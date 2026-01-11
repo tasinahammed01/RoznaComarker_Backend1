@@ -1,0 +1,599 @@
+{
+  "info": {
+    "_postman_id": "9e3e6b91-3d7a-4b0a-8f4c-5d2ad5e70c11",
+    "name": "RoznaComarker Backend API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /api/health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{BASE_URL}}/api/health", "host": ["{{BASE_URL}}"], "path": ["api", "health"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "POST /api/auth/login (Firebase -> JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json && json.token) { pm.environment.set('JWT_TOKEN', json.token); }",
+                  "if (json && json.user && json.user.id) { pm.environment.set('USER_ID', json.user.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{FIREBASE_ID_TOKEN}}", "type": "text" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/auth/login", "host": ["{{BASE_URL}}"], "path": ["api", "auth", "login"] }
+          }
+        },
+        {
+          "name": "GET /api/auth/me",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}", "type": "text" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/auth/me", "host": ["{{BASE_URL}}"], "path": ["api", "auth", "me"] }
+          }
+        },
+        {
+          "name": "GET /api/auth/jwt-test",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}", "type": "text" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/auth/jwt-test", "host": ["{{BASE_URL}}"], "path": ["api", "auth", "jwt-test"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Classes (Teacher)",
+      "item": [
+        {
+          "name": "POST /api/classes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json && json.data && json.data._id) {",
+                  "  pm.environment.set('CLASS_ID', json.data._id);",
+                  "  if (json.data.joinCode) pm.environment.set('JOIN_CODE', json.data.joinCode);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Math 101\",\n  \"description\": \"Morning section\"\n}"
+            },
+            "url": { "raw": "{{BASE_URL}}/api/classes", "host": ["{{BASE_URL}}"], "path": ["api", "classes"] }
+          }
+        },
+        {
+          "name": "GET /api/classes/mine",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/classes/mine", "host": ["{{BASE_URL}}"], "path": ["api", "classes", "mine"] }
+          }
+        },
+        {
+          "name": "PATCH /api/classes/:id",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Math 101 (Updated)\"\n}"
+            },
+            "url": { "raw": "{{BASE_URL}}/api/classes/{{CLASS_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "classes", "{{CLASS_ID}}"] }
+          }
+        },
+        {
+          "name": "DELETE /api/classes/:id",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/classes/{{CLASS_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "classes", "{{CLASS_ID}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Classes (Public)",
+      "item": [
+        {
+          "name": "GET /api/classes/join/:joinCode",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{BASE_URL}}/api/classes/join/{{JOIN_CODE}}", "host": ["{{BASE_URL}}"], "path": ["api", "classes", "join", "{{JOIN_CODE}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Memberships (Student)",
+      "item": [
+        {
+          "name": "POST /api/memberships/join",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"joinCode\": \"{{JOIN_CODE}}\"\n}"
+            },
+            "url": { "raw": "{{BASE_URL}}/api/memberships/join", "host": ["{{BASE_URL}}"], "path": ["api", "memberships", "join"] }
+          }
+        },
+        {
+          "name": "GET /api/memberships/mine",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/memberships/mine", "host": ["{{BASE_URL}}"], "path": ["api", "memberships", "mine"] }
+          }
+        },
+        {
+          "name": "PATCH /api/memberships/leave/:classId",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/memberships/leave/{{CLASS_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "memberships", "leave", "{{CLASS_ID}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Assignments",
+      "item": [
+        {
+          "name": "POST /api/assignments (Teacher)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json && json.data && json.data._id) {",
+                  "  pm.environment.set('ASSIGNMENT_ID', json.data._id);",
+                  "  if (json.data.qrToken) pm.environment.set('QR_TOKEN', json.data.qrToken);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Homework 1\",\n  \"classId\": \"{{CLASS_ID}}\",\n  \"deadline\": \"2026-02-01T12:00:00.000Z\",\n  \"instructions\": \"Solve the problems\",\n  \"allowLateResubmission\": true\n}"
+            },
+            "url": { "raw": "{{BASE_URL}}/api/assignments", "host": ["{{BASE_URL}}"], "path": ["api", "assignments"] }
+          }
+        },
+        {
+          "name": "GET /api/assignments/class/:classId (Teacher)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/assignments/class/{{CLASS_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "assignments", "class", "{{CLASS_ID}}"] }
+          }
+        },
+        {
+          "name": "PATCH /api/assignments/:id (Teacher)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Homework 1 (Updated)\"\n}"
+            },
+            "url": { "raw": "{{BASE_URL}}/api/assignments/{{ASSIGNMENT_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "assignments", "{{ASSIGNMENT_ID}}"] }
+          }
+        },
+        {
+          "name": "DELETE /api/assignments/:id (Teacher)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/assignments/{{ASSIGNMENT_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "assignments", "{{ASSIGNMENT_ID}}"] }
+          }
+        },
+        {
+          "name": "GET /api/assignments/my (Student)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/assignments/my", "host": ["{{BASE_URL}}"], "path": ["api", "assignments", "my"] }
+          }
+        },
+        {
+          "name": "GET /api/assignments/:id (Student)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/assignments/{{ASSIGNMENT_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "assignments", "{{ASSIGNMENT_ID}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Submissions",
+      "item": [
+        {
+          "name": "POST /api/submissions/:assignmentId (Student, file upload)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json && json.data && json.data._id) { pm.environment.set('SUBMISSION_ID', json.data._id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": "" }
+              ]
+            },
+            "url": { "raw": "{{BASE_URL}}/api/submissions/{{ASSIGNMENT_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "submissions", "{{ASSIGNMENT_ID}}"] }
+          }
+        },
+        {
+          "name": "POST /api/submissions/qr/:qrToken (Student, file upload)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": "" }
+              ]
+            },
+            "url": { "raw": "{{BASE_URL}}/api/submissions/qr/{{QR_TOKEN}}", "host": ["{{BASE_URL}}"], "path": ["api", "submissions", "qr", "{{QR_TOKEN}}"] }
+          }
+        },
+        {
+          "name": "GET /api/submissions/my (Student)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/submissions/my", "host": ["{{BASE_URL}}"], "path": ["api", "submissions", "my"] }
+          }
+        },
+        {
+          "name": "GET /api/submissions/assignment/:assignmentId (Teacher)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/submissions/assignment/{{ASSIGNMENT_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "submissions", "assignment", "{{ASSIGNMENT_ID}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Feedback",
+      "item": [
+        {
+          "name": "POST /api/feedback/:submissionId (Teacher)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json && json.data && json.data._id) { pm.environment.set('FEEDBACK_ID', json.data._id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "textFeedback", "value": "Good job", "type": "text" },
+                { "key": "score", "value": "8", "type": "text" },
+                { "key": "maxScore", "value": "10", "type": "text" },
+                { "key": "file", "type": "file", "src": "" }
+              ]
+            },
+            "url": { "raw": "{{BASE_URL}}/api/feedback/{{SUBMISSION_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "feedback", "{{SUBMISSION_ID}}"] }
+          }
+        },
+        {
+          "name": "PUT /api/feedback/:feedbackId (Teacher)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "textFeedback", "value": "Updated feedback", "type": "text" },
+                { "key": "file", "type": "file", "src": "" }
+              ]
+            },
+            "url": { "raw": "{{BASE_URL}}/api/feedback/{{FEEDBACK_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "feedback", "{{FEEDBACK_ID}}"] }
+          }
+        },
+        {
+          "name": "GET /api/feedback/submission/:submissionId (Student)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/feedback/submission/{{SUBMISSION_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "feedback", "submission", "{{SUBMISSION_ID}}"] }
+          }
+        },
+        {
+          "name": "GET /api/feedback/:feedbackId (Teacher)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/feedback/{{FEEDBACK_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "feedback", "{{FEEDBACK_ID}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "File Upload",
+      "item": [
+        {
+          "name": "POST /api/files/assignment (Teacher)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": "" }
+              ]
+            },
+            "url": { "raw": "{{BASE_URL}}/api/files/assignment", "host": ["{{BASE_URL}}"], "path": ["api", "files", "assignment"] }
+          }
+        },
+        {
+          "name": "POST /api/files/submission (Student)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": "" }
+              ]
+            },
+            "url": { "raw": "{{BASE_URL}}/api/files/submission", "host": ["{{BASE_URL}}"], "path": ["api", "files", "submission"] }
+          }
+        },
+        {
+          "name": "POST /api/files/feedback (Teacher)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": "" }
+              ]
+            },
+            "url": { "raw": "{{BASE_URL}}/api/files/feedback", "host": ["{{BASE_URL}}"], "path": ["api", "files", "feedback"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Subscription & Usage",
+      "item": [
+        {
+          "name": "GET /api/subscription/me",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/subscription/me", "host": ["{{BASE_URL}}"], "path": ["api", "subscription", "me"] }
+          }
+        },
+        {
+          "name": "POST /api/subscription/set (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{USER_ID}}\",\n  \"planName\": \"Pro\",\n  \"startedAt\": \"2026-01-01T00:00:00.000Z\"\n}"
+            },
+            "url": { "raw": "{{BASE_URL}}/api/subscription/set", "host": ["{{BASE_URL}}"], "path": ["api", "subscription", "set"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "POST /api/users/mock-sync",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json && json.data && json.data._id) { pm.environment.set('USER_ID', json.data._id); }",
+                  "if (json && json.data && json.data.firebaseUid) { pm.environment.set('FIREBASE_UID', json.data.firebaseUid); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firebaseUid\": \"demo-firebase-uid\",\n  \"email\": \"demo@example.com\",\n  \"displayName\": \"Demo User\"\n}"
+            },
+            "url": { "raw": "{{BASE_URL}}/api/users/mock-sync", "host": ["{{BASE_URL}}"], "path": ["api", "users", "mock-sync"] }
+          }
+        },
+        {
+          "name": "GET /api/users/firebase/:firebaseUid",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{BASE_URL}}/api/users/firebase/{{FIREBASE_UID}}", "host": ["{{BASE_URL}}"], "path": ["api", "users", "firebase", "{{FIREBASE_UID}}"] }
+          }
+        },
+        {
+          "name": "GET /api/users/:id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{BASE_URL}}/api/users/{{USER_ID}}", "host": ["{{BASE_URL}}"], "path": ["api", "users", "{{USER_ID}}"] }
+          }
+        },
+        {
+          "name": "PATCH /api/users/:id/deactivate",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": { "raw": "{{BASE_URL}}/api/users/{{USER_ID}}/deactivate", "host": ["{{BASE_URL}}"], "path": ["api", "users", "{{USER_ID}}", "deactivate"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "RBAC Demo",
+      "item": [
+        {
+          "name": "GET /api/demo/teacher",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/demo/teacher", "host": ["{{BASE_URL}}"], "path": ["api", "demo", "teacher"] }
+          }
+        },
+        {
+          "name": "GET /api/demo/student",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/demo/student", "host": ["{{BASE_URL}}"], "path": ["api", "demo", "student"] }
+          }
+        },
+        {
+          "name": "GET /api/demo/shared",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{JWT_TOKEN}}" }
+            ],
+            "url": { "raw": "{{BASE_URL}}/api/demo/shared", "host": ["{{BASE_URL}}"], "path": ["api", "demo", "shared"] }
+          }
+        }
+      ]
+    }
+  ]
+}
