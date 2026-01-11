@@ -4,6 +4,8 @@ const { v4: uuidv4 } = require('uuid');
 
 const Class = require('../models/class.model');
 const Membership = require('../models/membership.model');
+const Assignment = require('../models/assignment.model');
+const Submission = require('../models/Submission');
 
 const { incrementUsage } = require('../middlewares/usage.middleware');
 
@@ -294,6 +296,36 @@ async function getClassSummary(req, res) {
       status: 'active'
     });
 
+    const assignmentsCount = await Assignment.countDocuments({
+      class: classDoc._id,
+      isActive: true
+    });
+
+    const submissionsCount = await Submission.countDocuments({
+      class: classDoc._id
+    });
+
+    // Get the latest timestamp from class, assignments, and submissions
+    const classUpdatedAt = classDoc.updatedAt || classDoc.createdAt;
+    
+    const latestAssignment = await Assignment.findOne({
+      class: classDoc._id,
+      isActive: true
+    }).sort({ updatedAt: -1 }).select('updatedAt');
+
+    const latestSubmission = await Submission.findOne({
+      class: classDoc._id
+    }).sort({ updatedAt: -1 }).select('updatedAt');
+
+    const assignmentUpdatedAt = latestAssignment?.updatedAt || classUpdatedAt;
+    const submissionUpdatedAt = latestSubmission?.updatedAt || classUpdatedAt;
+    
+    const lastEdited = new Date(Math.max(
+      new Date(classUpdatedAt).getTime(),
+      new Date(assignmentUpdatedAt).getTime(),
+      new Date(submissionUpdatedAt).getTime()
+    ));
+
     const teacher = classDoc.teacher;
     const teacherEmail = teacher && teacher.email ? teacher.email : '';
     const teacherName = (teacher && (teacher.displayName || teacher.email)) || '';
@@ -308,7 +340,10 @@ async function getClassSummary(req, res) {
         name: teacherName,
         email: teacherEmail
       },
-      studentsCount
+      studentsCount,
+      assignmentsCount,
+      submissionsCount,
+      lastEdited: lastEdited.toISOString()
     });
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch class summary');

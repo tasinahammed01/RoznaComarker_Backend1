@@ -69,8 +69,10 @@ app.use(
 
 app.use(createGlobalRateLimiter());
 
+// Serve static files with CORS support
 app.use(
   '/uploads',
+  createCorsMiddleware(),
   express.static(
     uploadsRoot
   )

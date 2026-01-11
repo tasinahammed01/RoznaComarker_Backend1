@@ -15,15 +15,22 @@ function createCorsMiddleware() {
 
   return cors({
     origin(origin, callback) {
-      if (!origin) {
-        return callback(null, true);
+      // In development, allow localhost:4200 explicitly
+      if (!isProd) {
+        const devOrigins = [
+          'http://localhost:4200',
+          'http://localhost:4200/',
+          'http://127.0.0.1:4200',
+          'http://127.0.0.1:4200/'
+        ];
+        
+        if (!origin || devOrigins.includes(origin) || devOrigins.includes(origin + '/')) {
+          return callback(null, true);
+        }
+        return callback(null, true); // Allow any origin in development for flexibility
       }
 
       const normalizedOrigin = normalizeUrl(origin);
-
-      if (!isProd) {
-        return callback(null, true);
-      }
 
       if (normalizedOrigin === allowedOrigin) {
         return callback(null, true);
@@ -33,7 +40,10 @@ function createCorsMiddleware() {
       err.statusCode = 403;
       return callback(err);
     },
-    credentials: true
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    exposedHeaders: ['Content-Length', 'Content-Type']
   });
 }
 
