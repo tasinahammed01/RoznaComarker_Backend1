@@ -94,6 +94,14 @@ const swaggerSpec = createSwaggerSpec();
 app.get('/api/docs.json', (req, res) => res.json(swaggerSpec));
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
+// Root health check endpoint
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "Backend is running"
+  });
+});
+
 app.use(notFound);
 app.use(errorHandler);
 

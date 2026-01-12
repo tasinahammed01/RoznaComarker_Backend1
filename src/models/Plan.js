@@ -36,7 +36,6 @@ const planSchema = new mongoose.Schema(
   }
 );
 
-planSchema.index({ name: 1 }, { unique: true });
 
 planSchema.statics.seedDefaults = async function seedDefaults() {
   const defaults = [

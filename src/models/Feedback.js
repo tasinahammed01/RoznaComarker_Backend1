@@ -88,7 +88,6 @@ const feedbackSchema = new Schema(
   }
 );
 
-feedbackSchema.index({ submission: 1 }, { unique: true });
 feedbackSchema.index({ student: 1 });
 feedbackSchema.index({ assignment: 1 });
 
