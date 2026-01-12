@@ -3,7 +3,12 @@ const express = require('express');
 const submissionController = require('../controllers/submission.controller');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { requireRole } = require('../middlewares/role.middleware');
-const { upload, setUploadType, handleUploadError } = require('../middlewares/upload.middleware');
+const {
+  upload,
+  setUploadType,
+  handleUploadError,
+  validateUploadedFileSignature
+} = require('../middlewares/upload.middleware');
 
 const { param } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
@@ -76,6 +81,7 @@ router.post(
   setUploadType('submissions'),
   upload.single('file'),
   handleUploadError,
+  validateUploadedFileSignature,
   enforceStorageLimitFromUploadedFile(),
   submissionController.submitByQrToken
 );
@@ -132,6 +138,7 @@ router.post(
   setUploadType('submissions'),
   upload.single('file'),
   handleUploadError,
+  validateUploadedFileSignature,
   enforceStorageLimitFromUploadedFile(),
   submissionController.submitByAssignmentId
 );

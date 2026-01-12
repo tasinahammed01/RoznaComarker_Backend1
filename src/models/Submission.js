@@ -50,6 +50,10 @@ const submissionSchema = new Schema(
       type: String,
       trim: true
     },
+    transcriptText: {
+      type: String,
+      trim: true
+    },
     feedback: {
       type: Schema.Types.ObjectId,
       ref: 'Feedback'

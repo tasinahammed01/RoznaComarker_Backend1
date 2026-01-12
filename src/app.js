@@ -15,6 +15,8 @@ const classRoutes = require('./routes/class.routes');
 const membershipRoutes = require('./routes/membership.routes');
 const assignmentRoutes = require('./routes/assignment.routes');
 const fileRoutes = require('./routes/file.routes');
+const uploadRoutes = require('./routes/upload.routes');
+const secureFileRoutes = require('./routes/secureFile.routes');
 const submissionRoutes = require('./routes/submission.routes');
 const feedbackRoutes = require('./routes/feedback.routes');
 const subscriptionRoutes = require('./routes/subscription.routes');
@@ -36,6 +38,9 @@ const uploadsRoot = path.join(__dirname, '..', uploadBasePath);
 fs.mkdirSync(path.join(uploadsRoot, 'assignments'), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, 'submissions'), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, 'feedback'), { recursive: true });
+fs.mkdirSync(path.join(uploadsRoot, 'original'), { recursive: true });
+fs.mkdirSync(path.join(uploadsRoot, 'processed'), { recursive: true });
+fs.mkdirSync(path.join(uploadsRoot, 'transcripts'), { recursive: true });
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -69,14 +74,10 @@ app.use(
 
 app.use(createGlobalRateLimiter());
 
-// Serve static files with CORS support
-app.use(
-  '/uploads',
-  createCorsMiddleware(),
-  express.static(
-    uploadsRoot
-  )
-);
+// Serve legacy static files with CORS support
+app.use('/uploads/assignments', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'assignments')));
+app.use('/uploads/submissions', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'submissions')));
+app.use('/uploads/feedback', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'feedback')));
 
 app.use('/api', healthRoutes);
 app.use('/api/auth', authRoutes);
@@ -86,9 +87,12 @@ app.use('/api/classes', classRoutes);
 app.use('/api/memberships', membershipRoutes);
 app.use('/api/assignments', assignmentRoutes);
 app.use('/api/files', fileRoutes);
+app.use('/api/uploads', uploadRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/subscription', subscriptionRoutes);
+
+app.use('/files', secureFileRoutes);
 
 const swaggerSpec = createSwaggerSpec();
 app.get('/api/docs.json', (req, res) => res.json(swaggerSpec));
