@@ -15,18 +15,7 @@ function createCorsMiddleware() {
 
   return cors({
     origin(origin, callback) {
-      // In development, allow localhost:4200 explicitly
       if (!isProd) {
-        const devOrigins = [
-          'http://localhost:4200',
-          'http://localhost:4200/',
-          'http://127.0.0.1:4200',
-          'http://127.0.0.1:4200/'
-        ];
-        
-        if (!origin || devOrigins.includes(origin) || devOrigins.includes(origin + '/')) {
-          return callback(null, true);
-        }
         return callback(null, true); // Allow any origin in development for flexibility
       }
 
