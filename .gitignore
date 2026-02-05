@@ -1,0 +1,52 @@
+# dependencies
+node_modules/
+
+# env
+.env
+.env.*
+
+# logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# uploads / user content
+uploads/
+
+# build artifacts
+build/
+dist/
+
+# coverage
+coverage/
+.nyc_output/
+
+# local / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# secrets / credentials
+key/
+Key/
+*.pem
+*.p12
+*.pfx
+*.key
+*.crt
+
+# google/firebase service accounts and downloaded keys
+*.json
+
+# allow repo json configs
+!package.json
+!package-lock.json
+!tsconfig.json
+!*.config.js
