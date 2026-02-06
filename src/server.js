@@ -47,9 +47,10 @@ async function start() {
     throw err;
   }
 
-  server = app.listen(env.PORT, () => {
+  const port = process.env.PORT || env.PORT || 5000;
+  server = app.listen(port, '0.0.0.0', () => {
     logger.info(
-      `Server running on port ${env.PORT} (${env.NODE_ENV})`
+      `Server running on port ${port} (${env.NODE_ENV})`
     );
   });
 }
