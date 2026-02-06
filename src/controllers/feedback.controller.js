@@ -9,6 +9,7 @@ const File = require('../models/File');
 
 const uploadService = require('../services/upload.service');
 const { buildOcrCorrections } = require('../services/ocrCorrections.service');
+const { normalizeOcrWordsFromStored } = require('../services/ocrCorrections.service');
 const { computeAcademicEvaluation } = require('../modules/academicEvaluationEngine');
 
 const { bytesToMB, incrementUsage } = require('../middlewares/usage.middleware');
@@ -18,6 +19,140 @@ function sendSuccess(res, data) {
     success: true,
     data
   });
+}
+
+function clampScore5(n) {
+  const v = typeof n === 'number' ? n : Number(n);
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(5, v));
+}
+
+function safeString(v) {
+  return typeof v === 'string' ? v : (v == null ? '' : String(v));
+}
+
+function normalizeAiFeedbackPayload(payload) {
+  const obj = payload && typeof payload === 'object' ? payload : {};
+  const textAnnotations = Array.isArray(obj.textAnnotations) ? obj.textAnnotations : [];
+  const rubricScores = obj.rubricScores && typeof obj.rubricScores === 'object' ? obj.rubricScores : {};
+
+  const outScores = {
+    CONTENT: clampScore5(rubricScores.CONTENT),
+    ORGANIZATION: clampScore5(rubricScores.ORGANIZATION),
+    GRAMMAR: clampScore5(rubricScores.GRAMMAR),
+    VOCABULARY: clampScore5(rubricScores.VOCABULARY),
+    MECHANICS: clampScore5(rubricScores.MECHANICS)
+  };
+
+  const outAnnotations = textAnnotations
+    .map((a) => ({
+      text: safeString(a && a.text).trim(),
+      category: safeString(a && a.category).trim(),
+      color: safeString(a && a.color).trim(),
+      explanation: safeString(a && a.explanation).trim()
+    }))
+    .filter((a) => a.text.length && a.category.length);
+
+  return {
+    textAnnotations: outAnnotations,
+    rubricScores: outScores,
+    generalComments: safeString(obj.generalComments).trim()
+  };
+}
+
+function legendColorForCategory(category) {
+  switch (String(category || '').toUpperCase()) {
+    case 'CONTENT':
+      return '#FFD6A5';
+    case 'ORGANIZATION':
+      return '#CDE7F0';
+    case 'GRAMMAR':
+      return '#B7E4C7';
+    case 'VOCABULARY':
+      return '#E4C1F9';
+    case 'MECHANICS':
+      return '#FFF3BF';
+    default:
+      return '#FFF3BF';
+  }
+}
+
+function mapLtGroupKeyToRubricCategory(groupKey) {
+  const k = String(groupKey || '').toLowerCase();
+  if (k.includes('grammar')) return 'GRAMMAR';
+  if (k.includes('spelling')) return 'MECHANICS';
+  if (k.includes('typography')) return 'MECHANICS';
+  if (k.includes('style')) return 'ORGANIZATION';
+  return 'CONTENT';
+}
+
+function buildVocabularyAnnotationsFromText(text) {
+  const t = typeof text === 'string' ? text : '';
+  const tokens = t
+    .toLowerCase()
+    .replace(/[^a-z\s']/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+
+  const freq = new Map();
+  for (const w of tokens) {
+    if (w.length <= 3) continue;
+    freq.set(w, (freq.get(w) || 0) + 1);
+  }
+
+  // Keep only obvious repetitions.
+  const repeated = Array.from(freq.entries())
+    .filter(([, c]) => c >= 4)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+
+  return repeated.map(([word, count]) => ({
+    text: word,
+    category: 'VOCABULARY',
+    color: legendColorForCategory('VOCABULARY'),
+    explanation: `The word "${word}" is repeated ${count} times. Consider using synonyms or rephrasing.`
+  }));
+}
+
+function computeRubricScoresFromCounts(counts) {
+  const c = counts && typeof counts === 'object' ? counts : {};
+  const n = (k) => (Number.isFinite(Number(c[k])) ? Number(c[k]) : 0);
+
+  // Simple severity model: start from 5, subtract weighted penalties.
+  const score = (penalty) => clampScore5(Math.round((5 - penalty) * 10) / 10);
+
+  const grammarPenalty = n('GRAMMAR') * 0.35;
+  const mechanicsPenalty = n('MECHANICS') * 0.25;
+  const vocabPenalty = n('VOCABULARY') * 0.3;
+  const orgPenalty = n('ORGANIZATION') * 0.3;
+  const contentPenalty = n('CONTENT') * 0.25;
+
+  return {
+    CONTENT: score(contentPenalty),
+    ORGANIZATION: score(orgPenalty),
+    GRAMMAR: score(grammarPenalty),
+    VOCABULARY: score(vocabPenalty),
+    MECHANICS: score(mechanicsPenalty)
+  };
+}
+
+function buildGeneralComments({ text, rubricScores, counts }) {
+  const safe = typeof text === 'string' ? text.trim() : '';
+  const wordCount = safe ? safe.split(/\s+/).filter(Boolean).length : 0;
+  const scores = rubricScores || {};
+
+  const weakest = Object.entries(scores)
+    .sort((a, b) => Number(a[1]) - Number(b[1]))
+    .slice(0, 2)
+    .map(([k]) => k);
+
+  const issuesTotal = Object.values(counts || {}).reduce((acc, v) => acc + (Number.isFinite(Number(v)) ? Number(v) : 0), 0);
+
+  const focusLine = weakest.length
+    ? `Focus areas: ${weakest.join(', ')}.`
+    : 'Focus on clarity and correctness.';
+
+  return `OCR analysis processed ${wordCount} words. Detected ${issuesTotal} issue(s). ${focusLine}`;
 }
 
 function sendError(res, statusCode, message) {
@@ -429,6 +564,163 @@ async function createFeedback(req, res) {
   }
 }
 
+async function generateAiFeedbackFromOcr(req, res) {
+  try {
+    const { submissionId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+      return sendError(res, 400, 'Invalid submission id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const submission = await Submission.findById(submissionId);
+    if (!submission) {
+      return sendError(res, 404, 'Submission not found');
+    }
+
+    const classDoc = await Class.findOne({
+      _id: submission.class,
+      teacher: teacherId,
+      isActive: true
+    });
+    if (!classDoc) {
+      return sendError(res, 403, 'Not class teacher');
+    }
+
+    const assignment = await Assignment.findOne({
+      _id: submission.assignment,
+      isActive: true
+    });
+    if (!assignment) {
+      return sendError(res, 404, 'Assignment not found');
+    }
+
+    const ocrText = typeof submission.ocrText === 'string' ? submission.ocrText : '';
+    if (!ocrText.trim()) {
+      return sendError(res, 400, 'Submission OCR text is empty');
+    }
+
+    const preDetectedIssues = req.body && Array.isArray(req.body.preDetectedIssues) ? req.body.preDetectedIssues : null;
+
+    let corrections = [];
+    try {
+      if (preDetectedIssues) {
+        corrections = preDetectedIssues;
+      } else {
+        const normalizedWords = normalizeOcrWordsFromStored(submission.ocrData && submission.ocrData.words);
+        const built = await buildOcrCorrections({
+          text: ocrText,
+          language: (req.body && req.body.language) ? String(req.body.language) : 'en-US',
+          ocrWords: normalizedWords
+        });
+        corrections = Array.isArray(built && built.corrections) ? built.corrections : [];
+      }
+    } catch {
+      corrections = [];
+    }
+
+    const textAnnotations = [];
+    const counts = {
+      CONTENT: 0,
+      ORGANIZATION: 0,
+      GRAMMAR: 0,
+      VOCABULARY: 0,
+      MECHANICS: 0
+    };
+
+    for (const c of Array.isArray(corrections) ? corrections : []) {
+      const category = mapLtGroupKeyToRubricCategory(c && (c.groupKey || c.groupLabel));
+      const start = Number.isFinite(Number(c && c.startChar)) ? Number(c.startChar) : NaN;
+      const end = Number.isFinite(Number(c && c.endChar)) ? Number(c.endChar) : NaN;
+      const exact = Number.isFinite(start) && Number.isFinite(end) && end > start
+        ? ocrText.slice(start, end)
+        : safeString(c && (c.wrongText || c.text || c.message)).trim();
+
+      const explanation = safeString(c && (c.message || c.description || c.explanation)).trim() || 'Check this section.';
+
+      if (!exact) continue;
+
+      textAnnotations.push({
+        text: exact,
+        category,
+        color: legendColorForCategory(category),
+        explanation
+      });
+
+      if (category in counts) counts[category] += 1;
+    }
+
+    const vocabAnnotations = buildVocabularyAnnotationsFromText(ocrText);
+    for (const a of vocabAnnotations) {
+      textAnnotations.push(a);
+      counts.VOCABULARY += 1;
+    }
+
+    const paragraphCount = ocrText.split(/\n\s*\n/).filter((p) => p.trim().length).length;
+    if (paragraphCount <= 1) {
+      textAnnotations.push({
+        text: 'Structure',
+        category: 'ORGANIZATION',
+        color: legendColorForCategory('ORGANIZATION'),
+        explanation: 'The response appears to be a single block. Consider splitting into paragraphs (intro, body, conclusion).'
+      });
+      counts.ORGANIZATION += 1;
+    }
+
+    const sentenceCount = ocrText.split(/[.!?]+/).filter((s) => s.trim().length).length;
+    if (sentenceCount < 3) {
+      textAnnotations.push({
+        text: 'Idea development',
+        category: 'CONTENT',
+        color: legendColorForCategory('CONTENT'),
+        explanation: 'The response is very short. Add supporting details and examples to develop your ideas.'
+      });
+      counts.CONTENT += 1;
+    }
+
+    const rubricScores = computeRubricScoresFromCounts(counts);
+    const generalComments = buildGeneralComments({ text: ocrText, rubricScores, counts });
+
+    const aiFeedback = normalizeAiFeedbackPayload({
+      textAnnotations,
+      rubricScores,
+      generalComments
+    });
+
+    let feedbackDoc = await Feedback.findOne({ submission: submission._id });
+    if (!feedbackDoc) {
+      feedbackDoc = await Feedback.create({
+        teacher: teacherId,
+        student: submission.student,
+        class: submission.class,
+        assignment: submission.assignment,
+        submission: submission._id,
+        aiFeedback,
+        aiGeneratedAt: new Date()
+      });
+    } else {
+      feedbackDoc.aiFeedback = aiFeedback;
+      feedbackDoc.aiGeneratedAt = new Date();
+      await feedbackDoc.save();
+    }
+
+    if (!submission.feedback || String(submission.feedback) !== String(feedbackDoc._id)) {
+      submission.feedback = feedbackDoc._id;
+      await submission.save();
+    }
+
+    const populated = await populateFeedback(feedbackDoc._id);
+    const withEval = await attachEvaluationToFeedbackDoc(populated);
+    return sendSuccess(res, withEval);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to generate AI feedback');
+  }
+}
+
 async function updateFeedback(req, res) {
   try {
     const { feedbackId } = req.params;
@@ -650,6 +942,7 @@ async function listFeedbackByClassForTeacher(req, res) {
 
 module.exports = {
   createFeedback,
+  generateAiFeedbackFromOcr,
   updateFeedback,
   getFeedbackBySubmissionForStudent,
   getFeedbackByIdForTeacher,

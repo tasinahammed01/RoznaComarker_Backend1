@@ -96,6 +96,16 @@ router.post(
   feedbackController.createFeedback
 );
 
+router.post(
+  '/ai/:submissionId',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  feedbackController.generateAiFeedbackFromOcr
+);
+
 /**
  * @openapi
  * /api/feedback/{feedbackId}:

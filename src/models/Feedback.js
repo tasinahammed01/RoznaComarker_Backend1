@@ -116,6 +116,14 @@ const feedbackSchema = new Schema(
     fileUrl: {
       type: String,
       trim: true
+    },
+    aiFeedback: {
+      type: Schema.Types.Mixed,
+      default: undefined
+    },
+    aiGeneratedAt: {
+      type: Date,
+      default: undefined
     }
   },
   {
