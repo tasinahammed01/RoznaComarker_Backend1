@@ -50,6 +50,27 @@ const submissionSchema = new Schema(
       type: String,
       trim: true
     },
+    ocrStatus: {
+      type: String,
+      enum: ['pending', 'completed', 'failed'],
+      default: undefined,
+      index: true
+    },
+    ocrText: {
+      type: String,
+      trim: true
+    },
+    ocrError: {
+      type: String,
+      trim: true
+    },
+    ocrData: {
+      type: Schema.Types.Mixed,
+      default: undefined
+    },
+    ocrUpdatedAt: {
+      type: Date
+    },
     transcriptText: {
       type: String,
       trim: true

@@ -6,6 +6,11 @@ const Class = require('../models/class.model');
 const Membership = require('../models/membership.model');
 const Submission = require('../models/Submission');
 const File = require('../models/File');
+const OcrUpload = require('../models/OcrUpload');
+
+const uploadService = require('../services/upload.service');
+const { runOcrAndPersist } = require('../services/ocrPipeline.service');
+const { normalizeOcrWordsFromStored, buildOcrCorrections } = require('../services/ocrCorrections.service');
 
 const { bytesToMB, ensureActivePlan, incrementUsage } = require('../middlewares/usage.middleware');
 
@@ -16,11 +21,79 @@ function sendSuccess(res, data) {
   });
 }
 
+async function uploadHandwrittenForOcr(req, res) {
+  try {
+    const studentId = req.user && req.user._id;
+    if (!studentId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized'
+      });
+    }
+
+    const persisted = await persistUploadedFile(req, 'submissions');
+    if (persisted.error) {
+      return res.status(persisted.error.statusCode).json({
+        success: false,
+        message: persisted.error.message
+      });
+    }
+
+    const doc = await OcrUpload.create({
+      student: studentId,
+      file: persisted.fileDoc._id,
+      fileUrl: persisted.url,
+      originalName: req.file && req.file.originalname ? String(req.file.originalname) : undefined,
+      ocrStatus: 'pending',
+      ocrUpdatedAt: new Date()
+    });
+
+    await runOcrAndPersist({ fileId: persisted.fileDoc._id, targetDoc: doc });
+
+    return res.json({
+      success: true,
+      fileUrl: doc.fileUrl,
+      submissionId: String(doc._id),
+      ocrStatus: doc.ocrStatus,
+      ocrText: doc.ocrText || '',
+      ocrError: doc.ocrError || ''
+    });
+  } catch (err) {
+    const message =
+      process.env.NODE_ENV === 'production'
+        ? 'Upload failed'
+        : (err && err.message ? String(err.message) : 'Upload failed');
+
+    return res.status(500).json({
+      success: false,
+      message
+    });
+  }
+}
+
 function sendError(res, statusCode, message) {
   return res.status(statusCode).json({
     success: false,
     message
   });
+}
+
+function getRequestBaseUrl(req) {
+  const raw = `${req.protocol}://${req.get('host')}`;
+  return raw.replace(/\/+$/, '');
+}
+
+function normalizePublicUploadsUrlForDev(req, url) {
+  if (!url) return url;
+  if (process.env.NODE_ENV === 'production') return url;
+
+  const raw = String(url);
+  const marker = '/uploads/';
+  const idx = raw.indexOf(marker);
+  if (idx < 0) return raw;
+
+  const pathPart = raw.slice(idx);
+  return `${getRequestBaseUrl(req)}${pathPart}`;
 }
 
 function getBaseUrl(req) {
@@ -159,9 +232,19 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       existing.isLate = isLate;
       existing.qrToken = qrToken;
 
+      existing.ocrStatus = 'pending';
+      existing.ocrText = undefined;
+      existing.ocrError = undefined;
+      existing.ocrData = undefined;
+      existing.ocrUpdatedAt = new Date();
+
       const saved = await existing.save();
 
       await incrementUsage(studentId, { storageMB: uploadedMB });
+
+      setImmediate(() => {
+        runOcrAndPersist({ fileId: persisted.fileDoc._id, targetDoc: saved }).catch(() => {});
+      });
 
       const populated = await Submission.findById(saved._id)
         .populate('student', '_id email displayName photoURL role')
@@ -181,10 +264,16 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       status,
       submittedAt: now,
       isLate,
-      qrToken
+      qrToken,
+      ocrStatus: 'pending',
+      ocrUpdatedAt: new Date()
     });
 
     await incrementUsage(studentId, { submissions: 1, storageMB: uploadedMB });
+
+    setImmediate(() => {
+      runOcrAndPersist({ fileId: persisted.fileDoc._id, targetDoc: created }).catch(() => {});
+    });
 
     const populated = await Submission.findById(created._id)
       .populate('student', '_id email displayName photoURL role')
@@ -301,6 +390,12 @@ async function getSubmissionsByAssignment(req, res) {
       .populate('class')
       .populate('file');
 
+    for (const s of submissions) {
+      if (s && typeof s.fileUrl === 'string') {
+        s.fileUrl = normalizePublicUploadsUrlForDev(req, s.fileUrl);
+      }
+    }
+
     return sendSuccess(res, submissions);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch submissions');
@@ -329,7 +424,11 @@ async function getMySubmissionByAssignmentId(req, res) {
       .populate('student', '_id email displayName photoURL role');
 
     if (!submission) {
-      return sendError(res, 404, 'Submission not found');
+      return sendSuccess(res, null);
+    }
+
+    if (submission && typeof submission.fileUrl === 'string') {
+      submission.fileUrl = normalizePublicUploadsUrlForDev(req, submission.fileUrl);
     }
 
     return sendSuccess(res, submission);
@@ -353,9 +452,96 @@ async function getMySubmissions(req, res) {
       .populate('class')
       .populate('file');
 
+    for (const s of submissions) {
+      if (s && typeof s.fileUrl === 'string') {
+        s.fileUrl = normalizePublicUploadsUrlForDev(req, s.fileUrl);
+      }
+    }
+
     return sendSuccess(res, submissions);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch submissions');
+  }
+}
+
+async function getOcrCorrections(req, res) {
+  try {
+    const submissionId = req.params && req.params.submissionId;
+    const user = req.user;
+
+    if (!user) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+      return sendError(res, 400, 'Invalid submission id');
+    }
+
+    let doc = await Submission.findById(submissionId);
+    let kind = 'submission';
+    if (!doc) {
+      doc = await OcrUpload.findById(submissionId);
+      kind = 'ocr_upload';
+    }
+
+    if (!doc) {
+      return sendSuccess(res, { corrections: [], ocr: [] });
+    }
+
+    if (user.role === 'student') {
+      if (String(doc.student) !== String(user._id)) {
+        return sendError(res, 403, 'Forbidden');
+      }
+    } else if (user.role === 'teacher') {
+      if (kind !== 'submission') {
+        return sendError(res, 403, 'Forbidden');
+      }
+      await uploadService.assertTeacherOwnsClassOrThrow(user._id, doc.class);
+    } else {
+      return sendError(res, 403, 'Forbidden');
+    }
+
+    const ocrDataWords = doc && doc.ocrData && typeof doc.ocrData === 'object' ? doc.ocrData.words : null;
+    const needsOcr = !ocrDataWords || !Array.isArray(ocrDataWords) || ocrDataWords.length === 0;
+
+    if (needsOcr) {
+      if (!doc.file) {
+        return sendSuccess(res, { corrections: [], ocr: [], ocrStatus: doc.ocrStatus || null, ocrError: doc.ocrError || null });
+      }
+
+      await runOcrAndPersist({ fileId: doc.file, targetDoc: doc });
+
+      if (doc.ocrStatus === 'failed') {
+        return sendSuccess(res, {
+          corrections: [],
+          ocr: [],
+          ocrStatus: doc.ocrStatus || null,
+          ocrError: doc.ocrError || null
+        });
+      }
+    }
+
+    const normalizedWords = normalizeOcrWordsFromStored(doc.ocrData && doc.ocrData.words);
+
+    const built = await buildOcrCorrections({
+      text: doc.ocrText || '',
+      language: 'en-US',
+      ocrWords: normalizedWords
+    });
+
+    return sendSuccess(res, {
+      corrections: built.corrections,
+      ocr: built.ocr,
+      ocrStatus: doc.ocrStatus || null,
+      ocrError: doc.ocrError || null
+    });
+  } catch (err) {
+    const message =
+      process.env.NODE_ENV === 'production'
+        ? 'Failed to fetch OCR corrections'
+        : (err && err.message ? String(err.message) : 'Failed to fetch OCR corrections');
+
+    return sendError(res, 500, message);
   }
 }
 
@@ -364,5 +550,7 @@ module.exports = {
   submitByQrToken,
   getSubmissionsByAssignment,
   getMySubmissions,
-  getMySubmissionByAssignmentId
+  getMySubmissionByAssignmentId,
+  getOcrCorrections,
+  uploadHandwrittenForOcr
 };

@@ -86,6 +86,19 @@ router.post(
   submissionController.submitByQrToken
 );
 
+router.post(
+  '/upload',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('student'),
+  setUploadType('submissions'),
+  upload.single('file'),
+  handleUploadError,
+  validateUploadedFileSignature,
+  enforceStorageLimitFromUploadedFile(),
+  submissionController.uploadHandwrittenForOcr
+);
+
 /**
  * @openapi
  * /api/submissions/{assignmentId}:
@@ -143,6 +156,15 @@ router.post(
   submissionController.submitByAssignmentId
 );
 
+router.get(
+  '/assignment/:assignmentId/my',
+  verifyJwtToken,
+  requireRole('student'),
+  param('assignmentId').isMongoId().withMessage('Invalid assignment id'),
+  handleValidationResult,
+  submissionController.getMySubmissionByAssignmentId
+);
+
 /**
  * @openapi
  * /api/submissions/assignment/{assignmentId}:
@@ -197,6 +219,15 @@ router.get(
  *         description: Forbidden
  */
 router.get('/my', verifyJwtToken, requireRole('student'), submissionController.getMySubmissions);
+
+router.post(
+  '/:submissionId/ocr-corrections',
+  verifyJwtToken,
+  requireRole(['student', 'teacher']),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  submissionController.getOcrCorrections
+);
 
 router.get(
   '/:assignmentId',

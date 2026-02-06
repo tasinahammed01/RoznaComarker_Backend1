@@ -20,14 +20,26 @@ const secureFileRoutes = require('./routes/secureFile.routes');
 const submissionRoutes = require('./routes/submission.routes');
 const feedbackRoutes = require('./routes/feedback.routes');
 const subscriptionRoutes = require('./routes/subscription.routes');
+const writingCorrectionsRoutes = require('./routes/writingCorrections.routes');
 const notFound = require('./middlewares/notFound.middleware');
 const { errorHandler } = require('./middlewares/error.middleware');
+
+const submissionController = require('./controllers/submission.controller');
+const { verifyJwtToken } = require('./middlewares/jwtAuth.middleware');
+const { requireRole } = require('./middlewares/role.middleware');
+const {
+  upload,
+  setUploadType,
+  handleUploadError,
+  validateUploadedFileSignature
+} = require('./middlewares/upload.middleware');
+const { enforceStorageLimitFromUploadedFile } = require('./middlewares/usage.middleware');
 
 const swaggerUi = require('swagger-ui-express');
 const { createSwaggerSpec } = require('./config/swagger');
 
 const { createCorsMiddleware } = require('./middlewares/cors.middleware');
-const { createGlobalRateLimiter } = require('./middlewares/rateLimit.middleware');
+const { createGlobalRateLimiter, createSensitiveRateLimiter } = require('./middlewares/rateLimit.middleware');
 
 const app = express();
 
@@ -91,8 +103,39 @@ app.use('/api/uploads', uploadRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/subscription', subscriptionRoutes);
+app.use('/api/writing-corrections', writingCorrectionsRoutes);
+
+app.post(
+  '/upload',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('student'),
+  setUploadType('submissions'),
+  upload.single('file'),
+  handleUploadError,
+  validateUploadedFileSignature,
+  enforceStorageLimitFromUploadedFile(),
+  (req, res, next) => {
+    req.params = req.params || {};
+    req.params.assignmentId = req.body && req.body.assignmentId ? String(req.body.assignmentId) : undefined;
+    return next();
+  },
+  submissionController.submitByAssignmentId
+);
 
 app.use('/files', secureFileRoutes);
+
+app.get('/files/submissions/:filename', (req, res) => {
+  const filename = req.params && req.params.filename ? String(req.params.filename) : '';
+  if (!filename) {
+    return res.status(404).json({
+      success: false,
+      message: 'Route not found'
+    });
+  }
+
+  return res.redirect(`/uploads/submissions/${encodeURIComponent(filename)}`);
+});
 
 const swaggerSpec = createSwaggerSpec();
 app.get('/api/docs.json', (req, res) => res.json(swaggerSpec));
