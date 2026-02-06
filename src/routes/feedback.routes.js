@@ -198,6 +198,24 @@ router.get(
   feedbackController.getFeedbackBySubmissionForStudent
 );
 
+router.get(
+  '/student/:submissionId',
+  verifyJwtToken,
+  requireRole('student'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  feedbackController.getFeedbackBySubmissionForStudent
+);
+
+router.get(
+  '/teacher/:classId',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('classId').isMongoId().withMessage('Invalid class id'),
+  handleValidationResult,
+  feedbackController.listFeedbackByClassForTeacher
+);
+
 /**
  * @openapi
  * /api/feedback/{feedbackId}:

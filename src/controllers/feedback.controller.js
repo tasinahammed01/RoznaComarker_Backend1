@@ -7,6 +7,10 @@ const Submission = require('../models/Submission');
 const Feedback = require('../models/Feedback');
 const File = require('../models/File');
 
+const uploadService = require('../services/upload.service');
+const { buildOcrCorrections } = require('../services/ocrCorrections.service');
+const { computeAcademicEvaluation } = require('../modules/academicEvaluationEngine');
+
 const { bytesToMB, incrementUsage } = require('../middlewares/usage.middleware');
 
 function sendSuccess(res, data) {
@@ -75,6 +79,49 @@ function normalizeOptionalNumber(value) {
   }
 
   return parsed;
+}
+
+function normalizeOptionalObject(value) {
+  if (value === null) return undefined;
+  if (typeof value === 'undefined') return undefined;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed.length) return undefined;
+    try {
+      const parsed = JSON.parse(trimmed);
+      return normalizeOptionalObject(parsed);
+    } catch {
+      return { error: 'invalid json object' };
+    }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { error: 'must be an object' };
+  }
+  return { value };
+}
+
+function normalizeOptionalOverrideScores(value) {
+  const obj = normalizeOptionalObject(value);
+  if (obj && obj.error) return obj;
+  if (!obj || typeof obj.value === 'undefined') return undefined;
+
+  const v = obj.value;
+  const keys = ['grammarScore', 'structureScore', 'contentScore', 'vocabularyScore', 'taskAchievementScore', 'overallScore'];
+  const out = {};
+
+  for (const k of keys) {
+    if (typeof v[k] === 'undefined' || v[k] === null || (typeof v[k] === 'string' && !String(v[k]).trim().length)) {
+      continue;
+    }
+
+    const n = typeof v[k] === 'number' ? v[k] : Number(v[k]);
+    if (!Number.isFinite(n)) {
+      return { error: `overriddenScores.${k} must be a number` };
+    }
+    out[k] = Math.max(0, Math.min(100, n));
+  }
+
+  return { value: Object.keys(out).length ? out : undefined };
 }
 
 function normalizeAnnotations(value) {
@@ -186,6 +233,47 @@ async function populateFeedback(feedbackId) {
     .populate('file');
 }
 
+async function attachEvaluationToFeedbackDoc(feedbackDoc) {
+  if (!feedbackDoc) return feedbackDoc;
+  const feedback = feedbackDoc && typeof feedbackDoc.toObject === 'function' ? feedbackDoc.toObject() : feedbackDoc;
+
+  const submission = feedbackDoc.submission;
+  if (!submission || typeof submission !== 'object') {
+    return feedback;
+  }
+
+  const transcriptText = (submission.transcriptText && String(submission.transcriptText).trim())
+    ? String(submission.transcriptText)
+    : (submission.ocrText && String(submission.ocrText).trim())
+      ? String(submission.ocrText)
+      : '';
+
+  const ocrWords = submission && submission.ocrData && typeof submission.ocrData === 'object' ? submission.ocrData.words : null;
+
+  let issues = [];
+  try {
+    const built = await buildOcrCorrections({
+      text: transcriptText,
+      language: 'en-US',
+      ocrWords
+    });
+    issues = Array.isArray(built && built.corrections) ? built.corrections : [];
+  } catch {
+    issues = [];
+  }
+
+  const evaluation = computeAcademicEvaluation({
+    text: transcriptText,
+    issues,
+    teacherOverrideScores: feedbackDoc.overriddenScores
+  });
+
+  return {
+    ...feedback,
+    evaluation
+  };
+}
+
 function validateScoreFields({ score, maxScore }) {
   if (typeof maxScore !== 'undefined' && maxScore !== null) {
     if (maxScore <= 0) {
@@ -253,6 +341,21 @@ async function createFeedback(req, res) {
       return sendError(res, 400, 'textFeedback must be a string');
     }
 
+    const teacherComments = normalizeOptionalString(req.body && req.body.teacherComments);
+    if (teacherComments === null) {
+      return sendError(res, 400, 'teacherComments must be a string');
+    }
+
+    const overrideReason = normalizeOptionalString(req.body && req.body.overrideReason);
+    if (overrideReason === null) {
+      return sendError(res, 400, 'overrideReason must be a string');
+    }
+
+    const overriddenScoresResult = normalizeOptionalOverrideScores(req.body && req.body.overriddenScores);
+    if (overriddenScoresResult && overriddenScoresResult.error) {
+      return sendError(res, 400, overriddenScoresResult.error);
+    }
+
     const score = normalizeOptionalNumber(req.body && req.body.score);
     if (score === null) {
       return sendError(res, 400, 'score must be a number');
@@ -296,6 +399,11 @@ async function createFeedback(req, res) {
         textFeedback,
         score,
         maxScore,
+        teacherComments,
+        overriddenScores: overriddenScoresResult ? overriddenScoresResult.value : undefined,
+        overrideReason,
+        overriddenBy: overriddenScoresResult && overriddenScoresResult.value ? teacherId : undefined,
+        overriddenAt: overriddenScoresResult && overriddenScoresResult.value ? new Date() : undefined,
         annotations: annotationsResult ? annotationsResult.value : undefined,
         file: persisted.fileDoc ? persisted.fileDoc._id : undefined,
         fileUrl: persisted.url
@@ -307,7 +415,8 @@ async function createFeedback(req, res) {
       );
 
       const populated = await populateFeedback(created._id);
-      return sendSuccess(res, populated);
+      const withEval = await attachEvaluationToFeedbackDoc(populated);
+      return sendSuccess(res, withEval);
     } catch (err) {
       if (err && err.code === 11000 && err.keyPattern && err.keyPattern.submission) {
         return sendError(res, 409, 'Feedback already exists');
@@ -393,6 +502,20 @@ async function updateFeedback(req, res) {
       feedback.textFeedback = textFeedback;
     }
 
+    if (typeof teacherComments !== 'undefined') {
+      feedback.teacherComments = teacherComments;
+    }
+
+    if (typeof overrideReason !== 'undefined') {
+      feedback.overrideReason = overrideReason;
+    }
+
+    if (typeof overriddenScoresResult !== 'undefined') {
+      feedback.overriddenScores = overriddenScoresResult ? overriddenScoresResult.value : undefined;
+      feedback.overriddenBy = overriddenScoresResult && overriddenScoresResult.value ? teacherId : undefined;
+      feedback.overriddenAt = overriddenScoresResult && overriddenScoresResult.value ? new Date() : undefined;
+    }
+
     if (typeof score !== 'undefined') {
       feedback.score = score;
     }
@@ -413,7 +536,8 @@ async function updateFeedback(req, res) {
     await feedback.save();
 
     const populated = await populateFeedback(feedback._id);
-    return sendSuccess(res, populated);
+    const withEval = await attachEvaluationToFeedbackDoc(populated);
+    return sendSuccess(res, withEval);
   } catch (err) {
     return sendError(res, 500, 'Failed to update feedback');
   }
@@ -447,7 +571,8 @@ async function getFeedbackBySubmissionForStudent(req, res) {
     }
 
     const populated = await populateFeedback(feedback._id);
-    return sendSuccess(res, populated);
+    const withEval = await attachEvaluationToFeedbackDoc(populated);
+    return sendSuccess(res, withEval);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch feedback');
   }
@@ -482,7 +607,42 @@ async function getFeedbackByIdForTeacher(req, res) {
     }
 
     const populated = await populateFeedback(feedback._id);
-    return sendSuccess(res, populated);
+    const withEval = await attachEvaluationToFeedbackDoc(populated);
+    return sendSuccess(res, withEval);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to fetch feedback');
+  }
+}
+
+async function listFeedbackByClassForTeacher(req, res) {
+  try {
+    const { classId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(classId)) {
+      return sendError(res, 400, 'Invalid class id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    await uploadService.assertTeacherOwnsClassOrThrow(teacherId, classId);
+
+    const feedbacks = await Feedback.find({ class: classId })
+      .sort({ createdAt: -1 })
+      .populate('teacher', '_id email displayName photoURL role')
+      .populate('student', '_id email displayName photoURL role')
+      .populate('class')
+      .populate('assignment')
+      .populate('submission')
+      .populate('file');
+
+    const out = [];
+    for (const fb of feedbacks) {
+      out.push(await attachEvaluationToFeedbackDoc(fb));
+    }
+
+    return sendSuccess(res, out);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch feedback');
   }
@@ -492,5 +652,6 @@ module.exports = {
   createFeedback,
   updateFeedback,
   getFeedbackBySubmissionForStudent,
-  getFeedbackByIdForTeacher
+  getFeedbackByIdForTeacher,
+  listFeedbackByClassForTeacher
 };

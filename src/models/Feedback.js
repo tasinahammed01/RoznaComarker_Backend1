@@ -27,6 +27,20 @@ const annotationSchema = new Schema(
   }
 );
 
+const overriddenScoresSchema = new Schema(
+  {
+    grammarScore: { type: Number, default: undefined },
+    structureScore: { type: Number, default: undefined },
+    contentScore: { type: Number, default: undefined },
+    vocabularyScore: { type: Number, default: undefined },
+    taskAchievementScore: { type: Number, default: undefined },
+    overallScore: { type: Number, default: undefined }
+  },
+  {
+    _id: false
+  }
+);
+
 const feedbackSchema = new Schema(
   {
     teacher: {
@@ -69,6 +83,27 @@ const feedbackSchema = new Schema(
     },
     maxScore: {
       type: Number
+    },
+    teacherComments: {
+      type: String,
+      trim: true
+    },
+    overriddenScores: {
+      type: overriddenScoresSchema,
+      default: undefined
+    },
+    overrideReason: {
+      type: String,
+      trim: true
+    },
+    overriddenBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: undefined
+    },
+    overriddenAt: {
+      type: Date,
+      default: undefined
     },
     annotations: {
       type: [annotationSchema],
