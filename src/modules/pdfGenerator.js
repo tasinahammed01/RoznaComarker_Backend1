@@ -1,5 +1,7 @@
 const puppeteer = require('puppeteer');
 
+const { fetch } = require('undici');
+
 function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -7,6 +9,45 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+async function tryFetchAsDataUri(url) {
+  const u = typeof url === 'string' ? url.trim() : '';
+  if (!u) return '';
+  if (u.startsWith('data:')) return u;
+  if (!/^https?:\/\//i.test(u)) return '';
+
+  try {
+    const res = await fetch(u);
+    if (!res || !res.ok) return '';
+    const ct = res.headers.get('content-type') || 'application/octet-stream';
+    const ab = await res.arrayBuffer();
+    const b64 = Buffer.from(ab).toString('base64');
+    return `data:${ct};base64,${b64}`;
+  } catch {
+    return '';
+  }
+}
+
+async function waitForImages(page) {
+  try {
+    await page.evaluate(async () => {
+      const imgs = Array.from(document.images || []);
+      await Promise.all(
+        imgs.map((img) =>
+          img.complete
+            ? Promise.resolve()
+            : new Promise((resolve) => {
+                const done = () => resolve();
+                img.addEventListener('load', done, { once: true });
+                img.addEventListener('error', done, { once: true });
+              })
+        )
+      );
+    });
+  } catch {
+    // ignore
+  }
 }
 
 function toRgba(hexColor, alpha) {
@@ -40,8 +81,11 @@ function buildWritingCorrectionsHtml(text, issues) {
 
   const normalized = list
     .map((i) => {
-      const start = typeof i.start === 'number' ? i.start : Number(i.start);
-      const end = typeof i.end === 'number' ? i.end : Number(i.end);
+      const startRaw = i && (i.startChar ?? i.start);
+      const endRaw = i && (i.endChar ?? i.end);
+
+      const start = typeof startRaw === 'number' ? startRaw : Number(startRaw);
+      const end = typeof endRaw === 'number' ? endRaw : Number(endRaw);
       if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
       if (start < 0 || end <= start || start >= safeText.length) return null;
       return {
@@ -70,8 +114,8 @@ function buildWritingCorrectionsHtml(text, issues) {
 
     const symbol = escapeHtml(issue.symbol || '');
     const description = escapeHtml(issue.description || issue.message || '');
-    const bg = toRgba(issue.color, 0.22);
     const border = escapeHtml(issue.color || '#FFC107');
+    const bg = toRgba(issue.color, 0.14);
 
     html =
       `<span class="correction-highlight" style="background:${bg}; border-bottom: 2px solid ${border};">` +
@@ -359,12 +403,14 @@ async function renderSubmissionPdf({ header, imageUrl, transcriptText, issues, f
     };
   }
 
+  const embedded = await tryFetchAsDataUri(imageUrl);
+
   const html = buildHtml({
     header: {
       ...header,
       date: header && header.date ? header.date : formatDate(new Date())
     },
-    imageUrl,
+    imageUrl: embedded || imageUrl,
     transcriptHtml,
     scoreSummary,
     stats,
@@ -381,6 +427,9 @@ async function renderSubmissionPdf({ header, imageUrl, transcriptText, issues, f
   try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
+
+    await waitForImages(page);
+
     const pdfBuffer = await page.pdf({
       format: 'A4',
       printBackground: true,
