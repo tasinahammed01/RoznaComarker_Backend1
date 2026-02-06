@@ -19,6 +19,7 @@ const uploadRoutes = require('./routes/upload.routes');
 const secureFileRoutes = require('./routes/secureFile.routes');
 const submissionRoutes = require('./routes/submission.routes');
 const feedbackRoutes = require('./routes/feedback.routes');
+const pdfRoutes = require('./routes/pdf.routes');
 const subscriptionRoutes = require('./routes/subscription.routes');
 const writingCorrectionsRoutes = require('./routes/writingCorrections.routes');
 const notFound = require('./middlewares/notFound.middleware');
@@ -102,6 +103,7 @@ app.use('/api/files', fileRoutes);
 app.use('/api/uploads', uploadRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api/feedback', feedbackRoutes);
+app.use('/api/pdf', pdfRoutes);
 app.use('/api/subscription', subscriptionRoutes);
 app.use('/api/writing-corrections', writingCorrectionsRoutes);
 

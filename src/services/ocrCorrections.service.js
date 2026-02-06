@@ -129,6 +129,8 @@ async function buildOcrCorrections({ text, language, ocrWords }) {
       page,
       wordIds,
       bboxList,
+      groupKey: issue.groupKey,
+      groupLabel: issue.groupLabel,
       category: issue.groupLabel || issue.groupKey || 'Quick Check',
       symbol: issue.symbol || 'CK',
       color: issue.color || '#FF0000',

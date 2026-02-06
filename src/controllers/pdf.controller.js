@@ -1,0 +1,114 @@
+const mongoose = require('mongoose');
+
+const Submission = require('../models/Submission');
+const Feedback = require('../models/Feedback');
+
+const uploadService = require('../services/upload.service');
+const { buildOcrCorrections } = require('../services/ocrCorrections.service');
+
+const { ApiError } = require('../middlewares/error.middleware');
+
+const { renderSubmissionPdf } = require('../modules/pdfGenerator');
+
+function getRequestBaseUrl(req) {
+  const raw = `${req.protocol}://${req.get('host')}`;
+  return raw.replace(/\/+$/, '');
+}
+
+async function getSubmissionWithPermissionsOrThrow({ user, submissionId }) {
+  if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+    throw new ApiError(400, 'Invalid submission id');
+  }
+
+  const submission = await Submission.findById(submissionId)
+    .populate('student', '_id email displayName photoURL role')
+    .populate('assignment')
+    .populate('class')
+    .populate('file')
+    .populate('feedback');
+
+  if (!submission) {
+    throw new ApiError(404, 'Submission not found');
+  }
+
+  if (!user) {
+    throw new ApiError(401, 'Unauthorized');
+  }
+
+  if (user.role === 'student') {
+    if (String(submission.student?._id || submission.student) !== String(user._id)) {
+      throw new ApiError(403, 'Forbidden');
+    }
+  } else if (user.role === 'teacher') {
+    await uploadService.assertTeacherOwnsClassOrThrow(user._id, submission.class);
+  } else {
+    throw new ApiError(403, 'Forbidden');
+  }
+
+  return submission;
+}
+
+async function downloadSubmissionPdf(req, res, next) {
+  try {
+    const submissionId = req.params && req.params.submissionId ? String(req.params.submissionId) : '';
+
+    const submission = await getSubmissionWithPermissionsOrThrow({
+      user: req.user,
+      submissionId
+    });
+
+    const feedbackId = submission && submission.feedback ? (typeof submission.feedback === 'string' ? submission.feedback : submission.feedback._id) : null;
+    const feedback = feedbackId ? await Feedback.findById(feedbackId) : null;
+
+    const transcriptText = (submission.transcriptText && String(submission.transcriptText).trim())
+      ? String(submission.transcriptText)
+      : (submission.ocrText && String(submission.ocrText).trim())
+        ? String(submission.ocrText)
+        : '';
+
+    const ocrWords = submission && submission.ocrData && typeof submission.ocrData === 'object' ? submission.ocrData.words : null;
+
+    const built = await buildOcrCorrections({
+      text: transcriptText,
+      language: 'en-US',
+      ocrWords
+    });
+
+    const issues = Array.isArray(built && built.corrections) ? built.corrections : [];
+
+    const baseUrl = getRequestBaseUrl(req);
+    const imageUrl = submission.fileUrl && typeof submission.fileUrl === 'string'
+      ? submission.fileUrl.startsWith('http')
+        ? submission.fileUrl
+        : `${baseUrl}${submission.fileUrl.startsWith('/') ? '' : '/'}${submission.fileUrl}`
+      : '';
+
+    const header = {
+      studentName: (submission.student && typeof submission.student === 'object')
+        ? (submission.student.displayName || submission.student.email || '')
+        : '',
+      submissionId: String(submission._id),
+      date: submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : ''
+    };
+
+    const pdfBuffer = await renderSubmissionPdf({
+      header,
+      imageUrl,
+      transcriptText,
+      issues,
+      feedback
+    });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="submission-feedback.pdf"');
+    res.setHeader('Content-Length', String(pdfBuffer.length));
+
+    return res.status(200).send(pdfBuffer);
+  } catch (err) {
+    return next(err);
+  }
+}
+
+module.exports = {
+  downloadSubmissionPdf
+};

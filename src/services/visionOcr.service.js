@@ -6,18 +6,39 @@ const sizeOf = require('image-size');
 
 const logger = require('../utils/logger');
 
-function toAbsoluteCredentialsPathMaybe(relativePath) {
-  if (!relativePath || typeof relativePath !== 'string') return null;
-  const trimmed = relativePath.trim();
+function getBackendRootDir() {
+  return path.resolve(__dirname, '..', '..', '..');
+}
+
+function resolveCredentialsPathMaybe(rawPath) {
+  if (!rawPath || typeof rawPath !== 'string') return null;
+  const trimmed = rawPath.trim();
   if (!trimmed) return null;
+
   if (path.isAbsolute(trimmed)) return trimmed;
-  return path.join(process.cwd(), trimmed);
+
+  const backendRoot = getBackendRootDir();
+  const cwdCandidate = path.resolve(process.cwd(), trimmed);
+  const backendCandidate = path.resolve(backendRoot, trimmed);
+
+  const candidates = [cwdCandidate, backendCandidate];
+
+  const backendDirName = path.basename(backendRoot);
+  if (backendDirName.toLowerCase() === 'backend' && /^backend[\\/]/i.test(trimmed)) {
+    candidates.push(path.resolve(backendRoot, trimmed.replace(/^backend[\\/]/i, '')));
+  }
+
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+
+  return candidates[0] || null;
 }
 
 function ensureGoogleCredentialsEnv() {
   const isDev = process.env.NODE_ENV !== 'production';
   const raw = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  const abs = toAbsoluteCredentialsPathMaybe(raw);
+  const abs = resolveCredentialsPathMaybe(raw);
 
   if (!abs) {
     if (!isDev) {
@@ -32,7 +53,8 @@ function ensureGoogleCredentialsEnv() {
   if (!fs.existsSync(abs)) {
     throw new Error(
       `Google Vision credentials file not found at: ${abs}. ` +
-        'Fix GOOGLE_APPLICATION_CREDENTIALS (use an absolute path or a path relative to the backend folder).'
+        'Fix GOOGLE_APPLICATION_CREDENTIALS. Recommended values: ./key/roznaKey_vision_key.json (backend-relative) ' +
+        'or an absolute path to backend/key/roznaKey_vision_key.json.'
     );
   }
 
