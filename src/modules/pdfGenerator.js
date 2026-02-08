@@ -195,7 +195,168 @@ function formatDate(value) {
   return d.toLocaleString();
 }
 
-function buildHtml({ header, imageUrl, transcriptHtml, scoreSummary, stats, detailedIssues, teacherFeedback, actionSteps }) {
+function clampPct(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(100, v));
+}
+
+function normalizeAnnotationPoint(a) {
+  if (!a || typeof a !== 'object') return null;
+  const xRaw = a.x;
+  const yRaw = a.y;
+  const xNum = typeof xRaw === 'number' ? xRaw : Number(xRaw);
+  const yNum = typeof yRaw === 'number' ? yRaw : Number(yRaw);
+  if (!Number.isFinite(xNum) || !Number.isFinite(yNum)) return null;
+
+  // Stored annotations vary by implementation; support either:
+  // - normalized [0..1]
+  // - percent [0..100]
+  // - pixel coordinates (best-effort, treated as percent if plausible)
+  const xPct = xNum <= 1 ? xNum * 100 : (xNum <= 100 ? xNum : 50);
+  const yPct = yNum <= 1 ? yNum * 100 : (yNum <= 100 ? yNum : 50);
+
+  const comment = String(a.comment || '').trim();
+  return {
+    x: clampPct(xPct),
+    y: clampPct(yPct),
+    comment
+  };
+}
+
+function pickTeacherComments(feedback) {
+  if (!feedback) return '';
+  const tc = feedback.teacherComments;
+  if (typeof tc === 'string' && tc.trim().length) return tc.trim();
+  const tf = feedback.textFeedback;
+  if (typeof tf === 'string' && tf.trim().length) return tf.trim();
+  return '';
+}
+
+function buildRubricRows(feedback) {
+  const fb = feedback && typeof feedback === 'object' ? feedback : {};
+  const overridden = fb.overriddenScores && typeof fb.overriddenScores === 'object' ? fb.overriddenScores : null;
+  const aiScores = fb.aiFeedback && fb.aiFeedback.rubricScores && typeof fb.aiFeedback.rubricScores === 'object' ? fb.aiFeedback.rubricScores : null;
+
+  const submissionRubric = fb.rubricScores && typeof fb.rubricScores === 'object' ? fb.rubricScores : null;
+
+  const rows = [];
+
+  if (overridden) {
+    const labels = {
+      grammarScore: 'Grammar',
+      structureScore: 'Structure',
+      contentScore: 'Content',
+      vocabularyScore: 'Vocabulary',
+      taskAchievementScore: 'Task Achievement',
+      overallScore: 'Overall'
+    };
+
+    for (const [k, label] of Object.entries(labels)) {
+      if (typeof overridden[k] === 'undefined') continue;
+      const n = safeNumber(overridden[k], NaN);
+      if (!Number.isFinite(n)) continue;
+      rows.push({ label, value: `${Math.round(n * 10) / 10}/100`, source: 'Teacher override' });
+    }
+
+    return rows;
+  }
+
+  if (submissionRubric) {
+    const labels = {
+      CONTENT: 'Content',
+      ORGANIZATION: 'Organization',
+      GRAMMAR: 'Grammar',
+      VOCABULARY: 'Vocabulary',
+      MECHANICS: 'Mechanics'
+    };
+    for (const [k, label] of Object.entries(labels)) {
+      const item = submissionRubric[k];
+      const n = safeNumber(item && item.score, NaN);
+      const max = safeNumber(item && item.maxScore, 5);
+      if (!Number.isFinite(n)) continue;
+      rows.push({ label, value: `${Math.round(n * 10) / 10}/${Math.round(max * 10) / 10}`, source: 'Submission' });
+    }
+    return rows;
+  }
+
+  if (aiScores) {
+    const labels = {
+      CONTENT: 'Content',
+      ORGANIZATION: 'Organization',
+      GRAMMAR: 'Grammar',
+      VOCABULARY: 'Vocabulary',
+      MECHANICS: 'Mechanics'
+    };
+    for (const [k, label] of Object.entries(labels)) {
+      const n = safeNumber(aiScores[k], NaN);
+      if (!Number.isFinite(n)) continue;
+      rows.push({ label, value: `${Math.round(n * 10) / 10}/5`, source: 'AI' });
+    }
+    return rows;
+  }
+
+  return rows;
+}
+
+function scoreSummaryFromSubmissionFeedback(submissionFeedback) {
+  const overall = safeNumber(submissionFeedback && submissionFeedback.overallScore, NaN);
+  if (!Number.isFinite(overall)) return null;
+  const grade = submissionFeedback && typeof submissionFeedback.grade === 'string' ? submissionFeedback.grade : '';
+  const raw = `${Math.round(overall * 10) / 10}/100`;
+  const label = grade && grade.trim().length ? grade.trim() : scoreLabel(overall, 100).label;
+  return { raw, label, note: 'From submission feedback' };
+}
+
+function normalizeStringList(value, maxItems) {
+  const arr = Array.isArray(value) ? value : [];
+  const out = [];
+  for (const it of arr) {
+    const t = typeof it === 'string' ? it.trim() : String(it || '').trim();
+    if (!t) continue;
+    out.push(t);
+    if (typeof maxItems === 'number' && out.length >= maxItems) break;
+  }
+  return out;
+}
+
+function buildAiBlocksFromSubmissionFeedback(submissionFeedback) {
+  const detailed = submissionFeedback && submissionFeedback.detailedFeedback && typeof submissionFeedback.detailedFeedback === 'object'
+    ? submissionFeedback.detailedFeedback
+    : {};
+  const ai = submissionFeedback && submissionFeedback.aiFeedback && typeof submissionFeedback.aiFeedback === 'object'
+    ? submissionFeedback.aiFeedback
+    : {};
+
+  const strengths = normalizeStringList(detailed.strengths, 5);
+  const areas = normalizeStringList(detailed.areasForImprovement, 5);
+  const steps = normalizeStringList(detailed.actionSteps, 8);
+
+  const overallComments = typeof ai.overallComments === 'string' ? ai.overallComments.trim() : '';
+  const perCategory = Array.isArray(ai.perCategory) ? ai.perCategory : [];
+
+  const perCategoryRows = perCategory
+    .map((c) => {
+      if (!c || typeof c !== 'object') return null;
+      const category = String(c.category || '').trim();
+      const message = String(c.message || '').trim();
+      const scoreOutOf5 = safeNumber(c.scoreOutOf5, NaN);
+      if (!category && !message && !Number.isFinite(scoreOutOf5)) return null;
+      const scoreText = Number.isFinite(scoreOutOf5) ? `${Math.round(scoreOutOf5 * 10) / 10}/5` : '';
+      return { category, message, scoreText };
+    })
+    .filter(Boolean);
+
+  return {
+    strengths,
+    areas,
+    steps,
+    overallComments,
+    perCategoryRows
+  };
+}
+
+function buildHtml({ header, imageUrl, transcriptHtml, scoreSummary, stats, detailedIssues, teacherFeedback, actionSteps, rubricRows, overrideReason, imageAnnotations, submissionFeedbackBlocks }) {
   const statsRows = [
     { label: 'Spelling', value: stats.spelling, color: '#F44336' },
     { label: 'Grammar', value: stats.grammar, color: '#FF9800' },
@@ -236,9 +397,72 @@ function buildHtml({ header, imageUrl, transcriptHtml, scoreSummary, stats, deta
     ? `<div class="teacher-feedback">${escapeHtml(String(teacherFeedback))}</div>`
     : `<div class="teacher-feedback empty">No teacher comments provided.</div>`;
 
+  const overrideReasonBlock = overrideReason && String(overrideReason).trim()
+    ? `<div class="teacher-feedback">${escapeHtml(String(overrideReason))}</div>`
+    : `<div class="teacher-feedback empty">No override reason provided.</div>`;
+
+  const rubricTable = (Array.isArray(rubricRows) ? rubricRows : []).length
+    ? `
+      <table>
+        <thead><tr><th>Rubric</th><th>Score</th><th>Source</th></tr></thead>
+        <tbody>
+          ${(rubricRows || []).map((r) => `<tr><td>${escapeHtml(r.label)}</td><td>${escapeHtml(r.value)}</td><td>${escapeHtml(r.source)}</td></tr>`).join('')}
+        </tbody>
+      </table>
+    `.trim()
+    : `<div class="empty">No rubric scores available.</div>`;
+
+  const strengthsBlock = submissionFeedbackBlocks && Array.isArray(submissionFeedbackBlocks.strengths) && submissionFeedbackBlocks.strengths.length
+    ? `<ol>${submissionFeedbackBlocks.strengths.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ol>`
+    : `<div class="empty">No strengths available.</div>`;
+
+  const areasBlock = submissionFeedbackBlocks && Array.isArray(submissionFeedbackBlocks.areas) && submissionFeedbackBlocks.areas.length
+    ? `<ol>${submissionFeedbackBlocks.areas.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ol>`
+    : `<div class="empty">No areas for improvement available.</div>`;
+
+  const aiStepsBlock = submissionFeedbackBlocks && Array.isArray(submissionFeedbackBlocks.steps) && submissionFeedbackBlocks.steps.length
+    ? `<ol>${submissionFeedbackBlocks.steps.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ol>`
+    : `<div class="empty">No action steps available.</div>`;
+
+  const aiOverallCommentsBlock = submissionFeedbackBlocks && typeof submissionFeedbackBlocks.overallComments === 'string' && submissionFeedbackBlocks.overallComments.trim().length
+    ? `<div class="teacher-feedback">${escapeHtml(submissionFeedbackBlocks.overallComments)}</div>`
+    : `<div class="teacher-feedback empty">No AI overall comments available.</div>`;
+
+  const aiPerCategoryTable = submissionFeedbackBlocks && Array.isArray(submissionFeedbackBlocks.perCategoryRows) && submissionFeedbackBlocks.perCategoryRows.length
+    ? `
+      <table>
+        <thead><tr><th>Category</th><th>Score</th><th>Feedback</th></tr></thead>
+        <tbody>
+          ${submissionFeedbackBlocks.perCategoryRows.map((r) => `<tr><td>${escapeHtml(r.category || '')}</td><td>${escapeHtml(r.scoreText || '')}</td><td>${escapeHtml(r.message || '')}</td></tr>`).join('')}
+        </tbody>
+      </table>
+    `.trim()
+    : `<div class="empty">No AI per-category feedback available.</div>`;
+
   const imgBlock = imageUrl
-    ? `<img class="essay-image" src="${escapeHtml(imageUrl)}" alt="Original submission" />`
+    ? `
+      <div class="image-wrap">
+        <img class="essay-image" src="${escapeHtml(imageUrl)}" alt="Original submission" />
+        ${(Array.isArray(imageAnnotations) ? imageAnnotations : []).map((a) => {
+          const left = clampPct(a.x);
+          const top = clampPct(a.y);
+          const idx = escapeHtml(String(a.index));
+          return `<div class="img-marker" style="left:${left}%; top:${top}%;">${idx}</div>`;
+        }).join('')}
+      </div>
+    `.trim()
     : `<div class="empty">Original image not available.</div>`;
+
+  const imageAnnotationsList = (Array.isArray(imageAnnotations) ? imageAnnotations : []).length
+    ? `
+      <div class="card">
+        <div style="font-weight:700; margin-bottom:6px;">Image Annotations</div>
+        <ol>
+          ${(imageAnnotations || []).map((a) => `<li><strong>#${escapeHtml(String(a.index))}:</strong> ${escapeHtml(String(a.comment || ''))}</li>`).join('')}
+        </ol>
+      </div>
+    `.trim()
+    : `<div class="card"><div style="font-weight:700; margin-bottom:6px;">Image Annotations</div><div class="empty">No image annotations available.</div></div>`;
 
   return `
 <!doctype html>
@@ -256,6 +480,8 @@ function buildHtml({ header, imageUrl, transcriptHtml, scoreSummary, stats, deta
     .section { margin-top: 16px; }
     .section h2 { font-size: 13px; font-weight: 800; margin: 0 0 10px; padding: 8px 10px; background: #F1F5F9; border: 1px solid #E2E8F0; border-radius: 10px; }
     .essay-image { width: 100%; max-height: 720px; object-fit: contain; border: 1px solid #E2E8F0; border-radius: 12px; padding: 8px; background: #FFFFFF; box-shadow: 0 1px 0 rgba(2,6,23,0.05); }
+    .image-wrap { position: relative; }
+    .img-marker { position: absolute; transform: translate(-50%, -50%); width: 22px; height: 22px; border-radius: 999px; background: rgba(239, 68, 68, 0.95); color: #fff; font-weight: 900; font-size: 11px; display:flex; align-items:center; justify-content:center; border: 2px solid #fff; box-shadow: 0 1px 0 rgba(2,6,23,0.2); }
     .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .card { border: 1px solid #E2E8F0; border-radius: 12px; padding: 12px; background: #FFFFFF; box-shadow: 0 1px 0 rgba(2,6,23,0.04); }
     .big-score { font-size: 22px; font-weight: 900; color: #0F172A; }
@@ -334,6 +560,44 @@ function buildHtml({ header, imageUrl, transcriptHtml, scoreSummary, stats, deta
       </div>
       <div style="height:10px"></div>
       <div class="card">
+        <div style="font-weight:700; margin-bottom:6px;">AI Overall Comments</div>
+        ${aiOverallCommentsBlock}
+      </div>
+      <div style="height:10px"></div>
+      <div class="card">
+        <div style="font-weight:700; margin-bottom:6px;">Rubric Scores</div>
+        ${rubricTable}
+      </div>
+      <div style="height:10px"></div>
+      <div class="card">
+        <div style="font-weight:700; margin-bottom:6px;">AI Per-Category Feedback</div>
+        ${aiPerCategoryTable}
+      </div>
+      <div style="height:10px"></div>
+      <div class="card">
+        <div style="font-weight:700; margin-bottom:6px;">Override Reason</div>
+        ${overrideReasonBlock}
+      </div>
+      <div style="height:10px"></div>
+      <div class="grid">
+        <div class="card">
+          <div style="font-weight:700; margin-bottom:6px;">Strengths</div>
+          ${strengthsBlock}
+        </div>
+        <div class="card">
+          <div style="font-weight:700; margin-bottom:6px;">Areas for Improvement</div>
+          ${areasBlock}
+        </div>
+      </div>
+      <div style="height:10px"></div>
+      <div class="card">
+        <div style="font-weight:700; margin-bottom:6px;">Action Steps</div>
+        ${aiStepsBlock}
+      </div>
+      <div style="height:10px"></div>
+      ${imageAnnotationsList}
+      <div style="height:10px"></div>
+      <div class="card">
         <div style="font-weight:700; margin-bottom:6px;">Detected Issues</div>
         ${issueItems || '<div class="empty">No issues detected.</div>'}
       </div>
@@ -381,7 +645,7 @@ function computeFallbackScoreFromStats(stats) {
   return { score, maxScore: 100 };
 }
 
-async function renderSubmissionPdf({ header, imageUrl, transcriptText, issues, feedback }) {
+async function renderSubmissionPdf({ header, imageUrl, transcriptText, issues, feedback, submissionFeedback }) {
   const stats = computeCorrectionStats(issues);
   const actionSteps = buildActionSteps(stats);
   const transcriptHtml = transcriptText && String(transcriptText).trim()
@@ -391,6 +655,11 @@ async function renderSubmissionPdf({ header, imageUrl, transcriptText, issues, f
   let score = safeNumber(feedback && feedback.score, NaN);
   let maxScore = safeNumber(feedback && feedback.maxScore, NaN);
   let scoreSummary = scoreLabel(score, maxScore);
+
+  const sbScoreSummary = scoreSummaryFromSubmissionFeedback(submissionFeedback);
+  if (sbScoreSummary) {
+    scoreSummary = sbScoreSummary;
+  }
 
   if (scoreSummary.raw === 'N/A') {
     const fallback = computeFallbackScoreFromStats(stats);
@@ -405,6 +674,18 @@ async function renderSubmissionPdf({ header, imageUrl, transcriptText, issues, f
 
   const embedded = await tryFetchAsDataUri(imageUrl);
 
+  const rubricRows = buildRubricRows(submissionFeedback || feedback);
+  const overrideReason = feedback && typeof feedback.overrideReason === 'string' ? feedback.overrideReason : '';
+  const teacherFeedback = pickTeacherComments(feedback);
+  const rawAnnotations = feedback && Array.isArray(feedback.annotations) ? feedback.annotations : [];
+  const imageAnnotations = rawAnnotations
+    .map((a) => normalizeAnnotationPoint(a))
+    .filter(Boolean)
+    .map((a, idx) => ({ ...a, index: idx + 1 }))
+    .filter((a) => a.comment && String(a.comment).trim().length);
+
+  const submissionFeedbackBlocks = buildAiBlocksFromSubmissionFeedback(submissionFeedback);
+
   const html = buildHtml({
     header: {
       ...header,
@@ -415,8 +696,12 @@ async function renderSubmissionPdf({ header, imageUrl, transcriptText, issues, f
     scoreSummary,
     stats,
     detailedIssues: issues,
-    teacherFeedback: feedback && feedback.textFeedback ? feedback.textFeedback : '',
-    actionSteps
+    teacherFeedback,
+    actionSteps,
+    rubricRows,
+    overrideReason,
+    imageAnnotations,
+    submissionFeedbackBlocks
   });
 
   const browser = await puppeteer.launch({

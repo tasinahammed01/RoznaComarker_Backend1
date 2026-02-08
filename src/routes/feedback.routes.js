@@ -106,6 +106,37 @@ router.post(
   feedbackController.generateAiFeedbackFromOcr
 );
 
+// Canonical submission feedback API (teacher + student read, teacher write)
+router.get(
+  '/:submissionId',
+  verifyJwtToken,
+  requireRole(['teacher', 'student']),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  feedbackController.getSubmissionFeedback
+);
+
+// Teacher-only: (re)generate AI defaults for a submission and persist them.
+router.post(
+  '/:submissionId/generate-ai',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  feedbackController.generateAiSubmissionFeedback
+);
+
+router.put(
+  '/:submissionId',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  feedbackController.upsertSubmissionFeedback
+);
+
 /**
  * @openapi
  * /api/feedback/{feedbackId}:
@@ -208,6 +239,16 @@ router.get(
   feedbackController.getFeedbackBySubmissionForStudent
 );
 
+// Teacher: fetch feedback by submissionId (Feedback collection is the source of truth).
+router.get(
+  '/submission/teacher/:submissionId',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  feedbackController.getFeedbackBySubmissionForTeacher
+);
+
 router.get(
   '/student/:submissionId',
   verifyJwtToken,
@@ -255,7 +296,7 @@ router.get(
  *         description: Feedback not found
  */
 router.get(
-  '/:feedbackId',
+  '/by-id/:feedbackId',
   verifyJwtToken,
   requireRole('teacher'),
   param('feedbackId').isMongoId().withMessage('Invalid feedback id'),

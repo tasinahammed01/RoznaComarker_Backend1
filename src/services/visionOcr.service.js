@@ -7,7 +7,7 @@ const sizeOf = require('image-size');
 const logger = require('../utils/logger');
 
 function getBackendRootDir() {
-  return path.resolve(__dirname, '..', '..', '..');
+  return path.resolve(__dirname, '..', '..');
 }
 
 function resolveCredentialsPathMaybe(rawPath) {
@@ -18,67 +18,55 @@ function resolveCredentialsPathMaybe(rawPath) {
   if (path.isAbsolute(trimmed)) return trimmed;
 
   const backendRoot = getBackendRootDir();
-  const cwdCandidate = path.resolve(process.cwd(), trimmed);
-  const backendCandidate = path.resolve(backendRoot, trimmed);
+  const withoutDotSlash = trimmed.replace(/^\.[\\/]/, '');
 
-  const candidates = [cwdCandidate, backendCandidate];
-
-  const backendDirName = path.basename(backendRoot);
-  if (backendDirName.toLowerCase() === 'backend' && /^backend[\\/]/i.test(trimmed)) {
-    candidates.push(path.resolve(backendRoot, trimmed.replace(/^backend[\\/]/i, '')));
+  if (/^backend[\\/]/i.test(withoutDotSlash)) {
+    return path.resolve(backendRoot, withoutDotSlash.replace(/^backend[\\/]/i, ''));
   }
 
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-
-  return candidates[0] || null;
+  return path.resolve(backendRoot, trimmed);
 }
 
 function ensureGoogleCredentialsEnv() {
-  const isDev = process.env.NODE_ENV !== 'production';
   const raw = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  const abs = resolveCredentialsPathMaybe(raw);
+  const resolved = resolveCredentialsPathMaybe(raw);
+  if (!resolved) return null;
 
-  if (!abs) {
-    if (!isDev) {
-      throw new Error(
-        'Google Vision credentials not configured. Set GOOGLE_APPLICATION_CREDENTIALS to your service-account JSON path.'
-      );
+  if (!fs.existsSync(resolved)) {
+    const backendRoot = getBackendRootDir();
+    const fallback = path.resolve(backendRoot, 'key', 'vision_key.json');
+    if (fs.existsSync(fallback)) {
+      logger.warn({
+        message: 'GOOGLE_APPLICATION_CREDENTIALS path invalid; using fallback backend/key/vision_key.json',
+        configured: resolved,
+        fallback
+      });
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = fallback;
+      return fallback;
     }
 
-    return null;
-  }
-
-  if (!fs.existsSync(abs)) {
     throw new Error(
-      `Google Vision credentials file not found at: ${abs}. ` +
-        'Fix GOOGLE_APPLICATION_CREDENTIALS. Recommended values: ./key/roznaKey_vision_key.json (backend-relative) ' +
-        'or an absolute path to backend/key/roznaKey_vision_key.json.'
+      `Google Vision credentials file not found at: ${resolved} (from GOOGLE_APPLICATION_CREDENTIALS=${JSON.stringify(raw)}). ` +
+        'Fix GOOGLE_APPLICATION_CREDENTIALS. Recommended values: ./key/vision_key.json (backend-relative) ' +
+        'or an absolute path to backend/key/vision_key.json.'
     );
   }
 
-  process.env.GOOGLE_APPLICATION_CREDENTIALS = abs;
-
-  return abs;
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = resolved;
+  return resolved;
 }
 
-function classifyVisionError(err) {
-  const msg = err && err.message ? String(err.message) : '';
-  if (msg.includes('Could not load the default credentials')) return 'credentials';
-  if (msg.includes('credentials') && msg.includes('not configured')) return 'credentials';
-  if (msg.includes('credentials file not found')) return 'credentials';
-  if (msg.includes('PERMISSION_DENIED') || msg.includes('permission')) return 'credentials';
-  return 'processing';
-}
+/**
+ * Google Vision client
+ * Credentials are loaded automatically from:
+ * process.env.GOOGLE_APPLICATION_CREDENTIALS
+ */
+const credentialsPath = ensureGoogleCredentialsEnv();
+const visionClient = credentialsPath
+  ? new ImageAnnotatorClient({ keyFilename: credentialsPath })
+  : new ImageAnnotatorClient();
 
-function createVisionClient(credentialsPath) {
-  const isDev = process.env.NODE_ENV !== 'production';
-  if (isDev && credentialsPath) {
-    return new ImageAnnotatorClient({ keyFilename: credentialsPath });
-  }
-  return new ImageAnnotatorClient();
-}
+/* ------------------------- helpers ------------------------- */
 
 function clampPercent(value) {
   const n = Number(value);
@@ -88,18 +76,18 @@ function clampPercent(value) {
 
 function bboxFromVertices(vertices, width, height) {
   const pts = Array.isArray(vertices) ? vertices : [];
-  const xs = pts.map((v) => Number(v && v.x)).filter((n) => Number.isFinite(n));
-  const ys = pts.map((v) => Number(v && v.y)).filter((n) => Number.isFinite(n));
+  const xs = pts.map(v => Number(v && v.x)).filter(Number.isFinite);
+  const ys = pts.map(v => Number(v && v.y)).filter(Number.isFinite);
+
   if (!xs.length || !ys.length) return null;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
 
   const minX = Math.min(...xs);
   const minY = Math.min(...ys);
   const maxX = Math.max(...xs);
   const maxY = Math.max(...ys);
-
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-    return null;
-  }
 
   const x = clampPercent((minX / width) * 100);
   const y = clampPercent((minY / height) * 100);
@@ -122,12 +110,14 @@ function shouldInsertNewline(prevWord, currWord) {
 }
 
 function buildTranscriptFromWords(words) {
-  const list = Array.isArray(words) ? words.filter((w) => w && typeof w.id === 'string') : [];
+  const list = Array.isArray(words)
+    ? words.filter(w => w && typeof w.id === 'string')
+    : [];
 
   let text = '';
   const spans = [];
-
   let prev = null;
+
   for (const w of list) {
     const wordText = typeof w.text === 'string' ? w.text.trim() : '';
     if (!wordText) continue;
@@ -154,87 +144,78 @@ function buildTranscriptFromWords(words) {
   return { text, spans };
 }
 
+/* ------------------------- main OCR ------------------------- */
+
 async function extractOcrFromImageFile(absoluteFilePath) {
   if (!absoluteFilePath || typeof absoluteFilePath !== 'string') {
     throw new Error('Missing file path');
   }
 
-  const ext = path.extname(absoluteFilePath).toLowerCase();
-  if (ext === '.pdf') {
-    throw new Error('PDF OCR is not supported without GCS async batch processing');
+  if (!fs.existsSync(absoluteFilePath)) {
+    throw new Error(`File not found: ${absoluteFilePath}`);
   }
 
-  const credentialsPath = ensureGoogleCredentialsEnv();
+  const ext = path.extname(absoluteFilePath).toLowerCase();
+  if (ext === '.pdf') {
+    throw new Error('PDF OCR requires async batch processing via GCS');
+  }
 
   const dims = sizeOf(absoluteFilePath);
-  const width = dims && typeof dims.width === 'number' ? dims.width : null;
-  const height = dims && typeof dims.height === 'number' ? dims.height : null;
+  const width = dims?.width;
+  const height = dims?.height;
 
   if (!width || !height) {
     throw new Error('Unable to determine image dimensions');
   }
 
-  const client = createVisionClient(credentialsPath);
-
   let result;
   try {
-    [result] = await client.documentTextDetection({
+    [result] = await visionClient.documentTextDetection({
       image: { source: { filename: absoluteFilePath } }
     });
   } catch (err) {
-    const kind = classifyVisionError(err);
-    if (kind === 'credentials') {
-      logger.error({
-        message: 'Google Vision credentials error',
-        error: err && err.message ? err.message : err,
-        credentialsPath: credentialsPath || null
-      });
-    } else {
-      logger.error({
-        message: 'Google Vision OCR processing error',
-        error: err && err.message ? err.message : err
-      });
-    }
+    logger.error({
+      message: 'Google Vision OCR error',
+      error: err?.message || err
+    });
     throw err;
   }
 
-  const annotation = result && result.fullTextAnnotation ? result.fullTextAnnotation : null;
-  const pages = annotation && Array.isArray(annotation.pages) ? annotation.pages : [];
+  const annotation = result?.fullTextAnnotation || null;
+  const pages = Array.isArray(annotation?.pages) ? annotation.pages : [];
 
   const words = [];
   const perPageCounters = new Map();
 
-  for (let pIndex = 0; pIndex < pages.length; pIndex += 1) {
+  for (let pIndex = 0; pIndex < pages.length; pIndex++) {
     const pageNumber = pIndex + 1;
     const page = pages[pIndex];
 
-    const blocks = page && Array.isArray(page.blocks) ? page.blocks : [];
-    for (const b of blocks) {
-      const paragraphs = b && Array.isArray(b.paragraphs) ? b.paragraphs : [];
-      for (const para of paragraphs) {
-        const ws = para && Array.isArray(para.words) ? para.words : [];
-        for (const word of ws) {
-          const symbols = word && Array.isArray(word.symbols) ? word.symbols : [];
-          const text = symbols
-            .map((s) => (s && typeof s.text === 'string' ? s.text : ''))
+    for (const block of page.blocks || []) {
+      for (const para of block.paragraphs || []) {
+        for (const word of para.words || []) {
+          const text = (word.symbols || [])
+            .map(s => s?.text || '')
             .join('')
             .trim();
 
           if (!text) continue;
 
-          const bb = bboxFromVertices(word.boundingBox && word.boundingBox.vertices, width, height);
-          if (!bb) continue;
+          const bbox = bboxFromVertices(
+            word.boundingBox?.vertices,
+            width,
+            height
+          );
+          if (!bbox) continue;
 
           const next = (perPageCounters.get(pageNumber) || 0) + 1;
           perPageCounters.set(pageNumber, next);
 
-          const id = `word_${pageNumber}_${next}`;
-
           words.push({
-            id,
+            id: `word_${pageNumber}_${next}`,
             page: pageNumber,
             text,
-            bbox: bb
+            bbox
           });
         }
       }
@@ -244,34 +225,37 @@ async function extractOcrFromImageFile(absoluteFilePath) {
   const { text: transcriptText, spans } = buildTranscriptFromWords(words);
 
   return {
-    fullText: annotation && typeof annotation.text === 'string' ? annotation.text : transcriptText,
+    fullText: annotation?.text || transcriptText,
     transcriptText,
     words,
     spans,
     pages: pages.length
-      ? pages.map((_, idx) => {
-          const pageNumber = idx + 1;
-          return {
-            pageNumber,
-            width,
-            height,
-            words: words
-              .filter((w) => w.page === pageNumber)
-              .map((w) => ({ id: w.id, text: w.text, bbox: w.bbox })),
-            lines: []
-          };
-        })
+      ? pages.map((_, idx) => ({
+          pageNumber: idx + 1,
+          width,
+          height,
+          words: words
+            .filter(w => w.page === idx + 1)
+            .map(w => ({ id: w.id, text: w.text, bbox: w.bbox })),
+          lines: []
+        }))
       : [
           {
             pageNumber: 1,
             width,
             height,
-            words: words.map((w) => ({ id: w.id, text: w.text, bbox: w.bbox })),
+            words: words.map(w => ({
+              id: w.id,
+              text: w.text,
+              bbox: w.bbox
+            })),
             lines: []
           }
         ]
   };
 }
+
+/* ------------------------- exports ------------------------- */
 
 module.exports = {
   extractOcrFromImageFile,

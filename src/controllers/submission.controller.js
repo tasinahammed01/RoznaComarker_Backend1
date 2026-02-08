@@ -248,7 +248,10 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
 
       const populated = await Submission.findById(saved._id)
         .populate('student', '_id email displayName photoURL role')
-        .populate('assignment')
+        .populate({
+          path: 'assignment',
+          populate: { path: 'teacher', select: '_id email displayName' }
+        })
         .populate('class')
         .populate('file');
 
@@ -277,7 +280,10 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
 
     const populated = await Submission.findById(created._id)
       .populate('student', '_id email displayName photoURL role')
-      .populate('assignment')
+      .populate({
+        path: 'assignment',
+        populate: { path: 'teacher', select: '_id email displayName' }
+      })
       .populate('class')
       .populate('file');
 
@@ -386,7 +392,10 @@ async function getSubmissionsByAssignment(req, res) {
     })
       .sort({ submittedAt: -1 })
       .populate('student', '_id email displayName photoURL role')
-      .populate('assignment')
+      .populate({
+        path: 'assignment',
+        populate: { path: 'teacher', select: '_id email displayName' }
+      })
       .populate('class')
       .populate('file');
 
@@ -418,7 +427,10 @@ async function getMySubmissionByAssignmentId(req, res) {
       student: studentId,
       assignment: assignmentId
     })
-      .populate('assignment')
+      .populate({
+        path: 'assignment',
+        populate: { path: 'teacher', select: '_id email displayName' }
+      })
       .populate('class')
       .populate('file')
       .populate('student', '_id email displayName photoURL role');
@@ -448,7 +460,10 @@ async function getMySubmissions(req, res) {
       student: studentId
     })
       .sort({ submittedAt: -1 })
-      .populate('assignment')
+      .populate({
+        path: 'assignment',
+        populate: { path: 'teacher', select: '_id email displayName' }
+      })
       .populate('class')
       .populate('file');
 

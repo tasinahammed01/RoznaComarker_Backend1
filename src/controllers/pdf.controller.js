@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const Submission = require('../models/Submission');
 const Feedback = require('../models/Feedback');
+const SubmissionFeedback = require('../models/SubmissionFeedback');
 
 const uploadService = require('../services/upload.service');
 const { buildOcrCorrections } = require('../services/ocrCorrections.service');
@@ -22,7 +23,10 @@ async function getSubmissionWithPermissionsOrThrow({ user, submissionId }) {
 
   const submission = await Submission.findById(submissionId)
     .populate('student', '_id email displayName photoURL role')
-    .populate('assignment')
+    .populate({
+      path: 'assignment',
+      populate: { path: 'teacher', select: '_id email displayName' }
+    })
     .populate('class')
     .populate('file')
     .populate('feedback');
@@ -57,8 +61,11 @@ async function downloadSubmissionPdf(req, res, next) {
       submissionId
     });
 
-    const feedbackId = submission && submission.feedback ? (typeof submission.feedback === 'string' ? submission.feedback : submission.feedback._id) : null;
-    const feedback = feedbackId ? await Feedback.findById(feedbackId) : null;
+    // Feedback collection is the single source of truth.
+    // Do not rely on `submission.feedback` being present/populated.
+    const feedback = await Feedback.findOne({ submission: submission._id });
+
+    const submissionFeedback = await SubmissionFeedback.findOne({ submissionId: submission._id });
 
     const transcriptText = (submission.transcriptText && String(submission.transcriptText).trim())
       ? String(submission.transcriptText)
@@ -83,20 +90,39 @@ async function downloadSubmissionPdf(req, res, next) {
         : `${baseUrl}${submission.fileUrl.startsWith('/') ? '' : '/'}${submission.fileUrl}`
       : '';
 
+    const assignmentTeacherEmail =
+      submission.assignment && typeof submission.assignment === 'object'
+        ? (
+            (submission.assignment.teacher && typeof submission.assignment.teacher === 'object' && submission.assignment.teacher.email)
+              ? String(submission.assignment.teacher.email)
+              : ''
+          )
+        : '';
+
+    const assignmentPublishDateRaw =
+      submission.assignment && typeof submission.assignment === 'object'
+        ? (submission.assignment.publishedAt || submission.assignment.createdAt)
+        : null;
+
     const header = {
-      studentName: (submission.student && typeof submission.student === 'object')
+      studentName: assignmentTeacherEmail || ((submission.student && typeof submission.student === 'object')
         ? (submission.student.displayName || submission.student.email || '')
-        : '',
+        : ''),
       submissionId: String(submission._id),
-      date: submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : ''
+      date: assignmentPublishDateRaw ? new Date(assignmentPublishDateRaw).toLocaleString() : (submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : '')
     };
+
+    console.log('Generating PDF for submission', String(submission._id), 'teacher:', assignmentTeacherEmail);
+    console.log('Embedding image for submission', String(submission._id), imageUrl);
+    console.log('Adding dynamic feedback for submission', String(submission._id));
 
     const pdfBuffer = await renderSubmissionPdf({
       header,
       imageUrl,
       transcriptText,
       issues,
-      feedback
+      feedback,
+      submissionFeedback
     });
 
     res.setHeader('Content-Type', 'application/pdf');

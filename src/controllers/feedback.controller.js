@@ -5,6 +5,7 @@ const Assignment = require('../models/assignment.model');
 const Class = require('../models/class.model');
 const Submission = require('../models/Submission');
 const Feedback = require('../models/Feedback');
+const SubmissionFeedback = require('../models/SubmissionFeedback');
 const File = require('../models/File');
 
 const uploadService = require('../services/upload.service');
@@ -19,6 +20,531 @@ function sendSuccess(res, data) {
     success: true,
     data
   });
+}
+
+function defaultRubricItem() {
+  return { score: 0, maxScore: 5, comment: '' };
+}
+
+function buildDefaultSubmissionFeedbackDoc({ submissionId, classId, studentId, teacherId }) {
+  return {
+    submissionId,
+    classId,
+    studentId,
+    teacherId,
+    rubricScores: {
+      CONTENT: defaultRubricItem(),
+      ORGANIZATION: defaultRubricItem(),
+      GRAMMAR: defaultRubricItem(),
+      VOCABULARY: defaultRubricItem(),
+      MECHANICS: defaultRubricItem()
+    },
+    overallScore: 0,
+    grade: 'F',
+    correctionStats: {
+      content: 0,
+      grammar: 0,
+      organization: 0,
+      vocabulary: 0,
+      mechanics: 0
+    },
+    detailedFeedback: {
+      strengths: [],
+      areasForImprovement: [],
+      actionSteps: []
+    },
+    aiFeedback: {
+      perCategory: [],
+      overallComments: ''
+    },
+    overriddenByTeacher: false
+  };
+}
+
+function clampScore100(n) {
+  const v = typeof n === 'number' ? n : Number(n);
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(100, v));
+}
+
+function gradeFromOverallScore100(score100) {
+  const s = clampScore100(score100);
+  if (s >= 90) return 'A';
+  if (s >= 80) return 'B';
+  if (s >= 70) return 'C';
+  if (s >= 60) return 'D';
+  return 'F';
+}
+
+function normalizeRubricItemPayload(item) {
+  const obj = item && typeof item === 'object' ? item : {};
+  const scoreRaw = obj.score;
+  const score = Number(scoreRaw);
+  if (!Number.isFinite(score) || score < 0 || score > 5) {
+    return { error: 'score must be a number between 0 and 5' };
+  }
+
+  const comment = typeof obj.comment === 'string' ? obj.comment : (obj.comment == null ? '' : String(obj.comment));
+  return {
+    value: {
+      score,
+      maxScore: 5,
+      comment
+    }
+  };
+}
+
+function normalizeAiFeedbackPerCategoryPayload(value) {
+  if (!Array.isArray(value)) return null;
+  const out = [];
+  for (const it of value) {
+    const obj = it && typeof it === 'object' ? it : {};
+    const category = safeString(obj.category).trim();
+    const message = safeString(obj.message).trim();
+    const scoreOutOf5 = clampScore5(obj.scoreOutOf5);
+    if (!category && !message) continue;
+    out.push({ category, message, scoreOutOf5 });
+  }
+  return out;
+}
+
+function computeCountsFromCorrections(corrections) {
+  const counts = {
+    CONTENT: 0,
+    ORGANIZATION: 0,
+    GRAMMAR: 0,
+    VOCABULARY: 0,
+    MECHANICS: 0
+  };
+  for (const c of Array.isArray(corrections) ? corrections : []) {
+    const category = mapLtGroupKeyToRubricCategory(c && (c.groupKey || c.groupLabel));
+    if (category in counts) counts[category] += 1;
+  }
+  return counts;
+}
+
+function buildDetailedFeedbackDefaults({ structuredFeedback }) {
+  const sf = structuredFeedback && typeof structuredFeedback === 'object' ? structuredFeedback : {};
+  const strengths = [];
+  const areas = [];
+  const steps = [];
+
+  const grammarSummary = safeString(sf.grammarFeedback && sf.grammarFeedback.summary).trim();
+  const structureSummary = safeString(sf.structureFeedback && sf.structureFeedback.summary).trim();
+  const contentSummary = safeString(sf.contentFeedback && sf.contentFeedback.summary).trim();
+  const vocabSummary = safeString(sf.vocabularyFeedback && sf.vocabularyFeedback.summary).trim();
+
+  if (contentSummary) strengths.push('You addressed the prompt with a clear attempt.');
+  if (structureSummary) areas.push('Improve structure and organization for clearer flow.');
+  if (grammarSummary) areas.push('Reduce grammar/mechanics errors with careful proofreading.');
+  if (vocabSummary) steps.push('Vary word choice and avoid repetition where possible.');
+
+  if (!steps.length) {
+    steps.push('Review your work and correct the highlighted issues, then rewrite for clarity.');
+  }
+
+  return {
+    strengths: strengths.slice(0, 5),
+    areasForImprovement: areas.slice(0, 5),
+    actionSteps: steps.slice(0, 5)
+  };
+}
+
+function buildAiFeedbackDefaults({ rubricScores, structuredFeedback, overallComments }) {
+  const sf = structuredFeedback && typeof structuredFeedback === 'object' ? structuredFeedback : {};
+  const rs = rubricScores && typeof rubricScores === 'object' ? rubricScores : {};
+
+  const perCategory = [
+    { category: 'CONTENT', message: safeString(sf.contentFeedback && sf.contentFeedback.summary).trim(), scoreOutOf5: clampScore5(rs.CONTENT && rs.CONTENT.score) },
+    { category: 'ORGANIZATION', message: safeString(sf.structureFeedback && sf.structureFeedback.summary).trim(), scoreOutOf5: clampScore5(rs.ORGANIZATION && rs.ORGANIZATION.score) },
+    { category: 'GRAMMAR', message: safeString(sf.grammarFeedback && sf.grammarFeedback.summary).trim(), scoreOutOf5: clampScore5(rs.GRAMMAR && rs.GRAMMAR.score) },
+    { category: 'VOCABULARY', message: safeString(sf.vocabularyFeedback && sf.vocabularyFeedback.summary).trim(), scoreOutOf5: clampScore5(rs.VOCABULARY && rs.VOCABULARY.score) },
+    { category: 'MECHANICS', message: safeString(sf.grammarFeedback && sf.grammarFeedback.summary).trim(), scoreOutOf5: clampScore5(rs.MECHANICS && rs.MECHANICS.score) }
+  ].filter((x) => x.message || x.scoreOutOf5 > 0);
+
+  return {
+    perCategory,
+    overallComments: safeString(overallComments).trim()
+  };
+}
+
+function normalizeStringArrayPayload(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) return null;
+  const out = [];
+  for (const v of value) {
+    if (typeof v === 'string') {
+      const t = v.trim();
+      if (t.length) out.push(t);
+      continue;
+    }
+    if (v == null) continue;
+    const t = String(v).trim();
+    if (t.length) out.push(t);
+  }
+  return out;
+}
+
+async function getSubmissionFeedback(req, res) {
+  try {
+    const { submissionId } = req.params;
+
+    console.log('Checking dynamic fields for submission', submissionId);
+
+    const userId = req.user && req.user._id;
+    const role = req.user && req.user.role;
+    if (!userId || !role) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const submission = await Submission.findById(submissionId);
+    if (!submission) {
+      return sendError(res, 404, 'Submission not found');
+    }
+
+    if (role === 'student') {
+      if (String(submission.student) !== String(userId)) {
+        return sendError(res, 403, 'No permission');
+      }
+    } else if (role === 'teacher') {
+      const classDoc = await Class.findOne({
+        _id: submission.class,
+        teacher: userId,
+        isActive: true
+      });
+      if (!classDoc) {
+        return sendError(res, 403, 'No permission');
+      }
+    } else {
+      return sendError(res, 403, 'Forbidden');
+    }
+
+    let feedback = await SubmissionFeedback.findOne({ submissionId: submission._id });
+    if (!feedback) {
+      console.log('Dynamic summary generation for submission', submissionId);
+      // Hybrid model: if feedback doesn't exist, generate AI defaults on the backend and persist.
+      const classDoc = await Class.findById(submission.class).select('_id teacher');
+      const teacherId = role === 'teacher' ? userId : (classDoc && classDoc.teacher ? classDoc.teacher : null);
+      if (!teacherId) {
+        return sendError(res, 500, 'Failed to resolve class teacher');
+      }
+
+      const transcriptText = (submission.transcriptText && String(submission.transcriptText).trim())
+        ? String(submission.transcriptText)
+        : (submission.ocrText && String(submission.ocrText).trim())
+          ? String(submission.ocrText)
+          : '';
+
+      const normalizedWords = normalizeOcrWordsFromStored(submission.ocrData && submission.ocrData.words);
+
+      let built;
+      try {
+        built = await buildOcrCorrections({
+          text: transcriptText,
+          language: 'en-US',
+          ocrWords: normalizedWords
+        });
+      } catch {
+        built = { corrections: [], fullText: transcriptText };
+      }
+
+      const corrections = Array.isArray(built && built.corrections) ? built.corrections : [];
+      const counts = augmentCountsWithTextHeuristics(transcriptText, computeCountsFromCorrections(corrections));
+
+      const rubricScoreNums = computeRubricScoresFromCounts(counts);
+      const rubricScores = {
+        CONTENT: { score: rubricScoreNums.CONTENT, maxScore: 5, comment: '' },
+        ORGANIZATION: { score: rubricScoreNums.ORGANIZATION, maxScore: 5, comment: '' },
+        GRAMMAR: { score: rubricScoreNums.GRAMMAR, maxScore: 5, comment: '' },
+        VOCABULARY: { score: rubricScoreNums.VOCABULARY, maxScore: 5, comment: '' },
+        MECHANICS: { score: rubricScoreNums.MECHANICS, maxScore: 5, comment: '' }
+      };
+
+      const evaluation = computeAcademicEvaluation({
+        text: transcriptText,
+        issues: corrections,
+        teacherOverrideScores: null
+      });
+
+      const overallScore100 = clampScore100(evaluation && evaluation.effectiveRubric && evaluation.effectiveRubric.overallScore);
+      const grade = evaluation && evaluation.effectiveRubric && typeof evaluation.effectiveRubric.gradeLetter === 'string'
+        ? evaluation.effectiveRubric.gradeLetter
+        : gradeFromOverallScore100(overallScore100);
+
+      const overallComments = buildGeneralComments({ text: transcriptText, rubricScores: rubricScoreNums, counts });
+      const detailedFeedback = ensureDetailedFeedbackDynamic({
+        detailedFeedback: buildDetailedFeedbackDefaults({ structuredFeedback: evaluation && evaluation.structuredFeedback }),
+        counts
+      });
+      const aiFeedback = buildAiFeedbackDefaults({
+        rubricScores,
+        structuredFeedback: evaluation && evaluation.structuredFeedback,
+        overallComments
+      });
+
+      const created = await SubmissionFeedback.create({
+        submissionId: submission._id,
+        classId: submission.class,
+        studentId: submission.student,
+        teacherId,
+        overallScore: overallScore100,
+        grade,
+        correctionStats: {
+          content: counts.CONTENT,
+          grammar: counts.GRAMMAR,
+          organization: counts.ORGANIZATION,
+          vocabulary: counts.VOCABULARY,
+          mechanics: counts.MECHANICS
+        },
+        detailedFeedback,
+        rubricScores,
+        aiFeedback,
+        overriddenByTeacher: false
+      });
+
+      feedback = created.toObject();
+    } else {
+      feedback = feedback.toObject();
+    }
+
+    console.log('[FEEDBACK GET]', submissionId, feedback);
+    return sendSuccess(res, feedback);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to fetch feedback');
+  }
+}
+
+async function generateAiSubmissionFeedback(req, res) {
+  try {
+    const { submissionId } = req.params;
+
+    console.log('Checking dynamic fields for submission', submissionId);
+
+    if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+      return sendError(res, 400, 'Invalid submission id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    console.log('Generate AI for submission', submissionId);
+    console.log('Dynamic summary generation for submission', submissionId);
+
+    const submission = await Submission.findById(submissionId);
+    if (!submission) {
+      return sendError(res, 404, 'Submission not found');
+    }
+
+    const classDoc = await Class.findOne({
+      _id: submission.class,
+      teacher: teacherId,
+      isActive: true
+    });
+    if (!classDoc) {
+      return sendError(res, 403, 'Not class teacher');
+    }
+
+    const transcriptText = (submission.transcriptText && String(submission.transcriptText).trim())
+      ? String(submission.transcriptText)
+      : (submission.ocrText && String(submission.ocrText).trim())
+        ? String(submission.ocrText)
+        : '';
+
+    const normalizedWords = normalizeOcrWordsFromStored(submission.ocrData && submission.ocrData.words);
+
+    let built;
+    try {
+      built = await buildOcrCorrections({
+        text: transcriptText,
+        language: (req.body && req.body.language) ? String(req.body.language) : 'en-US',
+        ocrWords: normalizedWords
+      });
+    } catch {
+      built = { corrections: [], fullText: transcriptText };
+    }
+
+    const corrections = Array.isArray(built && built.corrections) ? built.corrections : [];
+    const counts = augmentCountsWithTextHeuristics(transcriptText, computeCountsFromCorrections(corrections));
+
+    const rubricScoreNums = computeRubricScoresFromCounts(counts);
+    const rubricScores = {
+      CONTENT: { score: rubricScoreNums.CONTENT, maxScore: 5, comment: '' },
+      ORGANIZATION: { score: rubricScoreNums.ORGANIZATION, maxScore: 5, comment: '' },
+      GRAMMAR: { score: rubricScoreNums.GRAMMAR, maxScore: 5, comment: '' },
+      VOCABULARY: { score: rubricScoreNums.VOCABULARY, maxScore: 5, comment: '' },
+      MECHANICS: { score: rubricScoreNums.MECHANICS, maxScore: 5, comment: '' }
+    };
+
+    const evaluation = computeAcademicEvaluation({
+      text: transcriptText,
+      issues: corrections,
+      teacherOverrideScores: null
+    });
+
+    const overallScore100 = clampScore100(evaluation && evaluation.effectiveRubric && evaluation.effectiveRubric.overallScore);
+    const grade = evaluation && evaluation.effectiveRubric && typeof evaluation.effectiveRubric.gradeLetter === 'string'
+      ? evaluation.effectiveRubric.gradeLetter
+      : gradeFromOverallScore100(overallScore100);
+
+    const overallComments = buildGeneralComments({ text: transcriptText, rubricScores: rubricScoreNums, counts });
+    const detailedFeedback = ensureDetailedFeedbackDynamic({
+      detailedFeedback: buildDetailedFeedbackDefaults({ structuredFeedback: evaluation && evaluation.structuredFeedback }),
+      counts
+    });
+    const aiFeedback = buildAiFeedbackDefaults({
+      rubricScores,
+      structuredFeedback: evaluation && evaluation.structuredFeedback,
+      overallComments
+    });
+
+    const update = {
+      submissionId: submission._id,
+      classId: submission.class,
+      studentId: submission.student,
+      teacherId,
+      overallScore: overallScore100,
+      grade,
+      correctionStats: {
+        content: counts.CONTENT,
+        grammar: counts.GRAMMAR,
+        organization: counts.ORGANIZATION,
+        vocabulary: counts.VOCABULARY,
+        mechanics: counts.MECHANICS
+      },
+      detailedFeedback,
+      rubricScores,
+      aiFeedback,
+      overriddenByTeacher: false
+    };
+
+    const saved = await SubmissionFeedback.findOneAndUpdate(
+      { submissionId: submission._id },
+      { $set: update },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return sendSuccess(res, saved);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to generate AI feedback');
+  }
+}
+
+async function upsertSubmissionFeedback(req, res) {
+  try {
+    const { submissionId } = req.params;
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const submission = await Submission.findById(submissionId);
+    if (!submission) {
+      return sendError(res, 404, 'Submission not found');
+    }
+
+    const classDoc = await Class.findOne({
+      _id: submission.class,
+      teacher: teacherId,
+      isActive: true
+    });
+    if (!classDoc) {
+      return sendError(res, 403, 'No permission');
+    }
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    console.log('[FEEDBACK UPSERT]', submissionId, body);
+
+    const detailedFeedbackObj = body.detailedFeedback && typeof body.detailedFeedback === 'object' ? body.detailedFeedback : {};
+
+    const rubric = body.rubricScores && typeof body.rubricScores === 'object' ? body.rubricScores : {};
+    const keys = ['CONTENT', 'ORGANIZATION', 'GRAMMAR', 'VOCABULARY', 'MECHANICS'];
+    const normalizedRubric = {};
+    for (const k of keys) {
+      const normalized = normalizeRubricItemPayload(rubric[k]);
+      if (normalized.error) {
+        return sendError(res, 400, `rubricScores.${k}.${normalized.error}`);
+      }
+      normalizedRubric[k] = normalized.value;
+    }
+
+    // Accept both the new contract (body.detailedFeedback.*) and legacy root arrays.
+    const strengths = normalizeStringArrayPayload(
+      typeof detailedFeedbackObj.strengths !== 'undefined' ? detailedFeedbackObj.strengths : body.strengths
+    );
+    if (strengths === null) {
+      return sendError(res, 400, 'strengths must be an array of strings');
+    }
+
+    const areasForImprovement = normalizeStringArrayPayload(
+      typeof detailedFeedbackObj.areasForImprovement !== 'undefined'
+        ? detailedFeedbackObj.areasForImprovement
+        : body.areasForImprovement
+    );
+    if (areasForImprovement === null) {
+      return sendError(res, 400, 'areasForImprovement must be an array of strings');
+    }
+
+    const actionSteps = normalizeStringArrayPayload(
+      typeof detailedFeedbackObj.actionSteps !== 'undefined' ? detailedFeedbackObj.actionSteps : body.actionSteps
+    );
+    if (actionSteps === null) {
+      return sendError(res, 400, 'actionSteps must be an array of strings');
+    }
+
+    const aiFeedbackObj = body.aiFeedback && typeof body.aiFeedback === 'object' ? body.aiFeedback : {};
+    const perCategory = normalizeAiFeedbackPerCategoryPayload(aiFeedbackObj.perCategory);
+    if (perCategory === null) {
+      return sendError(res, 400, 'aiFeedback.perCategory must be an array');
+    }
+    const aiOverallComments = typeof aiFeedbackObj.overallComments === 'string'
+      ? aiFeedbackObj.overallComments
+      : (aiFeedbackObj.overallComments == null ? '' : String(aiFeedbackObj.overallComments));
+
+    const overallScore = typeof body.overallScore === 'number' || typeof body.overallScore === 'string'
+      ? clampScore100(body.overallScore)
+      : undefined;
+    if (typeof body.overallScore !== 'undefined' && typeof overallScore !== 'number') {
+      return sendError(res, 400, 'overallScore must be a number');
+    }
+
+    const grade = typeof overallScore === 'number' ? gradeFromOverallScore100(overallScore) : undefined;
+
+    const update = {
+      submissionId: submission._id,
+      classId: submission.class,
+      studentId: submission.student,
+      teacherId,
+      rubricScores: normalizedRubric,
+      overriddenByTeacher: true,
+      detailedFeedback: {
+        strengths,
+        areasForImprovement,
+        actionSteps
+      },
+      aiFeedback: {
+        perCategory,
+        overallComments: aiOverallComments
+      }
+    };
+
+    if (typeof overallScore === 'number') {
+      update.overallScore = overallScore;
+      update.grade = grade;
+    }
+
+    const saved = await SubmissionFeedback.findOneAndUpdate(
+      { submissionId: submission._id },
+      { $set: update },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return sendSuccess(res, saved);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to save feedback');
+  }
 }
 
 function clampScore5(n) {
@@ -74,6 +600,49 @@ function legendColorForCategory(category) {
       return '#FFF3BF';
     default:
       return '#FFF3BF';
+  }
+}
+
+async function getFeedbackBySubmissionForTeacher(req, res) {
+  try {
+    const { submissionId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+      return sendError(res, 400, 'Invalid submission id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const submission = await Submission.findById(submissionId);
+    if (!submission) {
+      return sendError(res, 404, 'Submission not found');
+    }
+
+    // Required: Feedback collection must be the single source of truth. Teachers fetch feedback by submissionId
+    // and we only allow access if they own the class (access control remains unchanged).
+    const classDoc = await Class.findOne({
+      _id: submission.class,
+      teacher: teacherId,
+      isActive: true
+    });
+
+    if (!classDoc) {
+      return sendError(res, 403, 'No permission');
+    }
+
+    const feedback = await Feedback.findOne({ submission: submission._id });
+    if (!feedback) {
+      return sendError(res, 404, 'Feedback not found');
+    }
+
+    const populated = await populateFeedback(feedback._id);
+    const withEval = await attachEvaluationToFeedbackDoc(populated);
+    return sendSuccess(res, withEval);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to fetch feedback');
   }
 }
 
@@ -425,6 +994,79 @@ function validateScoreFields({ score, maxScore }) {
   return null;
 }
 
+function augmentCountsWithTextHeuristics(text, counts) {
+  if (!text || typeof text !== 'string') return counts;
+  const next = { ...counts };
+
+  const paragraphCount = text.split(/\n\s*\n/).filter((p) => p.trim().length).length;
+  if (paragraphCount <= 1) {
+    next.ORGANIZATION = (Number(next.ORGANIZATION) || 0) + 1;
+  }
+
+  const sentenceCount = text.split(/[.!?]+/).filter((s) => s.trim().length).length;
+  if (sentenceCount < 3) {
+    next.CONTENT = (Number(next.CONTENT) || 0) + 1;
+  }
+
+  const words = text.toLowerCase().match(/[a-z']+/g) || [];
+  if (words.length >= 30) {
+    const freq = new Map();
+    for (const w of words) freq.set(w, (freq.get(w) || 0) + 1);
+    let maxCount = 0;
+    for (const c of freq.values()) maxCount = Math.max(maxCount, c);
+    if (maxCount / Math.max(1, words.length) > 0.08) {
+      next.VOCABULARY = (Number(next.VOCABULARY) || 0) + 1;
+    }
+  }
+
+  return next;
+}
+
+function ensureDetailedFeedbackDynamic({ detailedFeedback, counts }) {
+  const out = detailedFeedback && typeof detailedFeedback === 'object'
+    ? {
+        strengths: Array.isArray(detailedFeedback.strengths) ? detailedFeedback.strengths : [],
+        areasForImprovement: Array.isArray(detailedFeedback.areasForImprovement) ? detailedFeedback.areasForImprovement : [],
+        actionSteps: Array.isArray(detailedFeedback.actionSteps) ? detailedFeedback.actionSteps : []
+      }
+    : { strengths: [], areasForImprovement: [], actionSteps: [] };
+
+  const c = counts && typeof counts === 'object' ? counts : {};
+  const grammar = Number(c.GRAMMAR) || 0;
+  const vocab = Number(c.VOCABULARY) || 0;
+  const org = Number(c.ORGANIZATION) || 0;
+  const content = Number(c.CONTENT) || 0;
+
+  if (!out.strengths.length) {
+    const strengths = [];
+    if (org <= 1) strengths.push('Clear paragraph structure');
+    if (content <= 1) strengths.push('Ideas are present and on-topic');
+    if (grammar <= 1) strengths.push('Good grammar control overall');
+    if (!strengths.length) strengths.push('Shows effort and engagement with the task');
+    out.strengths = strengths;
+  }
+
+  if (!out.areasForImprovement.length) {
+    const areas = [];
+    if (grammar > 0) areas.push('Minor grammar and punctuation mistakes');
+    if (org > 0) areas.push('Improve paragraphing and logical flow');
+    if (vocab > 0) areas.push('Vocabulary variety could be richer');
+    if (content > 0) areas.push('Develop ideas with clearer examples and details');
+    out.areasForImprovement = areas.length ? areas.slice(0, 3) : ['Improve clarity and completeness of ideas'];
+  }
+
+  if (!out.actionSteps.length) {
+    const steps = [];
+    if (org > 0) steps.push('Split your response into introduction, body, and conclusion paragraphs');
+    if (content > 0) steps.push('Add 1-2 concrete examples to support your main points');
+    if (grammar > 0) steps.push('Review LanguageTool suggestions and re-check tense/agreement and punctuation');
+    if (vocab > 0) steps.push('Replace repeated words with suitable synonyms and more precise terms');
+    out.actionSteps = steps.length ? steps.slice(0, 5) : ['Proofread and revise for clarity'];
+  }
+
+  return out;
+}
+
 async function createFeedback(req, res) {
   try {
     const { submissionId } = req.params;
@@ -754,6 +1396,21 @@ async function updateFeedback(req, res) {
       return sendError(res, 400, 'textFeedback must be a string');
     }
 
+    const teacherComments = normalizeOptionalString(req.body && req.body.teacherComments);
+    if (teacherComments === null) {
+      return sendError(res, 400, 'teacherComments must be a string');
+    }
+
+    const overrideReason = normalizeOptionalString(req.body && req.body.overrideReason);
+    if (overrideReason === null) {
+      return sendError(res, 400, 'overrideReason must be a string');
+    }
+
+    const overriddenScoresResult = normalizeOptionalOverrideScores(req.body && req.body.overriddenScores);
+    if (overriddenScoresResult && overriddenScoresResult.error) {
+      return sendError(res, 400, overriddenScoresResult.error);
+    }
+
     const score = normalizeOptionalNumber(req.body && req.body.score);
     if (score === null) {
       return sendError(res, 400, 'score must be a number');
@@ -943,8 +1600,12 @@ async function listFeedbackByClassForTeacher(req, res) {
 module.exports = {
   createFeedback,
   generateAiFeedbackFromOcr,
+  generateAiSubmissionFeedback,
   updateFeedback,
+  getSubmissionFeedback,
+  upsertSubmissionFeedback,
   getFeedbackBySubmissionForStudent,
+  getFeedbackBySubmissionForTeacher,
   getFeedbackByIdForTeacher,
   listFeedbackByClassForTeacher
 };
