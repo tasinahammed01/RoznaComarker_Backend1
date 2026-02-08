@@ -185,6 +185,54 @@ function normalizeStringArrayPayload(value) {
   return out;
 }
 
+function buildDynamicRubricComments({
+  wordCount,
+  grammarCount,
+  mechanicsCount,
+  organizationCount,
+  contentCount,
+  paragraphCount,
+  grammarMechanics,
+  structureOrganization,
+  contentRelevance,
+  overallRubricScore
+}) {
+  const wc = Number(wordCount) || 0;
+  const paras = Number(paragraphCount) || 0;
+
+  const gmIssues = (Number(grammarCount) || 0) + (Number(mechanicsCount) || 0);
+  const gmDensity = wc ? (gmIssues / wc) : 0;
+  const orgDensity = wc ? ((Number(organizationCount) || 0) / wc) : 0;
+  const contentDensity = wc ? ((Number(contentCount) || 0) / wc) : 0;
+
+  const gmNote = gmDensity > 0.08
+    ? 'Frequent grammar/punctuation issues are reducing clarity.'
+    : gmDensity > 0.03
+      ? 'A few grammar/punctuation issues were detected; proofreading will help.'
+      : 'Grammar and mechanics are strong with minimal issues detected.';
+
+  const orgNote = paras < 2
+    ? 'Structure is hard to follow; consider using clear paragraphs.'
+    : orgDensity > 0.03
+      ? 'Organization can be improved by strengthening transitions and sequencing.'
+      : 'Organization is generally clear with a logical flow.';
+
+  const contentNote = wc < 60
+    ? 'Content is very brief; add more detail and explanation to address the task fully.'
+    : contentDensity > 0.06
+      ? 'Some ideas appear unclear or off-target; focus on answering the prompt directly and completely.'
+      : 'Content is mostly relevant and adequately developed.';
+
+  const overallNote = `Overall rubric reflects: Grammar & Mechanics ${Number(grammarMechanics || 0).toFixed(1)}/5, Structure & Organization ${Number(structureOrganization || 0).toFixed(1)}/5, Content Relevance ${Number(contentRelevance || 0).toFixed(1)}/5.`;
+
+  return {
+    grammarMechanics: gmNote,
+    structureOrganization: orgNote,
+    contentRelevance: contentNote,
+    overallRubricScore: overallNote
+  };
+}
+
 async function getSubmissionFeedback(req, res) {
   try {
     const { submissionId } = req.params;
@@ -221,6 +269,7 @@ async function getSubmissionFeedback(req, res) {
 
     let feedback = await SubmissionFeedback.findOne({ submissionId: submission._id });
     if (!feedback) {
+      console.log('Generating dynamic AI Feedback for submission', submissionId);
       console.log('Dynamic summary generation for submission', submissionId);
       // Hybrid model: if feedback doesn't exist, generate AI defaults on the backend and persist.
       const classDoc = await Class.findById(submission.class).select('_id teacher');
@@ -251,13 +300,57 @@ async function getSubmissionFeedback(req, res) {
       const corrections = Array.isArray(built && built.corrections) ? built.corrections : [];
       const counts = augmentCountsWithTextHeuristics(transcriptText, computeCountsFromCorrections(corrections));
 
-      const rubricScoreNums = computeRubricScoresFromCounts(counts);
+      const clamp5 = (n) => {
+        const x = Number(n);
+        if (!Number.isFinite(x)) return 0;
+        return Math.max(0, Math.min(5, x));
+      };
+
+      const safeText = typeof transcriptText === 'string' ? transcriptText : '';
+      const wordCount = safeText.trim() ? safeText.trim().split(/\s+/).filter(Boolean).length : 0;
+
+      const grammarCount = Number(counts && counts.GRAMMAR) || 0;
+      const mechanicsCount = Number(counts && counts.MECHANICS) || 0;
+      const organizationCount = Number(counts && counts.ORGANIZATION) || 0;
+      const contentCount = Number(counts && counts.CONTENT) || 0;
+
+      // Grammar & Mechanics (/5) based on issue density.
+      const grammarMechanicsIssues = grammarCount + mechanicsCount;
+      const grammarMechanics = clamp5(5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * 60);
+
+      // Structure & Organization (/5) from paragraph structure + organization issues.
+      const paragraphCount = safeText.split(/\n\s*\n+/).filter((p) => String(p).trim()).length;
+      const paragraphPenalty = paragraphCount >= 3 ? 0 : paragraphCount === 2 ? 0.5 : 1;
+      const structureOrganization = clamp5(5 - paragraphPenalty - (organizationCount / Math.max(1, wordCount)) * 40);
+
+      // Content Relevance (/5) from content issues + very short submissions penalty.
+      const lengthPenalty = wordCount >= 120 ? 0 : wordCount >= 60 ? 0.5 : 1;
+      const contentRelevance = clamp5(5 - lengthPenalty - (contentCount / Math.max(1, wordCount)) * 40);
+
+      const overallRubricScore = clamp5((grammarMechanics + structureOrganization + contentRelevance) / 3);
+
+      console.log('Dynamic AI rubric generated for submission', submissionId);
+
+      const rubricComments = buildDynamicRubricComments({
+        wordCount,
+        grammarCount,
+        mechanicsCount,
+        organizationCount,
+        contentCount,
+        paragraphCount,
+        grammarMechanics,
+        structureOrganization,
+        contentRelevance,
+        overallRubricScore
+      });
+
       const rubricScores = {
-        CONTENT: { score: rubricScoreNums.CONTENT, maxScore: 5, comment: '' },
-        ORGANIZATION: { score: rubricScoreNums.ORGANIZATION, maxScore: 5, comment: '' },
-        GRAMMAR: { score: rubricScoreNums.GRAMMAR, maxScore: 5, comment: '' },
-        VOCABULARY: { score: rubricScoreNums.VOCABULARY, maxScore: 5, comment: '' },
-        MECHANICS: { score: rubricScoreNums.MECHANICS, maxScore: 5, comment: '' }
+        // Mapped into existing schema keys (no DB schema changes).
+        CONTENT: { score: contentRelevance, maxScore: 5, comment: rubricComments.contentRelevance },
+        ORGANIZATION: { score: structureOrganization, maxScore: 5, comment: rubricComments.structureOrganization },
+        GRAMMAR: { score: grammarMechanics, maxScore: 5, comment: rubricComments.grammarMechanics },
+        VOCABULARY: { score: 0, maxScore: 5, comment: '' },
+        MECHANICS: { score: overallRubricScore, maxScore: 5, comment: rubricComments.overallRubricScore }
       };
 
       const evaluation = computeAcademicEvaluation({
@@ -271,7 +364,7 @@ async function getSubmissionFeedback(req, res) {
         ? evaluation.effectiveRubric.gradeLetter
         : gradeFromOverallScore100(overallScore100);
 
-      const overallComments = buildGeneralComments({ text: transcriptText, rubricScores: rubricScoreNums, counts });
+      const overallComments = buildGeneralComments({ text: transcriptText, rubricScores: { CONTENT: contentRelevance, ORGANIZATION: structureOrganization, GRAMMAR: grammarMechanics }, counts });
       const detailedFeedback = ensureDetailedFeedbackDynamic({
         detailedFeedback: buildDetailedFeedbackDefaults({ structuredFeedback: evaluation && evaluation.structuredFeedback }),
         counts
@@ -281,6 +374,10 @@ async function getSubmissionFeedback(req, res) {
         structuredFeedback: evaluation && evaluation.structuredFeedback,
         overallComments
       });
+
+      // Teacher comment must start empty and must not be AI-generated.
+      aiFeedback.overallComments = '';
+      console.log('Teacher comment initialized as empty');
 
       const created = await SubmissionFeedback.create({
         submissionId: submission._id,
@@ -304,7 +401,75 @@ async function getSubmissionFeedback(req, res) {
 
       feedback = created.toObject();
     } else {
-      feedback = feedback.toObject();
+      const feedbackObj = feedback.toObject();
+      const rs = feedbackObj && feedbackObj.rubricScores ? feedbackObj.rubricScores : null;
+      const needsBackfill = !rs?.GRAMMAR?.comment || !rs?.ORGANIZATION?.comment || !rs?.CONTENT?.comment || !rs?.MECHANICS?.comment;
+
+      if (!needsBackfill) {
+        feedback = feedbackObj;
+      } else {
+        const transcriptText = (submission.transcriptText && String(submission.transcriptText).trim())
+          ? String(submission.transcriptText)
+          : (submission.ocrText && String(submission.ocrText).trim())
+            ? String(submission.ocrText)
+            : '';
+
+        const safeText = typeof transcriptText === 'string' ? transcriptText : '';
+        const wordCount = safeText.trim() ? safeText.trim().split(/\s+/).filter(Boolean).length : 0;
+        const paragraphCount = safeText.split(/\n\s*\n+/).filter((p) => String(p).trim()).length;
+
+        const cs = feedbackObj && feedbackObj.correctionStats ? feedbackObj.correctionStats : {};
+        const grammarCount = Number(cs.grammar) || 0;
+        const mechanicsCount = Number(cs.mechanics) || 0;
+        const organizationCount = Number(cs.organization) || 0;
+        const contentCount = Number(cs.content) || 0;
+
+        const clamp5 = (n) => {
+          const x = Number(n);
+          if (!Number.isFinite(x)) return 0;
+          return Math.max(0, Math.min(5, x));
+        };
+
+        const grammarMechanicsIssues = grammarCount + mechanicsCount;
+        const grammarMechanics = clamp5(5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * 60);
+        const paragraphPenalty = paragraphCount >= 3 ? 0 : paragraphCount === 2 ? 0.5 : 1;
+        const structureOrganization = clamp5(5 - paragraphPenalty - (organizationCount / Math.max(1, wordCount)) * 40);
+        const lengthPenalty = wordCount >= 120 ? 0 : wordCount >= 60 ? 0.5 : 1;
+        const contentRelevance = clamp5(5 - lengthPenalty - (contentCount / Math.max(1, wordCount)) * 40);
+        const overallRubricScore = clamp5((grammarMechanics + structureOrganization + contentRelevance) / 3);
+
+        const rubricComments = buildDynamicRubricComments({
+          wordCount,
+          grammarCount,
+          mechanicsCount,
+          organizationCount,
+          contentCount,
+          paragraphCount,
+          grammarMechanics,
+          structureOrganization,
+          contentRelevance,
+          overallRubricScore
+        });
+
+        const updatedRubricScores = {
+          ...(rs || {}),
+          GRAMMAR: { ...(rs?.GRAMMAR || {}), comment: rubricComments.grammarMechanics },
+          ORGANIZATION: { ...(rs?.ORGANIZATION || {}), comment: rubricComments.structureOrganization },
+          CONTENT: { ...(rs?.CONTENT || {}), comment: rubricComments.contentRelevance },
+          MECHANICS: { ...(rs?.MECHANICS || {}), comment: rubricComments.overallRubricScore }
+        };
+
+        try {
+          const saved = await SubmissionFeedback.findOneAndUpdate(
+            { submissionId: submission._id },
+            { $set: { rubricScores: updatedRubricScores } },
+            { new: true }
+          );
+          feedback = saved ? saved.toObject() : { ...feedbackObj, rubricScores: updatedRubricScores };
+        } catch {
+          feedback = { ...feedbackObj, rubricScores: updatedRubricScores };
+        }
+      }
     }
 
     console.log('[FEEDBACK GET]', submissionId, feedback);
@@ -319,6 +484,8 @@ async function generateAiSubmissionFeedback(req, res) {
     const { submissionId } = req.params;
 
     console.log('Checking dynamic fields for submission', submissionId);
+
+    console.log('Generating dynamic AI Feedback for submission', submissionId);
 
     if (!mongoose.Types.ObjectId.isValid(submissionId)) {
       return sendError(res, 400, 'Invalid submission id');
@@ -368,13 +535,53 @@ async function generateAiSubmissionFeedback(req, res) {
     const corrections = Array.isArray(built && built.corrections) ? built.corrections : [];
     const counts = augmentCountsWithTextHeuristics(transcriptText, computeCountsFromCorrections(corrections));
 
-    const rubricScoreNums = computeRubricScoresFromCounts(counts);
+    const clamp5 = (n) => {
+      const x = Number(n);
+      if (!Number.isFinite(x)) return 0;
+      return Math.max(0, Math.min(5, x));
+    };
+
+    const safeText = typeof transcriptText === 'string' ? transcriptText : '';
+    const wordCount = safeText.trim() ? safeText.trim().split(/\s+/).filter(Boolean).length : 0;
+
+    const grammarCount = Number(counts && counts.GRAMMAR) || 0;
+    const mechanicsCount = Number(counts && counts.MECHANICS) || 0;
+    const organizationCount = Number(counts && counts.ORGANIZATION) || 0;
+    const contentCount = Number(counts && counts.CONTENT) || 0;
+
+    const grammarMechanicsIssues = grammarCount + mechanicsCount;
+    const grammarMechanics = clamp5(5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * 60);
+
+    const paragraphCount = safeText.split(/\n\s*\n+/).filter((p) => String(p).trim()).length;
+    const paragraphPenalty = paragraphCount >= 3 ? 0 : paragraphCount === 2 ? 0.5 : 1;
+    const structureOrganization = clamp5(5 - paragraphPenalty - (organizationCount / Math.max(1, wordCount)) * 40);
+
+    const lengthPenalty = wordCount >= 120 ? 0 : wordCount >= 60 ? 0.5 : 1;
+    const contentRelevance = clamp5(5 - lengthPenalty - (contentCount / Math.max(1, wordCount)) * 40);
+
+    const overallRubricScore = clamp5((grammarMechanics + structureOrganization + contentRelevance) / 3);
+
+    console.log('Dynamic AI rubric generated for submission', submissionId);
+
+    const rubricComments = buildDynamicRubricComments({
+      wordCount,
+      grammarCount,
+      mechanicsCount,
+      organizationCount,
+      contentCount,
+      paragraphCount,
+      grammarMechanics,
+      structureOrganization,
+      contentRelevance,
+      overallRubricScore
+    });
+
     const rubricScores = {
-      CONTENT: { score: rubricScoreNums.CONTENT, maxScore: 5, comment: '' },
-      ORGANIZATION: { score: rubricScoreNums.ORGANIZATION, maxScore: 5, comment: '' },
-      GRAMMAR: { score: rubricScoreNums.GRAMMAR, maxScore: 5, comment: '' },
-      VOCABULARY: { score: rubricScoreNums.VOCABULARY, maxScore: 5, comment: '' },
-      MECHANICS: { score: rubricScoreNums.MECHANICS, maxScore: 5, comment: '' }
+      CONTENT: { score: contentRelevance, maxScore: 5, comment: rubricComments.contentRelevance },
+      ORGANIZATION: { score: structureOrganization, maxScore: 5, comment: rubricComments.structureOrganization },
+      GRAMMAR: { score: grammarMechanics, maxScore: 5, comment: rubricComments.grammarMechanics },
+      VOCABULARY: { score: 0, maxScore: 5, comment: '' },
+      MECHANICS: { score: overallRubricScore, maxScore: 5, comment: rubricComments.overallRubricScore }
     };
 
     const evaluation = computeAcademicEvaluation({
@@ -388,7 +595,15 @@ async function generateAiSubmissionFeedback(req, res) {
       ? evaluation.effectiveRubric.gradeLetter
       : gradeFromOverallScore100(overallScore100);
 
-    const overallComments = buildGeneralComments({ text: transcriptText, rubricScores: rubricScoreNums, counts });
+    const overallComments = buildGeneralComments({
+      text: transcriptText,
+      rubricScores: {
+        CONTENT: contentRelevance,
+        ORGANIZATION: structureOrganization,
+        GRAMMAR: grammarMechanics
+      },
+      counts
+    });
     const detailedFeedback = ensureDetailedFeedbackDynamic({
       detailedFeedback: buildDetailedFeedbackDefaults({ structuredFeedback: evaluation && evaluation.structuredFeedback }),
       counts
@@ -398,6 +613,10 @@ async function generateAiSubmissionFeedback(req, res) {
       structuredFeedback: evaluation && evaluation.structuredFeedback,
       overallComments
     });
+
+    // Teacher comment must start empty and must not be AI-generated.
+    aiFeedback.overallComments = '';
+    console.log('Teacher comment initialized as empty');
 
     const update = {
       submissionId: submission._id,

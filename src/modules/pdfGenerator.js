@@ -2,6 +2,9 @@ const puppeteer = require('puppeteer');
 
 const { fetch } = require('undici');
 
+const fs = require('fs');
+const path = require('path');
+
 function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -23,6 +26,61 @@ async function tryFetchAsDataUri(url) {
     const ct = res.headers.get('content-type') || 'application/octet-stream';
     const ab = await res.arrayBuffer();
     const b64 = Buffer.from(ab).toString('base64');
+    return `data:${ct};base64,${b64}`;
+  } catch {
+    return '';
+  }
+}
+
+function getUploadsRoot() {
+  const basePath = (process.env.UPLOAD_BASE_PATH || 'uploads').trim() || 'uploads';
+  return path.join(__dirname, '..', '..', basePath);
+}
+
+function guessMimeTypeFromFilename(filename) {
+  const ext = String(path.extname(String(filename || '')).toLowerCase());
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  return 'application/octet-stream';
+}
+
+function extractUploadsPath(urlOrPath) {
+  const raw = typeof urlOrPath === 'string' ? urlOrPath.trim() : '';
+  if (!raw) return null;
+
+  let pathname = raw;
+  try {
+    if (/^https?:\/\//i.test(raw)) {
+      pathname = new URL(raw).pathname;
+    }
+  } catch {
+    pathname = raw;
+  }
+
+  // Support URLs like:
+  // /uploads/submissions/<file>
+  // /uploads/assignments/<file>
+  // /uploads/feedback/<file>
+  // (keep it strict to avoid reading arbitrary paths)
+  const m = String(pathname).match(/^\/uploads\/(assignments|submissions|feedback)\/([^/?#]+)$/i);
+  if (!m) return null;
+  return { folder: m[1].toLowerCase(), filename: m[2] };
+}
+
+async function tryReadUploadsFileAsDataUri(urlOrPath) {
+  const parts = extractUploadsPath(urlOrPath);
+  if (!parts) return '';
+
+  const uploadsRoot = getUploadsRoot();
+  const abs = path.join(uploadsRoot, parts.folder, parts.filename);
+
+  try {
+    const buf = await fs.promises.readFile(abs);
+    if (!buf || !buf.length) return '';
+    const ct = guessMimeTypeFromFilename(parts.filename);
+    const b64 = Buffer.from(buf).toString('base64');
     return `data:${ct};base64,${b64}`;
   } catch {
     return '';
@@ -672,7 +730,10 @@ async function renderSubmissionPdf({ header, imageUrl, transcriptText, issues, f
     };
   }
 
-  const embedded = await tryFetchAsDataUri(imageUrl);
+  let embedded = await tryFetchAsDataUri(imageUrl);
+  if (!embedded) {
+    embedded = await tryReadUploadsFileAsDataUri(imageUrl);
+  }
 
   const rubricRows = buildRubricRows(submissionFeedback || feedback);
   const overrideReason = feedback && typeof feedback.overrideReason === 'string' ? feedback.overrideReason : '';

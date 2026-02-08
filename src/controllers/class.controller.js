@@ -29,7 +29,7 @@ function isNonEmptyString(value) {
 
 function buildJoinUrl(req, joinCode) {
   const baseUrl = `${req.protocol}://${req.get('host')}`;
-  return `${baseUrl}/api/classes/join/${joinCode}`;
+  return `${process.env.FRONTEND_URL}/student/join-class?joinCode=${joinCode}`;
 }
 
 async function createClass(req, res) {
