@@ -139,6 +139,13 @@ async function downloadSubmissionPdf(req, res, next) {
     res.status(200);
     return res.end(Buffer.isBuffer(pdfBuffer) ? pdfBuffer : Buffer.from(pdfBuffer));
   } catch (err) {
+    try {
+      const submissionId = req.params && req.params.submissionId ? String(req.params.submissionId) : '';
+      console.error('PDF generation failed for submission', submissionId);
+      console.error(err && err.stack ? err.stack : err);
+    } catch {
+      // ignore
+    }
     return next(err);
   }
 }

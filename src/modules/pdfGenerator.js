@@ -2,6 +2,7 @@ const puppeteer = require('puppeteer');
 
 const { fetch } = require('undici');
 
+const os = require('os');
 const fs = require('fs');
 const path = require('path');
 
@@ -773,9 +774,19 @@ async function renderSubmissionPdf({ header, imageUrl, transcriptText, issues, f
     submissionFeedbackBlocks
   });
 
+  const userDataDir = (process.env.PUPPETEER_USER_DATA_DIR && String(process.env.PUPPETEER_USER_DATA_DIR).trim())
+    ? String(process.env.PUPPETEER_USER_DATA_DIR).trim()
+    : path.join(os.tmpdir(), 'puppeteer');
+
+  try {
+    await fs.promises.mkdir(userDataDir, { recursive: true });
+  } catch {
+    // ignore; puppeteer will throw a more descriptive error if it cannot use this dir
+  }
+
   const browser = await puppeteer.launch({
     headless: true,
-    userDataDir: '/tmp/puppeteer',
+    userDataDir,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
