@@ -710,6 +710,14 @@ async function renderSubmissionPdf({ header, imageUrl, transcriptText, issues, f
     ? buildWritingCorrectionsHtml(String(transcriptText), issues)
     : '';
 
+  const rawImageUrl = typeof imageUrl === 'string' ? imageUrl.trim() : '';
+  if (rawImageUrl && rawImageUrl.startsWith('/uploads')) {
+    const base = (process.env.BASE_URL || '').trim().replace(/\/+$/, '');
+    if (base) {
+      imageUrl = `${base}${rawImageUrl}`;
+    }
+  }
+
   let score = safeNumber(feedback && feedback.score, NaN);
   let maxScore = safeNumber(feedback && feedback.maxScore, NaN);
   let scoreSummary = scoreLabel(score, maxScore);
@@ -767,11 +775,14 @@ async function renderSubmissionPdf({ header, imageUrl, transcriptText, issues, f
 
   const browser = await puppeteer.launch({
     headless: true,
+    userDataDir: '/tmp/puppeteer',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-gpu'
+      '--disable-gpu',
+      '--single-process',
+      '--no-zygote'
     ]
   });
 
