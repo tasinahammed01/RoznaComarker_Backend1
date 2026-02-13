@@ -17,7 +17,7 @@ function bytesToMB(bytes) {
 }
 
 async function getFreePlan() {
-  return Plan.findOne({ name: 'Free' });
+  return Plan.findOne({ name: 'Free', isActive: true });
 }
 
 function toEmptyUsage() {
