@@ -5,11 +5,19 @@ function normalizeUrl(value) {
   return value.trim().replace(/\/+$/, '');
 }
 
+function parseAllowedOrigins(value) {
+  if (typeof value !== 'string') return [];
+  return value
+    .split(',')
+    .map((x) => normalizeUrl(x))
+    .filter(Boolean);
+}
+
 function createCorsMiddleware() {
   const isProd = process.env.NODE_ENV === 'production';
-  const allowedOrigin = normalizeUrl(process.env.FRONTEND_URL);
+  const allowedOrigins = parseAllowedOrigins(process.env.FRONTEND_URL);
 
-  if (isProd && !allowedOrigin) {
+  if (isProd && !allowedOrigins.length) {
     throw new Error('FRONTEND_URL must be set in production');
   }
 
@@ -21,7 +29,7 @@ function createCorsMiddleware() {
 
       const normalizedOrigin = normalizeUrl(origin);
 
-      if (normalizedOrigin === allowedOrigin) {
+      if (allowedOrigins.includes(normalizedOrigin)) {
         return callback(null, true);
       }
 
