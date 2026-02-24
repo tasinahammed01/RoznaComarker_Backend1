@@ -3,6 +3,13 @@ const express = require('express');
 const userController = require('../controllers/user.controller');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 
+const {
+  upload,
+  setUploadType,
+  handleUploadError,
+  validateUploadedFileSignature
+} = require('../middlewares/upload.middleware');
+
 const { param, body } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
 
@@ -95,6 +102,26 @@ router.get(
 );
 
 router.get('/me', verifyJwtToken, userController.getMe);
+
+router.patch(
+  '/me',
+  verifyJwtToken,
+  body('displayName').optional({ nullable: true }).isString(),
+  body('institution').optional({ nullable: true }).isString(),
+  body('bio').optional({ nullable: true }).isString(),
+  handleValidationResult,
+  userController.updateMe
+);
+
+router.post(
+  '/me/avatar',
+  verifyJwtToken,
+  setUploadType('avatars'),
+  upload.single('file'),
+  handleUploadError,
+  validateUploadedFileSignature,
+  userController.uploadMyAvatar
+);
 
 /**
  * @openapi

@@ -94,11 +94,77 @@ async function getMe(req, res) {
       id: user._id,
       email: user.email,
       displayName: user.displayName,
+      institution: user.institution,
+      bio: user.bio,
       photoURL: user.photoURL,
       role: user.role
     });
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch user');
+  }
+}
+
+async function updateMe(req, res) {
+  try {
+    const user = req && req.user;
+    if (!user) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const { displayName, institution, bio } = req.body || {};
+
+    if (typeof displayName === 'string') {
+      user.displayName = displayName.trim();
+    }
+
+    if (typeof institution === 'string') {
+      user.institution = institution.trim();
+    }
+
+    if (typeof bio === 'string') {
+      user.bio = bio.trim();
+    }
+
+    const saved = await user.save();
+
+    return sendSuccess(res, {
+      id: saved._id,
+      email: saved.email,
+      displayName: saved.displayName,
+      institution: saved.institution,
+      bio: saved.bio,
+      photoURL: saved.photoURL,
+      role: saved.role
+    });
+  } catch (err) {
+    return sendError(res, 500, 'Failed to update profile');
+  }
+}
+
+async function uploadMyAvatar(req, res) {
+  try {
+    const user = req && req.user;
+    if (!user) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const file = req && req.file;
+    if (!file || !file.filename) {
+      return sendError(res, 400, 'No file provided');
+    }
+
+    const urlPath = `/uploads/avatars/${encodeURIComponent(file.filename)}`;
+    user.photoURL = urlPath;
+    const saved = await user.save();
+
+    return res.json({
+      success: true,
+      data: {
+        photoURL: saved.photoURL
+      }
+    });
+  } catch (err) {
+    return sendError(res, 500, 'Failed to upload avatar');
   }
 }
 
@@ -207,6 +273,8 @@ module.exports = {
   createOrGetUser,
   setMyRole,
   getMe,
+  updateMe,
+  uploadMyAvatar,
   getUserById,
   getUserByFirebaseUid,
   deactivateUser

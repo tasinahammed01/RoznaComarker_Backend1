@@ -38,6 +38,8 @@ function resolveUploadFolder(type) {
   if (type === 'processed') return path.join(uploadsRoot, 'processed');
   if (type === 'transcripts') return path.join(uploadsRoot, 'transcripts');
 
+  if (type === 'avatars') return path.join(uploadsRoot, 'avatars');
+
   return path.join(uploadsRoot, 'uploads');
 }
 

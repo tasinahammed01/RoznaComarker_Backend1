@@ -21,6 +21,14 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true
     },
+    institution: {
+      type: String,
+      trim: true
+    },
+    bio: {
+      type: String,
+      trim: true
+    },
     role: {
       type: String,
       enum: ['teacher', 'student', 'admin'],

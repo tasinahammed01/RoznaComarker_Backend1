@@ -55,6 +55,7 @@ fs.mkdirSync(path.join(uploadsRoot, 'feedback'), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, 'original'), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, 'processed'), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, 'transcripts'), { recursive: true });
+fs.mkdirSync(path.join(uploadsRoot, 'avatars'), { recursive: true });
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -71,6 +72,7 @@ app.use(
     contentSecurityPolicy: {
       directives: cspDirectives
     },
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
     frameguard: { action: 'deny' },
     hsts: process.env.NODE_ENV === 'production'
       ? { maxAge: 15552000, includeSubDomains: true, preload: true }
@@ -92,6 +94,7 @@ app.use(createGlobalRateLimiter());
 app.use('/uploads/assignments', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'assignments')));
 app.use('/uploads/submissions', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'submissions')));
 app.use('/uploads/feedback', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'feedback')));
+app.use('/uploads/avatars', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'avatars')));
 
 app.use('/api', healthRoutes);
 app.use('/api/auth', authRoutes);
