@@ -23,6 +23,56 @@ function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function clampNumber(value, { min, max, fallback }) {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function normalizeAiConfigPayload(payload) {
+  const obj = payload && typeof payload === 'object' ? payload : {};
+
+  const strictnessRaw = typeof obj.strictness === 'string' ? obj.strictness.trim().toLowerCase() : null;
+  const strictnessAllowed = ['friendly', 'balanced', 'strict'];
+  const strictness = strictnessAllowed.includes(String(strictnessRaw)) ? String(strictnessRaw) : undefined;
+
+  const checksObj = obj.checks && typeof obj.checks === 'object' ? obj.checks : {};
+  const checks = {
+    grammarSpelling: typeof checksObj.grammarSpelling === 'boolean' ? checksObj.grammarSpelling : undefined,
+    coherenceLogic: typeof checksObj.coherenceLogic === 'boolean' ? checksObj.coherenceLogic : undefined,
+    factChecking: typeof checksObj.factChecking === 'boolean' ? checksObj.factChecking : undefined
+  };
+
+  const hasAnyChecks = Object.values(checks).some((v) => typeof v === 'boolean');
+  if (!strictness && !hasAnyChecks) return null;
+
+  return {
+    ...(strictness ? { strictness } : {}),
+    ...(hasAnyChecks ? { checks } : {})
+  };
+}
+
+function normalizeClassroomDefaultsPayload(payload) {
+  const obj = payload && typeof payload === 'object' ? payload : {};
+  const gradingScaleRaw = typeof obj.gradingScale === 'string' ? obj.gradingScale.trim().toLowerCase() : null;
+  const gradingScaleAllowed = ['score_0_100', 'grade_a_f', 'pass_fail'];
+  const gradingScale = gradingScaleAllowed.includes(String(gradingScaleRaw)) ? String(gradingScaleRaw) : undefined;
+
+  const latePenalty = typeof obj.lateSubmissionPenaltyPercent !== 'undefined'
+    ? clampNumber(obj.lateSubmissionPenaltyPercent, { min: 0, max: 100, fallback: undefined })
+    : undefined;
+
+  const autoPublishGrades = typeof obj.autoPublishGrades === 'boolean' ? obj.autoPublishGrades : undefined;
+
+  if (!gradingScale && typeof latePenalty === 'undefined' && typeof autoPublishGrades === 'undefined') return null;
+
+  return {
+    ...(gradingScale ? { gradingScale } : {}),
+    ...(typeof latePenalty === 'number' ? { lateSubmissionPenaltyPercent: latePenalty } : {}),
+    ...(typeof autoPublishGrades === 'boolean' ? { autoPublishGrades } : {})
+  };
+}
+
 async function createOrGetUser(req, res) {
   try {
     const { firebaseUid, email, displayName, photoURL } = req.body || {};
@@ -96,6 +146,8 @@ async function getMe(req, res) {
       displayName: user.displayName,
       institution: user.institution,
       bio: user.bio,
+      aiConfig: user.aiConfig,
+      classroomDefaults: user.classroomDefaults,
       photoURL: user.photoURL,
       role: user.role
     });
@@ -111,7 +163,7 @@ async function updateMe(req, res) {
       return sendError(res, 401, 'Unauthorized');
     }
 
-    const { displayName, institution, bio } = req.body || {};
+    const { displayName, institution, bio, aiConfig, classroomDefaults } = req.body || {};
 
     if (typeof displayName === 'string') {
       user.displayName = displayName.trim();
@@ -125,6 +177,26 @@ async function updateMe(req, res) {
       user.bio = bio.trim();
     }
 
+    const nextAiConfig = normalizeAiConfigPayload(aiConfig);
+    if (nextAiConfig) {
+      user.aiConfig = {
+        ...(user.aiConfig && typeof user.aiConfig === 'object' ? user.aiConfig.toObject?.() || user.aiConfig : {}),
+        ...nextAiConfig,
+        checks: {
+          ...(user.aiConfig && user.aiConfig.checks ? user.aiConfig.checks.toObject?.() || user.aiConfig.checks : {}),
+          ...(nextAiConfig.checks || {})
+        }
+      };
+    }
+
+    const nextDefaults = normalizeClassroomDefaultsPayload(classroomDefaults);
+    if (nextDefaults) {
+      user.classroomDefaults = {
+        ...(user.classroomDefaults && typeof user.classroomDefaults === 'object' ? user.classroomDefaults.toObject?.() || user.classroomDefaults : {}),
+        ...nextDefaults
+      };
+    }
+
     const saved = await user.save();
 
     return sendSuccess(res, {
@@ -133,6 +205,8 @@ async function updateMe(req, res) {
       displayName: saved.displayName,
       institution: saved.institution,
       bio: saved.bio,
+      aiConfig: saved.aiConfig,
+      classroomDefaults: saved.classroomDefaults,
       photoURL: saved.photoURL,
       role: saved.role
     });
@@ -215,12 +289,20 @@ async function getUserById(req, res) {
       return sendError(res, 400, 'Invalid user id');
     }
 
-    const user = await User.findById(id);
+    const user = await User.findById(id).select('email displayName institution bio photoURL role');
     if (!user) {
       return sendError(res, 404, 'User not found');
     }
 
-    return sendSuccess(res, user);
+    return sendSuccess(res, {
+      _id: user._id,
+      email: user.email,
+      displayName: user.displayName,
+      institution: user.institution,
+      bio: user.bio,
+      photoURL: user.photoURL,
+      role: user.role
+    });
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch user');
   }

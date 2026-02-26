@@ -32,6 +32,24 @@ function buildJoinUrl(req, joinCode) {
   return `${process.env.FRONTEND_URL}/student/join-class?joinCode=${joinCode}`;
 }
 
+function normalizeClassroomDefaultsFromUser(user) {
+  const d = user && user.classroomDefaults && typeof user.classroomDefaults === 'object' ? user.classroomDefaults : {};
+  const gradingScaleRaw = typeof d.gradingScale === 'string' ? d.gradingScale.trim().toLowerCase() : '';
+  const gradingScale = ['score_0_100', 'grade_a_f', 'pass_fail'].includes(gradingScaleRaw) ? gradingScaleRaw : undefined;
+
+  const lateRaw = d.lateSubmissionPenaltyPercent;
+  const lateNum = typeof lateRaw === 'number' ? lateRaw : Number(lateRaw);
+  const lateSubmissionPenaltyPercent = Number.isFinite(lateNum) ? Math.max(0, Math.min(100, lateNum)) : undefined;
+
+  const autoPublishGrades = typeof d.autoPublishGrades === 'boolean' ? d.autoPublishGrades : undefined;
+
+  return {
+    ...(gradingScale ? { gradingScale } : {}),
+    ...(typeof lateSubmissionPenaltyPercent === 'number' ? { lateSubmissionPenaltyPercent } : {}),
+    ...(typeof autoPublishGrades === 'boolean' ? { autoPublishGrades } : {})
+  };
+}
+
 async function createClass(req, res) {
   try {
     const { name, description } = req.body || {};
@@ -45,6 +63,8 @@ async function createClass(req, res) {
       return sendError(res, 401, 'Unauthorized');
     }
 
+    const defaults = normalizeClassroomDefaultsFromUser(req.user);
+
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const joinCode = uuidv4();
       const joinUrl = buildJoinUrl(req, joinCode);
@@ -56,7 +76,8 @@ async function createClass(req, res) {
           description: isNonEmptyString(description) ? description.trim() : undefined,
           teacher: teacherId,
           joinCode,
-          qrCodeUrl
+          qrCodeUrl,
+          ...defaults
         });
 
         await incrementUsage(teacherId, { classes: 1 });
@@ -335,6 +356,7 @@ async function getClassSummary(req, res) {
       name: classDoc.name,
       description: classDoc.description || '',
       joinCode: classDoc.joinCode,
+      gradingScale: classDoc.gradingScale,
       teacher: {
         id: teacher && teacher._id ? String(teacher._id) : String(teacherId),
         name: teacherName,

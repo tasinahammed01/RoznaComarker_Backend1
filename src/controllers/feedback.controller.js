@@ -61,6 +61,56 @@ function buildDefaultSubmissionFeedbackDoc({ submissionId, classId, studentId, t
   };
 }
 
+function normalizeTeacherAiConfig(user) {
+  const cfg = user && user.aiConfig && typeof user.aiConfig === 'object' ? user.aiConfig : {};
+  const strictnessRaw = typeof cfg.strictness === 'string' ? cfg.strictness.trim().toLowerCase() : '';
+  const strictness = ['friendly', 'balanced', 'strict'].includes(strictnessRaw) ? strictnessRaw : 'balanced';
+
+  const checks = cfg.checks && typeof cfg.checks === 'object' ? cfg.checks : {};
+  return {
+    strictness,
+    checks: {
+      grammarSpelling: typeof checks.grammarSpelling === 'boolean' ? checks.grammarSpelling : true,
+      coherenceLogic: typeof checks.coherenceLogic === 'boolean' ? checks.coherenceLogic : true,
+      factChecking: typeof checks.factChecking === 'boolean' ? checks.factChecking : false
+    }
+  };
+}
+
+function isGrammarSpellingGroup(groupKey) {
+  const k = String(groupKey || '').toLowerCase();
+  return k === 'grammar' || k === 'spelling' || k === 'typography';
+}
+
+function isCoherenceLogicGroup(groupKey) {
+  const k = String(groupKey || '').toLowerCase();
+  // LanguageTool uses `style` for many coherence/structure issues.
+  return k === 'style';
+}
+
+function filterCorrectionsByAiConfig(corrections, aiConfig) {
+  const list = Array.isArray(corrections) ? corrections : [];
+  const cfg = aiConfig && typeof aiConfig === 'object' ? aiConfig : normalizeTeacherAiConfig(null);
+
+  return list.filter((c) => {
+    const k = c && (c.groupKey || c.groupLabel);
+    if (isGrammarSpellingGroup(k)) return cfg.checks.grammarSpelling;
+    if (isCoherenceLogicGroup(k)) return cfg.checks.coherenceLogic;
+    return true;
+  });
+}
+
+function strictnessPenaltyConfig(strictness) {
+  const s = String(strictness || '').toLowerCase();
+  if (s === 'friendly') {
+    return { gm: 45, org: 30, content: 30 };
+  }
+  if (s === 'strict') {
+    return { gm: 80, org: 55, content: 55 };
+  }
+  return { gm: 60, org: 40, content: 40 };
+}
+
 function clampScore100(n) {
   const v = typeof n === 'number' ? n : Number(n);
   if (!Number.isFinite(v)) return 0;
@@ -106,6 +156,71 @@ function normalizeAiFeedbackPerCategoryPayload(value) {
     out.push({ category, message, scoreOutOf5 });
   }
   return out;
+}
+
+function normalizeRubricDesignerPayload(value) {
+  if (value == null) return { value: null };
+  const obj = value && typeof value === 'object' ? value : null;
+  if (!obj) return { error: 'rubricDesigner must be an object' };
+
+  const title = safeString(obj.title).trim();
+
+  const rawLevels = Array.isArray(obj.levels) ? obj.levels : null;
+  if (!rawLevels) return { error: 'rubricDesigner.levels must be an array' };
+
+  const levels = rawLevels
+    .map((l) => {
+      const lvl = l && typeof l === 'object' ? l : {};
+      const maxPoints = Number(lvl.maxPoints);
+      return {
+        title: safeString(lvl.title).trim(),
+        maxPoints: Number.isFinite(maxPoints) ? Math.max(0, Math.floor(maxPoints)) : 0
+      };
+    })
+    .slice(0, 6);
+
+  const rawCriteria = Array.isArray(obj.criteria) ? obj.criteria : null;
+  if (!rawCriteria) return { error: 'rubricDesigner.criteria must be an array' };
+
+  const criteria = rawCriteria
+    .map((c) => {
+      const row = c && typeof c === 'object' ? c : {};
+      const cells = Array.isArray(row.cells) ? row.cells.map((x) => safeString(x)) : [];
+      return {
+        title: safeString(row.title).trim(),
+        cells: cells.slice(0, 10)
+      };
+    })
+    .slice(0, 50);
+
+  return { value: { title, levels, criteria } };
+}
+
+function buildRubricDesignerFromRubricScores({ rubricScores, title }) {
+  const rs = rubricScores && typeof rubricScores === 'object' ? rubricScores : {};
+
+  const levels = [
+    { title: 'Excellent', maxPoints: 10 },
+    { title: 'Good', maxPoints: 8 },
+    { title: 'Fair', maxPoints: 6 },
+    { title: 'Needs Improvement', maxPoints: 4 }
+  ];
+  const mkCells = (comment) => {
+    const out = Array.from({ length: levels.length }).map(() => '');
+    out[0] = safeString(comment).trim();
+    return out;
+  };
+
+  return {
+    title: safeString(title).trim(),
+    levels,
+    criteria: [
+      { title: 'Overall Rubric Score', cells: mkCells(rs?.MECHANICS?.comment) },
+      { title: 'Content Relevance', cells: mkCells(rs?.CONTENT?.comment) },
+      { title: 'Structure & Organization', cells: mkCells(rs?.ORGANIZATION?.comment) },
+      { title: 'Grammar & Mechanics', cells: mkCells(rs?.GRAMMAR?.comment) }
+    ]
+  };
 }
 
 function computeCountsFromCorrections(corrections) {
@@ -297,7 +412,9 @@ async function getSubmissionFeedback(req, res) {
         built = { corrections: [], fullText: transcriptText };
       }
 
-      const corrections = Array.isArray(built && built.corrections) ? built.corrections : [];
+      const aiCfg = normalizeTeacherAiConfig(req.user);
+      const allCorrections = Array.isArray(built && built.corrections) ? built.corrections : [];
+      const corrections = filterCorrectionsByAiConfig(allCorrections, aiCfg);
       const counts = augmentCountsWithTextHeuristics(transcriptText, computeCountsFromCorrections(corrections));
 
       const clamp5 = (n) => {
@@ -314,18 +431,20 @@ async function getSubmissionFeedback(req, res) {
       const organizationCount = Number(counts && counts.ORGANIZATION) || 0;
       const contentCount = Number(counts && counts.CONTENT) || 0;
 
+      const penaltyCfg = strictnessPenaltyConfig(aiCfg.strictness);
+
       // Grammar & Mechanics (/5) based on issue density.
       const grammarMechanicsIssues = grammarCount + mechanicsCount;
-      const grammarMechanics = clamp5(5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * 60);
+      const grammarMechanics = clamp5(5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * penaltyCfg.gm);
 
       // Structure & Organization (/5) from paragraph structure + organization issues.
       const paragraphCount = safeText.split(/\n\s*\n+/).filter((p) => String(p).trim()).length;
       const paragraphPenalty = paragraphCount >= 3 ? 0 : paragraphCount === 2 ? 0.5 : 1;
-      const structureOrganization = clamp5(5 - paragraphPenalty - (organizationCount / Math.max(1, wordCount)) * 40);
+      const structureOrganization = clamp5(5 - paragraphPenalty - (organizationCount / Math.max(1, wordCount)) * penaltyCfg.org);
 
       // Content Relevance (/5) from content issues + very short submissions penalty.
       const lengthPenalty = wordCount >= 120 ? 0 : wordCount >= 60 ? 0.5 : 1;
-      const contentRelevance = clamp5(5 - lengthPenalty - (contentCount / Math.max(1, wordCount)) * 40);
+      const contentRelevance = clamp5(5 - lengthPenalty - (contentCount / Math.max(1, wordCount)) * penaltyCfg.content);
 
       const overallRubricScore = clamp5((grammarMechanics + structureOrganization + contentRelevance) / 3);
 
@@ -479,6 +598,284 @@ async function getSubmissionFeedback(req, res) {
   }
 }
 
+function applyCorrectionsToText(text, corrections) {
+  const base = typeof text === 'string' ? text : '';
+  const list = Array.isArray(corrections) ? corrections : [];
+
+  const edits = list
+    .map((c) => {
+      const start = typeof c?.startChar === 'number' ? c.startChar : Number(c?.startChar);
+      const end = typeof c?.endChar === 'number' ? c.endChar : Number(c?.endChar);
+      const replacement = typeof c?.suggestedText === 'string' ? c.suggestedText : '';
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+      if (!replacement) return null;
+      return { start, end, replacement };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.start - a.start);
+
+  let out = base;
+  for (const e of edits) {
+    if (e.start < 0 || e.end > out.length) continue;
+    out = out.slice(0, e.start) + e.replacement + out.slice(e.end);
+  }
+  return out;
+}
+
+function normalizeForMatch(value) {
+  return safeString(value)
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function similarityScore(a, b) {
+  const aa = normalizeForMatch(a);
+  const bb = normalizeForMatch(b);
+  if (!aa || !bb) return 0;
+  if (aa === bb) return 100;
+
+  const aTokens = new Set(aa.split(' ').filter(Boolean));
+  const bTokens = new Set(bb.split(' ').filter(Boolean));
+  let inter = 0;
+  for (const t of aTokens) if (bTokens.has(t)) inter += 1;
+  const union = aTokens.size + bTokens.size - inter;
+  return union ? (inter / union) * 100 : 0;
+}
+
+function buildRubricDesignerFilledFromRubricScores({ rubricDesigner, rubricScores }) {
+  const d = rubricDesigner && typeof rubricDesigner === 'object' ? rubricDesigner : null;
+  const rs = rubricScores && typeof rubricScores === 'object' ? rubricScores : {};
+  if (!d) return null;
+
+  const criteria = Array.isArray(d.criteria) ? d.criteria : [];
+  const levels = Array.isArray(d.levels) ? d.levels : [];
+  const levelCount = levels.length;
+
+  const scoreEntries = Object.entries(rs)
+    .map(([key, item]) => {
+      const obj = item && typeof item === 'object' ? item : {};
+      return {
+        key: safeString(key).trim(),
+        comment: safeString(obj.comment).trim()
+      };
+    })
+    .filter((x) => x.key.length);
+
+  const toTitleCase = (value) => {
+    const s = safeString(value).trim();
+    if (!s) return '';
+    return s
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+  };
+
+  const buildCandidates = (entry) => {
+    const raw = safeString(entry && entry.key).trim();
+    const spaced = raw.replace(/_/g, ' ');
+    return [raw, spaced, toTitleCase(spaced)].filter((x) => safeString(x).trim().length);
+  };
+
+  const filled = criteria.map((row) => {
+    const title = safeString(row && row.title).trim();
+    const cellsRaw = Array.isArray(row && row.cells) ? row.cells : [];
+    const cells = Array.from({ length: levelCount }).map((_, i) => safeString(cellsRaw[i]));
+
+    let best = null;
+    let bestScore = 0;
+    for (const entry of scoreEntries) {
+      for (const candidate of buildCandidates(entry)) {
+        const s = similarityScore(title, candidate);
+        if (s > bestScore) {
+          bestScore = s;
+          best = entry;
+        }
+      }
+    }
+
+    if (best && best.comment) {
+      cells[0] = best.comment;
+    }
+
+    return {
+      title,
+      cells
+    };
+  });
+
+  return {
+    title: safeString(d.title).trim(),
+    levels: levels.map((l) => ({
+      title: safeString(l && l.title).trim(),
+      maxPoints: Number.isFinite(Number(l && l.maxPoints)) ? Math.max(0, Math.floor(Number(l.maxPoints))) : 0
+    })),
+    criteria: filled
+  };
+}
+
+async function generateAiRubricFromDesigner(req, res) {
+  try {
+    const { submissionId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+      return sendError(res, 400, 'Invalid submission id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const submission = await Submission.findById(submissionId);
+    if (!submission) {
+      return sendError(res, 404, 'Submission not found');
+    }
+
+    const classDoc = await Class.findOne({
+      _id: submission.class,
+      teacher: teacherId,
+      isActive: true
+    });
+    if (!classDoc) {
+      return sendError(res, 403, 'Not class teacher');
+    }
+
+    const existing = await SubmissionFeedback.findOne({ submissionId: submission._id });
+    const base = existing ? existing.toObject() : buildDefaultSubmissionFeedbackDoc({
+      submissionId: submission._id,
+      classId: submission.class,
+      studentId: submission.student,
+      teacherId
+    });
+
+    const transcriptText = (submission.transcriptText && String(submission.transcriptText).trim())
+      ? String(submission.transcriptText)
+      : (submission.ocrText && String(submission.ocrText).trim())
+        ? String(submission.ocrText)
+        : '';
+
+    if (!transcriptText.trim()) {
+      return sendError(res, 422, 'OCR text is not available for this submission yet');
+    }
+
+    const normalizedWords = normalizeOcrWordsFromStored(submission.ocrData && submission.ocrData.words);
+
+    let built;
+    try {
+      built = await buildOcrCorrections({
+        text: transcriptText,
+        language: (req.body && req.body.language) ? String(req.body.language) : 'en-US',
+        ocrWords: normalizedWords
+      });
+    } catch {
+      built = { corrections: [], fullText: transcriptText };
+    }
+
+    const corrections = Array.isArray(built && built.corrections) ? built.corrections : [];
+    const correctedText = applyCorrectionsToText(transcriptText, corrections);
+
+    const evaluation = computeAcademicEvaluation({
+      text: correctedText,
+      issues: corrections,
+      teacherOverrideScores: null
+    });
+
+    const counts = computeCountsFromCorrections(corrections);
+
+    const er = evaluation && evaluation.effectiveRubric ? evaluation.effectiveRubric : null;
+    const to5 = (score100) => clampScore5((Number(score100) || 0) / 20);
+
+    const rubricComments = buildDynamicRubricComments({
+      wordCount: Number(evaluation?.rubric?.wordCount) || 0,
+      grammarCount: Number(counts?.GRAMMAR) || 0,
+      mechanicsCount: Number(counts?.MECHANICS) || 0,
+      organizationCount: Number(counts?.ORGANIZATION) || 0,
+      contentCount: Number(counts?.CONTENT) || 0,
+      paragraphCount: Number(evaluation?.rubric?.paragraphCount) || 0,
+      grammarMechanics: to5(er && er.grammarScore),
+      structureOrganization: to5(er && er.structureScore),
+      contentRelevance: to5(er && er.contentScore),
+      overallRubricScore: (to5(er && er.grammarScore) + to5(er && er.structureScore) + to5(er && er.contentScore)) / 3
+    });
+
+    const rubricScores = {
+      ...(base.rubricScores || {}),
+      CONTENT: {
+        score: to5(er && er.contentScore),
+        maxScore: 5,
+        comment: safeString(rubricComments && rubricComments.contentRelevance).trim() || safeString(base?.rubricScores?.CONTENT?.comment)
+      },
+      ORGANIZATION: {
+        score: to5(er && er.structureScore),
+        maxScore: 5,
+        comment: safeString(rubricComments && rubricComments.structureOrganization).trim() || safeString(base?.rubricScores?.ORGANIZATION?.comment)
+      },
+      GRAMMAR: {
+        score: to5(er && er.grammarScore),
+        maxScore: 5,
+        comment: safeString(rubricComments && rubricComments.grammarMechanics).trim() || safeString(base?.rubricScores?.GRAMMAR?.comment)
+      },
+      VOCABULARY: {
+        score: to5(er && er.vocabularyScore),
+        maxScore: 5,
+        comment: safeString(base?.rubricScores?.VOCABULARY?.comment)
+      },
+      MECHANICS: {
+        score: to5(er && er.taskAchievementScore),
+        maxScore: 5,
+        comment: safeString(rubricComments && rubricComments.overallRubricScore).trim() || safeString(base?.rubricScores?.MECHANICS?.comment)
+      }
+    };
+
+    const structuredFeedback = evaluation && evaluation.structuredFeedback ? evaluation.structuredFeedback : null;
+    const aiFeedback = buildAiFeedbackDefaults({
+      rubricScores,
+      structuredFeedback,
+      overallComments: ''
+    });
+
+    const detailedFeedback = ensureDetailedFeedbackDynamic({
+      detailedFeedback: buildDetailedFeedbackDefaults({ structuredFeedback }),
+      counts
+    });
+
+    const rubricDesignerTitle = `Rubric: ${safeString((submission && (submission.title || submission.name)) || '').trim() || 'Submission'}`;
+    const existingDesigner = base && base.rubricDesigner ? base.rubricDesigner : null;
+    const designerBase = existingDesigner || buildRubricDesignerFromRubricScores({ rubricScores, title: rubricDesignerTitle });
+    const rubricDesigner = buildRubricDesignerFilledFromRubricScores({ rubricDesigner: designerBase, rubricScores }) || designerBase;
+
+    const update = {
+      submissionId: submission._id,
+      classId: submission.class,
+      studentId: submission.student,
+      teacherId,
+      rubricScores,
+      detailedFeedback,
+      aiFeedback,
+      rubricDesigner,
+      overriddenByTeacher: false,
+      overallScore: clampScore100(er && er.overallScore),
+      grade: (er && typeof er.gradeLetter === 'string') ? er.gradeLetter : gradeFromOverallScore100(clampScore100(er && er.overallScore))
+    };
+
+    const saved = await SubmissionFeedback.findOneAndUpdate(
+      { submissionId: submission._id },
+      { $set: update },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return sendSuccess(res, saved);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to generate rubric');
+  }
+}
+
 async function generateAiSubmissionFeedback(req, res) {
   try {
     const { submissionId } = req.params;
@@ -532,7 +929,9 @@ async function generateAiSubmissionFeedback(req, res) {
       built = { corrections: [], fullText: transcriptText };
     }
 
-    const corrections = Array.isArray(built && built.corrections) ? built.corrections : [];
+    const aiCfg = normalizeTeacherAiConfig(req.user);
+    const allCorrections = Array.isArray(built && built.corrections) ? built.corrections : [];
+    const corrections = filterCorrectionsByAiConfig(allCorrections, aiCfg);
     const counts = augmentCountsWithTextHeuristics(transcriptText, computeCountsFromCorrections(corrections));
 
     const clamp5 = (n) => {
@@ -549,15 +948,17 @@ async function generateAiSubmissionFeedback(req, res) {
     const organizationCount = Number(counts && counts.ORGANIZATION) || 0;
     const contentCount = Number(counts && counts.CONTENT) || 0;
 
+    const penaltyCfg = strictnessPenaltyConfig(aiCfg.strictness);
+
     const grammarMechanicsIssues = grammarCount + mechanicsCount;
-    const grammarMechanics = clamp5(5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * 60);
+    const grammarMechanics = clamp5(5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * penaltyCfg.gm);
 
     const paragraphCount = safeText.split(/\n\s*\n+/).filter((p) => String(p).trim()).length;
     const paragraphPenalty = paragraphCount >= 3 ? 0 : paragraphCount === 2 ? 0.5 : 1;
-    const structureOrganization = clamp5(5 - paragraphPenalty - (organizationCount / Math.max(1, wordCount)) * 40);
+    const structureOrganization = clamp5(5 - paragraphPenalty - (organizationCount / Math.max(1, wordCount)) * penaltyCfg.org);
 
     const lengthPenalty = wordCount >= 120 ? 0 : wordCount >= 60 ? 0.5 : 1;
-    const contentRelevance = clamp5(5 - lengthPenalty - (contentCount / Math.max(1, wordCount)) * 40);
+    const contentRelevance = clamp5(5 - lengthPenalty - (contentCount / Math.max(1, wordCount)) * penaltyCfg.content);
 
     const overallRubricScore = clamp5((grammarMechanics + structureOrganization + contentRelevance) / 3);
 
@@ -650,6 +1051,64 @@ async function generateAiSubmissionFeedback(req, res) {
   }
 }
 
+async function generateAiRubricDesigner(req, res) {
+  try {
+    const { submissionId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+      return sendError(res, 400, 'Invalid submission id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const submission = await Submission.findById(submissionId);
+    if (!submission) {
+      return sendError(res, 404, 'Submission not found');
+    }
+
+    const classDoc = await Class.findOne({
+      _id: submission.class,
+      teacher: teacherId,
+      isActive: true
+    });
+    if (!classDoc) {
+      return sendError(res, 403, 'Not class teacher');
+    }
+
+    const existing = await SubmissionFeedback.findOne({ submissionId: submission._id });
+    const base = existing ? existing.toObject() : buildDefaultSubmissionFeedbackDoc({
+      submissionId: submission._id,
+      classId: submission.class,
+      studentId: submission.student,
+      teacherId
+    });
+
+    const rubricDesignerTitle = `Rubric: ${safeString((submission && (submission.title || submission.name)) || '').trim() || 'Submission'}`;
+    const rubricDesigner = buildRubricDesignerFromRubricScores({ rubricScores: base.rubricScores, title: rubricDesignerTitle });
+
+    const saved = await SubmissionFeedback.findOneAndUpdate(
+      { submissionId: submission._id },
+      {
+        $set: {
+          submissionId: submission._id,
+          classId: submission.class,
+          studentId: submission.student,
+          teacherId,
+          rubricDesigner
+        }
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return sendSuccess(res, saved);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to generate rubric');
+  }
+}
+
 async function upsertSubmissionFeedback(req, res) {
   try {
     const { submissionId } = req.params;
@@ -722,6 +1181,11 @@ async function upsertSubmissionFeedback(req, res) {
       ? aiFeedbackObj.overallComments
       : (aiFeedbackObj.overallComments == null ? '' : String(aiFeedbackObj.overallComments));
 
+    const normalizedRubricDesigner = normalizeRubricDesignerPayload(body.rubricDesigner);
+    if (normalizedRubricDesigner.error) {
+      return sendError(res, 400, normalizedRubricDesigner.error);
+    }
+
     const overallScore = typeof body.overallScore === 'number' || typeof body.overallScore === 'string'
       ? clampScore100(body.overallScore)
       : undefined;
@@ -746,7 +1210,8 @@ async function upsertSubmissionFeedback(req, res) {
       aiFeedback: {
         perCategory,
         overallComments: aiOverallComments
-      }
+      },
+      rubricDesigner: normalizedRubricDesigner.value
     };
 
     if (typeof overallScore === 'number') {
@@ -1820,6 +2285,8 @@ module.exports = {
   createFeedback,
   generateAiFeedbackFromOcr,
   generateAiSubmissionFeedback,
+  generateAiRubricDesigner,
+  generateAiRubricFromDesigner,
   updateFeedback,
   getSubmissionFeedback,
   upsertSubmissionFeedback,

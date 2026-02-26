@@ -127,6 +127,29 @@ router.post(
   feedbackController.generateAiSubmissionFeedback
 );
 
+// Teacher-only: generate rubric designer for the rubric modal (does not regenerate AI feedback).
+router.post(
+  '/:submissionId/generate-rubric',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  feedbackController.generateAiRubricDesigner
+);
+
+// Teacher-only: generate AI rubric scores from OCR + LanguageTool corrections and fill the
+// current rubric designer structure.
+router.post(
+  '/:submissionId/generate-rubric-ai',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  feedbackController.generateAiRubricFromDesigner
+);
+
 router.put(
   '/:submissionId',
   createSensitiveRateLimiter(),

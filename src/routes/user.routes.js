@@ -109,6 +109,8 @@ router.patch(
   body('displayName').optional({ nullable: true }).isString(),
   body('institution').optional({ nullable: true }).isString(),
   body('bio').optional({ nullable: true }).isString(),
+  body('aiConfig').optional({ nullable: true }).isObject(),
+  body('classroomDefaults').optional({ nullable: true }).isObject(),
   handleValidationResult,
   userController.updateMe
 );

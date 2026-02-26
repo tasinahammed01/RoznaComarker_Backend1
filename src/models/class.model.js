@@ -28,6 +28,21 @@ const classSchema = new Schema(
     qrCodeUrl: {
       type: String
     },
+    gradingScale: {
+      type: String,
+      enum: ['score_0_100', 'grade_a_f', 'pass_fail'],
+      default: 'score_0_100'
+    },
+    lateSubmissionPenaltyPercent: {
+      type: Number,
+      default: 10,
+      min: 0,
+      max: 100
+    },
+    autoPublishGrades: {
+      type: Boolean,
+      default: false
+    },
     isActive: {
       type: Boolean,
       default: true

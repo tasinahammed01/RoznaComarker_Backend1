@@ -29,6 +29,35 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true
     },
+    aiConfig: {
+      strictness: {
+        type: String,
+        enum: ['friendly', 'balanced', 'strict'],
+        default: 'balanced'
+      },
+      checks: {
+        grammarSpelling: { type: Boolean, default: true },
+        coherenceLogic: { type: Boolean, default: true },
+        factChecking: { type: Boolean, default: false }
+      }
+    },
+    classroomDefaults: {
+      gradingScale: {
+        type: String,
+        enum: ['score_0_100', 'grade_a_f', 'pass_fail'],
+        default: 'score_0_100'
+      },
+      lateSubmissionPenaltyPercent: {
+        type: Number,
+        default: 10,
+        min: 0,
+        max: 100
+      },
+      autoPublishGrades: {
+        type: Boolean,
+        default: false
+      }
+    },
     role: {
       type: String,
       enum: ['teacher', 'student', 'admin'],
