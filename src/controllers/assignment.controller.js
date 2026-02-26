@@ -6,6 +6,7 @@ const Class = require('../models/class.model');
 const Membership = require('../models/membership.model');
 
 const { incrementUsage } = require('../middlewares/usage.middleware');
+const logger = require('../utils/logger');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -148,6 +149,8 @@ async function createAssignment(req, res) {
 
     return sendError(res, 500, 'Failed to generate unique qr token');
   } catch (err) {
+    logger.error('Failed to create assignment');
+    logger.error(err);
     return sendError(res, 500, 'Failed to create assignment');
   }
 }
