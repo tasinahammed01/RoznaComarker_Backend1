@@ -17,7 +17,14 @@ const { handleValidationResult } = require('../middlewares/validation.middleware
 
 const { createSensitiveRateLimiter } = require('../middlewares/rateLimit.middleware');
 
+const multer = require('multer');
+
 const router = express.Router();
+
+const rubricUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }
+});
 
 /**
  * @openapi
@@ -148,6 +155,39 @@ router.post(
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
   feedbackController.generateAiRubricFromDesigner
+);
+
+// Teacher-only: generate rubric designer from a teacher prompt.
+router.post(
+  '/:submissionId/generate-rubric-prompt',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  feedbackController.generateRubricDesignerFromPrompt
+);
+
+router.post(
+  '/:submissionId/generate-rubric-context',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  feedbackController.generateRubricDesignerFromContext
+);
+
+// Teacher-only: upload a rubric file (PDF/DOCX/XLSX/JSON) and generate rubric designer.
+router.post(
+  '/:submissionId/rubric-file',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  rubricUpload.single('file'),
+  feedbackController.generateRubricDesignerFromFile
 );
 
 router.put(

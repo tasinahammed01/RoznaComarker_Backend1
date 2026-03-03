@@ -23,6 +23,7 @@ const pdfRoutes = require('./routes/pdf.routes');
 const plansRoutes = require('./routes/plans.routes');
 const subscriptionRoutes = require('./routes/subscription.routes');
 const writingCorrectionsRoutes = require('./routes/writingCorrections.routes');
+const notificationRoutes = require('./routes/notification.routes');
 const notFound = require('./middlewares/notFound.middleware');
 const { errorHandler } = require('./middlewares/error.middleware');
 
@@ -35,7 +36,7 @@ const {
   handleUploadError,
   validateUploadedFileSignature
 } = require('./middlewares/upload.middleware');
-const { enforceStorageLimitFromUploadedFile } = require('./middlewares/usage.middleware');
+const { enforceStorageLimitFromUploadedFile, enforceStorageLimitFromUploadedFiles } = require('./middlewares/usage.middleware');
 
 const swaggerUi = require('swagger-ui-express');
 const { createSwaggerSpec } = require('./config/swagger');
@@ -111,6 +112,7 @@ app.use('/api/pdf', pdfRoutes);
 app.use('/api/plans', plansRoutes);
 app.use('/api/subscription', subscriptionRoutes);
 app.use('/api/writing-corrections', writingCorrectionsRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 app.post(
   '/upload',
@@ -118,10 +120,23 @@ app.post(
   verifyJwtToken,
   requireRole('student'),
   setUploadType('submissions'),
-  upload.single('file'),
+  upload.fields([
+    { name: 'files', maxCount: 20 },
+    { name: 'file', maxCount: 1 }
+  ]),
   handleUploadError,
   validateUploadedFileSignature,
-  enforceStorageLimitFromUploadedFile(),
+  (req, res, next) => {
+    const list = Array.isArray(req.files) ? req.files : (req.files && req.files.files ? req.files.files : []);
+    const single = req.files && req.files.file ? req.files.file[0] : req.file;
+    if (!Array.isArray(req.files)) {
+      req.files = [];
+      if (Array.isArray(list)) req.files.push(...list);
+      if (single) req.files.push(single);
+    }
+    return next();
+  },
+  enforceStorageLimitFromUploadedFiles(),
   (req, res, next) => {
     req.params = req.params || {};
     req.params.assignmentId = req.body && req.body.assignmentId ? String(req.body.assignmentId) : undefined;

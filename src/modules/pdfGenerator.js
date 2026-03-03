@@ -1,5 +1,3 @@
-const puppeteer = require('puppeteer');
-
 const { fetch } = require('undici');
 
 const os = require('os');
@@ -700,19 +698,27 @@ function computeFallbackScoreFromStats(stats) {
     (s.style || 0) * 0.6 +
     (s.other || 0) * 0.4;
 
-  const score = Math.max(0, Math.min(100, Math.round((100 - penalty) * 10) / 10));
-  return { score, maxScore: 100 };
+const score = Math.max(0, Math.min(100, Math.round((100 - penalty) * 10) / 10));
+return { score, maxScore: 100 };
 }
 
-async function renderSubmissionPdf({ header, imageUrl, transcriptText, issues, feedback, submissionFeedback }) {
-  const stats = computeCorrectionStats(issues);
-  const actionSteps = buildActionSteps(stats);
-  const transcriptHtml = transcriptText && String(transcriptText).trim()
-    ? buildWritingCorrectionsHtml(String(transcriptText), issues)
-    : '';
+async function renderSubmissionPdf({
+header,
+imageUrl,
+transcriptText,
+issues,
+feedback,
+submissionFeedback
+}) {
+// Lazy-load puppeteer to avoid test/runtime crashes when this module is imported.
+// eslint-disable-next-line global-require
+const puppeteer = require('puppeteer');
 
-  const rawImageUrl = typeof imageUrl === 'string' ? imageUrl.trim() : '';
-  if (rawImageUrl && rawImageUrl.startsWith('/uploads')) {
+const stats = computeCorrectionStats(issues);
+const actionSteps = buildActionSteps(stats);
+const transcriptHtml = transcriptText && String(transcriptText).trim()
+? buildWritingCorrectionsHtml(String(transcriptText), issues)
+: '';
     const base = (process.env.BASE_URL || '').trim().replace(/\/+$/, '');
     if (base) {
       imageUrl = `${base}${rawImageUrl}`;

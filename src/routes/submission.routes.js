@@ -17,6 +17,7 @@ const { createSensitiveRateLimiter } = require('../middlewares/rateLimit.middlew
 
 const {
   enforceStorageLimitFromUploadedFile
+  , enforceStorageLimitFromUploadedFiles
 } = require('../middlewares/usage.middleware');
 
 const router = express.Router();
@@ -79,10 +80,23 @@ router.post(
   param('qrToken').isString().trim().notEmpty().withMessage('Invalid QR'),
   handleValidationResult,
   setUploadType('submissions'),
-  upload.single('file'),
+  upload.fields([
+    { name: 'files', maxCount: 20 },
+    { name: 'file', maxCount: 1 }
+  ]),
   handleUploadError,
   validateUploadedFileSignature,
-  enforceStorageLimitFromUploadedFile(),
+  (req, res, next) => {
+    const list = Array.isArray(req.files) ? req.files : (req.files && req.files.files ? req.files.files : []);
+    const single = req.files && req.files.file ? req.files.file[0] : req.file;
+    if (!Array.isArray(req.files)) {
+      req.files = [];
+      if (Array.isArray(list)) req.files.push(...list);
+      if (single) req.files.push(single);
+    }
+    return next();
+  },
+  enforceStorageLimitFromUploadedFiles(),
   submissionController.submitByQrToken
 );
 
@@ -92,10 +106,23 @@ router.post(
   verifyJwtToken,
   requireRole('student'),
   setUploadType('submissions'),
-  upload.single('file'),
+  upload.fields([
+    { name: 'files', maxCount: 20 },
+    { name: 'file', maxCount: 1 }
+  ]),
   handleUploadError,
   validateUploadedFileSignature,
-  enforceStorageLimitFromUploadedFile(),
+  (req, res, next) => {
+    const list = Array.isArray(req.files) ? req.files : (req.files && req.files.files ? req.files.files : []);
+    const single = req.files && req.files.file ? req.files.file[0] : req.file;
+    if (!Array.isArray(req.files)) {
+      req.files = [];
+      if (Array.isArray(list)) req.files.push(...list);
+      if (single) req.files.push(single);
+    }
+    return next();
+  },
+  enforceStorageLimitFromUploadedFiles(),
   submissionController.uploadHandwrittenForOcr
 );
 
@@ -149,10 +176,23 @@ router.post(
   param('assignmentId').isMongoId().withMessage('Invalid assignment id'),
   handleValidationResult,
   setUploadType('submissions'),
-  upload.single('file'),
+  upload.fields([
+    { name: 'files', maxCount: 20 },
+    { name: 'file', maxCount: 1 }
+  ]),
   handleUploadError,
   validateUploadedFileSignature,
-  enforceStorageLimitFromUploadedFile(),
+  (req, res, next) => {
+    const list = Array.isArray(req.files) ? req.files : (req.files && req.files.files ? req.files.files : []);
+    const single = req.files && req.files.file ? req.files.file[0] : req.file;
+    if (!Array.isArray(req.files)) {
+      req.files = [];
+      if (Array.isArray(list)) req.files.push(...list);
+      if (single) req.files.push(single);
+    }
+    return next();
+  },
+  enforceStorageLimitFromUploadedFiles(),
   submissionController.submitByAssignmentId
 );
 

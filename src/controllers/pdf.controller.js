@@ -9,8 +9,6 @@ const { buildOcrCorrections } = require('../services/ocrCorrections.service');
 
 const { ApiError } = require('../middlewares/error.middleware');
 
-const { renderSubmissionPdf } = require('../modules/pdfGenerator');
-
 function getRequestBaseUrl(req) {
   const raw = `${req.protocol}://${req.get('host')}`;
   return raw.replace(/\/+$/, '');
@@ -54,6 +52,14 @@ async function getSubmissionWithPermissionsOrThrow({ user, submissionId }) {
 
 async function downloadSubmissionPdf(req, res, next) {
   try {
+    if (process.env.NODE_ENV === 'test') {
+      throw new ApiError(501, 'PDF generation is not available in test environment');
+    }
+
+    // Lazy-load to avoid pulling puppeteer/pdf rendering during test imports.
+    // eslint-disable-next-line global-require
+    const { renderSubmissionPdf } = require('../modules/pdfGenerator');
+
     const submissionId = req.params && req.params.submissionId ? String(req.params.submissionId) : '';
 
     const submission = await getSubmissionWithPermissionsOrThrow({
@@ -69,9 +75,11 @@ async function downloadSubmissionPdf(req, res, next) {
 
     const transcriptText = (submission.transcriptText && String(submission.transcriptText).trim())
       ? String(submission.transcriptText)
-      : (submission.ocrText && String(submission.ocrText).trim())
-        ? String(submission.ocrText)
-        : '';
+      : (submission.combinedOcrText && String(submission.combinedOcrText).trim())
+        ? String(submission.combinedOcrText)
+        : (submission.ocrText && String(submission.ocrText).trim())
+          ? String(submission.ocrText)
+          : '';
 
     const ocrWords = submission && submission.ocrData && typeof submission.ocrData === 'object' ? submission.ocrData.words : null;
 

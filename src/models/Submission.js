@@ -22,14 +22,42 @@ const submissionSchema = new Schema(
       required: true,
       index: true
     },
+    // Legacy single-file fields (kept for backward compatibility)
     file: {
       type: Schema.Types.ObjectId,
       ref: 'File',
-      required: true
+      required: false
     },
     fileUrl: {
       type: String,
-      required: true,
+      required: false,
+      trim: true
+    },
+
+    // New multi-file fields
+    files: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: 'File',
+        required: false
+      }
+    ],
+    fileUrls: [
+      {
+        type: String,
+        trim: true
+      }
+    ],
+    ocrPages: [
+      {
+        fileId: { type: Schema.Types.ObjectId, ref: 'File', required: false },
+        pageNumber: { type: Number, required: false },
+        text: { type: String, trim: true },
+        words: { type: Schema.Types.Mixed, default: undefined }
+      }
+    ],
+    combinedOcrText: {
+      type: String,
       trim: true
     },
     status: {
@@ -56,6 +84,7 @@ const submissionSchema = new Schema(
       default: undefined,
       index: true
     },
+    // Legacy OCR fields (single-file)
     ocrText: {
       type: String,
       trim: true

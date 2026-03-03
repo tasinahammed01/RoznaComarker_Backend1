@@ -1,4 +1,4 @@
-const Plan = require('../models/Plan');
+const PricingPlans = require('../models/PricingPlans');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -16,17 +16,8 @@ function sendError(res, statusCode, message) {
 
 async function getActivePlans(req, res) {
   try {
-    const plans = await Plan.find({ isActive: true }).lean();
-
-    plans.sort((a, b) => {
-      const ap = typeof a.price === 'number' && Number.isFinite(a.price) ? a.price : null;
-      const bp = typeof b.price === 'number' && Number.isFinite(b.price) ? b.price : null;
-
-      if (ap === null && bp === null) return 0;
-      if (ap === null) return 1;
-      if (bp === null) return -1;
-      return ap - bp;
-    });
+    const doc = await PricingPlans.findOne({}).lean();
+    const plans = Array.isArray(doc?.plans) ? doc.plans : [];
 
     return sendSuccess(res, plans);
   } catch (err) {

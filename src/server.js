@@ -39,12 +39,14 @@ process.on('uncaughtException', (err) => {
 async function start() {
   await connectDB();
 
-  try {
-    await Plan.seedDefaults();
-  } catch (err) {
-    logger.error('Failed to seed default plans');
-    logger.error(err);
-    throw err;
+  if (process.env.SEED_DEFAULT_PLANS === 'true') {
+    try {
+      await Plan.seedDefaults();
+    } catch (err) {
+      logger.error('Failed to seed default plans');
+      logger.error(err);
+      throw err;
+    }
   }
 
   const port = process.env.PORT || env.PORT || 5000;

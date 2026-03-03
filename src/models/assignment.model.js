@@ -9,6 +9,11 @@ const assignmentSchema = new Schema(
       required: true,
       trim: true
     },
+    writingType: {
+      type: String,
+      required: true,
+      trim: true
+    },
     instructions: {
       type: String,
       trim: true

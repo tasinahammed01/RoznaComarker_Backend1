@@ -24,6 +24,12 @@ npm install
 - Copy `.env.example` -> `.env`
 - Fill in required variables (`MONGO_URI`, `JWT_SECRET`, Firebase service account values)
 
+OpenRouter + LLaMA (Rubric generation from teacher prompt):
+- `OPENROUTER_API_KEY` (required)
+- `LLAMA_MODEL` (default: `meta-llama/llama-3-8b-instruct`)
+- `OPENROUTER_BASE_URL` (default: `https://openrouter.ai/api/v1`)
+- `OPENROUTER_TIMEOUT_MS` (default/max used: `30000`)
+
 Notes:
 - `NODE_ENV=production` requires `FRONTEND_URL`.
 - Uploads are stored on disk under `UPLOAD_BASE_PATH` and served at `GET /uploads/...`.

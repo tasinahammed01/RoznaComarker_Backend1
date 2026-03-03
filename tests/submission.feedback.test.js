@@ -42,6 +42,7 @@ describe('Submissions & Feedback APIs', () => {
 
     const assignment = await Assignment.create({
       title: 'A1',
+      writingType: 'essay',
       deadline: new Date(Date.now() + 24 * 60 * 60 * 1000),
       class: classDoc._id,
       teacher: teacher._id,
@@ -73,6 +74,7 @@ describe('Submissions & Feedback APIs', () => {
 
     const assignment = await Assignment.create({
       title: 'A2',
+      writingType: 'essay',
       deadline: new Date(Date.now() + 24 * 60 * 60 * 1000),
       class: classDoc._id,
       teacher: teacher._id,
@@ -131,7 +133,7 @@ describe('Submissions & Feedback APIs', () => {
     expect(studentRead.body.data).toHaveProperty('_id', feedbackId);
 
     const teacherRead = await request(app)
-      .get(`/api/feedback/${feedbackId}`)
+      .get(`/api/feedback/by-id/${feedbackId}`)
       .set('Authorization', `Bearer ${teacherToken}`);
 
     expect(teacherRead.status).toBe(200);

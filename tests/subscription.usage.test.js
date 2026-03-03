@@ -27,6 +27,10 @@ describe('Subscription & usage limits', () => {
   });
 
   test('Free plan blocks creating more than 1 class', async () => {
+    const free = await Plan.findOne({ name: 'Free' });
+    const freeLimit = free && free.limits ? free.limits.classes : null;
+    const limit = typeof freeLimit === 'number' ? freeLimit : 1;
+
     const teacher = await User.create({
       firebaseUid: 'teacher-1',
       email: 'teacher1@example.com',
@@ -35,36 +39,38 @@ describe('Subscription & usage limits', () => {
 
     const token = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
 
-    const first = await request(app)
+    for (let i = 0; i < limit; i += 1) {
+      const res = await request(app)
+        .post('/api/classes')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: `Class ${i + 1}` });
+      expect(res.status).toBe(200);
+    }
+
+    const overflow = await request(app)
       .post('/api/classes')
       .set('Authorization', `Bearer ${token}`)
-      .send({ name: 'Class A' });
+      .send({ name: 'Overflow Class' });
 
-    expect(first.status).toBe(200);
-
-    const second = await request(app)
-      .post('/api/classes')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ name: 'Class B' });
-
-    expect(second.status).toBe(403);
-    expect(second.body && second.body.message).toMatch(/Limit exceeded: classes/i);
+    expect(overflow.status).toBe(403);
+    expect(overflow.body && overflow.body.message).toMatch(/Limit exceeded: classes/i);
 
     const teacherAfter = await User.findById(teacher._id);
-    expect(teacherAfter.usage.classes).toBe(1);
+    expect(teacherAfter.usage.classes).toBe(limit);
 
     const classCount = await Class.countDocuments({ teacher: teacher._id });
-    expect(classCount).toBe(1);
+    expect(classCount).toBe(limit);
   });
 
   test('Expired paid plan auto-downgrades to Free on next request', async () => {
-    const pro = await Plan.findOne({ name: 'Pro' });
+    const paid = await Plan.findOne({ name: 'Starter Monthly' });
+    expect(paid).toBeTruthy();
 
     const teacher = await User.create({
       firebaseUid: 'teacher-expired',
       email: 'teacher-expired@example.com',
       role: 'teacher',
-      plan: pro._id,
+      plan: paid._id,
       planStartedAt: new Date('2020-01-01T00:00:00.000Z'),
       planExpiresAt: new Date('2020-02-01T00:00:00.000Z')
     });
@@ -99,12 +105,12 @@ describe('Subscription & usage limits', () => {
     const res = await request(app)
       .post('/api/subscription/set')
       .set('Authorization', `Bearer ${token}`)
-      .send({ userId: String(teacher._id), planName: 'Pro' });
+      .send({ userId: String(teacher._id), planName: 'Starter Monthly' });
 
     expect(res.status).toBe(200);
-    expect(res.body && res.body.data && res.body.data.plan && res.body.data.plan.name).toBe('Pro');
+    expect(res.body && res.body.data && res.body.data.plan && res.body.data.plan.name).toBe('Starter Monthly');
 
     const updated = await User.findById(teacher._id).populate('plan');
-    expect(updated.plan.name).toBe('Pro');
+    expect(updated.plan.name).toBe('Starter Monthly');
   });
 });

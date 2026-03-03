@@ -10,6 +10,19 @@ function toAbsoluteStoredPath(storedPath) {
   return path.join(__dirname, '..', '..', storedPath);
 }
 
+async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
+  const ids = Array.isArray(fileIds) ? fileIds.filter(Boolean) : [];
+  const first = ids.length ? ids[0] : null;
+  if (!first) {
+    return {
+      ocrText: targetDoc && typeof targetDoc.ocrText === 'string' ? targetDoc.ocrText : '',
+      ocrStatus: targetDoc && typeof targetDoc.ocrStatus === 'string' ? targetDoc.ocrStatus : 'pending'
+    };
+  }
+
+  return runOcrAndPersist({ fileId: first, targetDoc });
+}
+
 function toStoredOcrWords(words) {
   const list = Array.isArray(words) ? words : [];
   return list
@@ -98,5 +111,6 @@ async function runOcrAndPersist({ fileId, targetDoc }) {
 }
 
 module.exports = {
-  runOcrAndPersist
+  runOcrAndPersist,
+  runOcrAndPersistForFiles
 };

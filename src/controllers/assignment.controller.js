@@ -7,6 +7,7 @@ const Membership = require('../models/membership.model');
 
 const { incrementUsage } = require('../middlewares/usage.middleware');
 const logger = require('../utils/logger');
+const { createNotification } = require('../services/notification.service');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -73,10 +74,14 @@ function normalizeRubric(value) {
 
 async function createAssignment(req, res) {
   try {
-    const { title, instructions, rubric, deadline, classId, allowLateResubmission } = req.body || {};
+    const { title, writingType, instructions, rubric, deadline, classId, allowLateResubmission } = req.body || {};
 
     if (!isNonEmptyString(title)) {
       return sendError(res, 400, 'title is required');
+    }
+
+    if (!isNonEmptyString(writingType)) {
+      return sendError(res, 400, 'writingType is required');
     }
 
     if (!mongoose.Types.ObjectId.isValid(classId)) {
@@ -86,6 +91,10 @@ async function createAssignment(req, res) {
     const parsedDeadline = toValidDate(deadline);
     if (!parsedDeadline) {
       return sendError(res, 400, 'deadline is required');
+    }
+
+    if (parsedDeadline.getTime() <= Date.now()) {
+      return sendError(res, 400, 'deadline must be in the future');
     }
 
     if (typeof allowLateResubmission !== 'undefined' && typeof allowLateResubmission !== 'boolean') {
@@ -123,6 +132,7 @@ async function createAssignment(req, res) {
       try {
         const created = await Assignment.create({
           title: title.trim(),
+          writingType: writingType.trim(),
           instructions: normalizedInstructions,
           rubric: normalizedRubric,
           deadline: parsedDeadline,
@@ -137,6 +147,52 @@ async function createAssignment(req, res) {
         const populated = await Assignment.findById(created._id)
           .populate('class')
           .populate('teacher', '_id email displayName photoURL role');
+
+        classDoc.updatedAt = new Date();
+        await classDoc.save();
+
+        // Notify active students in this class (fire-and-forget)
+        setImmediate(async () => {
+          try {
+            const memberships = await Membership.find({
+              class: classDoc._id,
+              status: 'active'
+            }).select('student');
+
+            const studentIds = (memberships || [])
+              .map((m) => m && m.student)
+              .filter(Boolean);
+
+            const teacherDisplay =
+              (req.user && (req.user.displayName || req.user.email))
+                ? String(req.user.displayName || req.user.email)
+                : 'Teacher';
+
+            const className = classDoc && classDoc.name ? String(classDoc.name) : 'Class';
+
+            await Promise.all(
+              studentIds.map((studentId) =>
+                createNotification({
+                  recipientId: studentId,
+                  actorId: teacherId,
+                  type: 'assignment_uploaded',
+                  title: 'New assignment uploaded',
+                  description: `${teacherDisplay} uploaded a new assignment in ${className}: ${created.title}`,
+                  data: {
+                    classId: String(classDoc._id),
+                    assignmentId: String(created._id),
+                    route: {
+                      path: '/student/my-classes/detail',
+                      params: [String(classDoc._id)]
+                    }
+                  }
+                })
+              )
+            );
+          } catch (err) {
+            logger.warn('Failed to create student notifications for assignment');
+          }
+        });
 
         return sendSuccess(res, populated);
       } catch (err) {
@@ -158,7 +214,7 @@ async function createAssignment(req, res) {
 async function updateAssignment(req, res) {
   try {
     const { id } = req.params;
-    const { title, instructions, rubric, deadline, allowLateResubmission } = req.body || {};
+    const { title, writingType, instructions, rubric, deadline, allowLateResubmission } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return sendError(res, 400, 'Invalid assignment id');
@@ -186,6 +242,13 @@ async function updateAssignment(req, res) {
       assignment.title = title.trim();
     }
 
+    if (typeof writingType !== 'undefined') {
+      if (!isNonEmptyString(writingType)) {
+        return sendError(res, 400, 'writingType must be a non-empty string');
+      }
+      assignment.writingType = writingType.trim();
+    }
+
     if (typeof instructions !== 'undefined') {
       const normalizedInstructions = normalizeOptionalString(instructions);
       if (normalizedInstructions === null) {
@@ -207,6 +270,11 @@ async function updateAssignment(req, res) {
       if (!parsedDeadline) {
         return sendError(res, 400, 'deadline must be a valid date');
       }
+
+      if (parsedDeadline.getTime() <= Date.now()) {
+        return sendError(res, 400, 'deadline must be in the future');
+      }
+
       assignment.deadline = parsedDeadline;
     }
 
@@ -218,6 +286,11 @@ async function updateAssignment(req, res) {
     }
 
     const saved = await assignment.save();
+
+    await Class.updateOne(
+      { _id: assignment.class, teacher: teacherId, isActive: true },
+      { $set: { updatedAt: new Date() } }
+    );
 
     const populated = await Assignment.findById(saved._id)
       .populate('class')
@@ -255,6 +328,11 @@ async function deleteAssignment(req, res) {
     assignment.isActive = false;
     const saved = await assignment.save();
 
+    await Class.updateOne(
+      { _id: assignment.class, teacher: teacherId, isActive: true },
+      { $set: { updatedAt: new Date() } }
+    );
+
     return sendSuccess(res, saved);
   } catch (err) {
     return sendError(res, 500, 'Failed to delete assignment');
@@ -286,7 +364,8 @@ async function getClassAssignments(req, res) {
 
     const assignments = await Assignment.find({
       class: classId,
-      teacher: teacherId
+      teacher: teacherId,
+      isActive: true
     })
       .sort({ createdAt: -1 })
       .populate('class')

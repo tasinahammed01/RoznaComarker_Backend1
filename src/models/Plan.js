@@ -66,6 +66,11 @@ const planSchema = new mongoose.Schema(
 
 
 planSchema.statics.seedDefaults = async function seedDefaults() {
+  const existingCount = await this.countDocuments({});
+  if (existingCount > 0) {
+    return;
+  }
+
   const createdAt = new Date('2026-02-14T00:00:00Z');
   const defaults = [
     {

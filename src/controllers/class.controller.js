@@ -272,6 +272,57 @@ async function getClassStudents(req, res) {
   }
 }
 
+async function removeStudentFromClass(req, res) {
+  try {
+    const { classId, studentId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(classId)) {
+      return sendError(res, 400, 'Invalid class id');
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(studentId)) {
+      return sendError(res, 400, 'Invalid student id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const classDoc = await Class.findOne({
+      _id: classId,
+      teacher: teacherId,
+      isActive: true
+    });
+
+    if (!classDoc) {
+      return sendError(res, 404, 'Class not found');
+    }
+
+    const membership = await Membership.findOne({
+      class: classDoc._id,
+      student: studentId,
+      status: 'active'
+    });
+
+    if (!membership) {
+      return sendError(res, 404, 'Student is not in this class');
+    }
+
+    membership.status = 'left';
+    const saved = await membership.save();
+
+    await incrementUsage(teacherId, { students: -1 });
+
+    classDoc.updatedAt = new Date();
+    await classDoc.save();
+
+    return sendSuccess(res, saved);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to remove student from class');
+  }
+}
+
 async function getClassSummary(req, res) {
   try {
     const { classId } = req.params;
@@ -374,10 +425,11 @@ async function getClassSummary(req, res) {
 
 module.exports = {
   createClass,
+  getMyClasses,
   updateClass,
   deleteClass,
-  getMyClasses,
   joinByCode,
+  getClassSummary,
   getClassStudents,
-  getClassSummary
+  removeStudentFromClass
 };

@@ -98,6 +98,16 @@ router.get(
   classController.getClassStudents
 );
 
+router.delete(
+  '/:classId/students/:studentId',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('classId').isMongoId().withMessage('Invalid class id'),
+  param('studentId').isMongoId().withMessage('Invalid student id'),
+  handleValidationResult,
+  classController.removeStudentFromClass
+);
+
 router.get(
   '/:classId/summary',
   verifyJwtToken,

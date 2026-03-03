@@ -17,7 +17,17 @@ function bytesToMB(bytes) {
 }
 
 async function getFreePlan() {
-  return Plan.findOne({ name: 'Free', isActive: true });
+  let freePlan = await Plan.findOne({ name: 'Free', isActive: true });
+  if (freePlan) return freePlan;
+
+  try {
+    await Plan.seedDefaults();
+  } catch (err) {
+    // ignore seeding errors here; caller will handle missing plan
+  }
+
+  freePlan = await Plan.findOne({ name: 'Free', isActive: true });
+  return freePlan;
 }
 
 function toEmptyUsage() {
@@ -158,6 +168,54 @@ function enforceStorageLimitFromUploadedFile() {
   };
 }
 
+function enforceStorageLimitFromUploadedFiles() {
+  return async function storageLimitMultiMiddleware(req, res, next) {
+    try {
+      const user = req.user;
+      if (!user) {
+        try {
+          const list = Array.isArray(req.files) ? req.files : [];
+          for (const f of list) tryDeleteUploadedFile(f);
+        } catch {
+          // ignore
+        }
+        return sendError(res, 401, 'Unauthorized');
+      }
+
+      const planDoc = await ensureActivePlan(user);
+      req.plan = planDoc;
+
+      const files = Array.isArray(req.files) ? req.files : [];
+      if (!files.length) return next();
+
+      const limit = getLimit(planDoc, 'storageMB');
+      if (limit === null) {
+        for (const f of files) tryDeleteUploadedFile(f);
+        return sendError(res, 403, 'No active plan');
+      }
+
+      const totalMB = files.reduce((sum, f) => sum + bytesToMB(f && f.size), 0);
+      const current = getUsage(user, 'storageMB');
+
+      if (current + totalMB > limit) {
+        for (const f of files) tryDeleteUploadedFile(f);
+        return sendError(res, 403, 'Limit exceeded: storage');
+      }
+
+      req.uploadSizeMB = totalMB;
+      return next();
+    } catch {
+      try {
+        const list = Array.isArray(req.files) ? req.files : [];
+        for (const f of list) tryDeleteUploadedFile(f);
+      } catch {
+        // ignore
+      }
+      return sendError(res, 500, 'Failed to validate storage limits');
+    }
+  };
+}
+
 async function incrementUsage(userId, increments) {
   const inc = {};
 
@@ -178,6 +236,7 @@ module.exports = {
   assignPlanToUser,
   enforceUsageLimit,
   enforceStorageLimitFromUploadedFile,
+  enforceStorageLimitFromUploadedFiles,
   incrementUsage,
   tryDeleteUploadedFile
 };

@@ -7,11 +7,18 @@ const Submission = require('../models/Submission');
 const Feedback = require('../models/Feedback');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 const File = require('../models/File');
+const User = require('../models/user.model');
 
 const uploadService = require('../services/upload.service');
+const {
+  RubricExcelTemplateError,
+  parseRubricDesignerFromExcelTemplate
+} = require('../services/rubricExcelTemplateParser.service');
 const { buildOcrCorrections } = require('../services/ocrCorrections.service');
 const { normalizeOcrWordsFromStored } = require('../services/ocrCorrections.service');
 const { computeAcademicEvaluation } = require('../modules/academicEvaluationEngine');
+
+const { fetchCompat, buildTimeoutSignal } = require('../services/httpClient.service');
 
 const { bytesToMB, incrementUsage } = require('../middlewares/usage.middleware');
 
@@ -115,6 +122,33 @@ function clampScore100(n) {
   const v = typeof n === 'number' ? n : Number(n);
   if (!Number.isFinite(v)) return 0;
   return Math.max(0, Math.min(100, v));
+}
+
+function computeRubricScore100FromRubricScores(rubricScores) {
+  const rs = rubricScores && typeof rubricScores === 'object' ? rubricScores : {};
+  const keys = ['CONTENT', 'ORGANIZATION', 'GRAMMAR', 'VOCABULARY', 'MECHANICS'];
+  const values = [];
+  for (const k of keys) {
+    const item = rs[k];
+    if (!item || typeof item !== 'object') continue;
+    const max = typeof item.maxScore === 'number' ? item.maxScore : 5;
+    const score = typeof item.score === 'number' ? item.score : Number(item.score);
+    if (!Number.isFinite(score)) continue;
+    if (!Number.isFinite(max) || max <= 0) continue;
+    values.push(Math.max(0, Math.min(max, score)) / max);
+  }
+
+  if (!values.length) return 0;
+  const avg01 = values.reduce((a, b) => a + b, 0) / values.length;
+  return clampScore100(Math.round(avg01 * 1000) / 10);
+}
+
+function computeCombinedOverallScore100({ rubricScores, languageToolScore100, rubricWeight = 0.7 }) {
+  const rw = typeof rubricWeight === 'number' ? rubricWeight : 0.7;
+  const rubricScore100 = computeRubricScore100FromRubricScores(rubricScores);
+  const ltScore100 = clampScore100(languageToolScore100);
+  const combined = rubricScore100 * rw + ltScore100 * (1 - rw);
+  return clampScore100(Math.round(combined * 10) / 10);
 }
 
 function gradeFromOverallScore100(score100) {
@@ -221,6 +255,29 @@ function buildRubricDesignerFromRubricScores({ rubricScores, title }) {
       { title: 'Grammar & Mechanics', cells: mkCells(rs?.GRAMMAR?.comment) }
     ]
   };
+}
+
+function sanitizeRubricDesignerCriteria(rubricDesigner) {
+  const d = rubricDesigner && typeof rubricDesigner === 'object' ? rubricDesigner : null;
+  if (!d) return d;
+
+  const unwanted = new Set([
+    'overall_rubric_score',
+    'content_relevance',
+    'structure_organization',
+    'structure_&_organization',
+    'grammar_mechanics',
+    'grammar_&_mechanics'
+  ]);
+
+  const criteria = Array.isArray(d.criteria) ? d.criteria : [];
+  const filtered = criteria.filter((c) => {
+    const title = safeString(c && c.title).trim().toLowerCase();
+    const key = title.replace(/\s+/g, '_');
+    return !unwanted.has(key);
+  });
+
+  return { ...d, criteria: filtered };
 }
 
 function computeCountsFromCorrections(corrections) {
@@ -393,11 +450,20 @@ async function getSubmissionFeedback(req, res) {
         return sendError(res, 500, 'Failed to resolve class teacher');
       }
 
+      let teacherUser = null;
+      try {
+        teacherUser = await User.findById(teacherId).select('_id aiConfig');
+      } catch {
+        teacherUser = null;
+      }
+
       const transcriptText = (submission.transcriptText && String(submission.transcriptText).trim())
         ? String(submission.transcriptText)
-        : (submission.ocrText && String(submission.ocrText).trim())
-          ? String(submission.ocrText)
-          : '';
+        : (submission.combinedOcrText && String(submission.combinedOcrText).trim())
+          ? String(submission.combinedOcrText)
+          : (submission.ocrText && String(submission.ocrText).trim())
+            ? String(submission.ocrText)
+            : '';
 
       const normalizedWords = normalizeOcrWordsFromStored(submission.ocrData && submission.ocrData.words);
 
@@ -412,10 +478,12 @@ async function getSubmissionFeedback(req, res) {
         built = { corrections: [], fullText: transcriptText };
       }
 
-      const aiCfg = normalizeTeacherAiConfig(req.user);
+      const aiCfg = normalizeTeacherAiConfig(role === 'teacher' ? req.user : teacherUser);
       const allCorrections = Array.isArray(built && built.corrections) ? built.corrections : [];
       const corrections = filterCorrectionsByAiConfig(allCorrections, aiCfg);
       const counts = augmentCountsWithTextHeuristics(transcriptText, computeCountsFromCorrections(corrections));
+
+      const correctedText = applyCorrectionsToText(transcriptText, corrections);
 
       const clamp5 = (n) => {
         const x = Number(n);
@@ -473,17 +541,16 @@ async function getSubmissionFeedback(req, res) {
       };
 
       const evaluation = computeAcademicEvaluation({
-        text: transcriptText,
+        text: correctedText,
         issues: corrections,
         teacherOverrideScores: null
       });
 
-      const overallScore100 = clampScore100(evaluation && evaluation.effectiveRubric && evaluation.effectiveRubric.overallScore);
-      const grade = evaluation && evaluation.effectiveRubric && typeof evaluation.effectiveRubric.gradeLetter === 'string'
-        ? evaluation.effectiveRubric.gradeLetter
-        : gradeFromOverallScore100(overallScore100);
+      const languageToolScore100 = clampScore100(evaluation && evaluation.effectiveRubric && evaluation.effectiveRubric.overallScore);
+      const overallScore100 = computeCombinedOverallScore100({ rubricScores, languageToolScore100, rubricWeight: 0.7 });
+      const grade = gradeFromOverallScore100(overallScore100);
 
-      const overallComments = buildGeneralComments({ text: transcriptText, rubricScores: { CONTENT: contentRelevance, ORGANIZATION: structureOrganization, GRAMMAR: grammarMechanics }, counts });
+      const overallComments = buildGeneralComments({ text: correctedText, rubricScores: { CONTENT: contentRelevance, ORGANIZATION: structureOrganization, GRAMMAR: grammarMechanics }, counts });
       const detailedFeedback = ensureDetailedFeedbackDynamic({
         detailedFeedback: buildDetailedFeedbackDefaults({ structuredFeedback: evaluation && evaluation.structuredFeedback }),
         counts
@@ -521,6 +588,163 @@ async function getSubmissionFeedback(req, res) {
       feedback = created.toObject();
     } else {
       const feedbackObj = feedback.toObject();
+
+      const cs0 = feedbackObj && feedbackObj.correctionStats ? feedbackObj.correctionStats : {};
+      const csTotal =
+        (Number(cs0.content) || 0) +
+        (Number(cs0.grammar) || 0) +
+        (Number(cs0.organization) || 0) +
+        (Number(cs0.vocabulary) || 0) +
+        (Number(cs0.mechanics) || 0);
+
+      const persistedOverall = Number(feedbackObj && feedbackObj.overallScore);
+      const hasText = ((submission.transcriptText && String(submission.transcriptText).trim()) || (submission.combinedOcrText && String(submission.combinedOcrText).trim()) || (submission.ocrText && String(submission.ocrText).trim())) ? true : false;
+
+      const needsStatsBackfill =
+        !feedbackObj.overriddenByTeacher &&
+        hasText &&
+        ((!Number.isFinite(persistedOverall) || persistedOverall <= 0) || csTotal <= 0);
+
+      if (needsStatsBackfill) {
+        const classDoc = await Class.findById(submission.class).select('_id teacher');
+        const teacherId = role === 'teacher' ? userId : (classDoc && classDoc.teacher ? classDoc.teacher : null);
+        if (!teacherId) {
+          return sendSuccess(res, feedbackObj);
+        }
+
+        let teacherUser = null;
+        try {
+          teacherUser = await User.findById(teacherId).select('_id aiConfig');
+        } catch {
+          teacherUser = null;
+        }
+
+        const transcriptText = (submission.transcriptText && String(submission.transcriptText).trim())
+          ? String(submission.transcriptText)
+          : (submission.combinedOcrText && String(submission.combinedOcrText).trim())
+            ? String(submission.combinedOcrText)
+            : (submission.ocrText && String(submission.ocrText).trim())
+              ? String(submission.ocrText)
+              : '';
+
+        const normalizedWords = normalizeOcrWordsFromStored(submission.ocrData && submission.ocrData.words);
+
+        let built;
+        try {
+          built = await buildOcrCorrections({
+            text: transcriptText,
+            language: 'en-US',
+            ocrWords: normalizedWords
+          });
+        } catch {
+          built = { corrections: [], fullText: transcriptText };
+        }
+
+        const aiCfg = normalizeTeacherAiConfig(role === 'teacher' ? req.user : teacherUser);
+        const allCorrections = Array.isArray(built && built.corrections) ? built.corrections : [];
+        const corrections = filterCorrectionsByAiConfig(allCorrections, aiCfg);
+        const counts = augmentCountsWithTextHeuristics(transcriptText, computeCountsFromCorrections(corrections));
+
+        const correctedText = applyCorrectionsToText(transcriptText, corrections);
+
+        const clamp5 = (n) => {
+          const x = Number(n);
+          if (!Number.isFinite(x)) return 0;
+          return Math.max(0, Math.min(5, x));
+        };
+
+        const safeText = typeof transcriptText === 'string' ? transcriptText : '';
+        const wordCount = safeText.trim() ? safeText.trim().split(/\s+/).filter(Boolean).length : 0;
+
+        const grammarCount = Number(counts && counts.GRAMMAR) || 0;
+        const mechanicsCount = Number(counts && counts.MECHANICS) || 0;
+        const organizationCount = Number(counts && counts.ORGANIZATION) || 0;
+        const contentCount = Number(counts && counts.CONTENT) || 0;
+
+        const penaltyCfg = strictnessPenaltyConfig(aiCfg.strictness);
+
+        const grammarMechanicsIssues = grammarCount + mechanicsCount;
+        const grammarMechanics = clamp5(5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * penaltyCfg.gm);
+
+        const paragraphCount = safeText.split(/\n\s*\n+/).filter((p) => String(p).trim()).length;
+        const paragraphPenalty = paragraphCount >= 3 ? 0 : paragraphCount === 2 ? 0.5 : 1;
+        const structureOrganization = clamp5(5 - paragraphPenalty - (organizationCount / Math.max(1, wordCount)) * penaltyCfg.org);
+
+        const lengthPenalty = wordCount >= 120 ? 0 : wordCount >= 60 ? 0.5 : 1;
+        const contentRelevance = clamp5(5 - lengthPenalty - (contentCount / Math.max(1, wordCount)) * penaltyCfg.content);
+
+        const overallRubricScore = clamp5((grammarMechanics + structureOrganization + contentRelevance) / 3);
+
+        const rubricComments = buildDynamicRubricComments({
+          wordCount,
+          grammarCount,
+          mechanicsCount,
+          organizationCount,
+          contentCount,
+          paragraphCount,
+          grammarMechanics,
+          structureOrganization,
+          contentRelevance,
+          overallRubricScore
+        });
+
+        const rubricScores = {
+          CONTENT: { score: contentRelevance, maxScore: 5, comment: rubricComments.contentRelevance },
+          ORGANIZATION: { score: structureOrganization, maxScore: 5, comment: rubricComments.structureOrganization },
+          GRAMMAR: { score: grammarMechanics, maxScore: 5, comment: rubricComments.grammarMechanics },
+          VOCABULARY: { score: 0, maxScore: 5, comment: '' },
+          MECHANICS: { score: overallRubricScore, maxScore: 5, comment: rubricComments.overallRubricScore }
+        };
+
+        const evaluation = computeAcademicEvaluation({
+          text: correctedText,
+          issues: corrections,
+          teacherOverrideScores: null
+        });
+
+        const languageToolScore100 = clampScore100(evaluation && evaluation.effectiveRubric && evaluation.effectiveRubric.overallScore);
+        const overallScore100 = computeCombinedOverallScore100({ rubricScores, languageToolScore100, rubricWeight: 0.7 });
+        const grade = gradeFromOverallScore100(overallScore100);
+
+        const overallComments = buildGeneralComments({ text: correctedText, rubricScores: { CONTENT: contentRelevance, ORGANIZATION: structureOrganization, GRAMMAR: grammarMechanics }, counts });
+        const detailedFeedback = ensureDetailedFeedbackDynamic({
+          detailedFeedback: buildDetailedFeedbackDefaults({ structuredFeedback: evaluation && evaluation.structuredFeedback }),
+          counts
+        });
+        const aiFeedback = buildAiFeedbackDefaults({
+          rubricScores,
+          structuredFeedback: evaluation && evaluation.structuredFeedback,
+          overallComments
+        });
+        aiFeedback.overallComments = '';
+
+        try {
+          const saved = await SubmissionFeedback.findOneAndUpdate(
+            { submissionId: submission._id },
+            {
+              $set: {
+                overallScore: overallScore100,
+                grade,
+                correctionStats: {
+                  content: counts.CONTENT,
+                  grammar: counts.GRAMMAR,
+                  organization: counts.ORGANIZATION,
+                  vocabulary: counts.VOCABULARY,
+                  mechanics: counts.MECHANICS
+                },
+                rubricScores,
+                detailedFeedback,
+                aiFeedback
+              }
+            },
+            { new: true }
+          );
+          return sendSuccess(res, saved ? saved.toObject() : { ...feedbackObj, overallScore: overallScore100 });
+        } catch {
+          return sendSuccess(res, feedbackObj);
+        }
+      }
+
       const rs = feedbackObj && feedbackObj.rubricScores ? feedbackObj.rubricScores : null;
       const needsBackfill = !rs?.GRAMMAR?.comment || !rs?.ORGANIZATION?.comment || !rs?.CONTENT?.comment || !rs?.MECHANICS?.comment;
 
@@ -595,6 +819,338 @@ async function getSubmissionFeedback(req, res) {
     return sendSuccess(res, feedback);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch feedback');
+  }
+}
+
+async function generateRubricDesignerFromContext(req, res) {
+  try {
+    const { submissionId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+      return sendError(res, 400, 'Invalid submission id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const submission = await Submission.findById(submissionId).populate('assignment');
+    if (!submission) {
+      return sendError(res, 404, 'Submission not found');
+    }
+
+    const classDoc = await Class.findOne({
+      _id: submission.class,
+      teacher: teacherId,
+      isActive: true
+    });
+    if (!classDoc) {
+      return sendError(res, 403, 'Not class teacher');
+    }
+
+    const existing = await SubmissionFeedback.findOne({ submissionId: submission._id });
+    const base = existing ? existing.toObject() : buildDefaultSubmissionFeedbackDoc({
+      submissionId: submission._id,
+      classId: submission.class,
+      studentId: submission.student,
+      teacherId
+    });
+
+    const assignment = submission.assignment && typeof submission.assignment === 'object' ? submission.assignment : null;
+    const assignmentTitle = safeString(assignment && assignment.title).trim();
+    const assignmentInstructions = safeString(assignment && assignment.instructions).trim();
+    const assignmentWritingType = safeString(assignment && assignment.writingType).trim();
+
+    const studentText = safeString(submission.transcriptText).trim() || safeString(submission.combinedOcrText).trim() || safeString(submission.ocrText).trim();
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const teacherPrompt = safeString(body.prompt).trim();
+    const forceRegenerate = Boolean(body.forceRegenerate);
+
+    if (!forceRegenerate && base && base.overriddenByTeacher && base.rubricDesigner) {
+      return sendSuccess(res, existing);
+    }
+
+    const apiKey = safeString(process.env.OPENROUTER_API_KEY).trim();
+    const baseUrl = safeString(process.env.OPENROUTER_BASE_URL).trim() || 'https://openrouter.ai/api/v1';
+    const model = safeString(process.env.LLAMA_MODEL).trim() || 'meta-llama/llama-3-8b-instruct';
+    if (!apiKey) {
+      return sendError(res, 501, 'AI provider not configured');
+    }
+
+    const systemInstruction = 'You are an academic rubric generator. Return ONLY valid JSON with no explanation, no markdown, no code blocks.';
+
+    const cappedStudentText = studentText.length > 8000 ? studentText.slice(0, 8000) : studentText;
+    const rubricTitle = `Rubric: ${assignmentTitle || 'Submission'}`;
+
+    const studentTextSection = cappedStudentText
+      ? `\n\nStudent Submission Text (OCR/Transcript):\n${cappedStudentText}`
+      : '';
+
+    const userPrompt = `${teacherPrompt ? teacherPrompt + "\n\n" : ''}Generate a rubric designer for grading the student's work.\n\nAssignment Title: ${assignmentTitle || 'N/A'}\nAssignment Writing Type: ${assignmentWritingType || 'N/A'}\nAssignment Instructions: ${assignmentInstructions || 'N/A'}${studentTextSection}\n\nOutput must match this exact JSON structure:\n{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}.\nRules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. Keep criteria 3-10 rows. Keep maxPoints as integers. Make criteria relevant to the writing type. Use clear descriptions in cells for each performance level. Use title: ${rubricTitle}.`;
+
+    const timeoutMs = Math.min(60000, Math.max(1, Number(process.env.OPENROUTER_TIMEOUT_MS) || 60000));
+    const { signal, cancel } = buildTimeoutSignal(timeoutMs);
+    const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+
+    let resp;
+    try {
+      resp = await fetchCompat(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: userPrompt }
+          ]
+        }),
+        signal
+      });
+    } catch (err) {
+      const name = err && typeof err === 'object' ? safeString(err.name) : '';
+      const msg = err && typeof err === 'object' ? safeString(err.message) : '';
+      if (name === 'AbortError' || /aborted/i.test(msg)) {
+        return sendError(res, 504, 'AI request timed out. Please try again.');
+      }
+      return sendError(res, 502, msg || 'AI request failed');
+    } finally {
+      cancel();
+    }
+
+    if (!resp || !resp.ok) {
+      let msg = 'Failed to generate rubric';
+      let status = 502;
+      try {
+        const errJson = resp ? await resp.json() : null;
+        const apiMsg = safeString(errJson && errJson.error && errJson.error.message).trim();
+        if (apiMsg) msg = apiMsg;
+      } catch {
+        const errText = resp ? safeString(await resp.text()) : '';
+        if (errText) msg = errText;
+      }
+
+      const sc = resp && typeof resp.status === 'number' ? resp.status : 0;
+      if (sc === 429) {
+        status = 429;
+        msg = 'AI quota exceeded. Please try again later.';
+      }
+      return sendError(res, status, msg);
+    }
+
+    const json = await resp.json();
+    const content = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
+    if (!content) {
+      return sendError(res, 422, 'AI returned an empty response');
+    }
+
+    const cleaned = stripMarkdownCodeFences(content);
+    const parsed = safeJsonParse(cleaned) || extractFirstJsonObject(cleaned);
+    const normalized = normalizeRubricDesignerPayload(parsed);
+    if (normalized.error || !normalized.value) {
+      return sendError(res, 422, normalized.error || 'Invalid JSON rubric returned from AI');
+    }
+
+    const rubricDesigner = {
+      ...normalized.value,
+      title: normalized.value.title && String(normalized.value.title).trim().length ? normalized.value.title : rubricTitle
+    };
+
+    const sanitizedRubricDesigner = sanitizeRubricDesignerCriteria(rubricDesigner);
+
+    const saved = await SubmissionFeedback.findOneAndUpdate(
+      { submissionId: submission._id },
+      {
+        $set: {
+          submissionId: submission._id,
+          classId: submission.class,
+          studentId: submission.student,
+          teacherId,
+          rubricDesigner: sanitizedRubricDesigner,
+          rubricScores: base.rubricScores || {},
+          overriddenByTeacher: false
+        }
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return sendSuccess(res, saved);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to generate rubric');
+  }
+}
+
+async function generateRubricDesignerFromFile(req, res) {
+  try {
+    const { submissionId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+      return sendError(res, 400, 'Invalid submission id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const submission = await Submission.findById(submissionId);
+    if (!submission) {
+      return sendError(res, 404, 'Submission not found');
+    }
+
+    const classDoc = await Class.findOne({
+      _id: submission.class,
+      teacher: teacherId,
+      isActive: true
+    });
+    if (!classDoc) {
+      return sendError(res, 403, 'Not class teacher');
+    }
+
+    const file = req && req.file;
+    if (!file || !file.buffer) {
+      return sendError(res, 400, 'file is required');
+    }
+
+    const normalizedMime = normalizeMimeForRubricUpload(file);
+    if (!isAllowedRubricUploadMime(normalizedMime)) {
+      return sendError(res, 400, 'Invalid file type. Only PDF, DOCX, XLSX, and JSON are allowed.');
+    }
+
+    if (normalizedMime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
+      let rubricDesigner;
+      try {
+        rubricDesigner = parseRubricDesignerFromExcelTemplate({
+          buffer: file.buffer,
+          title: `Rubric: ${safeString((submission && (submission.title || submission.name)) || '').trim() || 'Submission'}`
+        });
+      } catch (err) {
+        if (err instanceof RubricExcelTemplateError) {
+          return sendError(res, err.statusCode || 422, err.message || 'Invalid rubric Excel template');
+        }
+        return sendError(res, 422, 'Invalid rubric Excel template');
+      }
+
+      const sanitizedRubricDesigner = sanitizeRubricDesignerCriteria(rubricDesigner);
+
+      const existing = await SubmissionFeedback.findOne({ submissionId: submission._id });
+      const base = existing ? existing.toObject() : buildDefaultSubmissionFeedbackDoc({
+        submissionId: submission._id,
+        classId: submission.class,
+        studentId: submission.student,
+        teacherId
+      });
+
+      const saved = await SubmissionFeedback.findOneAndUpdate(
+        { submissionId: submission._id },
+        {
+          $set: {
+            submissionId: submission._id,
+            classId: submission.class,
+            studentId: submission.student,
+            teacherId,
+            rubricDesigner: sanitizedRubricDesigner,
+            rubricScores: base.rubricScores || {},
+            overriddenByTeacher: false
+          }
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      return sendSuccess(res, saved);
+    }
+
+    // JSON rubrics can be ingested directly without Gemini.
+    if (normalizedMime === 'application/json') {
+      const raw = Buffer.isBuffer(file.buffer) ? file.buffer.toString('utf8') : '';
+      const parsed = safeJsonParse(raw);
+      const normalized = normalizeRubricDesignerPayload(parsed);
+      if (normalized.error || !normalized.value) {
+        return sendError(res, 422, normalized.error || 'Invalid rubric JSON file');
+      }
+
+      const rubricDesignerTitle = normalized.value.title || `Rubric: ${safeString((submission && (submission.title || submission.name)) || '').trim() || 'Submission'}`;
+      const rubricDesigner = { ...normalized.value, title: rubricDesignerTitle };
+      const sanitizedRubricDesigner = sanitizeRubricDesignerCriteria(rubricDesigner);
+
+      const existing = await SubmissionFeedback.findOne({ submissionId: submission._id });
+      const base = existing ? existing.toObject() : buildDefaultSubmissionFeedbackDoc({
+        submissionId: submission._id,
+        classId: submission.class,
+        studentId: submission.student,
+        teacherId
+      });
+
+      const saved = await SubmissionFeedback.findOneAndUpdate(
+        { submissionId: submission._id },
+        {
+          $set: {
+            submissionId: submission._id,
+            classId: submission.class,
+            studentId: submission.student,
+            teacherId,
+            rubricDesigner: sanitizedRubricDesigner,
+            rubricScores: base.rubricScores || {},
+            overriddenByTeacher: false
+          }
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      return sendSuccess(res, saved);
+    }
+
+    const fileCall = await callGeminiGenerateRubricFromFile({
+      promptText: safeString(req.body && req.body.prompt).trim(),
+      fileMime: normalizedMime,
+      fileBuffer: file.buffer
+    });
+    if (fileCall.error) {
+      return sendError(res, fileCall.error.statusCode, fileCall.error.message);
+    }
+
+    const cleaned = stripMarkdownCodeFences(fileCall.content);
+    const parsed = safeJsonParse(cleaned) || extractFirstJsonObject(cleaned);
+    const normalized = normalizeRubricDesignerPayload(parsed);
+    if (normalized.error || !normalized.value) {
+      return sendError(res, 422, normalized.error || 'Invalid JSON rubric returned from Gemini');
+    }
+
+    const rubricDesignerTitle = normalized.value.title || `Rubric: ${safeString((submission && (submission.title || submission.name)) || '').trim() || 'Submission'}`;
+    const rubricDesigner = { ...normalized.value, title: rubricDesignerTitle };
+    const sanitizedRubricDesigner = sanitizeRubricDesignerCriteria(rubricDesigner);
+
+    const existing = await SubmissionFeedback.findOne({ submissionId: submission._id });
+    const base = existing ? existing.toObject() : buildDefaultSubmissionFeedbackDoc({
+      submissionId: submission._id,
+      classId: submission.class,
+      studentId: submission.student,
+      teacherId
+    });
+
+    const saved = await SubmissionFeedback.findOneAndUpdate(
+      { submissionId: submission._id },
+      {
+        $set: {
+          submissionId: submission._id,
+          classId: submission.class,
+          studentId: submission.student,
+          teacherId,
+          rubricDesigner,
+          rubricScores: base.rubricScores || {},
+          overriddenByTeacher: false
+        }
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return sendSuccess(res, saved);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to generate rubric from file');
   }
 }
 
@@ -756,9 +1312,11 @@ async function generateAiRubricFromDesigner(req, res) {
 
     const transcriptText = (submission.transcriptText && String(submission.transcriptText).trim())
       ? String(submission.transcriptText)
-      : (submission.ocrText && String(submission.ocrText).trim())
-        ? String(submission.ocrText)
-        : '';
+      : (submission.combinedOcrText && String(submission.combinedOcrText).trim())
+        ? String(submission.combinedOcrText)
+        : (submission.ocrText && String(submission.ocrText).trim())
+          ? String(submission.ocrText)
+          : '';
 
     if (!transcriptText.trim()) {
       return sendError(res, 422, 'OCR text is not available for this submission yet');
@@ -849,6 +1407,7 @@ async function generateAiRubricFromDesigner(req, res) {
     const existingDesigner = base && base.rubricDesigner ? base.rubricDesigner : null;
     const designerBase = existingDesigner || buildRubricDesignerFromRubricScores({ rubricScores, title: rubricDesignerTitle });
     const rubricDesigner = buildRubricDesignerFilledFromRubricScores({ rubricDesigner: designerBase, rubricScores }) || designerBase;
+    const sanitizedRubricDesigner = sanitizeRubricDesignerCriteria(rubricDesigner);
 
     const update = {
       submissionId: submission._id,
@@ -858,10 +1417,10 @@ async function generateAiRubricFromDesigner(req, res) {
       rubricScores,
       detailedFeedback,
       aiFeedback,
-      rubricDesigner,
+      rubricDesigner: sanitizedRubricDesigner,
       overriddenByTeacher: false,
-      overallScore: clampScore100(er && er.overallScore),
-      grade: (er && typeof er.gradeLetter === 'string') ? er.gradeLetter : gradeFromOverallScore100(clampScore100(er && er.overallScore))
+      overallScore: computeCombinedOverallScore100({ rubricScores, languageToolScore100: clampScore100(er && er.overallScore), rubricWeight: 0.7 }),
+      grade: gradeFromOverallScore100(computeCombinedOverallScore100({ rubricScores, languageToolScore100: clampScore100(er && er.overallScore), rubricWeight: 0.7 }))
     };
 
     const saved = await SubmissionFeedback.findOneAndUpdate(
@@ -934,6 +1493,8 @@ async function generateAiSubmissionFeedback(req, res) {
     const corrections = filterCorrectionsByAiConfig(allCorrections, aiCfg);
     const counts = augmentCountsWithTextHeuristics(transcriptText, computeCountsFromCorrections(corrections));
 
+    const correctedText = applyCorrectionsToText(transcriptText, corrections);
+
     const clamp5 = (n) => {
       const x = Number(n);
       if (!Number.isFinite(x)) return 0;
@@ -986,18 +1547,17 @@ async function generateAiSubmissionFeedback(req, res) {
     };
 
     const evaluation = computeAcademicEvaluation({
-      text: transcriptText,
+      text: correctedText,
       issues: corrections,
       teacherOverrideScores: null
     });
 
-    const overallScore100 = clampScore100(evaluation && evaluation.effectiveRubric && evaluation.effectiveRubric.overallScore);
-    const grade = evaluation && evaluation.effectiveRubric && typeof evaluation.effectiveRubric.gradeLetter === 'string'
-      ? evaluation.effectiveRubric.gradeLetter
-      : gradeFromOverallScore100(overallScore100);
+    const languageToolScore100 = clampScore100(evaluation && evaluation.effectiveRubric && evaluation.effectiveRubric.overallScore);
+    const overallScore100 = computeCombinedOverallScore100({ rubricScores, languageToolScore100, rubricWeight: 0.7 });
+    const grade = gradeFromOverallScore100(overallScore100);
 
     const overallComments = buildGeneralComments({
-      text: transcriptText,
+      text: correctedText,
       rubricScores: {
         CONTENT: contentRelevance,
         ORGANIZATION: structureOrganization,
@@ -1239,6 +1799,373 @@ function clampScore5(n) {
 
 function safeString(v) {
   return typeof v === 'string' ? v : (v == null ? '' : String(v));
+}
+
+function safeJsonParse(value) {
+  if (typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function stripMarkdownCodeFences(text) {
+  const s = safeString(text).trim();
+  if (!s) return '';
+
+  // Common Gemini / LLM formatting: ```json ... ``` or ``` ... ```
+  const fenced = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced && fenced[1]) return String(fenced[1]).trim();
+
+  // If it's not a pure fenced block, still try to remove any fenced wrappers.
+  return s.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+}
+
+function normalizeMimeForRubricUpload(file) {
+  const name = safeString(file && file.originalname).toLowerCase();
+  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
+  const mimetype = safeString(file && file.mimetype).toLowerCase();
+
+  // Normalize common cases from browsers.
+  if (ext === '.json') return 'application/json';
+  if (ext === '.pdf') return 'application/pdf';
+  if (ext === '.docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (ext === '.xlsx') return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  // Fall back to mimetype if it looks safe.
+  return mimetype;
+}
+
+function isAllowedRubricUploadMime(mime) {
+  const m = safeString(mime).toLowerCase();
+  return [
+    'application/json',
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  ].includes(m);
+}
+
+function buildGeminiBaseUrlCandidates(baseUrl) {
+  const raw = safeString(baseUrl).trim() || 'https://generativelanguage.googleapis.com/v1';
+  const normalized = raw.replace(/\/$/, '');
+
+  const v1 = normalized.replace(/\/v1beta$/i, '/v1').replace(/\/v1beta\//i, '/v1/');
+  const v1beta = normalized.replace(/\/v1$/i, '/v1beta').replace(/\/v1\//i, '/v1beta/');
+
+  if (v1 === v1beta) return [v1];
+  return [v1, v1beta].filter((x, i, a) => x && a.indexOf(x) === i);
+}
+
+function buildGeminiModelCandidates(model) {
+  const m = safeString(model).trim();
+  const list = [
+    m,
+    'gemini-1.5-flash-latest',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro-latest'
+  ].map((x) => safeString(x).trim()).filter(Boolean);
+
+  return list.filter((x, i, a) => a.indexOf(x) === i);
+}
+
+function isGeminiModelNotSupportedError(statusCode, message) {
+  const msg = safeString(message).toLowerCase();
+  if (statusCode === 404) return true;
+  if (msg.includes('model') && msg.includes('not found')) return true;
+  if (msg.includes('not supported') && msg.includes('generatecontent')) return true;
+  if (msg.includes('api version') && msg.includes('not found')) return true;
+  return false;
+}
+
+async function geminiGenerateContentWithFallback({ apiKey, baseUrl, model, contents, timeoutMs }) {
+  const baseUrls = buildGeminiBaseUrlCandidates(baseUrl);
+  const models = buildGeminiModelCandidates(model);
+
+  let lastErr = { statusCode: 502, message: 'Failed to contact Gemini' };
+
+  for (const b of baseUrls) {
+    for (const m of models) {
+      const { signal, cancel } = buildTimeoutSignal(timeoutMs);
+      const endpoint = `${b.replace(/\/$/, '')}/models/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+      let resp;
+      try {
+        resp = await fetchCompat(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents }),
+          signal
+        });
+      } catch (err) {
+        const name = err && typeof err === 'object' ? safeString(err.name) : '';
+        const msg = err && typeof err === 'object' ? safeString(err.message) : '';
+        cancel();
+        if (name === 'AbortError' || /aborted/i.test(msg)) {
+          return { error: { statusCode: 504, message: 'Gemini request timed out. Please try again.' } };
+        }
+        lastErr = { statusCode: 502, message: msg || 'Gemini request failed' };
+        continue;
+      } finally {
+        cancel();
+      }
+
+      if (resp && resp.ok) {
+        const json = await resp.json();
+        return { json };
+      }
+
+      let msg = 'Gemini error';
+      let status = resp && typeof resp.status === 'number' ? resp.status : 502;
+      try {
+        const errJson = resp ? await resp.json() : null;
+        const gemMsg = safeString(errJson && errJson.error && errJson.error.message).trim();
+        if (gemMsg) msg = gemMsg;
+      } catch {
+        try {
+          const errText = resp ? safeString(await resp.text()) : '';
+          if (errText) msg = errText;
+        } catch {
+          // ignore
+        }
+      }
+
+      if (status === 429) {
+        return { error: { statusCode: 429, message: 'Gemini quota exceeded. Please try again later.' } };
+      }
+
+      lastErr = { statusCode: 502, message: msg || 'Gemini request failed' };
+      if (isGeminiModelNotSupportedError(status, msg)) {
+        continue;
+      }
+
+      return { error: lastErr };
+    }
+  }
+
+  return { error: lastErr };
+}
+
+async function callGeminiGenerateRubricFromFile({ promptText, fileMime, fileBuffer }) {
+  const apiKey = safeString(process.env.GEMINI_API_KEY).trim();
+  const baseUrl = safeString(process.env.GEMINI_BASE_URL).trim() || 'https://generativelanguage.googleapis.com/v1';
+  const model = safeString(process.env.GEMINI_MODEL).trim() || 'gemini-1.5-flash-latest';
+
+  if (!apiKey) {
+    return { error: { statusCode: 501, message: 'Gemini not configured' } };
+  }
+
+  const systemInstruction =
+    'You are an academic rubric generator.\n' +
+    'You will be given a document file that contains a rubric or rubric-like guidance.\n' +
+    'Return ONLY valid JSON.\n' +
+    'Do not include explanation text.\n' +
+    'Do not include markdown.\n' +
+    'Do not include code blocks.\n' +
+    'Output must match this exact structure:\n' +
+    '{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}.\n' +
+    'Rules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. ' +
+    'Keep criteria 3-10 rows. Keep maxPoints as integers.\n';
+
+  const fullPrompt = `${systemInstruction}\nTeacher context/instructions:\n${safeString(promptText).trim() || 'Convert the attached file into the required rubric JSON.'}`;
+
+  const timeoutMs = Math.min(30000, Math.max(1, Number(process.env.GEMINI_TIMEOUT_MS) || 30000));
+  const resp = await geminiGenerateContentWithFallback({
+    apiKey,
+    baseUrl,
+    model,
+    timeoutMs,
+    contents: [
+      {
+        parts: [
+          { text: fullPrompt },
+          {
+            inlineData: {
+              mimeType: safeString(fileMime).toLowerCase(),
+              data: Buffer.isBuffer(fileBuffer) ? fileBuffer.toString('base64') : ''
+            }
+          }
+        ]
+      }
+    ]
+  });
+
+  if (resp.error) {
+    return { error: resp.error };
+  }
+
+  const json = resp.json;
+  const parts =
+    json && json.candidates && json.candidates[0] && json.candidates[0].content &&
+    Array.isArray(json.candidates[0].content.parts)
+      ? json.candidates[0].content.parts
+      : [];
+
+  const content = parts.map((p) => safeString(p && p.text)).join('\n').trim();
+  if (!content) {
+    return { error: { statusCode: 422, message: 'Gemini returned an empty response' } };
+  }
+
+  return { content };
+}
+
+function extractFirstJsonObject(text) {
+  const s = safeString(text);
+  const first = s.indexOf('{');
+  const last = s.lastIndexOf('}');
+  if (first < 0 || last < 0 || last <= first) return null;
+  return safeJsonParse(s.slice(first, last + 1));
+}
+
+async function generateRubricDesignerFromPrompt(req, res) {
+  try {
+    const { submissionId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+      return sendError(res, 400, 'Invalid submission id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const submission = await Submission.findById(submissionId);
+    if (!submission) {
+      return sendError(res, 404, 'Submission not found');
+    }
+
+    const classDoc = await Class.findOne({
+      _id: submission.class,
+      teacher: teacherId,
+      isActive: true
+    });
+    if (!classDoc) {
+      return sendError(res, 403, 'Not class teacher');
+    }
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const prompt = safeString(body.prompt).trim();
+    if (!prompt) {
+      return sendError(res, 400, 'prompt is required');
+    }
+
+    const existing = await SubmissionFeedback.findOne({ submissionId: submission._id });
+    const base = existing ? existing.toObject() : buildDefaultSubmissionFeedbackDoc({
+      submissionId: submission._id,
+      classId: submission.class,
+      studentId: submission.student,
+      teacherId
+    });
+
+    const apiKey = safeString(process.env.OPENROUTER_API_KEY).trim();
+    const baseUrl = safeString(process.env.OPENROUTER_BASE_URL).trim() || 'https://openrouter.ai/api/v1';
+    const model = safeString(process.env.LLAMA_MODEL).trim() || 'meta-llama/llama-3-8b-instruct';
+
+    if (!apiKey) {
+      return sendError(res, 501, 'AI provider not configured');
+    }
+
+    const systemInstruction = 'You are an academic rubric generator. Return ONLY valid JSON with no explanation, no markdown, no code blocks.';
+    const userPrompt = `${prompt}\n\nOutput must match this exact JSON structure:\n{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}. Rules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. Keep criteria 3-10 rows. Keep maxPoints as integers.`;
+
+    const timeoutMs = Math.min(60000, Math.max(1, Number(process.env.OPENROUTER_TIMEOUT_MS) || 60000));
+    const { signal, cancel } = buildTimeoutSignal(timeoutMs);
+    const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+
+    let resp;
+    try {
+      resp = await fetchCompat(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: userPrompt }
+          ]
+        }),
+        signal
+      });
+    } catch (err) {
+      const name = err && typeof err === 'object' ? safeString(err.name) : '';
+      const msg = err && typeof err === 'object' ? safeString(err.message) : '';
+      if (name === 'AbortError' || /aborted/i.test(msg)) {
+        return sendError(res, 504, 'AI request timed out. Please try again.');
+      }
+      return sendError(res, 502, msg || 'AI request failed');
+    } finally {
+      cancel();
+    }
+
+    if (!resp || !resp.ok) {
+      let msg = 'Failed to generate rubric from prompt';
+      let status = 502;
+      try {
+        const errJson = resp ? await resp.json() : null;
+        const apiMsg = safeString(errJson && errJson.error && errJson.error.message).trim();
+        if (apiMsg) msg = apiMsg;
+      } catch {
+        const errText = resp ? safeString(await resp.text()) : '';
+        if (errText) msg = errText;
+      }
+
+      const sc = resp && typeof resp.status === 'number' ? resp.status : 0;
+      if (sc === 401 || sc === 403) {
+        status = 502;
+        msg = msg || 'AI authentication failed';
+      }
+      if (sc === 429) {
+        status = 429;
+        msg = 'AI quota exceeded. Please try again later.';
+      }
+
+      return sendError(res, status, msg);
+    }
+
+    const json = await resp.json();
+    const content = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
+    if (!content) {
+      return sendError(res, 422, 'AI returned an empty response');
+    }
+
+    const cleaned = stripMarkdownCodeFences(content);
+    const parsed = safeJsonParse(cleaned) || extractFirstJsonObject(cleaned);
+    const normalized = normalizeRubricDesignerPayload(parsed);
+    if (normalized.error || !normalized.value) {
+      return sendError(res, 422, normalized.error || 'Invalid JSON rubric returned from AI');
+    }
+
+    const rubricDesignerTitle = normalized.value.title || `Rubric: ${safeString((submission && (submission.title || submission.name)) || '').trim() || 'Submission'}`;
+    const rubricDesigner = { ...normalized.value, title: rubricDesignerTitle };
+
+    const sanitizedRubricDesigner = sanitizeRubricDesignerCriteria(rubricDesigner);
+
+    const saved = await SubmissionFeedback.findOneAndUpdate(
+      { submissionId: submission._id },
+      {
+        $set: {
+          submissionId: submission._id,
+          classId: submission.class,
+          studentId: submission.student,
+          teacherId,
+          rubricDesigner: sanitizedRubricDesigner,
+          rubricScores: base.rubricScores || {},
+          overriddenByTeacher: false
+        }
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return sendSuccess(res, saved);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to generate rubric from prompt');
+  }
 }
 
 function normalizeAiFeedbackPayload(payload) {
@@ -1632,9 +2559,11 @@ async function attachEvaluationToFeedbackDoc(feedbackDoc) {
 
   const transcriptText = (submission.transcriptText && String(submission.transcriptText).trim())
     ? String(submission.transcriptText)
-    : (submission.ocrText && String(submission.ocrText).trim())
-      ? String(submission.ocrText)
-      : '';
+    : (submission.combinedOcrText && String(submission.combinedOcrText).trim())
+      ? String(submission.combinedOcrText)
+      : (submission.ocrText && String(submission.ocrText).trim())
+        ? String(submission.ocrText)
+        : '';
 
   const ocrWords = submission && submission.ocrData && typeof submission.ocrData === 'object' ? submission.ocrData.words : null;
 
@@ -1925,8 +2854,12 @@ async function generateAiFeedbackFromOcr(req, res) {
       return sendError(res, 404, 'Assignment not found');
     }
 
-    const ocrText = typeof submission.ocrText === 'string' ? submission.ocrText : '';
-    if (!ocrText.trim()) {
+    const ocrText = (submission.transcriptText && String(submission.transcriptText).trim())
+      ? String(submission.transcriptText)
+      : (submission.combinedOcrText && String(submission.combinedOcrText).trim())
+        ? String(submission.combinedOcrText)
+        : (typeof submission.ocrText === 'string' ? submission.ocrText : '');
+    if (!String(ocrText || '').trim()) {
       return sendError(res, 400, 'Submission OCR text is empty');
     }
 
@@ -2287,6 +3220,9 @@ module.exports = {
   generateAiSubmissionFeedback,
   generateAiRubricDesigner,
   generateAiRubricFromDesigner,
+  generateRubricDesignerFromPrompt,
+  generateRubricDesignerFromContext,
+  generateRubricDesignerFromFile,
   updateFeedback,
   getSubmissionFeedback,
   upsertSubmissionFeedback,
