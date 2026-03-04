@@ -751,19 +751,57 @@ async function getOcrCorrections(req, res) {
       }
     }
 
+    const requestedFileId = req.body && typeof req.body.fileId === 'string' ? String(req.body.fileId).trim() : '';
+    const hasRequestedFile = Boolean(requestedFileId);
+
+    let pages = Array.isArray(doc.ocrPages) ? doc.ocrPages : [];
+    let activePages = hasRequestedFile
+      ? pages.filter((p) => p && p.fileId && String(p.fileId) === requestedFileId)
+      : pages;
+
+    if (hasRequestedFile && !activePages.length) {
+      const ids = Array.isArray(doc.files) && doc.files.length
+        ? doc.files
+        : (doc.file ? [doc.file] : []);
+
+      const requestedExists = ids.some((id) => String(id) === requestedFileId);
+      if (requestedExists && ids.length) {
+        await runOcrAndPersistForFiles({ fileIds: ids, targetDoc: doc });
+        pages = Array.isArray(doc.ocrPages) ? doc.ocrPages : [];
+        activePages = pages.filter((p) => p && p.fileId && String(p.fileId) === requestedFileId);
+      }
+    }
+
     const normalizedWords = normalizeOcrWordsFromStored(doc.ocrData && doc.ocrData.words);
 
+    const pageText = activePages
+      .map((p) => (typeof p?.text === 'string' ? p.text : ''))
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .join('\n\n');
+
+    let ocrWords = normalizedWords;
+    if (hasRequestedFile && activePages.length) {
+      const collected = [];
+      for (const p of activePages) {
+        const w = p && Array.isArray(p.words) ? p.words : [];
+        collected.push(...w);
+      }
+      ocrWords = normalizeOcrWordsFromStored(collected);
+    }
+
     const built = await buildOcrCorrections({
-      text: doc.ocrText || '',
+      text: pageText || doc.ocrText || '',
       language: 'en-US',
-      ocrWords: normalizedWords
+      ocrWords
     });
 
     return sendSuccess(res, {
       corrections: built.corrections,
       ocr: built.ocr,
       ocrStatus: doc.ocrStatus || null,
-      ocrError: doc.ocrError || null
+      ocrError: doc.ocrError || null,
+      fileId: hasRequestedFile ? requestedFileId : null
     });
   } catch (err) {
     const message =

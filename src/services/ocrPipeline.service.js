@@ -20,7 +20,116 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
     };
   }
 
-  return runOcrAndPersist({ fileId: first, targetDoc });
+  if (!targetDoc) {
+    throw new Error('Missing target doc');
+  }
+
+  targetDoc.ocrStatus = 'pending';
+  targetDoc.ocrError = undefined;
+  targetDoc.ocrUpdatedAt = new Date();
+  await targetDoc.save();
+
+  const ocrPages = [];
+  const perFileTexts = [];
+  let legacyFirstOcrText = '';
+  let legacyFirstOcrWords = [];
+
+  for (let i = 0; i < ids.length; i++) {
+    const fileId = ids[i];
+    if (!fileId) continue;
+
+    const fileDoc = await File.findById(fileId);
+    if (!fileDoc || !fileDoc.path) {
+      continue;
+    }
+
+    const absolute = toAbsoluteStoredPath(fileDoc.path);
+    if (!absolute) {
+      continue;
+    }
+
+    if (!fs.existsSync(absolute)) {
+      continue;
+    }
+
+    const ocr = await visionOcr.extractOcrFromImageFile(absolute);
+    const text = ocr && (ocr.transcriptText || ocr.fullText) ? String(ocr.transcriptText || ocr.fullText) : '';
+    const words = toStoredOcrWords(ocr && Array.isArray(ocr.words) ? ocr.words : []);
+
+    if (i === 0) {
+      legacyFirstOcrText = text;
+      legacyFirstOcrWords = words;
+    }
+
+    perFileTexts.push(text);
+
+    const pages = (ocr && Array.isArray(ocr.pages) ? ocr.pages : [])
+      .map((p) => {
+        const pageNumber = typeof p?.pageNumber === 'number' ? p.pageNumber : Number(p?.pageNumber);
+        const n = Number.isFinite(pageNumber) ? pageNumber : 1;
+
+        const pageWords = Array.isArray(p?.words)
+          ? p.words
+              .map((w) => {
+                const t = typeof w?.text === 'string' ? w.text : '';
+                const bbox = w?.bbox && typeof w.bbox === 'object' ? w.bbox : null;
+                if (!t || !bbox) return null;
+                const x = Number(bbox.x);
+                const y = Number(bbox.y);
+                const ww = Number(bbox.w);
+                const hh = Number(bbox.h);
+                if (![x, y, ww, hh].every((v) => Number.isFinite(v))) return null;
+                return {
+                  text: t,
+                  page: n,
+                  bbox: {
+                    x0: x,
+                    y0: y,
+                    x1: x + ww,
+                    y1: y + hh
+                  }
+                };
+              })
+              .filter(Boolean)
+          : [];
+
+        return {
+          fileId,
+          pageNumber: n,
+          text: text,
+          words: pageWords
+        };
+      })
+      .filter(Boolean);
+
+    if (pages.length) {
+      ocrPages.push(...pages);
+    } else {
+      ocrPages.push({
+        fileId,
+        pageNumber: 1,
+        text,
+        words
+      });
+    }
+  }
+
+  targetDoc.ocrStatus = 'completed';
+  targetDoc.ocrText = legacyFirstOcrText;
+  targetDoc.ocrData = { words: legacyFirstOcrWords };
+  targetDoc.ocrPages = ocrPages;
+  targetDoc.combinedOcrText = perFileTexts
+    .map((t) => (typeof t === 'string' ? t.trim() : ''))
+    .filter(Boolean)
+    .join('\n\n');
+  targetDoc.ocrError = undefined;
+  targetDoc.ocrUpdatedAt = new Date();
+  await targetDoc.save();
+
+  return {
+    ocrText: targetDoc.ocrText,
+    ocrStatus: targetDoc.ocrStatus
+  };
 }
 
 function toStoredOcrWords(words) {

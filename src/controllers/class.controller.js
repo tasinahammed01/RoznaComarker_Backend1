@@ -373,9 +373,17 @@ async function getClassSummary(req, res) {
       isActive: true
     });
 
-    const submissionsCount = await Submission.countDocuments({
-      class: classDoc._id
-    });
+    const activeAssignmentIds = await Assignment.find({
+      class: classDoc._id,
+      isActive: true
+    }).distinct('_id');
+
+    const submissionsCount = activeAssignmentIds.length
+      ? await Submission.countDocuments({
+          class: classDoc._id,
+          assignment: { $in: activeAssignmentIds }
+        })
+      : 0;
 
     // Get the latest timestamp from class, assignments, and submissions
     const classUpdatedAt = classDoc.updatedAt || classDoc.createdAt;
@@ -385,9 +393,14 @@ async function getClassSummary(req, res) {
       isActive: true
     }).sort({ updatedAt: -1 }).select('updatedAt');
 
-    const latestSubmission = await Submission.findOne({
-      class: classDoc._id
-    }).sort({ updatedAt: -1 }).select('updatedAt');
+    const latestSubmission = activeAssignmentIds.length
+      ? await Submission.findOne({
+          class: classDoc._id,
+          assignment: { $in: activeAssignmentIds }
+        })
+          .sort({ updatedAt: -1 })
+          .select('updatedAt')
+      : null;
 
     const assignmentUpdatedAt = latestAssignment?.updatedAt || classUpdatedAt;
     const submissionUpdatedAt = latestSubmission?.updatedAt || classUpdatedAt;

@@ -231,29 +231,15 @@ function normalizeRubricDesignerPayload(value) {
 }
 
 function buildRubricDesignerFromRubricScores({ rubricScores, title }) {
-  const rs = rubricScores && typeof rubricScores === 'object' ? rubricScores : {};
-
-  const levels = [
-    { title: 'Excellent', maxPoints: 10 },
-    { title: 'Good', maxPoints: 8 },
-    { title: 'Fair', maxPoints: 6 },
-    { title: 'Needs Improvement', maxPoints: 4 }
-  ];
-  const mkCells = (comment) => {
-    const out = Array.from({ length: levels.length }).map(() => '');
-    out[0] = safeString(comment).trim();
-    return out;
-  };
+  // IMPORTANT: Rubric designer must start empty. Teacher will generate/edit/attach.
+  // Keep the rubric title, but do not prefill level titles, maxPoints, criteria titles, or any cell text.
+  const levels = Array.from({ length: 4 }).map(() => ({ title: '', maxPoints: null }));
+  const criteria = Array.from({ length: 4 }).map(() => ({ title: '', cells: levels.map(() => '') }));
 
   return {
     title: safeString(title).trim(),
     levels,
-    criteria: [
-      { title: 'Overall Rubric Score', cells: mkCells(rs?.MECHANICS?.comment) },
-      { title: 'Content Relevance', cells: mkCells(rs?.CONTENT?.comment) },
-      { title: 'Structure & Organization', cells: mkCells(rs?.ORGANIZATION?.comment) },
-      { title: 'Grammar & Mechanics', cells: mkCells(rs?.GRAMMAR?.comment) }
-    ]
+    criteria
   };
 }
 
@@ -2013,10 +1999,55 @@ async function callGeminiGenerateRubricFromFile({ promptText, fileMime, fileBuff
 
 function extractFirstJsonObject(text) {
   const s = safeString(text);
-  const first = s.indexOf('{');
-  const last = s.lastIndexOf('}');
-  if (first < 0 || last < 0 || last <= first) return null;
-  return safeJsonParse(s.slice(first, last + 1));
+  if (!s) return null;
+
+  // Try a fast path first.
+  const direct = safeJsonParse(s);
+  if (direct && typeof direct === 'object') return direct;
+
+  // Scan for the first balanced-brace JSON object that successfully parses.
+  for (let start = s.indexOf('{'); start >= 0; start = s.indexOf('{', start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = start; i < s.length; i++) {
+      const ch = s[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (ch === '{') depth++;
+      if (ch === '}') depth--;
+
+      if (depth === 0) {
+        const candidate = s.slice(start, i + 1);
+        const parsed = safeJsonParse(candidate);
+        if (parsed && typeof parsed === 'object') return parsed;
+        break;
+      }
+      if (depth < 0) break;
+    }
+  }
+
+  return null;
 }
 
 async function generateRubricDesignerFromPrompt(req, res) {
