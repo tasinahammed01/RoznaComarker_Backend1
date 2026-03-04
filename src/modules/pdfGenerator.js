@@ -413,7 +413,7 @@ function buildAiBlocksFromSubmissionFeedback(submissionFeedback) {
   };
 }
 
-function buildHtml({ header, imageUrl, transcriptHtml, scoreSummary, stats, detailedIssues, teacherFeedback, actionSteps, rubricRows, overrideReason, imageAnnotations, submissionFeedbackBlocks }) {
+function buildHtml({ header, imageUrl, images, transcriptHtml, scoreSummary, stats, detailedIssues, teacherFeedback, actionSteps, rubricRows, overrideReason, imageAnnotations, submissionFeedbackBlocks }) {
   const statsRows = [
     { label: 'Spelling', value: stats.spelling, color: '#F44336' },
     { label: 'Grammar', value: stats.grammar, color: '#FF9800' },
@@ -496,18 +496,35 @@ function buildHtml({ header, imageUrl, transcriptHtml, scoreSummary, stats, deta
     `.trim()
     : `<div class="empty">No AI per-category feedback available.</div>`;
 
-  const imgBlock = imageUrl
-    ? `
-      <div class="image-wrap">
-        <img class="essay-image" src="${escapeHtml(imageUrl)}" alt="Original submission" />
-        ${(Array.isArray(imageAnnotations) ? imageAnnotations : []).map((a) => {
-          const left = clampPct(a.x);
-          const top = clampPct(a.y);
-          const idx = escapeHtml(String(a.index));
-          return `<div class="img-marker" style="left:${left}%; top:${top}%;">${idx}</div>`;
-        }).join('')}
-      </div>
-    `.trim()
+  const normalizedImages = Array.isArray(images) && images.length
+    ? images
+    : (imageUrl ? [{ url: imageUrl, transcriptText: '' }] : []);
+
+  const imgBlocks = normalizedImages.length
+    ? normalizedImages
+        .map((img, idx) => {
+          const u = img && typeof img.url === 'string' ? img.url : '';
+          const t = img && typeof img.transcriptText === 'string' ? img.transcriptText : '';
+          const title = normalizedImages.length > 1 ? `Image ${idx + 1}` : 'Original submission';
+          return `
+            <div class="card" style="margin-bottom:12px;">
+              <div style="font-weight:700; margin-bottom:8px;">${escapeHtml(title)}</div>
+              <div class="image-wrap">
+                <img class="essay-image" src="${escapeHtml(u)}" alt="${escapeHtml(title)}" />
+                ${idx === 0 ? (Array.isArray(imageAnnotations) ? imageAnnotations : []).map((a) => {
+                  const left = clampPct(a.x);
+                  const top = clampPct(a.y);
+                  const markerIdx = escapeHtml(String(a.index));
+                  return `<div class="img-marker" style="left:${left}%; top:${top}%;">${markerIdx}</div>`;
+                }).join('') : ''}
+              </div>
+              <div style="height:10px"></div>
+              <div style="font-weight:700; margin-bottom:6px;">Transcribed Text</div>
+              <div class="teacher-feedback">${t && String(t).trim() ? escapeHtml(String(t)) : '<span class="empty">No transcript available.</span>'}</div>
+            </div>
+          `.trim();
+        })
+        .join('')
     : `<div class="empty">Original image not available.</div>`;
 
   const imageAnnotationsList = (Array.isArray(imageAnnotations) ? imageAnnotations : []).length
@@ -580,8 +597,8 @@ function buildHtml({ header, imageUrl, transcriptHtml, scoreSummary, stats, deta
     </div>
 
     <div class="section">
-      <h2>1. Original Image</h2>
-      ${imgBlock}
+      <h2>1. Original Images</h2>
+      ${imgBlocks}
     </div>
 
     <div class="section">
@@ -705,6 +722,7 @@ return { score, maxScore: 100 };
 async function renderSubmissionPdf({
 header,
 imageUrl,
+images,
 transcriptText,
 issues,
 feedback,
@@ -719,10 +737,11 @@ const actionSteps = buildActionSteps(stats);
 const transcriptHtml = transcriptText && String(transcriptText).trim()
 ? buildWritingCorrectionsHtml(String(transcriptText), issues)
 : '';
-    const base = (process.env.BASE_URL || '').trim().replace(/\/+$/, '');
-    if (base) {
-      imageUrl = `${base}${rawImageUrl}`;
-    }
+  const base = (process.env.BASE_URL || '').trim().replace(/\/+$/, '');
+  const rawImageUrl = typeof imageUrl === 'string' ? imageUrl.trim() : '';
+  if (base && rawImageUrl && !/^https?:\/\//i.test(rawImageUrl) && !rawImageUrl.startsWith('data:')) {
+    const rel = rawImageUrl.startsWith('/') ? rawImageUrl : `/${rawImageUrl}`;
+    imageUrl = `${base}${rel}`;
   }
 
   let score = safeNumber(feedback && feedback.score, NaN);
@@ -745,9 +764,22 @@ const transcriptHtml = transcriptText && String(transcriptText).trim()
     };
   }
 
-  let embedded = await tryFetchAsDataUri(imageUrl);
-  if (!embedded) {
-    embedded = await tryReadUploadsFileAsDataUri(imageUrl);
+  const imageList = Array.isArray(images) && images.length
+    ? images
+    : (imageUrl ? [{ url: imageUrl, transcriptText: '' }] : []);
+
+  const embeddedImages = [];
+  for (const img of imageList) {
+    const url = img && typeof img.url === 'string' ? img.url : '';
+    let embedded = await tryFetchAsDataUri(url);
+    if (!embedded) {
+      embedded = await tryReadUploadsFileAsDataUri(url);
+    }
+    embeddedImages.push({
+      url,
+      embedded: embedded || '',
+      transcriptText: img && typeof img.transcriptText === 'string' ? img.transcriptText : ''
+    });
   }
 
   const rubricRows = buildRubricRows(submissionFeedback || feedback);
@@ -767,7 +799,11 @@ const transcriptHtml = transcriptText && String(transcriptText).trim()
       ...header,
       date: header && header.date ? header.date : formatDate(new Date())
     },
-    imageUrl: embedded || imageUrl,
+    imageUrl: embeddedImages.length ? (embeddedImages[0].embedded || embeddedImages[0].url) : (imageUrl || ''),
+    images: embeddedImages.map((i) => ({
+      url: i.embedded || i.url,
+      transcriptText: i.transcriptText
+    })),
     transcriptHtml,
     scoreSummary,
     stats,
@@ -790,22 +826,23 @@ const transcriptHtml = transcriptText && String(transcriptText).trim()
     // ignore; puppeteer will throw a more descriptive error if it cannot use this dir
   }
 
+  const isWin = process.platform === 'win32';
+  const launchArgs = [
+    ...(isWin ? [] : ['--no-sandbox', '--disable-setuid-sandbox']),
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--disable-features=IsolateOrigins,site-per-process'
+  ];
+
   const browser = await puppeteer.launch({
     headless: true,
     userDataDir,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--single-process',
-      '--no-zygote'
-    ]
+    args: launchArgs
   });
 
   try {
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.setContent(html, { waitUntil: 'load' });
 
     await waitForImages(page);
 

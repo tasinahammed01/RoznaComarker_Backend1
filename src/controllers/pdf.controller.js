@@ -27,6 +27,7 @@ async function getSubmissionWithPermissionsOrThrow({ user, submissionId }) {
     })
     .populate('class')
     .populate('file')
+    .populate('files')
     .populate('feedback');
 
   if (!submission) {
@@ -92,11 +93,43 @@ async function downloadSubmissionPdf(req, res, next) {
     const issues = Array.isArray(built && built.corrections) ? built.corrections : [];
 
     const baseUrl = getRequestBaseUrl(req);
-    const imageUrl = submission.fileUrl && typeof submission.fileUrl === 'string'
-      ? submission.fileUrl.startsWith('http')
-        ? submission.fileUrl
-        : `${baseUrl}${submission.fileUrl.startsWith('/') ? '' : '/'}${submission.fileUrl}`
-      : '';
+
+    const rawUrls = Array.isArray(submission.fileUrls) && submission.fileUrls.length
+      ? submission.fileUrls
+      : (submission.fileUrl && typeof submission.fileUrl === 'string' ? [submission.fileUrl] : []);
+
+    const normalizedUrls = rawUrls
+      .map((u) => (typeof u === 'string' ? u.trim() : ''))
+      .filter(Boolean)
+      .map((u) => (
+        u.startsWith('http')
+          ? u
+          : `${baseUrl}${u.startsWith('/') ? '' : '/'}${u}`
+      ));
+
+    const fileIds = Array.isArray(submission.files) && submission.files.length
+      ? submission.files.map((f) => (f && typeof f === 'object' && f._id ? String(f._id) : String(f))).filter(Boolean)
+      : (submission.file ? [String(submission.file._id || submission.file)] : []);
+
+    const ocrPages = Array.isArray(submission.ocrPages) ? submission.ocrPages : [];
+
+    const images = normalizedUrls.map((url, idx) => {
+      const fileId = fileIds[idx] || '';
+      const pageText = fileId
+        ? ocrPages
+            .filter((p) => p && p.fileId && String(p.fileId) === fileId)
+            .map((p) => (typeof p.text === 'string' ? p.text.trim() : ''))
+            .filter(Boolean)
+            .join('\n\n')
+        : '';
+
+      return {
+        url,
+        transcriptText: pageText || ''
+      };
+    });
+
+    const imageUrl = images.length ? images[0].url : '';
 
     const assignmentTeacherEmail =
       submission.assignment && typeof submission.assignment === 'object'
@@ -127,6 +160,7 @@ async function downloadSubmissionPdf(req, res, next) {
     const pdfBuffer = await renderSubmissionPdf({
       header,
       imageUrl,
+      images,
       transcriptText,
       issues,
       feedback,
