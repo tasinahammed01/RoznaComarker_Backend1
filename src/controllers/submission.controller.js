@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const fs = require('fs');
 const path = require('path');
 
 const Assignment = require('../models/assignment.model');
@@ -155,23 +156,41 @@ function normalizeSubmissionForClient(req, submission) {
   }
 
   // Validate file existence before normalizing URLs
-  const fs = require('fs');
   const basePath = (process.env.UPLOAD_BASE_PATH || 'uploads').trim() || 'uploads';
-  
+  const uploadsRoot = path.join(__dirname, '..', '..', basePath);
+
+  const extractFilename = (rawUrl) => {
+    if (!rawUrl || typeof rawUrl !== 'string') return null;
+    const withoutQuery = rawUrl.split('#')[0].split('?')[0];
+    const last = withoutQuery.split('/').pop();
+    if (!last) return null;
+    try {
+      return decodeURIComponent(last);
+    } catch {
+      return last;
+    }
+  };
+
   if (Array.isArray(doc.fileUrls)) {
     doc.fileUrls = doc.fileUrls
       .filter((u) => {
-        const filename = u.split('/').pop();
-        const filePath = path.join(__dirname, '..', basePath, 'submissions', filename);
+        const filename = extractFilename(u);
+        if (!filename) return false;
+        const filePath = path.join(uploadsRoot, 'submissions', filename);
         return fs.existsSync(filePath);
       })
       .map((u) => normalizePublicUploadsUrlForDev(req, u));
   }
+
   if (typeof doc.fileUrl === 'string') {
-    const filename = doc.fileUrl.split('/').pop();
-    const filePath = path.join(__dirname, '..', basePath, 'submissions', filename);
-    if (fs.existsSync(filePath)) {
-      doc.fileUrl = normalizePublicUploadsUrlForDev(req, doc.fileUrl);
+    const filename = extractFilename(doc.fileUrl);
+    if (filename) {
+      const filePath = path.join(uploadsRoot, 'submissions', filename);
+      if (fs.existsSync(filePath)) {
+        doc.fileUrl = normalizePublicUploadsUrlForDev(req, doc.fileUrl);
+      } else {
+        doc.fileUrl = undefined;
+      }
     } else {
       doc.fileUrl = undefined;
     }
