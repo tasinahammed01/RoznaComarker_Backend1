@@ -154,11 +154,27 @@ function normalizeSubmissionForClient(req, submission) {
     ];
   }
 
+  // Validate file existence before normalizing URLs
+  const fs = require('fs');
+  const basePath = (process.env.UPLOAD_BASE_PATH || 'uploads').trim() || 'uploads';
+  
   if (Array.isArray(doc.fileUrls)) {
-    doc.fileUrls = doc.fileUrls.map((u) => normalizePublicUploadsUrlForDev(req, u));
+    doc.fileUrls = doc.fileUrls
+      .filter((u) => {
+        const filename = u.split('/').pop();
+        const filePath = path.join(__dirname, '..', basePath, 'submissions', filename);
+        return fs.existsSync(filePath);
+      })
+      .map((u) => normalizePublicUploadsUrlForDev(req, u));
   }
   if (typeof doc.fileUrl === 'string') {
-    doc.fileUrl = normalizePublicUploadsUrlForDev(req, doc.fileUrl);
+    const filename = doc.fileUrl.split('/').pop();
+    const filePath = path.join(__dirname, '..', basePath, 'submissions', filename);
+    if (fs.existsSync(filePath)) {
+      doc.fileUrl = normalizePublicUploadsUrlForDev(req, doc.fileUrl);
+    } else {
+      doc.fileUrl = undefined;
+    }
   }
 
   return doc;
