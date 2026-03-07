@@ -72,9 +72,53 @@ function normalizeRubric(value) {
   }
 }
 
+function normalizeRubrics(value) {
+  if (value === null) {
+    return undefined;
+  }
+
+  if (typeof value === 'undefined') {
+    return undefined;
+  }
+
+  const obj = value && typeof value === 'object' ? value : null;
+  if (!obj) {
+    return null;
+  }
+
+  const rawCriteria = Array.isArray(obj.criteria) ? obj.criteria : null;
+  if (!rawCriteria) {
+    return null;
+  }
+
+  const criteria = rawCriteria
+    .map((c) => {
+      const row = c && typeof c === 'object' ? c : {};
+      const name = typeof row.name === 'string' ? row.name.trim() : '';
+      const rawLevels = Array.isArray(row.levels) ? row.levels : [];
+      const levels = rawLevels
+        .map((l) => {
+          const lvl = l && typeof l === 'object' ? l : {};
+          const score = Number(lvl.score);
+          return {
+            title: typeof lvl.title === 'string' ? lvl.title.trim() : '',
+            score: Number.isFinite(score) ? score : 0,
+            description: typeof lvl.description === 'string' ? lvl.description.trim() : ''
+          };
+        })
+        .slice(0, 10);
+
+      return { name, levels };
+    })
+    .filter((c) => c && typeof c.name === 'string')
+    .slice(0, 100);
+
+  return { criteria };
+}
+
 async function createAssignment(req, res) {
   try {
-    const { title, writingType, instructions, rubric, deadline, classId, allowLateResubmission } = req.body || {};
+    const { title, writingType, instructions, rubric, rubrics, deadline, classId, allowLateResubmission } = req.body || {};
 
     if (!isNonEmptyString(title)) {
       return sendError(res, 400, 'title is required');
@@ -126,6 +170,11 @@ async function createAssignment(req, res) {
       return sendError(res, 400, 'rubric must be valid text or JSON');
     }
 
+    const normalizedRubrics = normalizeRubrics(rubrics);
+    if (normalizedRubrics === null) {
+      return sendError(res, 400, 'rubrics must be valid JSON');
+    }
+
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const qrToken = uuidv4();
 
@@ -135,6 +184,7 @@ async function createAssignment(req, res) {
           writingType: writingType.trim(),
           instructions: normalizedInstructions,
           rubric: normalizedRubric,
+          rubrics: normalizedRubrics,
           deadline: parsedDeadline,
           class: classDoc._id,
           teacher: teacherId,
@@ -214,7 +264,7 @@ async function createAssignment(req, res) {
 async function updateAssignment(req, res) {
   try {
     const { id } = req.params;
-    const { title, writingType, instructions, rubric, deadline, allowLateResubmission } = req.body || {};
+    const { title, writingType, instructions, rubric, rubrics, deadline, allowLateResubmission } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return sendError(res, 400, 'Invalid assignment id');
@@ -263,6 +313,14 @@ async function updateAssignment(req, res) {
         return sendError(res, 400, 'rubric must be valid text or JSON');
       }
       assignment.rubric = normalizedRubric;
+    }
+
+    if (typeof rubrics !== 'undefined') {
+      const normalizedRubrics = normalizeRubrics(rubrics);
+      if (normalizedRubrics === null) {
+        return sendError(res, 400, 'rubrics must be valid JSON');
+      }
+      assignment.rubrics = normalizedRubrics;
     }
 
     if (typeof deadline !== 'undefined') {
@@ -377,6 +435,37 @@ async function getClassAssignments(req, res) {
   }
 }
 
+async function getAssignmentByIdForTeacher(req, res) {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return sendError(res, 400, 'Invalid assignment id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const assignment = await Assignment.findOne({
+      _id: id,
+      teacher: teacherId,
+      isActive: true
+    })
+      .populate('class')
+      .populate('teacher', '_id email displayName photoURL role');
+
+    if (!assignment) {
+      return sendError(res, 404, 'Assignment not found');
+    }
+
+    return sendSuccess(res, assignment);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to fetch assignment');
+  }
+}
+
 async function getMyAssignments(req, res) {
   try {
     const studentId = req.user && req.user._id;
@@ -468,5 +557,6 @@ module.exports = {
   deleteAssignment,
   getClassAssignments,
   getMyAssignments,
-  getAssignmentById
+  getAssignmentById,
+  getAssignmentByIdForTeacher
 };

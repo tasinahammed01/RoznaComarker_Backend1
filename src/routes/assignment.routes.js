@@ -77,6 +77,7 @@ router.post(
   body('classId').isMongoId().withMessage('Invalid class id'),
   body('deadline').notEmpty().withMessage('deadline is required'),
   body('instructions').optional({ nullable: true }).isString().withMessage('instructions must be a string'),
+  body('rubrics').optional({ nullable: true }),
   body('allowLateResubmission').optional().isBoolean().withMessage('allowLateResubmission must be a boolean'),
   handleValidationResult,
   enforceUsageLimit('assignments', 1),
@@ -134,6 +135,7 @@ router.patch(
   body('title').optional().isString().trim().notEmpty().withMessage('title must be a non-empty string'),
   body('writingType').optional().isString().trim().notEmpty().withMessage('writingType must be a non-empty string'),
   body('instructions').optional({ nullable: true }).isString().withMessage('instructions must be a string'),
+  body('rubrics').optional({ nullable: true }),
   body('allowLateResubmission').optional().isBoolean().withMessage('allowLateResubmission must be a boolean'),
   handleValidationResult,
   assignmentController.updateAssignment
@@ -209,6 +211,15 @@ router.get(
   param('classId').isMongoId().withMessage('Invalid class id'),
   handleValidationResult,
   assignmentController.getClassAssignments
+);
+
+router.get(
+  '/teacher/:id',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  handleValidationResult,
+  assignmentController.getAssignmentByIdForTeacher
 );
 
 // Student routes

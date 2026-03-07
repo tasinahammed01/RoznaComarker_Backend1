@@ -46,6 +46,13 @@ const { createGlobalRateLimiter, createSensitiveRateLimiter } = require('./middl
 
 const app = express();
 
+ // When running behind a reverse proxy (common on VPS with Nginx/Apache),
+ // trust X-Forwarded-* headers so req.protocol and req.get('host') are correct.
+ // This directly affects generated public URLs for uploaded files.
+ if (process.env.TRUST_PROXY === 'true' || process.env.NODE_ENV === 'production') {
+   app.set('trust proxy', 1);
+ }
+
 app.disable('x-powered-by');
 
 const uploadBasePath = (process.env.UPLOAD_BASE_PATH || 'uploads').trim() || 'uploads';

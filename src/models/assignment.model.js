@@ -2,6 +2,30 @@ const mongoose = require('mongoose');
 
 const { Schema } = mongoose;
 
+const rubricLevelSchema = new Schema(
+  {
+    title: { type: String, trim: true },
+    score: { type: Number },
+    description: { type: String, trim: true }
+  },
+  { _id: false }
+);
+
+const rubricCriteriaSchema = new Schema(
+  {
+    name: { type: String, trim: true },
+    levels: { type: [rubricLevelSchema], default: [] }
+  },
+  { _id: false }
+);
+
+const rubricsSchema = new Schema(
+  {
+    criteria: { type: [rubricCriteriaSchema], default: [] }
+  },
+  { _id: false }
+);
+
 const assignmentSchema = new Schema(
   {
     title: {
@@ -20,6 +44,10 @@ const assignmentSchema = new Schema(
     },
     rubric: {
       type: String
+    },
+    rubrics: {
+      type: rubricsSchema,
+      default: undefined
     },
     deadline: {
       type: Date,

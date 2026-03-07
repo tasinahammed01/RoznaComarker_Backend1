@@ -471,6 +471,9 @@ async function getSubmissionFeedback(req, res) {
 
       const correctedText = applyCorrectionsToText(transcriptText, corrections);
 
+      const assignment = await Assignment.findOne({ _id: submission.assignment, isActive: true });
+      const normalizedAssignmentRubrics = normalizeAssignmentRubrics(assignment && assignment.rubrics);
+
       const clamp5 = (n) => {
         const x = Number(n);
         if (!Number.isFinite(x)) return 0;
@@ -1487,6 +1490,131 @@ async function generateAiSubmissionFeedback(req, res) {
       return Math.max(0, Math.min(5, x));
     };
 
+    const canUseRubricsAi = Boolean(normalizedAssignmentRubrics);
+
+    if (canUseRubricsAi) {
+      const apiKey = safeString(process.env.OPENROUTER_API_KEY).trim();
+      const baseUrl = safeString(process.env.OPENROUTER_BASE_URL).trim() || 'https://openrouter.ai/api/v1';
+      const model = safeString(process.env.LLAMA_MODEL).trim() || 'meta-llama/llama-3-8b-instruct';
+
+      if (apiKey) {
+        const { systemInstruction, userPrompt } = buildRubricsPrompt({
+          assignmentTitle: assignment && assignment.title,
+          correctedText,
+          corrections,
+          rubrics: normalizedAssignmentRubrics
+        });
+
+        const timeoutMs = Math.min(60000, Math.max(1, Number(process.env.OPENROUTER_TIMEOUT_MS) || 60000));
+        const { signal, cancel } = buildTimeoutSignal(timeoutMs);
+        const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+
+        let resp;
+        try {
+          resp = await fetchCompat(endpoint, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model,
+              messages: [
+                { role: 'system', content: systemInstruction },
+                { role: 'user', content: userPrompt }
+              ]
+            }),
+            signal
+          });
+        } finally {
+          cancel();
+        }
+
+        if (resp && resp.ok) {
+          const json = await resp.json();
+          const content = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
+          const cleaned = stripMarkdownCodeFences(content);
+          const parsed = safeJsonParse(cleaned) || extractFirstJsonObject(cleaned);
+          const normalized = normalizeAiRubricEvaluationResponse(parsed);
+
+          if (normalized) {
+            const gmCrit = findCriterionByTitle(normalizedAssignmentRubrics, 'Grammar & Mechanics');
+            const soCrit = findCriterionByTitle(normalizedAssignmentRubrics, 'Structure & Organization');
+            const crCrit = findCriterionByTitle(normalizedAssignmentRubrics, 'Content Relevance');
+
+            const maxScore = (crit) => {
+              const lvls = Array.isArray(crit && crit.levels) ? crit.levels : [];
+              const max = lvls.reduce((m, l) => Math.max(m, Number(l && l.score) || 0), 0);
+              return Number.isFinite(max) ? max : 0;
+            };
+
+            const gm5 = toScore5FromLevel({ selectedLevelScore: normalized.gm.score, maxLevelScore: maxScore(gmCrit) });
+            const so5 = toScore5FromLevel({ selectedLevelScore: normalized.so.score, maxLevelScore: maxScore(soCrit) });
+            const cr5 = toScore5FromLevel({ selectedLevelScore: normalized.cr.score, maxLevelScore: maxScore(crCrit) });
+
+            const overallRubricScore5 = clampScore5((gm5 + so5 + cr5) / 3);
+
+            const rubricScores = {
+              CONTENT: { score: cr5, maxScore: 5, comment: normalized.cr.feedback },
+              ORGANIZATION: { score: so5, maxScore: 5, comment: normalized.so.feedback },
+              GRAMMAR: { score: gm5, maxScore: 5, comment: normalized.gm.feedback },
+              VOCABULARY: { score: 0, maxScore: 5, comment: '' },
+              MECHANICS: { score: overallRubricScore5, maxScore: 5, comment: normalized.overall.feedback }
+            };
+
+            const evaluation = computeAcademicEvaluation({
+              text: correctedText,
+              issues: corrections,
+              teacherOverrideScores: null
+            });
+
+            const languageToolScore100 = clampScore100(evaluation && evaluation.effectiveRubric && evaluation.effectiveRubric.overallScore);
+            const overallScore100 = computeCombinedOverallScore100({ rubricScores, languageToolScore100, rubricWeight: 0.7 });
+            const grade = gradeFromOverallScore100(overallScore100);
+
+            const detailedFeedback = ensureDetailedFeedbackDynamic({
+              detailedFeedback: buildDetailedFeedbackDefaults({ structuredFeedback: evaluation && evaluation.structuredFeedback }),
+              counts
+            });
+
+            const aiFeedback = buildAiFeedbackDefaults({
+              rubricScores,
+              structuredFeedback: evaluation && evaluation.structuredFeedback,
+              overallComments: ''
+            });
+
+            const update = {
+              submissionId: submission._id,
+              classId: submission.class,
+              studentId: submission.student,
+              teacherId,
+              overallScore: overallScore100,
+              grade,
+              correctionStats: {
+                content: counts.CONTENT,
+                grammar: counts.GRAMMAR,
+                organization: counts.ORGANIZATION,
+                vocabulary: counts.VOCABULARY,
+                mechanics: counts.MECHANICS
+              },
+              detailedFeedback,
+              rubricScores,
+              aiFeedback,
+              overriddenByTeacher: false
+            };
+
+            const saved = await SubmissionFeedback.findOneAndUpdate(
+              { submissionId: submission._id },
+              { $set: update },
+              { upsert: true, new: true, setDefaultsOnInsert: true }
+            );
+
+            return sendSuccess(res, saved);
+          }
+        }
+      }
+    }
+
     const safeText = typeof transcriptText === 'string' ? transcriptText : '';
     const wordCount = safeText.trim() ? safeText.trim().split(/\s+/).filter(Boolean).length : 0;
 
@@ -1806,6 +1934,109 @@ function stripMarkdownCodeFences(text) {
 
   // If it's not a pure fenced block, still try to remove any fenced wrappers.
   return s.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+}
+
+function normalizeAssignmentRubrics(value) {
+  const obj = value && typeof value === 'object' ? value : null;
+  const criteriaRaw = Array.isArray(obj && obj.criteria) ? obj.criteria : null;
+  if (!criteriaRaw) return null;
+
+  const criteria = criteriaRaw
+    .map((c) => {
+      const row = c && typeof c === 'object' ? c : {};
+      const name = safeString(row.name).trim();
+      const levelsRaw = Array.isArray(row.levels) ? row.levels : [];
+      const levels = levelsRaw
+        .map((l) => {
+          const lvl = l && typeof l === 'object' ? l : {};
+          const score = Number(lvl.score);
+          return {
+            title: safeString(lvl.title).trim(),
+            score: Number.isFinite(score) ? score : 0,
+            description: safeString(lvl.description).trim()
+          };
+        })
+        .filter((l) => l.title.length || l.description.length)
+        .slice(0, 10);
+
+      return { name, levels };
+    })
+    .filter((c) => c.name.length && Array.isArray(c.levels) && c.levels.length)
+    .slice(0, 100);
+
+  if (!criteria.length) return null;
+  return { criteria };
+}
+
+function normalizeRubricCriterionKey(name) {
+  return safeString(name).trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function findCriterionByTitle(rubrics, title) {
+  const crit = Array.isArray(rubrics && rubrics.criteria) ? rubrics.criteria : [];
+  const target = normalizeRubricCriterionKey(title);
+  return crit.find((c) => normalizeRubricCriterionKey(c && c.name) === target) || null;
+}
+
+function toScore5FromLevel({ selectedLevelScore, maxLevelScore }) {
+  const sel = Number(selectedLevelScore);
+  const max = Number(maxLevelScore);
+  if (!Number.isFinite(sel) || !Number.isFinite(max) || max <= 0) return 0;
+  return clampScore5((sel / max) * 5);
+}
+
+function buildRubricsPrompt({ assignmentTitle, correctedText, corrections, rubrics }) {
+  const required = ['Grammar & Mechanics', 'Structure & Organization', 'Content Relevance'];
+
+  const criteriaPayload = required
+    .map((t) => ({ title: t, criterion: findCriterionByTitle(rubrics, t) }))
+    .filter((x) => x.criterion);
+
+  const systemInstruction = 'You are an academic evaluator. Return ONLY valid JSON. No explanation, no markdown, no code blocks.';
+
+  const correctionsCompact = (Array.isArray(corrections) ? corrections : [])
+    .slice(0, 60)
+    .map((c) => ({
+      message: safeString(c && (c.message || c.description)).trim(),
+      groupKey: safeString(c && (c.groupKey || c.groupLabel || c.category)).trim(),
+      wrongText: safeString(c && (c.wrongText || c.text)).trim(),
+      suggestedText: safeString(c && (c.suggestedText || c.suggestion)).trim()
+    }));
+
+  const userPrompt = `Evaluate the student's submission using the teacher-provided rubric criteria and the provided grammar corrections.\n\nAssignment: ${safeString(assignmentTitle).trim() || 'N/A'}\n\nCorrected Student Text:\n${safeString(correctedText).slice(0, 8000)}\n\nGrammar Corrections (LanguageTool):\n${JSON.stringify(correctionsCompact)}\n\nRubric Criteria (use these EXACT titles and choose ONE level per criterion):\n${JSON.stringify(criteriaPayload)}\n\nOutput JSON must match exactly:\n{\n  "Grammar & Mechanics": {"selectedLevelTitle": "string", "score": number, "feedback": "string"},\n  "Structure & Organization": {"selectedLevelTitle": "string", "score": number, "feedback": "string"},\n  "Content Relevance": {"selectedLevelTitle": "string", "score": number, "feedback": "string"},\n  "Overall Rubric Score": {"score": number, "feedback": "string"}\n}\n\nRules:\n- Keep the 4 top-level keys EXACTLY as written.\n- For each category, selectedLevelTitle must match one of the provided level titles for that criterion.\n- Use the level's numeric score as the category score.\n- Overall Rubric Score.score should be the sum of the 3 category scores.\n- Feedback must be concise and directly tied to the rubric descriptions and the grammar corrections.`;
+
+  return { systemInstruction, userPrompt };
+}
+
+function normalizeAiRubricEvaluationResponse(value) {
+  const obj = value && typeof value === 'object' ? value : null;
+  if (!obj) return null;
+
+  const pick = (k) => (obj && Object.prototype.hasOwnProperty.call(obj, k) ? obj[k] : null);
+  const requiredKeys = ['Grammar & Mechanics', 'Structure & Organization', 'Content Relevance', 'Overall Rubric Score'];
+  if (!requiredKeys.every((k) => pick(k) && typeof pick(k) === 'object')) return null;
+
+  const normItem = (x) => {
+    const it = x && typeof x === 'object' ? x : {};
+    const score = Number(it.score);
+    return {
+      selectedLevelTitle: safeString(it.selectedLevelTitle).trim(),
+      score: Number.isFinite(score) ? score : 0,
+      feedback: safeString(it.feedback).trim()
+    };
+  };
+
+  const gm = normItem(pick('Grammar & Mechanics'));
+  const so = normItem(pick('Structure & Organization'));
+  const cr = normItem(pick('Content Relevance'));
+  const overall = normItem(pick('Overall Rubric Score'));
+
+  return {
+    gm,
+    so,
+    cr,
+    overall
+  };
 }
 
 function normalizeMimeForRubricUpload(file) {
