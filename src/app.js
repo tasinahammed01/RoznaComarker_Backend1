@@ -103,6 +103,8 @@ app.use('/uploads/assignments', createCorsMiddleware(), express.static(path.join
 app.use('/uploads/submissions', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'submissions')));
 app.use('/uploads/feedback', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'feedback')));
 app.use('/uploads/avatars', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'avatars')));
+app.use('/uploads/original', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'original')));
+app.use('/uploads/processed', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'processed')));
 
 app.use('/api', healthRoutes);
 app.use('/api/auth', authRoutes);
