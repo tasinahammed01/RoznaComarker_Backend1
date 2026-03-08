@@ -103,7 +103,12 @@ function normalizePublicUploadsUrlForDev(req, url) {
   if (idx < 0) return raw;
 
   const pathPart = raw.slice(idx);
-  return `${getRequestBaseUrl(req)}${pathPart}`;
+
+  // In dev the backend may be behind a proxy / have an internal host (e.g. 172.x)
+  // while clients must use a public BASE_URL. Prefer BASE_URL when available.
+  const fromEnv = (process.env.BASE_URL || '').trim();
+  const base = fromEnv.length ? fromEnv.replace(/\/+$/, '') : getRequestBaseUrl(req);
+  return `${base}${pathPart}`;
 }
 
 function normalizeSubmissionForClient(req, submission) {
