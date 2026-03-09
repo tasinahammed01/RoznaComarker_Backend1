@@ -5,6 +5,8 @@ const Assignment = require('../models/assignment.model');
 const Class = require('../models/class.model');
 const Membership = require('../models/membership.model');
 
+const { fetchCompat, buildTimeoutSignal } = require('../services/httpClient.service');
+
 const { incrementUsage } = require('../middlewares/usage.middleware');
 const logger = require('../utils/logger');
 const { createNotification } = require('../services/notification.service');
@@ -21,6 +23,141 @@ function sendError(res, statusCode, message) {
     success: false,
     message
   });
+}
+
+function safeString(v) {
+  return typeof v === 'string' ? v : (v == null ? '' : String(v));
+}
+
+function stripMarkdownCodeFences(text) {
+  const s = safeString(text).trim();
+  if (!s) return '';
+
+  const match = s.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```\s*$/);
+  if (match) return safeString(match[1]).trim();
+
+  return s;
+}
+
+function safeJsonParse(value) {
+  if (typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function extractFirstJsonObject(text) {
+  const s = safeString(text);
+  if (!s) return null;
+
+  const direct = safeJsonParse(s);
+  if (direct && typeof direct === 'object') return direct;
+
+  for (let start = s.indexOf('{'); start >= 0; start = s.indexOf('{', start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = start; i < s.length; i++) {
+      const ch = s[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (ch === '{') depth++;
+      if (ch === '}') depth--;
+
+      if (depth === 0) {
+        const candidate = s.slice(start, i + 1);
+        const parsed = safeJsonParse(candidate);
+        if (parsed && typeof parsed === 'object') return parsed;
+        break;
+      }
+      if (depth < 0) break;
+    }
+  }
+
+  return null;
+}
+
+function normalizeRubricDesignerPayload(value) {
+  if (value == null) return { value: null };
+  const obj = value && typeof value === 'object' ? value : null;
+  if (!obj) return { error: 'rubricDesigner must be an object' };
+
+  const title = safeString(obj.title).trim();
+
+  const rawLevels = Array.isArray(obj.levels) ? obj.levels : null;
+  if (!rawLevels) return { error: 'rubricDesigner.levels must be an array' };
+
+  const levels = rawLevels
+    .map((l) => {
+      const lvl = l && typeof l === 'object' ? l : {};
+      const maxPoints = Number(lvl.maxPoints);
+      return {
+        title: safeString(lvl.title).trim(),
+        maxPoints: Number.isFinite(maxPoints) ? Math.max(0, Math.floor(maxPoints)) : 0
+      };
+    })
+    .slice(0, 6);
+
+  const rawCriteria = Array.isArray(obj.criteria) ? obj.criteria : null;
+  if (!rawCriteria) return { error: 'rubricDesigner.criteria must be an array' };
+
+  const criteria = rawCriteria
+    .map((c) => {
+      const row = c && typeof c === 'object' ? c : {};
+      const cells = Array.isArray(row.cells) ? row.cells.map((x) => safeString(x)) : [];
+      return {
+        title: safeString(row.title).trim(),
+        cells: cells.slice(0, 10)
+      };
+    })
+    .slice(0, 50);
+
+  return { value: { title, levels, criteria } };
+}
+
+function sanitizeRubricDesignerCriteria(rubricDesigner) {
+  const d = rubricDesigner && typeof rubricDesigner === 'object' ? rubricDesigner : null;
+  if (!d) return d;
+
+  const unwanted = new Set([
+    'overall_rubric_score',
+    'content_relevance',
+    'structure_organization',
+    'structure_&_organization',
+    'grammar_mechanics',
+    'grammar_&_mechanics'
+  ]);
+
+  const criteria = Array.isArray(d.criteria) ? d.criteria : [];
+  const filtered = criteria.filter((c) => {
+    const title = safeString(c && c.title).trim().toLowerCase();
+    const key = title.replace(/\s+/g, '_');
+    return !unwanted.has(key);
+  });
+
+  return { ...d, criteria: filtered };
 }
 
 function isNonEmptyString(value) {
@@ -466,6 +603,127 @@ async function getAssignmentByIdForTeacher(req, res) {
   }
 }
 
+async function generateRubricDesignerFromPrompt(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return sendError(res, 400, 'Invalid assignment id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const assignment = await Assignment.findOne({
+      _id: id,
+      teacher: teacherId,
+      isActive: true
+    });
+    if (!assignment) {
+      return sendError(res, 404, 'Assignment not found');
+    }
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const prompt = safeString(body.prompt).trim();
+    if (!prompt) {
+      return sendError(res, 400, 'prompt is required');
+    }
+
+    const apiKey = safeString(process.env.OPENROUTER_API_KEY).trim();
+    const baseUrl = safeString(process.env.OPENROUTER_BASE_URL).trim() || 'https://openrouter.ai/api/v1';
+    const model = safeString(process.env.LLAMA_MODEL).trim() || 'meta-llama/llama-3-8b-instruct';
+
+    if (!apiKey) {
+      return sendError(res, 501, 'AI provider not configured');
+    }
+
+    const systemInstruction = 'You are an academic rubric generator. Return ONLY valid JSON with no explanation, no markdown, no code blocks.';
+
+    const assignmentTitle = safeString(assignment.title).trim();
+    const assignmentWritingType = safeString(assignment.writingType).trim();
+    const assignmentInstructions = safeString(assignment.instructions).trim();
+    const rubricTitle = `Rubric: ${assignmentTitle || 'Assignment'}`;
+
+    const userPrompt = `${prompt}\n\nGenerate a rubric designer for grading student submissions for this assignment.\n\nAssignment Title: ${assignmentTitle || 'N/A'}\nAssignment Writing Type: ${assignmentWritingType || 'N/A'}\nAssignment Instructions: ${assignmentInstructions || 'N/A'}\n\nOutput must match this exact JSON structure:\n{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}.\nRules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. Keep criteria 3-10 rows. Keep maxPoints as integers. Make criteria relevant to the writing type. Use clear descriptions in cells for each performance level. Use title: ${rubricTitle}.`;
+
+    const timeoutMs = Math.min(60000, Math.max(1, Number(process.env.OPENROUTER_TIMEOUT_MS) || 60000));
+    const { signal, cancel } = buildTimeoutSignal(timeoutMs);
+    const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+
+    let resp;
+    try {
+      resp = await fetchCompat(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: userPrompt }
+          ]
+        }),
+        signal
+      });
+    } catch (err) {
+      const name = err && typeof err === 'object' ? safeString(err.name) : '';
+      const msg = err && typeof err === 'object' ? safeString(err.message) : '';
+      if (name === 'AbortError' || /aborted/i.test(msg)) {
+        return sendError(res, 504, 'AI request timed out. Please try again.');
+      }
+      return sendError(res, 502, msg || 'AI request failed');
+    } finally {
+      cancel();
+    }
+
+    if (!resp || !resp.ok) {
+      let msg = 'Failed to generate rubric from prompt';
+      let status = 502;
+      try {
+        const errJson = resp ? await resp.json() : null;
+        const apiMsg = safeString(errJson && errJson.error && errJson.error.message).trim();
+        if (apiMsg) msg = apiMsg;
+      } catch {
+        const errText = resp ? safeString(await resp.text()) : '';
+        if (errText) msg = errText;
+      }
+
+      const sc = resp && typeof resp.status === 'number' ? resp.status : 0;
+      if (sc === 429) {
+        status = 429;
+        msg = 'AI quota exceeded. Please try again later.';
+      }
+      return sendError(res, status, msg);
+    }
+
+    const json = await resp.json();
+    const content = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
+    if (!content) {
+      return sendError(res, 422, 'AI returned an empty response');
+    }
+
+    const cleaned = stripMarkdownCodeFences(content);
+    const parsed = safeJsonParse(cleaned) || extractFirstJsonObject(cleaned);
+    const normalized = normalizeRubricDesignerPayload(parsed);
+    if (normalized.error || !normalized.value) {
+      return sendError(res, 422, normalized.error || 'Invalid JSON rubric returned from AI');
+    }
+
+    const rubricDesigner = {
+      ...normalized.value,
+      title: normalized.value.title && String(normalized.value.title).trim().length ? normalized.value.title : rubricTitle
+    };
+
+    const sanitized = sanitizeRubricDesignerCriteria(rubricDesigner);
+    return sendSuccess(res, sanitized);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to generate rubric from prompt');
+  }
+}
+
 async function getMyAssignments(req, res) {
   try {
     const studentId = req.user && req.user._id;
@@ -558,5 +816,6 @@ module.exports = {
   getClassAssignments,
   getMyAssignments,
   getAssignmentById,
-  getAssignmentByIdForTeacher
+  getAssignmentByIdForTeacher,
+  generateRubricDesignerFromPrompt
 };

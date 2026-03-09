@@ -4,6 +4,8 @@ const assignmentController = require('../controllers/assignment.controller');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { requireRole } = require('../middlewares/role.middleware');
 
+const { createSensitiveRateLimiter } = require('../middlewares/rateLimit.middleware');
+
 const { body, param } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
 
@@ -139,6 +141,18 @@ router.patch(
   body('allowLateResubmission').optional().isBoolean().withMessage('allowLateResubmission must be a boolean'),
   handleValidationResult,
   assignmentController.updateAssignment
+);
+
+// Teacher-only: generate rubric designer from a teacher prompt (for assignment rubric modal).
+router.post(
+  '/:id/generate-rubric-prompt',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  body('prompt').isString().trim().notEmpty().withMessage('prompt is required'),
+  handleValidationResult,
+  assignmentController.generateRubricDesignerFromPrompt
 );
 
 /**
