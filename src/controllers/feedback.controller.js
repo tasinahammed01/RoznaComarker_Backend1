@@ -464,7 +464,9 @@ async function getSubmissionFeedback(req, res) {
         built = { corrections: [], fullText: transcriptText };
       }
 
-      const aiCfg = normalizeTeacherAiConfig(role === 'teacher' ? req.user : teacherUser);
+      // Always use the persisted teacher AI config so student/teacher views compute identical scores.
+      // JWT payload may not include aiConfig and can lead to different defaults between roles.
+      const aiCfg = normalizeTeacherAiConfig(teacherUser);
       const allCorrections = Array.isArray(built && built.corrections) ? built.corrections : [];
       const corrections = filterCorrectionsByAiConfig(allCorrections, aiCfg);
       const counts = augmentCountsWithTextHeuristics(transcriptText, computeCountsFromCorrections(corrections));
@@ -629,7 +631,9 @@ async function getSubmissionFeedback(req, res) {
           built = { corrections: [], fullText: transcriptText };
         }
 
-        const aiCfg = normalizeTeacherAiConfig(role === 'teacher' ? req.user : teacherUser);
+        // Always use the persisted teacher AI config so student/teacher views compute identical scores.
+        // JWT payload may not include aiConfig and can lead to different defaults between roles.
+        const aiCfg = normalizeTeacherAiConfig(teacherUser);
         const allCorrections = Array.isArray(built && built.corrections) ? built.corrections : [];
         const corrections = filterCorrectionsByAiConfig(allCorrections, aiCfg);
         const counts = augmentCountsWithTextHeuristics(transcriptText, computeCountsFromCorrections(corrections));
