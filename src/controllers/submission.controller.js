@@ -106,8 +106,7 @@ function normalizePublicUploadsUrlForDev(req, url) {
 
   // In dev the backend may be behind a proxy / have an internal host (e.g. 172.x)
   // while clients must use a public BASE_URL. Prefer BASE_URL when available.
-  const fromEnv = (process.env.BASE_URL || '').trim();
-  const base = fromEnv.length ? fromEnv.replace(/\/+$/, '') : getRequestBaseUrl(req);
+  const base = getRequestBaseUrl(req);
   return `${base}${pathPart}`;
 }
 
@@ -176,6 +175,28 @@ function normalizeSubmissionForClient(req, submission) {
     }
   };
 
+  const normalizeFileDocUrlIfExists = (fileDoc) => {
+    if (!fileDoc || typeof fileDoc !== 'object') return null;
+    const rawUrl = typeof fileDoc.url === 'string' ? fileDoc.url : '';
+    const filenameFromUrl = extractFilename(rawUrl);
+
+    const filename = filenameFromUrl
+      ? filenameFromUrl
+      : (typeof fileDoc.filename === 'string' && fileDoc.filename.trim() ? fileDoc.filename.trim() : null);
+
+    if (!filename) return null;
+    const filePath = path.join(uploadsRoot, 'submissions', filename);
+    if (!fs.existsSync(filePath)) return null;
+
+    if (rawUrl) {
+      fileDoc.url = normalizePublicUploadsUrlForDev(req, rawUrl);
+    } else {
+      fileDoc.url = toPublicUrl(req, 'submissions', filename);
+    }
+
+    return fileDoc;
+  };
+
   if (Array.isArray(doc.fileUrls)) {
     doc.fileUrls = doc.fileUrls
       .filter((u) => {
@@ -185,6 +206,19 @@ function normalizeSubmissionForClient(req, submission) {
         return fs.existsSync(filePath);
       })
       .map((u) => normalizePublicUploadsUrlForDev(req, u));
+  }
+
+  if (Array.isArray(doc.files)) {
+    doc.files = doc.files
+      .map((f) => {
+        if (!f || typeof f !== 'object') return f;
+        return normalizeFileDocUrlIfExists(f) || null;
+      })
+      .filter(Boolean);
+  }
+
+  if (doc.file && typeof doc.file === 'object') {
+    doc.file = normalizeFileDocUrlIfExists(doc.file) || doc.file;
   }
 
   if (typeof doc.fileUrl === 'string') {
@@ -206,7 +240,12 @@ function normalizeSubmissionForClient(req, submission) {
 
 function getBaseUrl(req) {
   const fromEnv = (process.env.BASE_URL || '').trim();
-  const raw = fromEnv.length ? fromEnv : `${req.protocol}://${req.get('host')}`;
+
+  // In development always use the current request host (typically localhost).
+  // This prevents generating URLs pointing to a remote VPS when running locally.
+  const raw = process.env.NODE_ENV === 'production'
+    ? (fromEnv.length ? fromEnv : `${req.protocol}://${req.get('host')}`)
+    : `${req.protocol}://${req.get('host')}`;
   return raw.replace(/\/+$/, '');
 }
 
