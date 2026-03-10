@@ -143,6 +143,17 @@ router.patch(
   assignmentController.updateAssignment
 );
 
+router.patch(
+  '/:id/rubrics',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  body('rubrics').optional({ nullable: true }),
+  body('rubricDesigner').optional({ nullable: true }),
+  handleValidationResult,
+  assignmentController.updateAssignmentRubrics
+);
+
 // Teacher-only: generate rubric designer from a teacher prompt (for assignment rubric modal).
 router.post(
   '/:id/generate-rubric-prompt',

@@ -253,6 +253,43 @@ function normalizeRubrics(value) {
   return { criteria };
 }
 
+function rubricDesignerToRubrics(value) {
+  const d = value && typeof value === 'object' ? value : null;
+  if (!d) return null;
+
+  const rawLevels = Array.isArray(d.levels) ? d.levels : null;
+  const rawCriteria = Array.isArray(d.criteria) ? d.criteria : null;
+  if (!rawLevels || !rawCriteria) return null;
+
+  const levels = rawLevels
+    .map((l) => {
+      const lvl = l && typeof l === 'object' ? l : {};
+      const score = Number(lvl.maxPoints);
+      return {
+        title: safeString(lvl.title).trim(),
+        score: Number.isFinite(score) ? Math.max(0, Math.floor(score)) : 0
+      };
+    })
+    .slice(0, 10);
+
+  const criteria = rawCriteria
+    .map((c) => {
+      const row = c && typeof c === 'object' ? c : {};
+      const name = safeString(row.title).trim();
+      const cells = Array.isArray(row.cells) ? row.cells.map((x) => safeString(x)) : [];
+      const mappedLevels = levels.map((lvl, i) => ({
+        title: lvl.title,
+        score: lvl.score,
+        description: safeString(cells[i]).trim()
+      }));
+      return { name, levels: mappedLevels };
+    })
+    .filter((c) => c && typeof c.name === 'string')
+    .slice(0, 100);
+
+  return { criteria };
+}
+
 async function createAssignment(req, res) {
   try {
     const { title, writingType, instructions, rubric, rubrics, deadline, classId, allowLateResubmission } = req.body || {};
@@ -494,6 +531,67 @@ async function updateAssignment(req, res) {
     return sendSuccess(res, populated);
   } catch (err) {
     return sendError(res, 500, 'Failed to update assignment');
+  }
+}
+
+async function updateAssignmentRubrics(req, res) {
+  try {
+    const { id } = req.params;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return sendError(res, 400, 'Invalid assignment id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const assignment = await Assignment.findOne({
+      _id: id,
+      teacher: teacherId,
+      isActive: true
+    });
+
+    if (!assignment) {
+      return sendError(res, 404, 'Assignment not found');
+    }
+
+    let normalizedRubrics;
+    if (typeof body.rubricDesigner !== 'undefined') {
+      if (body.rubricDesigner === null) {
+        normalizedRubrics = undefined;
+      } else {
+        const converted = rubricDesignerToRubrics(body.rubricDesigner);
+        if (!converted) {
+          return sendError(res, 400, 'rubricDesigner must be valid JSON');
+        }
+        normalizedRubrics = normalizeRubrics(converted);
+      }
+    } else {
+      normalizedRubrics = normalizeRubrics(body.rubrics);
+    }
+
+    if (normalizedRubrics === null) {
+      return sendError(res, 400, 'rubrics must be valid JSON');
+    }
+
+    assignment.rubrics = normalizedRubrics;
+    const saved = await assignment.save();
+
+    await Class.updateOne(
+      { _id: assignment.class, teacher: teacherId, isActive: true },
+      { $set: { updatedAt: new Date() } }
+    );
+
+    const populated = await Assignment.findById(saved._id)
+      .populate('class')
+      .populate('teacher', '_id email displayName photoURL role');
+
+    return sendSuccess(res, populated);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to update rubrics');
   }
 }
 
@@ -812,6 +910,7 @@ async function getAssignmentById(req, res) {
 module.exports = {
   createAssignment,
   updateAssignment,
+  updateAssignmentRubrics,
   deleteAssignment,
   getClassAssignments,
   getMyAssignments,
