@@ -14,6 +14,10 @@ const {
   RubricExcelTemplateError,
   parseRubricDesignerFromExcelTemplate
 } = require('../services/rubricExcelTemplateParser.service');
+const {
+  RubricDocxTemplateError,
+  parseRubricDesignerFromDocxTemplate
+} = require('../services/docxRubricTemplateParser.service');
 const { buildOcrCorrections } = require('../services/ocrCorrections.service');
 const { normalizeOcrWordsFromStored } = require('../services/ocrCorrections.service');
 const { computeAcademicEvaluation } = require('../modules/academicEvaluationEngine');
@@ -199,10 +203,36 @@ function normalizeRubricDesignerPayload(value) {
 
   const title = safeString(obj.title).trim();
 
-  const rawLevels = Array.isArray(obj.levels) ? obj.levels : null;
-  if (!rawLevels) return { error: 'rubricDesigner.levels must be an array' };
+  const rawCriteriaCandidate = (Array.isArray(obj.criteria)
+    ? obj.criteria
+    : (obj.criteria && typeof obj.criteria === 'object' ? Object.values(obj.criteria) : null));
 
-  const levels = rawLevels
+  const rawLevelsCandidate = (Array.isArray(obj.levels)
+    ? obj.levels
+    : (obj.levels && typeof obj.levels === 'object' ? Object.values(obj.levels) : null));
+
+  let inferredLevels = null;
+  if (!rawLevelsCandidate && Array.isArray(rawCriteriaCandidate) && rawCriteriaCandidate.length) {
+    const firstRow = rawCriteriaCandidate[0] && typeof rawCriteriaCandidate[0] === 'object' ? rawCriteriaCandidate[0] : {};
+    const rawCells = Array.isArray(firstRow.cells)
+      ? firstRow.cells
+      : (firstRow.cells && typeof firstRow.cells === 'object' ? Object.values(firstRow.cells) : null);
+    const cellCount = Array.isArray(rawCells) ? rawCells.length : 0;
+    if (cellCount > 0) {
+      const count = Math.min(6, Math.max(1, cellCount));
+      inferredLevels = Array.from({ length: count }).map(() => ({ title: '', maxPoints: 0 }));
+    }
+  }
+
+  const levelsCandidate = rawLevelsCandidate || inferredLevels;
+  const rawLevels = Array.isArray(levelsCandidate)
+    ? levelsCandidate
+    : (levelsCandidate && typeof levelsCandidate === 'object' ? Object.values(levelsCandidate) : null);
+  const safeRawLevels = (Array.isArray(rawLevels) && rawLevels.length)
+    ? rawLevels
+    : Array.from({ length: 4 }).map(() => ({ title: '', maxPoints: 0 }));
+
+  const levels = safeRawLevels
     .map((l) => {
       const lvl = l && typeof l === 'object' ? l : {};
       const maxPoints = Number(lvl.maxPoints);
@@ -213,19 +243,28 @@ function normalizeRubricDesignerPayload(value) {
     })
     .slice(0, 6);
 
-  const rawCriteria = Array.isArray(obj.criteria) ? obj.criteria : null;
-  if (!rawCriteria) return { error: 'rubricDesigner.criteria must be an array' };
+  const rawCriteria = Array.isArray(rawCriteriaCandidate)
+    ? rawCriteriaCandidate
+    : (rawCriteriaCandidate && typeof rawCriteriaCandidate === 'object' ? Object.values(rawCriteriaCandidate) : null);
+  const safeRawCriteria = Array.isArray(rawCriteria) ? rawCriteria : [];
 
-  const criteria = rawCriteria
+  const criteria = safeRawCriteria
     .map((c) => {
       const row = c && typeof c === 'object' ? c : {};
-      const cells = Array.isArray(row.cells) ? row.cells.map((x) => safeString(x)) : [];
+      const rawCells = Array.isArray(row.cells)
+        ? row.cells
+        : (row.cells && typeof row.cells === 'object' ? Object.values(row.cells) : []);
+      const cells = Array.isArray(rawCells) ? rawCells.map((x) => safeCellString(x)) : [];
       return {
         title: safeString(row.title).trim(),
         cells: cells.slice(0, 10)
       };
     })
     .slice(0, 50);
+
+  if (!criteria.length) {
+    criteria.push({ title: '', cells: Array.from({ length: levels.length }).map(() => '') });
+  }
 
   return { value: { title, levels, criteria } };
 }
@@ -887,23 +926,30 @@ async function generateRubricDesignerFromContext(req, res) {
     const { signal, cancel } = buildTimeoutSignal(timeoutMs);
     const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
 
+    const maxTokens = Math.min(8000, Math.max(1200, Number(process.env.OPENROUTER_MAX_TOKENS) || 4000));
+
+    const doRequest = async (promptText) => fetchCompat(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        max_tokens: maxTokens,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: systemInstruction },
+          { role: 'user', content: promptText }
+        ]
+      }),
+      signal
+    });
+
     let resp;
     try {
-      resp = await fetchCompat(endpoint, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: systemInstruction },
-            { role: 'user', content: userPrompt }
-          ]
-        }),
-        signal
-      });
+      resp = await doRequest(userPrompt);
     } catch (err) {
       const name = err && typeof err === 'object' ? safeString(err.name) : '';
       const msg = err && typeof err === 'object' ? safeString(err.message) : '';
@@ -935,17 +981,68 @@ async function generateRubricDesignerFromContext(req, res) {
       return sendError(res, status, msg);
     }
 
-    const json = await resp.json();
-    const content = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
-    if (!content) {
-      return sendError(res, 422, 'AI returned an empty response');
+    let content = '';
+    let cleaned = '';
+    let parsed = null;
+    let normalized = { value: null };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const json = attempt === 0 ? await resp.json() : null;
+      if (attempt > 0) {
+        const { signal: signalN, cancel: cancelN } = buildTimeoutSignal(timeoutMs);
+        try {
+          const nextResp = await fetchCompat(endpoint, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model,
+              temperature: 0.2,
+              max_tokens: maxTokens,
+              response_format: { type: 'json_object' },
+              messages: [
+                { role: 'system', content: systemInstruction },
+                { role: 'user', content: buildRubricRetryPrompt(userPrompt) }
+              ]
+            }),
+            signal: signalN
+          });
+          if (!nextResp || !nextResp.ok) break;
+          const nextJson = await nextResp.json();
+          content = safeString(nextJson && nextJson.choices && nextJson.choices[0] && nextJson.choices[0].message && nextJson.choices[0].message.content).trim();
+        } catch {
+          break;
+        } finally {
+          cancelN();
+        }
+      } else {
+        content = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
+      }
+
+      if (!content) {
+        normalized = { error: 'AI returned an empty response' };
+        break;
+      }
+
+      cleaned = stripMarkdownCodeFences(content);
+      if (isLikelyTruncatedJson(cleaned)) {
+        normalized = { error: 'AI returned truncated JSON' };
+        continue;
+      }
+      parsed = safeJsonParse(cleaned) || extractFirstJsonObject(cleaned);
+      normalized = normalizeRubricDesignerPayload(parsed);
+      const candidate = normalized && normalized.value ? normalized.value : null;
+      if (normalized.error || !candidate) break;
+      if (isCompleteRubricDesigner(candidate)) break;
     }
 
-    const cleaned = stripMarkdownCodeFences(content);
-    const parsed = safeJsonParse(cleaned) || extractFirstJsonObject(cleaned);
-    const normalized = normalizeRubricDesignerPayload(parsed);
     if (normalized.error || !normalized.value) {
       return sendError(res, 422, normalized.error || 'Invalid JSON rubric returned from AI');
+    }
+
+    if (!isCompleteRubricDesigner(normalized.value)) {
+      return sendError(res, 422, 'AI returned an incomplete rubric. Please try again.');
     }
 
     const rubricDesigner = {
@@ -1012,6 +1109,49 @@ async function generateRubricDesignerFromFile(req, res) {
     const normalizedMime = normalizeMimeForRubricUpload(file);
     if (!isAllowedRubricUploadMime(normalizedMime)) {
       return sendError(res, 400, 'Invalid file type. Only PDF, DOCX, XLSX, and JSON are allowed.');
+    }
+
+    if (normalizedMime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      let rubricDesigner;
+      try {
+        rubricDesigner = await parseRubricDesignerFromDocxTemplate({
+          buffer: file.buffer,
+          title: `Rubric: ${safeString((submission && (submission.title || submission.name)) || '').trim() || 'Submission'}`
+        });
+      } catch (err) {
+        if (err instanceof RubricDocxTemplateError) {
+          return sendError(res, err.statusCode || 422, err.message || 'Invalid rubric DOCX template');
+        }
+        return sendError(res, 422, 'Invalid rubric DOCX template');
+      }
+
+      const sanitizedRubricDesigner = sanitizeRubricDesignerCriteria(rubricDesigner);
+
+      const existing = await SubmissionFeedback.findOne({ submissionId: submission._id });
+      const base = existing ? existing.toObject() : buildDefaultSubmissionFeedbackDoc({
+        submissionId: submission._id,
+        classId: submission.class,
+        studentId: submission.student,
+        teacherId
+      });
+
+      const saved = await SubmissionFeedback.findOneAndUpdate(
+        { submissionId: submission._id },
+        {
+          $set: {
+            submissionId: submission._id,
+            classId: submission.class,
+            studentId: submission.student,
+            teacherId,
+            rubricDesigner: sanitizedRubricDesigner,
+            rubricScores: base.rubricScores || {},
+            overriddenByTeacher: false
+          }
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      return sendSuccess(res, saved);
     }
 
     if (normalizedMime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
@@ -1919,6 +2059,26 @@ function safeString(v) {
   return typeof v === 'string' ? v : (v == null ? '' : String(v));
 }
 
+function safeCellString(v) {
+  if (typeof v === 'string') return v;
+  if (v == null) return '';
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (typeof v === 'object') {
+    const obj = v;
+    const preferred = [obj.description, obj.text, obj.content, obj.value, obj.label];
+    for (const x of preferred) {
+      const s = typeof x === 'string' ? x : (x == null ? '' : String(x));
+      if (s.trim().length) return s;
+    }
+    try {
+      return JSON.stringify(obj).slice(0, 2000);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
 function safeJsonParse(value) {
   if (typeof value !== 'string') return null;
   try {
@@ -2283,6 +2443,60 @@ function extractFirstJsonObject(text) {
   }
 
   return null;
+}
+
+function isCompleteRubricDesigner(designer) {
+  const d = designer && typeof designer === 'object' ? designer : null;
+  if (!d) return false;
+  const levels = Array.isArray(d.levels) ? d.levels : [];
+  const criteria = Array.isArray(d.criteria) ? d.criteria : [];
+  if (levels.length < 3 || levels.length > 6) return false;
+  if (criteria.length < 3) return false;
+  for (const row of criteria) {
+    const cells = row && typeof row === 'object' && Array.isArray(row.cells) ? row.cells : [];
+    if (cells.length !== levels.length) return false;
+  }
+  return true;
+}
+
+function buildRubricRetryPrompt(userPrompt) {
+  return `${userPrompt}\n\nIMPORTANT: Your previous response was incomplete/truncated. Return the FULL JSON object only. No markdown, no comments, no trailing text.`;
+}
+
+function isLikelyTruncatedJson(text) {
+  const s = typeof text === 'string' ? text.trim() : '';
+  if (!s) return false;
+  if (!s.startsWith('{')) return false;
+
+  let braces = 0;
+  let brackets = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) {
+        esc = false;
+        continue;
+      }
+      if (ch === '\\') {
+        esc = true;
+        continue;
+      }
+      if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      continue;
+    }
+    if (ch === '{') braces += 1;
+    else if (ch === '}') braces -= 1;
+    else if (ch === '[') brackets += 1;
+    else if (ch === ']') brackets -= 1;
+  }
+
+  return braces !== 0 || brackets !== 0 || !s.endsWith('}');
 }
 
 async function generateRubricDesignerFromPrompt(req, res) {

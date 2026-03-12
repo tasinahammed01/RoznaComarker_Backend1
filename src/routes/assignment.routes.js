@@ -1,5 +1,7 @@
 const express = require('express');
 
+const multer = require('multer');
+
 const assignmentController = require('../controllers/assignment.controller');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { requireRole } = require('../middlewares/role.middleware');
@@ -12,6 +14,11 @@ const { handleValidationResult } = require('../middlewares/validation.middleware
 const { enforceUsageLimit } = require('../middlewares/usage.middleware');
 
 const router = express.Router();
+
+const rubricUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }
+});
 
 /**
  * @openapi
@@ -164,6 +171,17 @@ router.post(
   body('prompt').isString().trim().notEmpty().withMessage('prompt is required'),
   handleValidationResult,
   assignmentController.generateRubricDesignerFromPrompt
+);
+
+router.post(
+  '/:id/rubric-file',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  handleValidationResult,
+  rubricUpload.single('file'),
+  assignmentController.uploadRubricFileForAssignment
 );
 
 /**

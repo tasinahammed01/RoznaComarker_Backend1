@@ -96,7 +96,7 @@ app.use(
   morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev')
 );
 
-app.use(createGlobalRateLimiter());
+// app.use(createGlobalRateLimiter()); // Global rate limiter disabled
 
 // Serve legacy static files with CORS support
 app.use('/uploads/assignments', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'assignments')));

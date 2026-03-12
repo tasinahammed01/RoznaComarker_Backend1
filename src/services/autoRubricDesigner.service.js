@@ -10,6 +10,26 @@ function safeString(v) {
   return typeof v === 'string' ? v : (v == null ? '' : String(v));
 }
 
+function safeCellString(v) {
+  if (typeof v === 'string') return v;
+  if (v == null) return '';
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (typeof v === 'object') {
+    const obj = v;
+    const preferred = [obj.description, obj.text, obj.content, obj.value, obj.label];
+    for (const x of preferred) {
+      const s = typeof x === 'string' ? x : (x == null ? '' : String(x));
+      if (s.trim().length) return s;
+    }
+    try {
+      return JSON.stringify(obj).slice(0, 2000);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
 function stripMarkdownCodeFences(text) {
   const s = safeString(text).trim();
   if (!s) return '';
@@ -44,10 +64,36 @@ function normalizeRubricDesignerPayload(value) {
 
   const title = safeString(obj.title).trim();
 
-  const rawLevels = Array.isArray(obj.levels) ? obj.levels : null;
-  if (!rawLevels) return { error: 'rubricDesigner.levels must be an array' };
+  const rawCriteriaCandidate = (Array.isArray(obj.criteria)
+    ? obj.criteria
+    : (obj.criteria && typeof obj.criteria === 'object' ? Object.values(obj.criteria) : null));
 
-  const levels = rawLevels
+  const rawLevelsCandidate = (Array.isArray(obj.levels)
+    ? obj.levels
+    : (obj.levels && typeof obj.levels === 'object' ? Object.values(obj.levels) : null));
+
+  let inferredLevels = null;
+  if (!rawLevelsCandidate && Array.isArray(rawCriteriaCandidate) && rawCriteriaCandidate.length) {
+    const firstRow = rawCriteriaCandidate[0] && typeof rawCriteriaCandidate[0] === 'object' ? rawCriteriaCandidate[0] : {};
+    const rawCells = Array.isArray(firstRow.cells)
+      ? firstRow.cells
+      : (firstRow.cells && typeof firstRow.cells === 'object' ? Object.values(firstRow.cells) : null);
+    const cellCount = Array.isArray(rawCells) ? rawCells.length : 0;
+    if (cellCount > 0) {
+      const count = Math.min(6, Math.max(1, cellCount));
+      inferredLevels = Array.from({ length: count }).map(() => ({ title: '', maxPoints: 0 }));
+    }
+  }
+
+  const levelsCandidate = rawLevelsCandidate || inferredLevels;
+  const rawLevels = Array.isArray(levelsCandidate)
+    ? levelsCandidate
+    : (levelsCandidate && typeof levelsCandidate === 'object' ? Object.values(levelsCandidate) : null);
+  const safeRawLevels = (Array.isArray(rawLevels) && rawLevels.length)
+    ? rawLevels
+    : Array.from({ length: 4 }).map(() => ({ title: '', maxPoints: 0 }));
+
+  const levels = safeRawLevels
     .map((l) => {
       const lvl = l && typeof l === 'object' ? l : {};
       const maxPoints = Number(lvl.maxPoints);
@@ -58,19 +104,28 @@ function normalizeRubricDesignerPayload(value) {
     })
     .slice(0, 6);
 
-  const rawCriteria = Array.isArray(obj.criteria) ? obj.criteria : null;
-  if (!rawCriteria) return { error: 'rubricDesigner.criteria must be an array' };
+  const rawCriteria = Array.isArray(rawCriteriaCandidate)
+    ? rawCriteriaCandidate
+    : (rawCriteriaCandidate && typeof rawCriteriaCandidate === 'object' ? Object.values(rawCriteriaCandidate) : null);
+  const safeRawCriteria = Array.isArray(rawCriteria) ? rawCriteria : [];
 
-  const criteria = rawCriteria
+  const criteria = safeRawCriteria
     .map((c) => {
       const row = c && typeof c === 'object' ? c : {};
-      const cells = Array.isArray(row.cells) ? row.cells.map((x) => safeString(x)) : [];
+      const rawCells = Array.isArray(row.cells)
+        ? row.cells
+        : (row.cells && typeof row.cells === 'object' ? Object.values(row.cells) : []);
+      const cells = Array.isArray(rawCells) ? rawCells.map((x) => safeCellString(x)) : [];
       return {
         title: safeString(row.title).trim(),
         cells: cells.slice(0, 10)
       };
     })
     .slice(0, 50);
+
+  if (!criteria.length) {
+    criteria.push({ title: '', cells: Array.from({ length: levels.length }).map(() => '') });
+  }
 
   return { value: { title, levels, criteria } };
 }
