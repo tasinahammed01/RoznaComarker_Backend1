@@ -125,6 +125,28 @@ const storage = multer.diskStorage({
   }
 });
 
+function collectUploadedFiles(req) {
+  const out = [];
+
+  if (req && req.file) {
+    out.push(req.file);
+  }
+
+  const rf = req && req.files;
+  if (Array.isArray(rf)) {
+    out.push(...rf);
+  } else if (rf && typeof rf === 'object') {
+    for (const key of Object.keys(rf)) {
+      const value = rf[key];
+      if (Array.isArray(value)) {
+        out.push(...value);
+      }
+    }
+  }
+
+  return out.filter(Boolean);
+}
+
 const upload = multer({
   storage,
   limits: {
@@ -151,56 +173,62 @@ function setUploadType(type) {
 }
 
 function validateUploadedFileSignature(req, res, next) {
-  const file = req && req.file;
-  if (!file || !file.path) return next();
+  const files = collectUploadedFiles(req);
+  const candidates = files.filter((f) => f && f.path);
+  if (!candidates.length) return next();
 
   try {
-    const fd = fs.openSync(file.path, 'r');
-    try {
-      const buf = Buffer.alloc(16);
-      const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
-      const snippet = buf.subarray(0, bytesRead);
+    for (const file of candidates) {
+      const fd = fs.openSync(file.path, 'r');
+      try {
+        const buf = Buffer.alloc(16);
+        const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+        const snippet = buf.subarray(0, bytesRead);
 
-      const detectedMime = detectSignatureKind(snippet);
-      if (!detectedMime || !ALLOWED_MIME_TYPES.has(detectedMime)) {
-        try {
-          fs.unlinkSync(file.path);
-        } catch (unlinkErr) {
-          logger.warn(unlinkErr);
+        const detectedMime = detectSignatureKind(snippet);
+        if (!detectedMime || !ALLOWED_MIME_TYPES.has(detectedMime)) {
+          try {
+            fs.unlinkSync(file.path);
+          } catch (unlinkErr) {
+            logger.warn(unlinkErr);
+          }
+
+          logger.warn({
+            message: 'Rejected upload: invalid file signature',
+            userId: req.user && req.user._id ? String(req.user._id) : undefined,
+            uploadType: req && req.uploadType ? String(req.uploadType) : undefined,
+            originalName: file.originalname,
+            storedName: file.filename,
+            detectedMime
+          });
+
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid file type. Only PDF, JPG, JPEG, and PNG are allowed.'
+          });
         }
-
-        logger.warn({
-          message: 'Rejected upload: invalid file signature',
-          userId: req.user && req.user._id ? String(req.user._id) : undefined,
-          originalName: file.originalname,
-          storedName: file.filename,
-          detectedMime
-        });
-
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid file type. Only PDF, JPG, JPEG, and PNG are allowed.'
-        });
+      } finally {
+        fs.closeSync(fd);
       }
-
-      return next();
-    } finally {
-      fs.closeSync(fd);
     }
+
+    return next();
   } catch (err) {
-    try {
-      if (file && file.path) {
-        fs.unlink(file.path, () => {});
+    for (const f of candidates) {
+      try {
+        if (f && f.path) {
+          fs.unlink(f.path, () => {});
+        }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
 
     logger.warn({
       message: 'Upload signature validation failed',
       error: err && err.message ? err.message : err,
       userId: req.user && req.user._id ? String(req.user._id) : undefined,
-      storedName: file && file.filename
+      uploadType: req && req.uploadType ? String(req.uploadType) : undefined
     });
 
     return res.status(400).json({
@@ -212,6 +240,14 @@ function validateUploadedFileSignature(req, res, next) {
 
 function handleUploadError(err, req, res, next) {
   if (!err) return next();
+
+  logger.warn({
+    message: 'Upload error',
+    code: err && err.code ? String(err.code) : undefined,
+    error: err && err.message ? String(err.message) : err,
+    userId: req.user && req.user._id ? String(req.user._id) : undefined,
+    uploadType: req && req.uploadType ? String(req.uploadType) : undefined
+  });
 
   if (err && err.code === 'LIMIT_FILE_SIZE') {
     const maxMB = Math.max(1, Math.ceil(getMaxFileSizeBytes() / (1024 * 1024)));

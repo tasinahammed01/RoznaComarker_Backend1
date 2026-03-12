@@ -3,6 +3,8 @@ const fs = require('fs');
 
 const File = require('../models/File');
 
+const logger = require('../utils/logger');
+
 const visionOcr = require('./visionOcr.service');
 
 function toAbsoluteStoredPath(storedPath) {
@@ -34,27 +36,50 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
   let legacyFirstOcrText = '';
   let legacyFirstOcrWords = [];
 
+  let attempted = 0;
+  let processed = 0;
+
   for (let i = 0; i < ids.length; i++) {
     const fileId = ids[i];
     if (!fileId) continue;
 
+    attempted += 1;
+
     const fileDoc = await File.findById(fileId);
     if (!fileDoc || !fileDoc.path) {
+      logger.warn({
+        message: 'OCR skipped: file doc not found or missing path',
+        fileId: String(fileId)
+      });
       continue;
     }
 
     const absolute = toAbsoluteStoredPath(fileDoc.path);
     if (!absolute) {
+      logger.warn({
+        message: 'OCR skipped: invalid stored path',
+        fileId: String(fileId),
+        storedPath: fileDoc.path
+      });
       continue;
     }
 
     if (!fs.existsSync(absolute)) {
+      logger.error({
+        message: 'OCR skipped: uploaded file not found on disk',
+        fileId: String(fileId),
+        storedPath: fileDoc.path,
+        absolutePath: absolute,
+        cwd: process.cwd()
+      });
       continue;
     }
 
     const ocr = await visionOcr.extractOcrFromImageFile(absolute);
     const text = ocr && (ocr.transcriptText || ocr.fullText) ? String(ocr.transcriptText || ocr.fullText) : '';
     const words = toStoredOcrWords(ocr && Array.isArray(ocr.words) ? ocr.words : []);
+
+    processed += 1;
 
     if (i === 0) {
       legacyFirstOcrText = text;
@@ -112,6 +137,31 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
         words
       });
     }
+  }
+
+  if (!processed || !ocrPages.length) {
+    const msg =
+      attempted && !processed
+        ? 'OCR failed: uploaded file(s) not found on disk. Check UPLOAD_BASE_PATH, working directory, and filesystem permissions on the VPS.'
+        : 'OCR failed: no OCR pages were produced. Check OCR credentials/dependencies and file validity.';
+
+    logger.error({
+      message: 'OCR failed for all uploaded files',
+      attempted,
+      processed,
+      fileIds: ids.map((x) => String(x))
+    });
+
+    targetDoc.ocrStatus = 'failed';
+    targetDoc.ocrError = msg;
+    targetDoc.ocrUpdatedAt = new Date();
+    await targetDoc.save();
+
+    return {
+      ocrText: targetDoc.ocrText || '',
+      ocrStatus: targetDoc.ocrStatus,
+      ocrError: targetDoc.ocrError
+    };
   }
 
   targetDoc.ocrStatus = 'completed';

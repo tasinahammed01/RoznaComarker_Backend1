@@ -55,6 +55,10 @@ const app = express();
 
 app.disable('x-powered-by');
 
+// Prevent conditional GET caching (ETag/If-None-Match) from returning 304 for API responses.
+// This avoids stale submission payloads after students upload and are redirected to the submission page.
+app.set('etag', false);
+
 const uploadBasePath = (process.env.UPLOAD_BASE_PATH || 'uploads').trim() || 'uploads';
 const uploadsRoot = path.join(__dirname, '..', uploadBasePath);
 fs.mkdirSync(path.join(uploadsRoot, 'assignments'), { recursive: true });
