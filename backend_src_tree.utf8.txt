@@ -1,0 +1,98 @@
+﻿Folder PATH listing for volume New Volume
+Volume serial number is 000000C9 C055:F522
+D:\CLIENT PROJECT FIVERR\1ST PROJECT\PROJECTROZNA\BACKEND\SRC
+|   app.js
+|   server.js
+|   
++---config
+|       db.js
+|       env.js
+|       firebase.js
+|       s3.js
+|       swagger.js
+|       
++---controllers
+|       assignment.controller.js
+|       class.controller.js
+|       feedback.controller.js
+|       file.controller.js
+|       membership.controller.js
+|       notification.controller.js
+|       pdf.controller.js
+|       plans.controller.js
+|       secureFile.controller.js
+|       submission.controller.js
+|       subscription.controller.js
+|       upload.controller.js
+|       user.controller.js
+|       writingCorrections.controller.js
+|       
++---middlewares
+|       cors.middleware.js
+|       error.middleware.js
+|       firebaseAuth.middleware.js
+|       jwtAuth.middleware.js
+|       notFound.middleware.js
+|       rateLimit.middleware.js
+|       role.middleware.js
+|       sanitize.middleware.js
+|       upload.middleware.js
+|       usage.middleware.js
+|       validation.middleware.js
+|       
++---models
+|       assignment.model.js
+|       class.model.js
+|       Feedback.js
+|       File.js
+|       membership.model.js
+|       notification.model.js
+|       OcrUpload.js
+|       Plan.js
+|       PricingPlans.js
+|       Submission.js
+|       SubmissionFeedback.js
+|       Upload.js
+|       user.model.js
+|       
++---modules
+|       academicEvaluationEngine.js
+|       pdfGenerator.js
+|       
++---routes
+|       assignment.routes.js
+|       auth.routes.js
+|       class.routes.js
+|       demo.routes.js
+|       feedback.routes.js
+|       file.routes.js
+|       health.routes.js
+|       membership.routes.js
+|       notification.routes.js
+|       pdf.routes.js
+|       plans.routes.js
+|       secureFile.routes.js
+|       submission.routes.js
+|       subscription.routes.js
+|       upload.routes.js
+|       user.routes.js
+|       writingCorrections.routes.js
+|       
++---services
+|       autoRubricDesigner.service.js
+|       docxRubricTemplateParser.service.js
+|       httpClient.service.js
+|       languageTool.service.js
+|       notification.service.js
+|       notificationRealtime.service.js
+|       ocrCorrections.service.js
+|       ocrPipeline.service.js
+|       rubricExcelTemplateParser.service.js
+|       upload.service.js
+|       visionOcr.service.js
+|       writingCorrections.service.js
+|       
+\---utils
+        jwt.js
+        logger.js
+        

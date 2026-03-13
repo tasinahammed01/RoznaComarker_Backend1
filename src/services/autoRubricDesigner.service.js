@@ -6,128 +6,11 @@ const SubmissionFeedback = require('../models/SubmissionFeedback');
 
 const { fetchCompat, buildTimeoutSignal } = require('./httpClient.service');
 
+const { safeJsonParse } = require('../utils/aiJsonParser');
+const { normalizeRubricDesignerPayload } = require('../utils/rubricNormalizer');
+
 function safeString(v) {
   return typeof v === 'string' ? v : (v == null ? '' : String(v));
-}
-
-function safeCellString(v) {
-  if (typeof v === 'string') return v;
-  if (v == null) return '';
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  if (typeof v === 'object') {
-    const obj = v;
-    const preferred = [obj.description, obj.text, obj.content, obj.value, obj.label];
-    for (const x of preferred) {
-      const s = typeof x === 'string' ? x : (x == null ? '' : String(x));
-      if (s.trim().length) return s;
-    }
-    try {
-      return JSON.stringify(obj).slice(0, 2000);
-    } catch {
-      return '';
-    }
-  }
-  return '';
-}
-
-function stripMarkdownCodeFences(text) {
-  const s = safeString(text).trim();
-  if (!s) return '';
-
-  const match = s.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```\s*$/);
-  if (match) return safeString(match[1]).trim();
-
-  return s;
-}
-
-function safeJsonParse(value) {
-  if (typeof value !== 'string') return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
-
-function extractFirstJsonObject(text) {
-  const s = safeString(text);
-  const first = s.indexOf('{');
-  const last = s.lastIndexOf('}');
-  if (first < 0 || last < 0 || last <= first) return null;
-  return safeJsonParse(s.slice(first, last + 1));
-}
-
-function normalizeRubricDesignerPayload(value) {
-  if (value == null) return { value: null };
-  const obj = value && typeof value === 'object' ? value : null;
-  if (!obj) return { error: 'rubricDesigner must be an object' };
-
-  const title = safeString(obj.title).trim();
-
-  const rawCriteriaCandidate = (Array.isArray(obj.criteria)
-    ? obj.criteria
-    : (obj.criteria && typeof obj.criteria === 'object' ? Object.values(obj.criteria) : null));
-
-  const rawLevelsCandidate = (Array.isArray(obj.levels)
-    ? obj.levels
-    : (obj.levels && typeof obj.levels === 'object' ? Object.values(obj.levels) : null));
-
-  let inferredLevels = null;
-  if (!rawLevelsCandidate && Array.isArray(rawCriteriaCandidate) && rawCriteriaCandidate.length) {
-    const firstRow = rawCriteriaCandidate[0] && typeof rawCriteriaCandidate[0] === 'object' ? rawCriteriaCandidate[0] : {};
-    const rawCells = Array.isArray(firstRow.cells)
-      ? firstRow.cells
-      : (firstRow.cells && typeof firstRow.cells === 'object' ? Object.values(firstRow.cells) : null);
-    const cellCount = Array.isArray(rawCells) ? rawCells.length : 0;
-    if (cellCount > 0) {
-      const count = Math.min(6, Math.max(1, cellCount));
-      inferredLevels = Array.from({ length: count }).map(() => ({ title: '', maxPoints: 0 }));
-    }
-  }
-
-  const levelsCandidate = rawLevelsCandidate || inferredLevels;
-  const rawLevels = Array.isArray(levelsCandidate)
-    ? levelsCandidate
-    : (levelsCandidate && typeof levelsCandidate === 'object' ? Object.values(levelsCandidate) : null);
-  const safeRawLevels = (Array.isArray(rawLevels) && rawLevels.length)
-    ? rawLevels
-    : Array.from({ length: 4 }).map(() => ({ title: '', maxPoints: 0 }));
-
-  const levels = safeRawLevels
-    .map((l) => {
-      const lvl = l && typeof l === 'object' ? l : {};
-      const maxPoints = Number(lvl.maxPoints);
-      return {
-        title: safeString(lvl.title).trim(),
-        maxPoints: Number.isFinite(maxPoints) ? Math.max(0, Math.floor(maxPoints)) : 0
-      };
-    })
-    .slice(0, 6);
-
-  const rawCriteria = Array.isArray(rawCriteriaCandidate)
-    ? rawCriteriaCandidate
-    : (rawCriteriaCandidate && typeof rawCriteriaCandidate === 'object' ? Object.values(rawCriteriaCandidate) : null);
-  const safeRawCriteria = Array.isArray(rawCriteria) ? rawCriteria : [];
-
-  const criteria = safeRawCriteria
-    .map((c) => {
-      const row = c && typeof c === 'object' ? c : {};
-      const rawCells = Array.isArray(row.cells)
-        ? row.cells
-        : (row.cells && typeof row.cells === 'object' ? Object.values(row.cells) : []);
-      const cells = Array.isArray(rawCells) ? rawCells.map((x) => safeCellString(x)) : [];
-      return {
-        title: safeString(row.title).trim(),
-        cells: cells.slice(0, 10)
-      };
-    })
-    .slice(0, 50);
-
-  if (!criteria.length) {
-    criteria.push({ title: '', cells: Array.from({ length: levels.length }).map(() => '') });
-  }
-
-  return { value: { title, levels, criteria } };
 }
 
 function sanitizeRubricDesignerCriteria(rubricDesigner) {
@@ -191,7 +74,37 @@ async function autoGenerateRubricDesignerForSubmission({ submissionId }) {
     return { ok: false, skipped: true, reason: 'ai_not_configured' };
   }
 
-  const systemInstruction = 'You are an academic rubric generator. Return ONLY valid JSON with no explanation, no markdown, no code blocks.';
+  const systemInstruction = `
+You are a rubric generator.
+
+Return ONLY valid JSON.
+
+DO NOT include:
+- explanations
+- markdown
+- code blocks
+- comments
+
+The JSON MUST match this structure EXACTLY:
+
+{
+ "title": "string",
+ "levels": [
+   { "title": "string", "maxPoints": number }
+ ],
+ "criteria": [
+   { "title": "string", "cells": ["string"] }
+ ]
+}
+
+Rules:
+- levels must be an ARRAY
+- criteria must be an ARRAY
+- cells must be an ARRAY
+- cells length MUST equal levels length
+- levels must be 3-5 items
+- criteria must be 3-10 rows
+`;
 
   const cappedStudentText = studentText.length > 8000 ? studentText.slice(0, 8000) : studentText;
   const assignmentTitle = safeString(assignment.title).trim();
@@ -232,22 +145,24 @@ async function autoGenerateRubricDesignerForSubmission({ submissionId }) {
   }
 
   const json = await resp.json();
-  const content = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
-  if (!content) {
+  const rawText = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
+  if (!rawText) {
     return { ok: false, skipped: false, reason: 'empty_ai_response' };
   }
 
-  const cleaned = stripMarkdownCodeFences(content);
-  const parsed = safeJsonParse(cleaned) || extractFirstJsonObject(cleaned);
-  const normalized = normalizeRubricDesignerPayload(parsed);
-  if (normalized.error || !normalized.value) {
-    return { ok: false, skipped: false, reason: 'invalid_rubric_json' };
+  console.log("AI raw response:", rawText);
+
+  const parsed = safeJsonParse(rawText);
+
+  if (!parsed) {
+    throw new Error("AI returned invalid JSON");
   }
 
-  const rubricDesigner = {
-    ...normalized.value,
-    title: normalized.value.title && String(normalized.value.title).trim().length ? normalized.value.title : rubricTitle
-  };
+  const rubricDesigner = normalizeRubricDesignerPayload(
+    parsed.rubricDesigner || parsed
+  );
+
+  console.log("Parsed rubric:", rubricDesigner);
 
   const sanitizedRubricDesigner = sanitizeRubricDesignerCriteria(rubricDesigner);
 
@@ -268,7 +183,7 @@ async function autoGenerateRubricDesignerForSubmission({ submissionId }) {
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
-  return { ok: true, skipped: false };
+  return { ok: true, skipped: false, rubricDesigner: sanitizedRubricDesigner };
 }
 
 module.exports = {

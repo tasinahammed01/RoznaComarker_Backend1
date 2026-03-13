@@ -911,7 +911,37 @@ async function generateRubricDesignerFromContext(req, res) {
       return sendError(res, 501, 'AI provider not configured');
     }
 
-    const systemInstruction = 'You are an academic rubric generator. Return ONLY valid JSON with no explanation, no markdown, no code blocks.';
+    const systemInstruction = `
+You are a rubric generator.
+
+Return ONLY valid JSON.
+
+DO NOT include:
+- explanations
+- markdown
+- code blocks
+- comments
+
+The JSON MUST match this structure EXACTLY:
+
+{
+ "title": "string",
+ "levels": [
+   { "title": "string", "maxPoints": number }
+ ],
+ "criteria": [
+   { "title": "string", "cells": ["string"] }
+ ]
+}
+
+Rules:
+- levels must be an ARRAY
+- criteria must be an ARRAY
+- cells must be an ARRAY
+- cells length MUST equal levels length
+- levels must be 3-5 items
+- criteria must be 3-10 rows
+`;
 
     const cappedStudentText = studentText.length > 8000 ? studentText.slice(0, 8000) : studentText;
     const rubricTitle = `Rubric: ${assignmentTitle || 'Submission'}`;
@@ -2548,7 +2578,37 @@ async function generateRubricDesignerFromPrompt(req, res) {
       return sendError(res, 501, 'AI provider not configured');
     }
 
-    const systemInstruction = 'You are an academic rubric generator. Return ONLY valid JSON with no explanation, no markdown, no code blocks.';
+    const systemInstruction = `
+You are a rubric generator.
+
+Return ONLY valid JSON.
+
+DO NOT include:
+- explanations
+- markdown
+- code blocks
+- comments
+
+The JSON MUST match this structure EXACTLY:
+
+{
+ "title": "string",
+ "levels": [
+   { "title": "string", "maxPoints": number }
+ ],
+ "criteria": [
+   { "title": "string", "cells": ["string"] }
+ ]
+}
+
+Rules:
+- levels must be an ARRAY
+- criteria must be an ARRAY
+- cells must be an ARRAY
+- cells length MUST equal levels length
+- levels must be 3-5 items
+- criteria must be 3-10 rows
+`;
     const userPrompt = `${prompt}\n\nOutput must match this exact JSON structure:\n{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}. Rules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. Keep criteria 3-10 rows. Keep maxPoints as integers.`;
 
     const timeoutMs = Math.min(60000, Math.max(1, Number(process.env.OPENROUTER_TIMEOUT_MS) || 60000));

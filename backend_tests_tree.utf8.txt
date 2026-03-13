@@ -1,0 +1,12 @@
+﻿Folder PATH listing for volume New Volume
+Volume serial number is 00000024 C055:F522
+D:\CLIENT PROJECT FIVERR\1ST PROJECT\PROJECTROZNA\BACKEND\TESTS
+|   README.md
+|   security.hardening.test.js
+|   submission.feedback.test.js
+|   subscription.usage.test.js
+|   
+\---helpers
+        auth.js
+        testServer.js
+        
