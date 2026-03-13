@@ -7,20 +7,17 @@ const submissionSchema = new Schema(
     student: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
-      index: true
+      required: true
     },
     assignment: {
       type: Schema.Types.ObjectId,
       ref: 'Assignment',
-      required: true,
-      index: true
+      required: true
     },
     class: {
       type: Schema.Types.ObjectId,
       ref: 'Class',
-      required: true,
-      index: true
+      required: true
     },
     // Legacy single-file fields (kept for backward compatibility)
     file: {

@@ -46,33 +46,28 @@ const feedbackSchema = new Schema(
     teacher: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
-      index: true
+      required: true
     },
     student: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
-      index: true
+      required: true
     },
     class: {
       type: Schema.Types.ObjectId,
       ref: 'Class',
-      required: true,
-      index: true
+      required: true
     },
     assignment: {
       type: Schema.Types.ObjectId,
       ref: 'Assignment',
-      required: true,
-      index: true
+      required: true
     },
     submission: {
       type: Schema.Types.ObjectId,
       ref: 'Submission',
       required: true,
-      unique: true,
-      index: true
+      unique: true
     },
     textFeedback: {
       type: String,
