@@ -24,6 +24,7 @@ const plansRoutes = require('./routes/plans.routes');
 const subscriptionRoutes = require('./routes/subscription.routes');
 const writingCorrectionsRoutes = require('./routes/writingCorrections.routes');
 const notificationRoutes = require('./routes/notification.routes');
+const rubricRoutes = require('./routes/rubric.routes');
 const notFound = require('./middlewares/notFound.middleware');
 const { errorHandler } = require('./middlewares/error.middleware');
 
@@ -126,6 +127,7 @@ app.use('/api/plans', plansRoutes);
 app.use('/api/subscription', subscriptionRoutes);
 app.use('/api/writing-corrections', writingCorrectionsRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/rubrics', rubricRoutes);
 
 app.post(
   '/upload',
