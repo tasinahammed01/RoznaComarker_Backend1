@@ -85,6 +85,7 @@ app.use(
     contentSecurityPolicy: {
       directives: cspDirectives
     },
+    crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
     crossOriginResourcePolicy: { policy: 'cross-origin' },
     frameguard: { action: 'deny' },
     hsts: process.env.NODE_ENV === 'production'
