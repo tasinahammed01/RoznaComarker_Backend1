@@ -730,7 +730,7 @@ submissionFeedback
 }) {
 // Lazy-load puppeteer to avoid test/runtime crashes when this module is imported.
 // eslint-disable-next-line global-require
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
 
 const stats = computeCorrectionStats(issues);
 const actionSteps = buildActionSteps(stats);
@@ -834,11 +834,47 @@ const transcriptHtml = transcriptText && String(transcriptText).trim()
     '--disable-features=IsolateOrigins,site-per-process'
   ];
 
-  const browser = await puppeteer.launch({
-    headless: true,
-    userDataDir,
-    args: launchArgs
-  });
+  const envExecutablePath = (process.env.PUPPETEER_EXECUTABLE_PATH && String(process.env.PUPPETEER_EXECUTABLE_PATH).trim())
+    ? String(process.env.PUPPETEER_EXECUTABLE_PATH).trim()
+    : '';
+
+  const linuxFallbackExecutablePath = process.platform === 'linux'
+    ? '/home/comarkerback/.cache/puppeteer/chrome/linux-140.0.7680.153/chrome-linux64/chrome'
+    : '';
+
+  const executablePath = envExecutablePath || linuxFallbackExecutablePath || undefined;
+
+  try {
+    console.log('[pdfGenerator] Launching puppeteer', {
+      platform: process.platform,
+      userDataDir,
+      executablePath: executablePath || '(not set)'
+    });
+  } catch {
+    // ignore
+  }
+
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      userDataDir,
+      args: launchArgs,
+      ...(executablePath ? { executablePath } : {})
+    });
+  } catch (err) {
+    try {
+      console.error('[pdfGenerator] Puppeteer launch failed', {
+        platform: process.platform,
+        userDataDir,
+        executablePath: executablePath || '(not set)'
+      });
+      console.error(err && err.stack ? err.stack : err);
+    } catch {
+      // ignore
+    }
+    throw err;
+  }
 
   try {
     const page = await browser.newPage();
