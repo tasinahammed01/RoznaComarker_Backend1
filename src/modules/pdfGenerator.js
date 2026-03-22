@@ -1,8 +1,81 @@
-const { fetch } = require('undici');
-
-const os = require('os');
+const puppeteer = require('puppeteer-core');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { fetch } = require('undici');
+
+async function launchBrowser() {
+  const executablePath =
+    process.env.PUPPETEER_EXECUTABLE_PATH ||
+    '/home/comarkerback/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome';
+
+  console.log('[PDF] Using Chromium path:', executablePath);
+
+  // Check if file exists (important for debugging)
+  if (!fs.existsSync(executablePath)) {
+    throw new Error(
+      'Chromium not found at: ' + executablePath +
+      ' | Please reinstall using: pnpm exec puppeteer browsers install chrome'
+    );
+  }
+
+  try {
+    const browser = await puppeteer.launch({
+      headless: true,
+      executablePath,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    });
+
+    console.log('[PDF] Puppeteer launched successfully');
+    return browser;
+
+  } catch (error) {
+    console.error('[PDF] Puppeteer launch failed:', error);
+    throw error;
+  }
+}
+
+async function generatePdfFromHtml(html) {
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+
+    const page = await browser.newPage();
+
+    await page.setContent(html, {
+      waitUntil: 'networkidle0'
+    });
+
+    const pdfBuffer = await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      margin: {
+        top: '14mm',
+        right: '12mm',
+        bottom: '14mm',
+        left: '12mm'
+      }
+    });
+
+    return pdfBuffer;
+
+  } catch (error) {
+    console.error('[PDF] Generation failed:', error);
+    throw error;
+
+  } finally {
+    if (browser) {
+      await browser.close();
+      console.log('[PDF] Browser closed');
+    }
+  }
+}
 
 function escapeHtml(value) {
   return String(value || '')
@@ -728,16 +801,12 @@ issues,
 feedback,
 submissionFeedback
 }) {
-// Lazy-load puppeteer to avoid test/runtime crashes when this module is imported.
-// eslint-disable-next-line global-require
-const puppeteer = require('puppeteer-core');
-
 const stats = computeCorrectionStats(issues);
 const actionSteps = buildActionSteps(stats);
 const transcriptHtml = transcriptText && String(transcriptText).trim()
 ? buildWritingCorrectionsHtml(String(transcriptText), issues)
 : '';
-  const base = (process.env.BASE_URL || '').trim().replace(/\/+$/, '');
+  const base = (process.env.BASE_URL || '').trim().replace(/\/$/, '');
   const rawImageUrl = typeof imageUrl === 'string' ? imageUrl.trim() : '';
   if (base && rawImageUrl && !/^https?:\/\//i.test(rawImageUrl) && !rawImageUrl.startsWith('data:')) {
     const rel = rawImageUrl.startsWith('/') ? rawImageUrl : `/${rawImageUrl}`;
@@ -816,82 +885,7 @@ const transcriptHtml = transcriptText && String(transcriptText).trim()
     submissionFeedbackBlocks
   });
 
-  const userDataDir = (process.env.PUPPETEER_USER_DATA_DIR && String(process.env.PUPPETEER_USER_DATA_DIR).trim())
-    ? String(process.env.PUPPETEER_USER_DATA_DIR).trim()
-    : path.join(os.tmpdir(), 'puppeteer');
-
-  try {
-    await fs.promises.mkdir(userDataDir, { recursive: true });
-  } catch {
-    // ignore; puppeteer will throw a more descriptive error if it cannot use this dir
-  }
-
-  const isWin = process.platform === 'win32';
-  const launchArgs = [
-    ...(isWin ? [] : ['--no-sandbox', '--disable-setuid-sandbox']),
-    '--disable-dev-shm-usage',
-    '--disable-gpu',
-    '--disable-features=IsolateOrigins,site-per-process'
-  ];
-
-  const envExecutablePath = (process.env.PUPPETEER_EXECUTABLE_PATH && String(process.env.PUPPETEER_EXECUTABLE_PATH).trim())
-    ? String(process.env.PUPPETEER_EXECUTABLE_PATH).trim()
-    : '';
-
-  const linuxFallbackExecutablePath = process.platform === 'linux'
-    ? '/home/comarkerback/.cache/puppeteer/chrome/linux-140.0.7680.153/chrome-linux64/chrome'
-    : '';
-
-  const executablePath = envExecutablePath || linuxFallbackExecutablePath || undefined;
-
-  try {
-    console.log('[pdfGenerator] Launching puppeteer', {
-      platform: process.platform,
-      userDataDir,
-      executablePath: executablePath || '(not set)'
-    });
-  } catch {
-    // ignore
-  }
-
-  let browser;
-  try {
-    browser = await puppeteer.launch({
-      headless: true,
-      userDataDir,
-      args: launchArgs,
-      ...(executablePath ? { executablePath } : {})
-    });
-  } catch (err) {
-    try {
-      console.error('[pdfGenerator] Puppeteer launch failed', {
-        platform: process.platform,
-        userDataDir,
-        executablePath: executablePath || '(not set)'
-      });
-      console.error(err && err.stack ? err.stack : err);
-    } catch {
-      // ignore
-    }
-    throw err;
-  }
-
-  try {
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'load' });
-
-    await waitForImages(page);
-
-    const pdfBuffer = await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      margin: { top: '14mm', right: '12mm', bottom: '14mm', left: '12mm' }
-    });
-
-    return pdfBuffer;
-  } finally {
-    await browser.close();
-  }
+  return await generatePdfFromHtml(html);
 }
 
 module.exports = {
