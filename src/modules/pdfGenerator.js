@@ -6,38 +6,27 @@ const { fetch } = require('undici');
 
 async function launchBrowser() {
   const executablePath =
-    process.env.PUPPETEER_EXECUTABLE_PATH ||
-    '/home/comarkerback/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome';
+    process.env.PUPPETEER_EXECUTABLE_PATH;
 
-  console.log('[PDF] Using Chromium path:', executablePath);
+  console.log("Using Chrome Path:", executablePath);
 
-  // Check if file exists (important for debugging)
-  if (!fs.existsSync(executablePath)) {
-    throw new Error(
-      'Chromium not found at: ' + executablePath +
-      ' | Please reinstall using: pnpm exec puppeteer browsers install chrome'
-    );
+  if (!executablePath) {
+    throw new Error("PUPPETEER_EXECUTABLE_PATH is NOT set");
   }
 
-  try {
-    const browser = await puppeteer.launch({
-      headless: true,
-      executablePath,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu'
-      ]
-    });
+  const browser = await puppeteer.launch({
+    headless: true,
+    executablePath,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu'
+    ]
+  });
 
-    console.log('[PDF] Puppeteer launched successfully');
-    return browser;
-
-  } catch (error) {
-    console.error('[PDF] Puppeteer launch failed:', error);
-    throw error;
-  }
+  console.log('[PDF] Puppeteer launched successfully');
+  return browser;
 }
 
 async function generatePdfFromHtml(html) {
