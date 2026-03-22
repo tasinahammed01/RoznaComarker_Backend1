@@ -14,6 +14,10 @@ async function launchBrowser() {
     throw new Error("PUPPETEER_EXECUTABLE_PATH is NOT set");
   }
 
+  console.log("Launching Puppeteer with:", {
+    executablePath,
+  });
+
   const browser = await puppeteer.launch({
     headless: true,
     executablePath,
@@ -55,7 +59,10 @@ async function generatePdfFromHtml(html) {
     return pdfBuffer;
 
   } catch (error) {
-    console.error('[PDF] Generation failed:', error);
+    console.error('[PDF] Generation failed FULL:', {
+      message: error.message,
+      stack: error.stack,
+    });
     throw error;
 
   } finally {
