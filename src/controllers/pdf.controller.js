@@ -8,6 +8,10 @@ const uploadService = require('../services/upload.service');
 const { buildOcrCorrections } = require('../services/ocrCorrections.service');
 
 const { ApiError } = require('../middlewares/error.middleware');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const { v4: uuidv4 } = require('uuid');
 
 function getRequestBaseUrl(req) {
   const raw = `${req.protocol}://${req.get('host')}`;
@@ -57,9 +61,9 @@ async function downloadSubmissionPdf(req, res, next) {
       throw new ApiError(501, 'PDF generation is not available in test environment');
     }
 
-    // Lazy-load to avoid pulling puppeteer/pdf rendering during test imports.
+    // Lazy-load to avoid pulling PDF generation during test imports.
     // eslint-disable-next-line global-require
-    const { renderSubmissionPdf } = require('../modules/pdfGenerator');
+    const { generatePdf } = require('../modules/pdfGenerator');
 
     const submissionId = req.params && req.params.submissionId ? String(req.params.submissionId) : '';
 
@@ -153,42 +157,52 @@ async function downloadSubmissionPdf(req, res, next) {
       date: assignmentPublishDateRaw ? new Date(assignmentPublishDateRaw).toLocaleString() : (submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : '')
     };
 
-    console.log('Generating PDF for submission', String(submission._id), 'teacher:', assignmentTeacherEmail);
-    console.log('Embedding image for submission', String(submission._id), imageUrl);
-    console.log('Adding dynamic feedback for submission', String(submission._id));
+    const tmpDir = path.join(os.tmpdir(), 'rozna-pdf');
+    await fs.promises.mkdir(tmpDir, { recursive: true });
+    const outputPath = path.join(tmpDir, `submission-feedback-${String(submission._id)}-${uuidv4()}.pdf`);
 
-    const pdfBuffer = await renderSubmissionPdf({
+    const savedPath = await generatePdf({
       header,
-      imageUrl,
       images,
       transcriptText,
       issues,
       feedback,
       submissionFeedback
-    });
+    }, outputPath);
 
     const safeFilename = 'submission-feedback.pdf';
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`);
-    res.setHeader('Content-Length', String(pdfBuffer.length));
-    res.setHeader('Cache-Control', 'no-store, max-age=0');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, Content-Length, Content-Type');
-
-    res.status(200);
-    return res.end(Buffer.isBuffer(pdfBuffer) ? pdfBuffer : Buffer.from(pdfBuffer));
+    return res.download(savedPath, safeFilename, async (err) => {
+      try {
+        await fs.promises.unlink(savedPath);
+      } catch {
+        // ignore
+      }
+      if (err) {
+        console.error('[PDF ERROR] Download failed', {
+          submissionId: String(submission._id),
+          message: err && err.message ? err.message : String(err),
+          stack: err && err.stack ? err.stack : undefined
+        });
+        return next(new ApiError(500, 'Failed to download PDF'));
+      }
+      return undefined;
+    });
   } catch (err) {
     try {
       const submissionId = req.params && req.params.submissionId ? String(req.params.submissionId) : '';
-      console.error('PDF generation failed for submission', submissionId);
-      console.error(err && err.stack ? err.stack : err);
+      console.error('[PDF ERROR] PDF generation failed', {
+        submissionId,
+        message: err && err.message ? err.message : String(err),
+        stack: err && err.stack ? err.stack : undefined
+      });
     } catch {
       // ignore
     }
-    return next(err);
+    if (err instanceof ApiError) {
+      return next(err);
+    }
+    return next(new ApiError(500, `PDF generation failed: ${err && err.message ? err.message : String(err)}`));
   }
 }
 

@@ -25,8 +25,8 @@
     "mongoose": "^9.1.2",
     "morgan": "^1.10.1",
     "multer": "^1.4.5-lts.1",
+    "pdfkit": "^0.16.0",
     "pdf-parse": "^1.1.1",
-    "puppeteer": "^24.1.1",
     "qrcode": "^1.5.4",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
@@ -39,5 +39,10 @@
     "mongodb-memory-server": "^9.1.8",
     "nodemon": "^3.1.11",
     "supertest": "^6.3.4"
+  },
+  "jest": {
+    "testMatch": [
+      "<rootDir>/tests/**/*.test.js"
+    ]
   }
 }
