@@ -172,6 +172,12 @@ async function downloadSubmissionPdf(req, res, next) {
 
     const safeFilename = 'submission-feedback.pdf';
 
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     return res.download(savedPath, safeFilename, async (err) => {
       try {
         await fs.promises.unlink(savedPath);

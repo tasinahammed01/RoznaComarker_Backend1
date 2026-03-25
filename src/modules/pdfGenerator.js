@@ -34,6 +34,75 @@ const STYLE = {
   }
 };
 
+function renderScoreAndStatisticsRow(doc, { overallBlock, statRows }) {
+  const pageX = doc.page.margins.left;
+  const pageW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const gap = 14;
+  const cardW = Math.floor((pageW - gap) / 2);
+  const cardH = 120;
+
+  ensurePageSpace(doc, cardH + 12);
+  const y = doc.y;
+
+  const overallScoreText = safeText(overallBlock && overallBlock.overallText);
+  const grade = safeText(overallBlock && overallBlock.gradeText) || 'N/A';
+  const g = grade.toUpperCase();
+  let accent = STYLE.colors.error;
+  if (g === 'A') accent = STYLE.colors.success;
+  else if (g === 'B' || g === 'C') accent = STYLE.colors.warning;
+
+  const leftX = pageX;
+  doc.save();
+  doc.roundedRect(leftX, y, cardW, cardH, 12).fillAndStroke('#FFFFFF', STYLE.colors.cardBorder);
+  doc.rect(leftX, y, 8, cardH).fill(accent);
+  doc.restore();
+  doc.font('Helvetica-Bold').fontSize(12).fillColor(STYLE.colors.neutral).text('Overall Score', leftX + 16, y + 14, { width: cardW - 32 });
+  doc.font('Helvetica-Bold').fontSize(32).fillColor(accent).text(g, leftX + 16, y + 42);
+  doc.font('Helvetica-Bold').fontSize(16).fillColor(STYLE.colors.neutral).text(overallScoreText || 'N/A', leftX + 70, y + 56, { width: cardW - 86 });
+  if (overallBlock && overallBlock.note) {
+    doc.font(STYLE.fonts.meta.name).fontSize(STYLE.fonts.meta.size).fillColor(STYLE.colors.headerFooter).text(safeText(overallBlock.note), leftX + 16, y + 92, { width: cardW - 32 });
+  }
+
+  const rightX = leftX + cardW + gap;
+  doc.save();
+  doc.roundedRect(rightX, y, cardW, cardH, 12).fillAndStroke('#FFFFFF', STYLE.colors.cardBorder);
+  doc.rect(rightX, y, 8, cardH).fill(STYLE.colors.primary);
+  doc.restore();
+  doc.font('Helvetica-Bold').fontSize(12).fillColor(STYLE.colors.neutral).text('Correction Statistics', rightX + 16, y + 14, { width: cardW - 32 });
+
+  const tableX = rightX + 16;
+  const tableY = y + 38;
+  const tableW = cardW - 32;
+  const rows = Array.isArray(statRows) ? statRows.slice(0, 7) : [];
+  const rowH = 16;
+
+  doc.save();
+  doc.rect(tableX, tableY, tableW, rowH).fill(STYLE.colors.tableHeaderBg);
+  doc.rect(tableX, tableY, tableW, rowH).strokeColor(STYLE.colors.cardBorder).lineWidth(1).stroke();
+  doc.restore();
+  doc.font('Helvetica-Bold').fontSize(10).fillColor(STYLE.colors.neutral);
+  doc.text('Category', tableX + 6, tableY + 4, { width: Math.floor(tableW * 0.68) - 12 });
+  doc.text('Count', tableX + Math.floor(tableW * 0.68) + 6, tableY + 4, { width: Math.floor(tableW * 0.32) - 12 });
+
+  doc.font(STYLE.fonts.body.name).fontSize(10).fillColor(STYLE.colors.text);
+  for (let i = 0; i < rows.length; i += 1) {
+    const ry = tableY + rowH + i * rowH;
+    const fill = i % 2 === 0 ? '#FFFFFF' : STYLE.colors.tableAltRowBg;
+    doc.save();
+    doc.rect(tableX, ry, tableW, rowH).fill(fill);
+    doc.rect(tableX, ry, tableW, rowH).strokeColor(STYLE.colors.cardBorder).lineWidth(1).stroke();
+    doc.restore();
+    const colSplit = Math.floor(tableW * 0.68);
+    doc.save();
+    doc.moveTo(tableX + colSplit, ry).lineTo(tableX + colSplit, ry + rowH).strokeColor(STYLE.colors.cardBorder).lineWidth(1).stroke();
+    doc.restore();
+    doc.text(safeText(rows[i][0]), tableX + 6, ry + 4, { width: colSplit - 12 });
+    doc.text(safeText(rows[i][1]), tableX + colSplit + 6, ry + 4, { width: tableW - colSplit - 12 });
+  }
+
+  doc.y = y + cardH + 12;
+}
+
 const CORRECTION_COLOR = {
   SP: STYLE.colors.warning,
   GR: STYLE.colors.error,
@@ -278,26 +347,28 @@ function drawHeaderFooterForPage(doc, { title, pageNumber, totalPages }) {
 }
 
 function ensurePageSpace(doc, neededHeight) {
-  if (doc.y + neededHeight > doc.page.height - 50) {
+  const footerSafeY = doc.page.height - doc.page.margins.bottom - 24;
+  if (doc.y + neededHeight > footerSafeY) {
     doc.addPage();
   }
 }
 
 function renderSectionTitle(doc, title) {
-  ensurePageSpace(doc, 40);
-  doc.moveDown(0.8);
+  ensurePageSpace(doc, 44);
+  doc.moveDown(0.7);
   const x = doc.page.margins.left;
   const w = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const y = doc.y;
+  const h = 28;
   doc.save();
-  doc.rect(x, y, w, 6).fill(STYLE.colors.primary);
+  doc.roundedRect(x, y, w, h, 8).fillAndStroke('#F3F4F6', STYLE.colors.cardBorder);
   doc.restore();
-  doc.y = y + 10;
   doc.font(STYLE.fonts.sectionTitle.name)
-    .fontSize(STYLE.fonts.sectionTitle.size)
+    .fontSize(12.5)
     .fillColor(STYLE.colors.neutral);
-  doc.text(safeText(title), { width: w });
-  doc.moveDown(0.4);
+  doc.text(safeText(title), x + 12, y + 8, { width: w - 24 });
+  doc.y = y + h;
+  doc.moveDown(0.35);
 }
 
 function renderText(doc, text, { fontName, fontSize, color, width } = {}) {
@@ -662,21 +733,54 @@ function renderDetectedIssues(doc, issues) {
     return;
   }
 
+  const x = doc.page.margins.left;
   const w = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const badgeSize = 18;
+  const pad = 10;
+
   for (const issue of list.slice(0, 120)) {
-    ensurePageSpace(doc, 60);
+    ensurePageSpace(doc, 70);
     const symbol = safeText(issue.symbol) || 'CK';
     const title = symbol === 'SP' ? 'Spelling' : symbol === 'GR' ? 'Grammar' : 'Other';
     const color = CORRECTION_COLOR[symbol] || STYLE.colors.primary;
-
     const word = safeText(issue.word || issue.originalText || issue.text);
+    const message = safeText(issue.message);
+    const suggestion = safeText(issue.suggestedText);
 
-    doc.font('Helvetica-Bold').fontSize(11).fillColor(color).text(`[${symbol}] ${title}`, { width: w });
-    doc.font(STYLE.fonts.body.name).fontSize(STYLE.fonts.body.size).fillColor(STYLE.colors.neutral);
-    if (issue.message) doc.text(`Message: ${safeText(issue.message)}`, { width: w });
-    if (word) doc.text(`Word: ${word}`, { width: w });
-    if (issue.suggestedText) doc.text(`Suggestion: ${safeText(issue.suggestedText)}`, { width: w });
-    doc.moveDown(0.6);
+    const bodyLines = [];
+    if (message) bodyLines.push(message);
+    if (word) bodyLines.push(`Word: ${word}`);
+    if (suggestion) bodyLines.push(`Suggestion: ${suggestion}`);
+    const bodyText = bodyLines.length ? bodyLines.join('\n') : 'No details available.';
+
+    doc.font(STYLE.fonts.body.name).fontSize(STYLE.fonts.body.size);
+    const titleH = doc.heightOfString(`${title}`, { width: w - pad * 2 - badgeSize - 10 });
+    const bodyH = doc.heightOfString(bodyText, { width: w - pad * 2 - badgeSize - 10 });
+    const h = Math.max(52, pad + titleH + 4 + bodyH + pad);
+
+    ensurePageSpace(doc, h + 8);
+    const y = doc.y;
+
+    doc.save();
+    doc.roundedRect(x, y, w, h, 10).fillAndStroke('#FFFFFF', STYLE.colors.cardBorder);
+    doc.restore();
+
+    const badgeX = x + pad;
+    const badgeY = y + pad;
+    doc.save();
+    doc.circle(badgeX + badgeSize / 2, badgeY + badgeSize / 2, badgeSize / 2)
+      .fillAndStroke('#FFFFFF', color);
+    doc.restore();
+    doc.font('Helvetica-Bold').fontSize(9).fillColor(color)
+      .text(symbol, badgeX, badgeY + 4, { width: badgeSize, align: 'center' });
+
+    const textX = badgeX + badgeSize + 10;
+    doc.font('Helvetica-Bold').fontSize(11).fillColor(STYLE.colors.neutral)
+      .text(title, textX, y + pad, { width: w - (textX - x) - pad });
+    doc.font(STYLE.fonts.body.name).fontSize(STYLE.fonts.body.size).fillColor(STYLE.colors.text)
+      .text(bodyText, textX, y + pad + titleH + 4, { width: w - (textX - x) - pad });
+
+    doc.y = y + h + 10;
   }
 }
 
@@ -836,9 +940,10 @@ async function generatePdf(submissionData, outputPath) {
       };
 
       renderHeader(doc, headerData);
-      renderScoreCard(doc, {
-        grade: overallBlock.gradeText,
-        overallScore: safeNumber(submissionFeedback && submissionFeedback.overallScore, safeNumber(overallBlock.overallText.split('/')[0], NaN))
+      const statRows = buildStatisticsRows({ issues, submissionFeedback });
+      renderScoreAndStatisticsRow(doc, {
+        overallBlock,
+        statRows
       });
 
       renderSectionTitle(doc, 'Images & Transcribed Text');
@@ -860,10 +965,6 @@ async function generatePdf(submissionData, outputPath) {
           await renderImageWithTranscription(doc, imgWithFullText, img.transcriptText || '', perPageIssues);
         }
       }
-
-      renderSectionTitle(doc, 'Score & Statistics');
-      const statRows = buildStatisticsRows({ issues, submissionFeedback });
-      renderTable(doc, ['Category', 'Count'], statRows, { columnWidths: [360, 140] });
 
       renderSectionTitle(doc, 'Teacher + AI Feedback');
       doc.font('Helvetica-Bold').fontSize(11).fillColor(STYLE.colors.neutral).text('Teacher Comments');
