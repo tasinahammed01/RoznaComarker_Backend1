@@ -104,9 +104,13 @@ function renderScoreAndStatisticsRow(doc, { overallBlock, statRows }) {
 }
 
 const CORRECTION_COLOR = {
-  SP: STYLE.colors.warning,
-  GR: STYLE.colors.error,
-  CK: STYLE.colors.primary
+  SP: '#d32f2f', // Spelling - red
+  GR: '#f57c00', // Grammar - orange
+  CK: '#1a73e8', // Other - blue
+  ORGANIZATION: '#2e7d32', // green
+  CONTENT: '#6a1b9a', // purple
+  VOCABULARY: '#00695c', // teal
+  MECHANICS: '#c62828' // red
 };
 
 function safeText(value) {
@@ -353,22 +357,32 @@ function ensurePageSpace(doc, neededHeight) {
   }
 }
 
-function renderSectionTitle(doc, title) {
-  ensurePageSpace(doc, 44);
-  doc.moveDown(0.7);
+function renderNumberedSectionTitle(doc, number, title) {
+  ensurePageSpace(doc, 50);
+  doc.moveDown(0.5);
+  
   const x = doc.page.margins.left;
   const w = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const y = doc.y;
   const h = 28;
+  
+  // Light grey rounded background
   doc.save();
   doc.roundedRect(x, y, w, h, 8).fillAndStroke('#F3F4F6', STYLE.colors.cardBorder);
   doc.restore();
-  doc.font(STYLE.fonts.sectionTitle.name)
-    .fontSize(12.5)
-    .fillColor(STYLE.colors.neutral);
-  doc.text(safeText(title), x + 12, y + 8, { width: w - 24 });
-  doc.y = y + h;
-  doc.moveDown(0.35);
+  
+  // Number badge
+  doc.save();
+  doc.roundedRect(x + 8, y + 4, 20, 20, 4).fill(STYLE.colors.primary);
+  doc.restore();
+  doc.font('Helvetica-Bold').fontSize(12).fillColor('#FFFFFF');
+  doc.text(String(number), x + 8, y + 7, { width: 20, align: 'center' });
+  
+  // Title text
+  doc.font('Helvetica-Bold').fontSize(14).fillColor(STYLE.colors.neutral);
+  doc.text(safeText(title), x + 36, y + 7, { width: w - 48 });
+  
+  doc.y = y + h + 10;
 }
 
 function renderText(doc, text, { fontName, fontSize, color, width } = {}) {
@@ -699,80 +713,103 @@ function renderTable(doc, headers, rows, { columnWidths } = {}) {
   doc.moveDown(0.8);
 }
 
-async function renderImageWithTranscription(doc, image, transcription, corrections) {
+async function renderImageSection(doc, image, index) {
   const urlOrPath = safeText(image && (image.url || image.path || image.imageUrl));
-  const transcriptText = safeText(transcription);
-  const perImageCorrections = Array.isArray(corrections) ? corrections : [];
-  const fullText = safeText(image && image.fullTextForCorrections);
-
-  const availableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  const maxImageHeight = 250;
-
-  ensurePageSpace(doc, maxImageHeight + 180);
+  
   if (!urlOrPath) {
-    renderText(doc, 'Image unavailable.', { fontName: 'Helvetica-Oblique', color: STYLE.colors.headerFooter });
+    ensurePageSpace(doc, 30);
+    doc.font('Helvetica-Oblique').fontSize(10).fillColor(STYLE.colors.headerFooter);
+    doc.text('Image unavailable.');
     doc.moveDown(0.6);
     return;
   }
-
+  
   const buf = await tryFetchImageBuffer(urlOrPath);
   if (!buf) {
-    renderText(doc, 'Image unavailable.', { fontName: 'Helvetica-Oblique', color: STYLE.colors.headerFooter });
+    ensurePageSpace(doc, 30);
+    doc.font('Helvetica-Oblique').fontSize(10).fillColor(STYLE.colors.headerFooter);
+    doc.text('Image unavailable.');
     doc.moveDown(0.6);
     return;
   }
-
+  
+  // Calculate image dimensions to fit within page width
+  const availableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const maxImageHeight = 280;
+  
   let dims;
   try {
     dims = sizeOf(buf);
   } catch {
     dims = null;
   }
-
+  
+  ensurePageSpace(doc, maxImageHeight + 20);
+  
+  // Add border around image
+  const imgX = doc.page.margins.left;
+  const imgY = doc.y;
+  
+  doc.save();
+  doc.roundedRect(imgX - 2, imgY - 2, availableWidth + 4, maxImageHeight + 4, 4)
+    .strokeColor(STYLE.colors.cardBorder)
+    .lineWidth(1)
+    .stroke();
+  doc.restore();
+  
+  // Render image with proper scaling
   doc.image(buf, {
     fit: [availableWidth, maxImageHeight],
-    align: 'center'
+    align: 'center',
+    valign: 'center'
   });
-
+  
+  // Calculate actual rendered height
   const drawnHeight = dims && dims.width && dims.height
     ? Math.min(maxImageHeight, (availableWidth * dims.height) / dims.width)
     : maxImageHeight;
-  doc.y += Math.min(maxImageHeight, Math.max(120, drawnHeight)) + 12;
+    
+  doc.y += Math.min(maxImageHeight, Math.max(120, drawnHeight)) + 20;
+}
 
-  doc.font('Helvetica-Bold').fontSize(11).fillColor(STYLE.colors.neutral).text('Transcribed Text', {
-    width: availableWidth
-  });
-  doc.moveDown(0.25);
-
+function renderTranscribedTextSection(doc, transcription, corrections) {
+  const transcriptText = safeText(transcription);
+  const perImageCorrections = Array.isArray(corrections) ? corrections : [];
+  
+  const availableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const boxX = doc.page.margins.left;
   const boxW = availableWidth;
-  const padding = 10;
-  const localizedCorrections = adaptCorrectionsToLocalText(
-    transcriptText || 'No transcription available for this image.',
-    perImageCorrections,
-    fullText
-  );
-
+  const padding = 12;
+  
+  // Create tokens from text and corrections
   const tokens = tokensFromTextAndCorrections(
     transcriptText || 'No transcription available for this image.',
-    localizedCorrections.length ? localizedCorrections : perImageCorrections
+    perImageCorrections
   );
-
+  
+  // Calculate required height for the text box
   doc.save();
   doc.font(STYLE.fonts.mono.name).fontSize(STYLE.fonts.mono.size);
-  const estimatedHeight = doc.heightOfString(transcriptText || 'No transcription available for this image.', {
+  const estimatedHeight = doc.heightOfString(transcriptText || 'No transcription available.', {
     width: boxW - padding * 2
   });
-  const boxH = estimatedHeight + padding * 2 + 8;
-  ensurePageSpace(doc, boxH + 10);
+  const boxH = Math.max(80, estimatedHeight + padding * 2 + 16);
+  doc.restore();
+  
+  ensurePageSpace(doc, boxH + 20);
+  
+  // Text box background
   const boxY = doc.y;
+  doc.save();
   doc.roundedRect(boxX, boxY, boxW, boxH, 10).fillAndStroke('#F9FAFB', STYLE.colors.cardBorder);
   doc.restore();
-
+  
+  // Render tokens with line wrapping and highlighting
   doc.x = boxX + padding;
   doc.y = boxY + padding;
   renderTokensLineWrapped(doc, tokens, { width: boxW - padding * 2 });
-  doc.y = boxY + boxH + 12;
+  
+  doc.y = boxY + boxH + 15;
 }
 
 function renderDetectedIssues(doc, issues) {
@@ -834,24 +871,59 @@ function renderDetectedIssues(doc, issues) {
   }
 }
 
-function renderHeader(doc, data) {
-  const w = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  doc.font(STYLE.fonts.title.name).fontSize(STYLE.fonts.title.size).fillColor(STYLE.colors.neutral);
-  doc.text('Submission Feedback Report', { width: w });
-  doc.moveDown(0.4);
-
-  doc.font(STYLE.fonts.meta.name).fontSize(STYLE.fonts.meta.size).fillColor(STYLE.colors.neutral);
-  renderKeyValueRow(doc, 'Student Email', data.studentEmail);
-  renderKeyValueRow(doc, 'Submission ID', data.submissionId);
-  renderKeyValueRow(doc, 'Date', data.date);
-
-  doc.moveDown(0.6);
-  doc.moveTo(doc.page.margins.left, doc.y)
-    .lineTo(doc.page.width - doc.page.margins.right, doc.y)
+function renderMainHeader(doc, data) {
+  const pageX = doc.page.margins.left;
+  const pageW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const y = doc.y;
+  
+  // Left side: Title and student info
+  doc.font('Helvetica-Bold').fontSize(20).fillColor(STYLE.colors.neutral);
+  doc.text('Submission Feedback Report', pageX, y, { width: pageW * 0.6 });
+  
+  doc.moveDown(0.3);
+  doc.font('Helvetica').fontSize(10).fillColor(STYLE.colors.headerFooter);
+  doc.text(`Student: ${safeText(data.studentEmail)}`, pageX, doc.y);
+  doc.text(`Submission ID: ${safeText(data.submissionId)}`, pageX, doc.y);
+  doc.text(`Date: ${safeText(data.date)}`, pageX, doc.y);
+  
+  // Right side: Score box
+  const scoreBoxWidth = 140;
+  const scoreBoxHeight = 70;
+  const scoreX = pageX + pageW - scoreBoxWidth;
+  const scoreY = y;
+  
+  const grade = safeText(data.grade) || 'N/A';
+  const scoreText = data.overallScore ? `${Math.round(data.overallScore * 10) / 10}/100` : 'N/A';
+  
+  // Grade color
+  const g = grade.toUpperCase();
+  let accent = STYLE.colors.error;
+  if (g === 'A') accent = STYLE.colors.success;
+  else if (g === 'B' || g === 'C') accent = STYLE.colors.warning;
+  
+  // Score box background
+  doc.save();
+  doc.roundedRect(scoreX, scoreY, scoreBoxWidth, scoreBoxHeight, 8).fillAndStroke('#FFFFFF', STYLE.colors.cardBorder);
+  doc.rect(scoreX, scoreY, 6, scoreBoxHeight).fill(accent);
+  doc.restore();
+  
+  // Grade and score text
+  doc.font('Helvetica-Bold').fontSize(36).fillColor(accent);
+  doc.text(grade, scoreX + 16, scoreY + 12);
+  
+  doc.font('Helvetica-Bold').fontSize(14).fillColor(STYLE.colors.neutral);
+  doc.text(scoreText, scoreX + 16, scoreY + 45);
+  
+  doc.y = y + scoreBoxHeight + 20;
+  
+  // Separator line
+  doc.moveTo(pageX, doc.y)
+    .lineTo(pageX + pageW, doc.y)
     .lineWidth(1)
     .strokeColor(STYLE.colors.rule)
     .stroke();
-  doc.moveDown(0.8);
+  
+  doc.y += 15;
 }
 
 function buildFeedbackBlocks({ submissionFeedback, feedback }) {
@@ -983,56 +1055,84 @@ async function generatePdf(submissionData, outputPath) {
     doc.pipe(stream);
 
     const render = async () => {
+      // Main Header with title and score
       const headerData = {
         studentEmail,
         submissionId,
-        date: dateText
+        date: dateText,
+        overallScore: overallBlock?.overallScore,
+        grade: overallBlock?.gradeText
       };
 
-      renderHeader(doc, headerData);
+      renderMainHeader(doc, headerData);
+      
+      // Section 1: Original Image
+      renderNumberedSectionTitle(doc, 1, 'Original Image');
+      if (!images.length) {
+        doc.font('Helvetica-Oblique').fontSize(10).fillColor(STYLE.colors.headerFooter);
+        doc.text('No images attached.');
+        doc.moveDown(0.6);
+      } else {
+        for (let i = 0; i < images.length; i += 1) {
+          const img = images[i] && typeof images[i] === 'object' ? images[i] : {};
+          // eslint-disable-next-line no-await-in-loop
+          await renderImageSection(doc, img, i);
+        }
+      }
+
+      // Section 2: Transcribed Text with highlights
+      renderNumberedSectionTitle(doc, 2, 'Transcribed Text (with highlights)');
+      if (!images.length) {
+        renderTranscribedTextSection(doc, transcriptText, issues);
+      } else {
+        for (let i = 0; i < images.length; i += 1) {
+          const img = images[i] && typeof images[i] === 'object' ? images[i] : {};
+          const pageNumber = i + 1;
+          const perPageIssues = issues.filter((c) => Number(c.page) === pageNumber);
+          // eslint-disable-next-line no-await-in-loop
+          await renderTranscribedTextSection(doc, img.transcriptText || '', perPageIssues);
+        }
+      }
+
+      // Section 3: Score & Statistics
+      renderNumberedSectionTitle(doc, 3, 'Score & Statistics');
       const statRows = buildStatisticsRows({ issues, submissionFeedback });
       renderScoreAndStatisticsRow(doc, {
         overallBlock,
         statRows
       });
 
-      renderSectionTitle(doc, 'Images & Transcribed Text');
-      if (!images.length) {
-        renderText(doc, 'No images attached.', { fontName: 'Helvetica-Oblique', color: STYLE.colors.headerFooter });
-        doc.moveDown(0.6);
+      // Section 4: Detailed Feedback
+      renderNumberedSectionTitle(doc, 4, 'Detailed Feedback');
+      
+      // Teacher Comments
+      doc.font('Helvetica-Bold').fontSize(12).fillColor(STYLE.colors.neutral);
+      doc.text('Teacher Comments');
+      doc.moveDown(0.3);
+      if (teacherComment) {
+        doc.font('Helvetica').fontSize(10).fillColor(STYLE.colors.text);
+        doc.text(teacherComment, { width: doc.page.width - doc.page.margins.left - doc.page.margins.right });
       } else {
-        for (let i = 0; i < images.length; i += 1) {
-          const img = images[i] && typeof images[i] === 'object' ? images[i] : {};
-          const pageNumber = i + 1;
-          const perPageIssues = issues.filter((c) => Number(c.page) === pageNumber);
-          const imgWithFullText = { ...img, fullTextForCorrections: transcriptText };
-          ensurePageSpace(doc, 20);
-          doc.font('Helvetica-Bold').fontSize(12).fillColor(STYLE.colors.neutral).text(`Image ${i + 1}`, {
-            width: doc.page.width - doc.page.margins.left - doc.page.margins.right
-          });
-          doc.moveDown(0.4);
-          // eslint-disable-next-line no-await-in-loop
-          await renderImageWithTranscription(doc, imgWithFullText, img.transcriptText || '', perPageIssues);
-        }
+        doc.font('Helvetica-Oblique').fontSize(10).fillColor(STYLE.colors.headerFooter);
+        doc.text('No comments provided');
       }
+      doc.moveDown(0.8);
+      
+      // AI Comments
+      doc.font('Helvetica-Bold').fontSize(12).fillColor(STYLE.colors.neutral);
+      doc.text('AI Comments');
+      doc.moveDown(0.3);
+      if (aiOverallComments) {
+        doc.font('Helvetica').fontSize(10).fillColor(STYLE.colors.text);
+        doc.text(aiOverallComments, { width: doc.page.width - doc.page.margins.left - doc.page.margins.right });
+      } else {
+        doc.font('Helvetica-Oblique').fontSize(10).fillColor(STYLE.colors.headerFooter);
+        doc.text('No AI comments available');
+      }
+      doc.moveDown(0.8);
 
-      renderSectionTitle(doc, 'Teacher + AI Feedback');
-      doc.font('Helvetica-Bold').fontSize(11).fillColor(STYLE.colors.neutral).text('Teacher Comments');
-      doc.moveDown(0.25);
-      renderText(doc, teacherComment || 'No data available.', {
-        fontName: teacherComment ? STYLE.fonts.body.name : 'Helvetica-Oblique',
-        color: teacherComment ? STYLE.colors.text : STYLE.colors.headerFooter
-      });
-      doc.moveDown(0.6);
-      doc.font('Helvetica-Bold').fontSize(11).fillColor(STYLE.colors.neutral).text('AI Overall Comments');
-      doc.moveDown(0.25);
-      renderText(doc, aiOverallComments || 'No data available.', {
-        fontName: aiOverallComments ? STYLE.fonts.body.name : 'Helvetica-Oblique',
-        color: aiOverallComments ? STYLE.colors.text : STYLE.colors.headerFooter
-      });
-      doc.moveDown(0.6);
-
-      renderSectionTitle(doc, 'Rubric Scores');
+      // Section 5: Rubric Table
+      renderNumberedSectionTitle(doc, 5, 'Rubric Scores');
       const rubricTableRows = rubricRows.map((r) => ([
         safeText(r.criteria),
         String(Number.isFinite(r.score) ? Math.round(r.score * 10) / 10 : ''),
@@ -1043,24 +1143,35 @@ async function generatePdf(submissionData, outputPath) {
         columnWidths: [170, 80, 90, 160]
       });
 
-      renderSectionTitle(doc, 'AI Per Category');
-      const aiRows = aiPerCategoryRows.map((r) => ([
-        safeText(r.category),
-        safeText(r.scoreText),
-        safeText(r.message)
-      ]));
-      renderTable(doc, ['Category', 'Score', 'Feedback'], aiRows.length ? aiRows : [['', '', 'No data available.']], {
-        columnWidths: [140, 70, 290]
-      });
+      // Optional: AI Per Category (if data exists)
+      if (aiPerCategoryRows.length > 0) {
+        renderNumberedSectionTitle(doc, 6, 'AI Per Category Feedback');
+        const aiRows = aiPerCategoryRows.map((r) => ([
+          safeText(r.category),
+          safeText(r.scoreText),
+          safeText(r.message)
+        ]));
+        renderTable(doc, ['Category', 'Score', 'Feedback'], aiRows, {
+          columnWidths: [140, 70, 290]
+        });
+      }
 
-      renderSectionTitle(doc, 'Strengths / Improvements / Actions');
-      renderCard(doc, 'Strengths', strengths, STYLE.colors.success);
-      renderCard(doc, 'Areas for Improvement', areasForImprovement, STYLE.colors.warning);
-      renderCard(doc, 'Action Steps', actionSteps, '#6a1b9a');
+      // Optional: Strengths/Improvements (if data exists)
+      if (strengths.length || areasForImprovement.length || actionSteps.length) {
+        renderNumberedSectionTitle(doc, aiPerCategoryRows.length > 0 ? 7 : 6, 'Strengths / Areas for Improvement');
+        renderCard(doc, 'Strengths', strengths, STYLE.colors.success);
+        renderCard(doc, 'Areas for Improvement', areasForImprovement, STYLE.colors.warning);
+        renderCard(doc, 'Action Steps', actionSteps, '#6a1b9a');
+      }
 
-      renderSectionTitle(doc, 'Detected Issues');
-      renderDetectedIssues(doc, issues);
+      // Optional: Detected Issues (if data exists)
+      if (issues.length > 0) {
+        const sectionNum = 6 + (aiPerCategoryRows.length > 0 ? 1 : 0) + (strengths.length || areasForImprovement.length || actionSteps.length ? 1 : 0);
+        renderNumberedSectionTitle(doc, sectionNum, 'Detected Issues');
+        renderDetectedIssues(doc, issues);
+      }
 
+      // Add header/footer to all pages
       const range = doc.bufferedPageRange();
       for (let i = 0; i < range.count; i += 1) {
         doc.switchToPage(range.start + i);
