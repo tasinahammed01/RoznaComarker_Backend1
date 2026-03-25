@@ -492,36 +492,86 @@ function tokensFromTextAndCorrections(text, corrections) {
 function renderTokensLineWrapped(doc, tokens, { width }) {
   const w = width || (doc.page.width - doc.page.margins.left - doc.page.margins.right);
   const list = Array.isArray(tokens) ? tokens : [];
-  doc.font(STYLE.fonts.mono.name).fontSize(STYLE.fonts.mono.size);
+  const startX = doc.x;
+  const startY = doc.y;
+  let x = startX;
+  let y = startY;
+  const lineHeight = STYLE.fonts.mono.size * 1.4;
+  const spaceWidth = doc.widthOfString(' ');
+  const badgeWidth = 22;
+  const badgeHeight = 14;
+  const bgPadding = 2;
 
   for (const token of list) {
     const type = safeText(token.type) || 'normal';
-    const color = CORRECTION_COLOR[type] || (type === 'normal' ? '#000000' : STYLE.colors.primary);
     const text = typeof token.text === 'string' ? token.text : '';
-    const suggestion = safeText(token.suggestion);
 
     if (!text) continue;
 
     if (type === 'normal') {
-      doc.fillColor('#000000');
-      doc.fontSize(STYLE.fonts.mono.size);
-      doc.text(`${text} `, { width: w, continued: true });
+      doc.font(STYLE.fonts.mono.name).fontSize(STYLE.fonts.mono.size).fillColor('#000000');
+      const words = text.split(/(\s+)/);
+      for (const word of words) {
+        if (!word) continue;
+        const wordWidth = doc.widthOfString(word);
+        if (x + wordWidth > startX + w && x > startX) {
+          x = startX;
+          y += lineHeight;
+        }
+        doc.text(word, x, y, { continued: false });
+        x += wordWidth;
+      }
       continue;
     }
 
-    doc.fillColor(color);
-    doc.fontSize(STYLE.fonts.mono.size);
-    doc.text(`${text} `, { width: w, continued: true, underline: true });
+    // Error token - draw with background, underline, and symbol badge
+    const color = CORRECTION_COLOR[type] || STYLE.colors.primary;
+    const words = text.split(/(\s+)/).filter(s => s && !/^\s+$/.test(s));
 
-    if (suggestion) {
-      doc.fillColor(STYLE.colors.headerFooter);
-      doc.fontSize(STYLE.fonts.meta.size);
-      doc.text(`[${suggestion}] `, { width: w, continued: true });
-      doc.fontSize(STYLE.fonts.mono.size);
+    for (const word of words) {
+      if (!word) continue;
+
+      doc.font(STYLE.fonts.mono.name).fontSize(STYLE.fonts.mono.size);
+      const wordWidth = doc.widthOfString(word);
+      const totalWidth = wordWidth + badgeWidth + spaceWidth * 2;
+
+      // Check if we need to wrap to next line
+      if (x + totalWidth > startX + w && x > startX) {
+        x = startX;
+        y += lineHeight;
+      }
+
+      // Draw background highlight
+      doc.save();
+      doc.fillColor(color + '33'); // Add transparency (20% opacity hex)
+      doc.rect(x - bgPadding, y - bgPadding, wordWidth + bgPadding * 2, lineHeight).fill();
+      doc.restore();
+
+      // Draw underline
+      doc.save();
+      doc.strokeColor(color);
+      doc.lineWidth(1);
+      doc.moveTo(x, y + STYLE.fonts.mono.size + 1).lineTo(x + wordWidth, y + STYLE.fonts.mono.size + 1).stroke();
+      doc.restore();
+
+      // Draw the word text
+      doc.fillColor('#000000');
+      doc.text(word, x, y, { continued: false });
+
+      // Draw symbol badge
+      const badgeX = x + wordWidth + spaceWidth;
+      doc.save();
+      doc.roundedRect(badgeX, y + 1, badgeWidth, badgeHeight, 3).fillAndStroke(color, color);
+      doc.restore();
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#FFFFFF');
+      doc.text(type, badgeX, y + 3, { width: badgeWidth, align: 'center' });
+
+      x += totalWidth;
     }
   }
 
-  doc.text('');
+  doc.x = startX;
+  doc.y = y + lineHeight;
 }
 
 function renderScoreCard(doc, data) {
