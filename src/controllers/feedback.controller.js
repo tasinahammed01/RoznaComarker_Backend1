@@ -1664,22 +1664,104 @@ async function generateAiSubmissionFeedback(req, res) {
       return Math.max(0, Math.min(5, x));
     };
 
-    const canUseRubricsAi = Boolean(normalizedAssignmentRubrics);
+    const fallbackStructured = (() => {
+      const safeText = typeof transcriptText === 'string' ? transcriptText : '';
+      const wordCount = safeText.trim() ? safeText.trim().split(/\s+/).filter(Boolean).length : 0;
 
-    if (canUseRubricsAi) {
-      const apiKey = safeString(process.env.OPENROUTER_API_KEY).trim();
-      const baseUrl = safeString(process.env.OPENROUTER_BASE_URL).trim() || 'https://openrouter.ai/api/v1';
-      const model = safeString(process.env.LLAMA_MODEL).trim() || 'meta-llama/llama-3-8b-instruct';
+      const grammarCount = Number(counts && counts.GRAMMAR) || 0;
+      const mechanicsCount = Number(counts && counts.MECHANICS) || 0;
+      const organizationCount = Number(counts && counts.ORGANIZATION) || 0;
+      const contentCount = Number(counts && counts.CONTENT) || 0;
+
+      const penaltyCfg = strictnessPenaltyConfig(aiCfg.strictness);
+
+      const grammarMechanicsIssues = grammarCount + mechanicsCount;
+      const grammarMechanics = clamp5(5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * penaltyCfg.gm);
+
+      const paragraphCount = safeText.split(/\n\s*\n+/).filter((p) => String(p).trim()).length;
+      const paragraphPenalty = paragraphCount >= 3 ? 0 : paragraphCount === 2 ? 0.5 : 1;
+      const structureOrganization = clamp5(5 - paragraphPenalty - (organizationCount / Math.max(1, wordCount)) * penaltyCfg.org);
+
+      const lengthPenalty = wordCount >= 120 ? 0 : wordCount >= 60 ? 0.5 : 1;
+      const contentRelevance = clamp5(5 - lengthPenalty - (contentCount / Math.max(1, wordCount)) * penaltyCfg.content);
+
+      const overallRubricScore = clamp5((grammarMechanics + structureOrganization + contentRelevance) / 3);
+
+      const rubricComments = buildDynamicRubricComments({
+        wordCount,
+        grammarCount,
+        mechanicsCount,
+        organizationCount,
+        contentCount,
+        paragraphCount,
+        grammarMechanics,
+        structureOrganization,
+        contentRelevance,
+        overallRubricScore
+      });
+
+      return {
+        grammar: { score: clamp5(grammarMechanics), text: safeString(rubricComments.grammarMechanics).trim() },
+        structure: { score: clamp5(structureOrganization), text: safeString(rubricComments.structureOrganization).trim() },
+        content: { score: clamp5(contentRelevance), text: safeString(rubricComments.contentRelevance).trim() },
+        overall: { score: clamp5(overallRubricScore), text: safeString(rubricComments.overallRubricScore).trim() }
+      };
+    })();
+
+    const validateStructured = (value) => {
+      const obj = value && typeof value === 'object' ? value : null;
+      if (!obj) return null;
+      const pick = (k) => {
+        const it = obj[k] && typeof obj[k] === 'object' ? obj[k] : null;
+        if (!it) return null;
+        const score = clamp5(it.score);
+        const text = safeString(it.text).trim();
+        if (!Number.isFinite(score)) return null;
+        if (!text.length) return null;
+        // Never allow HTML content through this endpoint.
+        if (text.includes('<') || text.includes('>')) return null;
+        return { score, text };
+      };
+      const grammar = pick('grammar');
+      const structure = pick('structure');
+      const content = pick('content');
+      const overall = pick('overall');
+      if (!grammar || !structure || !content || !overall) return null;
+      return { grammar, structure, content, overall };
+    };
+
+    let structured = fallbackStructured;
+    try {
+      const openRouterKey = safeString(process.env.OPENROUTER_API_KEY).trim();
+      const openAiKey = safeString(process.env.OPENAI_API_KEY).trim();
+
+      const provider = openRouterKey ? 'openrouter' : (openAiKey ? 'openai' : 'none');
+      const apiKey = provider === 'openrouter' ? openRouterKey : (provider === 'openai' ? openAiKey : '');
+
+      const baseUrl = provider === 'openai'
+        ? (safeString(process.env.OPENAI_BASE_URL).trim() || 'https://api.openai.com/v1')
+        : (safeString(process.env.OPENROUTER_BASE_URL).trim() || 'https://openrouter.ai/api/v1');
+
+      const model = provider === 'openai'
+        ? (safeString(process.env.OPENAI_MODEL).trim() || 'gpt-4o-mini')
+        : (safeString(process.env.OPENROUTER_MODEL || process.env.LLAMA_MODEL).trim() || 'meta-llama/llama-3-8b-instruct');
 
       if (apiKey) {
-        const { systemInstruction, userPrompt } = buildRubricsPrompt({
-          assignmentTitle: assignment && assignment.title,
-          correctedText,
-          corrections,
-          rubrics: normalizedAssignmentRubrics
-        });
+        const systemInstruction = 'You are a grading assistant. Return ONLY JSON. Do not include markdown or code fences.';
+        const userPrompt = [
+          'Return ONLY JSON with this exact shape:',
+          '{"grammar":{"score":number,"text":string},"structure":{"score":number,"text":string},"content":{"score":number,"text":string},"overall":{"score":number,"text":string}}',
+          '',
+          'Rules:',
+          '- Do NOT include titles.',
+          '- Scores must be numbers from 0 to 5 (decimals allowed).',
+          '- Text must be plain text (no HTML).',
+          '',
+          'Essay text:',
+          correctedText
+        ].join('\n');
 
-        const timeoutMs = Math.min(60000, Math.max(1, Number(process.env.OPENROUTER_TIMEOUT_MS) || 60000));
+        const timeoutMs = Math.min(60000, Math.max(1, Number(process.env.OPENROUTER_TIMEOUT_MS) || 45000));
         const { signal, cancel } = buildTimeoutSignal(timeoutMs);
         const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
 
@@ -1696,7 +1778,8 @@ async function generateAiSubmissionFeedback(req, res) {
               messages: [
                 { role: 'system', content: systemInstruction },
                 { role: 'user', content: userPrompt }
-              ]
+              ],
+              temperature: 0.2
             }),
             signal
           });
@@ -1706,194 +1789,30 @@ async function generateAiSubmissionFeedback(req, res) {
 
         if (resp && resp.ok) {
           const json = await resp.json();
-          const content = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
-          const cleaned = stripMarkdownCodeFences(content);
+          const contentRaw = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
+          const cleaned = stripMarkdownCodeFences(contentRaw);
           const parsed = safeJsonParse(cleaned) || extractFirstJsonObject(cleaned);
-          const normalized = normalizeAiRubricEvaluationResponse(parsed);
-
-          if (normalized) {
-            const gmCrit = findCriterionByTitle(normalizedAssignmentRubrics, 'Grammar & Mechanics');
-            const soCrit = findCriterionByTitle(normalizedAssignmentRubrics, 'Structure & Organization');
-            const crCrit = findCriterionByTitle(normalizedAssignmentRubrics, 'Content Relevance');
-
-            const maxScore = (crit) => {
-              const lvls = Array.isArray(crit && crit.levels) ? crit.levels : [];
-              const max = lvls.reduce((m, l) => Math.max(m, Number(l && l.score) || 0), 0);
-              return Number.isFinite(max) ? max : 0;
-            };
-
-            const gm5 = toScore5FromLevel({ selectedLevelScore: normalized.gm.score, maxLevelScore: maxScore(gmCrit) });
-            const so5 = toScore5FromLevel({ selectedLevelScore: normalized.so.score, maxLevelScore: maxScore(soCrit) });
-            const cr5 = toScore5FromLevel({ selectedLevelScore: normalized.cr.score, maxLevelScore: maxScore(crCrit) });
-
-            const overallRubricScore5 = clampScore5((gm5 + so5 + cr5) / 3);
-
-            const rubricScores = {
-              CONTENT: { score: cr5, maxScore: 5, comment: normalized.cr.feedback },
-              ORGANIZATION: { score: so5, maxScore: 5, comment: normalized.so.feedback },
-              GRAMMAR: { score: gm5, maxScore: 5, comment: normalized.gm.feedback },
-              VOCABULARY: { score: 0, maxScore: 5, comment: '' },
-              MECHANICS: { score: overallRubricScore5, maxScore: 5, comment: normalized.overall.feedback }
-            };
-
-            const evaluation = computeAcademicEvaluation({
-              text: correctedText,
-              issues: corrections,
-              teacherOverrideScores: null
-            });
-
-            const languageToolScore100 = clampScore100(evaluation && evaluation.effectiveRubric && evaluation.effectiveRubric.overallScore);
-            const overallScore100 = computeCombinedOverallScore100({ rubricScores, languageToolScore100, rubricWeight: 0.7 });
-            const grade = gradeFromOverallScore100(overallScore100);
-
-            const detailedFeedback = ensureDetailedFeedbackDynamic({
-              detailedFeedback: buildDetailedFeedbackDefaults({ structuredFeedback: evaluation && evaluation.structuredFeedback }),
-              counts
-            });
-
-            const aiFeedback = buildAiFeedbackDefaults({
-              rubricScores,
-              structuredFeedback: evaluation && evaluation.structuredFeedback,
-              overallComments: ''
-            });
-
-            const update = {
-              submissionId: submission._id,
-              classId: submission.class,
-              studentId: submission.student,
-              teacherId,
-              overallScore: overallScore100,
-              grade,
-              correctionStats: {
-                content: counts.CONTENT,
-                grammar: counts.GRAMMAR,
-                organization: counts.ORGANIZATION,
-                vocabulary: counts.VOCABULARY,
-                mechanics: counts.MECHANICS
-              },
-              detailedFeedback,
-              rubricScores,
-              aiFeedback,
-              overriddenByTeacher: false
-            };
-
-            const saved = await SubmissionFeedback.findOneAndUpdate(
-              { submissionId: submission._id },
-              { $set: update },
-              { upsert: true, new: true, setDefaultsOnInsert: true }
-            );
-
-            return sendSuccess(res, saved);
+          const validated = validateStructured(parsed);
+          if (validated) {
+            structured = validated;
+          } else {
+            console.warn('[generateAiSubmissionFeedback] Invalid AI JSON shape; using fallback');
           }
+        } else {
+          console.warn('[generateAiSubmissionFeedback] AI provider failed; using fallback', {
+            status: resp && resp.status,
+            statusText: resp && resp.statusText
+          });
         }
       }
+    } catch (e) {
+      console.warn('[generateAiSubmissionFeedback] AI generation exception; using fallback', e);
     }
 
-    const safeText = typeof transcriptText === 'string' ? transcriptText : '';
-    const wordCount = safeText.trim() ? safeText.trim().split(/\s+/).filter(Boolean).length : 0;
-
-    const grammarCount = Number(counts && counts.GRAMMAR) || 0;
-    const mechanicsCount = Number(counts && counts.MECHANICS) || 0;
-    const organizationCount = Number(counts && counts.ORGANIZATION) || 0;
-    const contentCount = Number(counts && counts.CONTENT) || 0;
-
-    const penaltyCfg = strictnessPenaltyConfig(aiCfg.strictness);
-
-    const grammarMechanicsIssues = grammarCount + mechanicsCount;
-    const grammarMechanics = clamp5(5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * penaltyCfg.gm);
-
-    const paragraphCount = safeText.split(/\n\s*\n+/).filter((p) => String(p).trim()).length;
-    const paragraphPenalty = paragraphCount >= 3 ? 0 : paragraphCount === 2 ? 0.5 : 1;
-    const structureOrganization = clamp5(5 - paragraphPenalty - (organizationCount / Math.max(1, wordCount)) * penaltyCfg.org);
-
-    const lengthPenalty = wordCount >= 120 ? 0 : wordCount >= 60 ? 0.5 : 1;
-    const contentRelevance = clamp5(5 - lengthPenalty - (contentCount / Math.max(1, wordCount)) * penaltyCfg.content);
-
-    const overallRubricScore = clamp5((grammarMechanics + structureOrganization + contentRelevance) / 3);
-
-    console.log('Dynamic AI rubric generated for submission', submissionId);
-
-    const rubricComments = buildDynamicRubricComments({
-      wordCount,
-      grammarCount,
-      mechanicsCount,
-      organizationCount,
-      contentCount,
-      paragraphCount,
-      grammarMechanics,
-      structureOrganization,
-      contentRelevance,
-      overallRubricScore
+    return res.json({
+      success: true,
+      data: structured
     });
-
-    const rubricScores = {
-      CONTENT: { score: contentRelevance, maxScore: 5, comment: rubricComments.contentRelevance },
-      ORGANIZATION: { score: structureOrganization, maxScore: 5, comment: rubricComments.structureOrganization },
-      GRAMMAR: { score: grammarMechanics, maxScore: 5, comment: rubricComments.grammarMechanics },
-      VOCABULARY: { score: 0, maxScore: 5, comment: '' },
-      MECHANICS: { score: overallRubricScore, maxScore: 5, comment: rubricComments.overallRubricScore }
-    };
-
-    const evaluation = computeAcademicEvaluation({
-      text: correctedText,
-      issues: corrections,
-      teacherOverrideScores: null
-    });
-
-    const languageToolScore100 = clampScore100(evaluation && evaluation.effectiveRubric && evaluation.effectiveRubric.overallScore);
-    const overallScore100 = computeCombinedOverallScore100({ rubricScores, languageToolScore100, rubricWeight: 0.7 });
-    const grade = gradeFromOverallScore100(overallScore100);
-
-    const overallComments = buildGeneralComments({
-      text: correctedText,
-      rubricScores: {
-        CONTENT: contentRelevance,
-        ORGANIZATION: structureOrganization,
-        GRAMMAR: grammarMechanics
-      },
-      counts
-    });
-    const detailedFeedback = ensureDetailedFeedbackDynamic({
-      detailedFeedback: buildDetailedFeedbackDefaults({ structuredFeedback: evaluation && evaluation.structuredFeedback }),
-      counts
-    });
-    const aiFeedback = buildAiFeedbackDefaults({
-      rubricScores,
-      structuredFeedback: evaluation && evaluation.structuredFeedback,
-      overallComments
-    });
-
-    // Teacher comment must start empty and must not be AI-generated.
-    aiFeedback.overallComments = '';
-    console.log('Teacher comment initialized as empty');
-
-    const update = {
-      submissionId: submission._id,
-      classId: submission.class,
-      studentId: submission.student,
-      teacherId,
-      overallScore: overallScore100,
-      grade,
-      correctionStats: {
-        content: counts.CONTENT,
-        grammar: counts.GRAMMAR,
-        organization: counts.ORGANIZATION,
-        vocabulary: counts.VOCABULARY,
-        mechanics: counts.MECHANICS
-      },
-      detailedFeedback,
-      rubricScores,
-      aiFeedback,
-      overriddenByTeacher: false
-    };
-
-    const saved = await SubmissionFeedback.findOneAndUpdate(
-      { submissionId: submission._id },
-      { $set: update },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-
-    return sendSuccess(res, saved);
   } catch (err) {
     return sendError(res, 500, 'Failed to generate AI feedback');
   }
