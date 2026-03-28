@@ -225,6 +225,29 @@ router.delete(
  *       404:
  *         description: Invalid join code
  */
-router.get('/join/:joinCode', classController.joinByCode);
+router.post(
+  '/:classId/invite',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('classId').isMongoId().withMessage('Invalid class id'),
+  body('emails').isArray({ min: 1 }).withMessage('emails must be a non-empty array'),
+  body('emails.*').isEmail().withMessage('All emails must be valid'),
+  handleValidationResult,
+  classController.inviteStudents
+);
+
+router.get(
+  '/:classId/invitations',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('classId').isMongoId().withMessage('Invalid class id'),
+  handleValidationResult,
+  classController.getClassInvitations
+);
+
+router.get(
+  '/join/:joinCode',
+  classController.joinByCode
+);
 
 module.exports = router;

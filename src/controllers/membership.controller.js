@@ -3,6 +3,8 @@ const mongoose = require('mongoose');
 const Class = require('../models/class.model');
 const Membership = require('../models/membership.model');
 const User = require('../models/user.model');
+const { createNotification } = require('../services/notification.service');
+const { publishToUser } = require('../services/notificationRealtime.service');
 
 const { ensureActivePlan, incrementUsage } = require('../middlewares/usage.middleware');
 
@@ -83,6 +85,42 @@ async function joinClassByCode(req, res) {
     }
 
     await incrementUsage(teacher._id, { students: 1 });
+
+    // Send real-time notification to teacher
+    try {
+      const student = await User.findById(studentId).select('_id email displayName');
+      
+      // Create notification for teacher
+      await createNotification({
+        recipientId: teacher._id,
+        actorId: studentId,
+        type: 'student_joined',
+        title: 'New Student Joined',
+        description: `${student?.displayName || student?.email} has joined your class "${classDoc.name}"`,
+        data: {
+          classId: classDoc._id,
+          studentId: studentId,
+          className: classDoc.name
+        }
+      });
+
+      // Send real-time event to teacher's SSE stream
+      publishToUser({
+        userId: teacher._id,
+        event: 'student_joined',
+        payload: {
+          classId: String(classDoc._id),
+          studentId: String(studentId),
+          studentName: student?.displayName || student?.email,
+          className: classDoc.name,
+          joinedAt: membership.joinedAt
+        }
+      });
+
+    } catch (notificationErr) {
+      // Log error but don't fail the join process
+      console.error('Failed to send notification:', notificationErr);
+    }
 
     return sendSuccess(res, {
       membership,

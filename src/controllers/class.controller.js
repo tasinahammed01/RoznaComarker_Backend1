@@ -6,6 +6,9 @@ const Class = require('../models/class.model');
 const Membership = require('../models/membership.model');
 const Assignment = require('../models/assignment.model');
 const Submission = require('../models/Submission');
+const Invitation = require('../models/invitation.model');
+const User = require('../models/user.model');
+const { sendInvitationEmail } = require('../services/email.service');
 
 const { incrementUsage } = require('../middlewares/usage.middleware');
 
@@ -436,6 +439,177 @@ async function getClassSummary(req, res) {
   }
 }
 
+async function inviteStudents(req, res) {
+  try {
+    const { classId } = req.params;
+    const { emails } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(classId)) {
+      return sendError(res, 400, 'Invalid class id');
+    }
+
+    if (!Array.isArray(emails) || emails.length === 0) {
+      return sendError(res, 400, 'emails array is required');
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const invalidEmails = emails.filter(email => !emailRegex.test(email));
+    if (invalidEmails.length > 0) {
+      return sendError(res, 400, `Invalid email format: ${invalidEmails.join(', ')}`);
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const classDoc = await Class.findOne({
+      _id: classId,
+      teacher: teacherId,
+      isActive: true
+    });
+
+    if (!classDoc) {
+      return sendError(res, 404, 'Class not found');
+    }
+
+    const results = [];
+    const joinUrl = buildJoinUrl(req, classDoc.joinCode);
+
+    for (const email of emails) {
+      const trimmedEmail = email.toLowerCase().trim();
+      
+      try {
+        // Check if user already exists
+        const existingUser = await User.findOne({ email: trimmedEmail });
+        
+        // Check if student is already a member
+        if (existingUser) {
+          const existingMembership = await Membership.findOne({
+            class: classDoc._id,
+            student: existingUser._id,
+            status: 'active'
+          });
+          
+          if (existingMembership) {
+            results.push({
+              email: trimmedEmail,
+              status: 'already_joined',
+              message: 'Student is already a member of this class'
+            });
+            continue;
+          }
+        }
+
+        // Check if invitation already exists and is valid
+        const existingInvitation = await Invitation.findValidInvitation(classDoc._id, trimmedEmail);
+        if (existingInvitation) {
+          results.push({
+            email: trimmedEmail,
+            status: 'already_invited',
+            message: 'Invitation already sent',
+            invitationId: existingInvitation._id
+          });
+          continue;
+        }
+
+        // Create new invitation
+        const invitation = await Invitation.create({
+          class: classDoc._id,
+          teacher: teacherId,
+          email: trimmedEmail
+        });
+
+        // Send email invitation
+        const emailResult = await sendInvitationEmail({
+          to: trimmedEmail,
+          className: classDoc.name,
+          classCode: classDoc.joinCode,
+          joinUrl,
+          teacherName: req.user?.displayName || req.user?.email
+        });
+
+        if (emailResult.success) {
+          results.push({
+            email: trimmedEmail,
+            status: 'invited',
+            message: 'Invitation sent successfully',
+            invitationId: invitation._id,
+            token: invitation.token,
+            joinUrl,
+            joinCode: classDoc.joinCode,
+            expiresAt: invitation.expiresAt
+          });
+        } else {
+          results.push({
+            email: trimmedEmail,
+            status: 'error',
+            message: `Failed to send email: ${emailResult.error}`
+          });
+        }
+
+      } catch (err) {
+        results.push({
+          email: trimmedEmail,
+          status: 'error',
+          message: err.message || 'Failed to send invitation'
+        });
+      }
+    }
+
+    return sendSuccess(res, {
+      classId: classDoc._id,
+      className: classDoc.name,
+      results,
+      summary: {
+        total: emails.length,
+        invited: results.filter(r => r.status === 'invited').length,
+        already_joined: results.filter(r => r.status === 'already_joined').length,
+        already_invited: results.filter(r => r.status === 'already_invited').length,
+        errors: results.filter(r => r.status === 'error').length
+      }
+    });
+
+  } catch (err) {
+    return sendError(res, 500, 'Failed to send invitations');
+  }
+}
+
+async function getClassInvitations(req, res) {
+  try {
+    const { classId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(classId)) {
+      return sendError(res, 400, 'Invalid class id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const classDoc = await Class.findOne({
+      _id: classId,
+      teacher: teacherId,
+      isActive: true
+    });
+
+    if (!classDoc) {
+      return sendError(res, 404, 'Class not found');
+    }
+
+    const invitations = await Invitation.find({ class: classDoc._id })
+      .sort({ invitedAt: -1 })
+      .select('email status invitedAt expiresAt acceptedAt token');
+
+    return sendSuccess(res, invitations);
+
+  } catch (err) {
+    return sendError(res, 500, 'Failed to fetch invitations');
+  }
+}
+
 module.exports = {
   createClass,
   getMyClasses,
@@ -444,5 +618,7 @@ module.exports = {
   joinByCode,
   getClassSummary,
   getClassStudents,
-  removeStudentFromClass
+  removeStudentFromClass,
+  inviteStudents,
+  getClassInvitations
 };
