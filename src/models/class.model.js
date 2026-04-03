@@ -9,7 +9,21 @@ const classSchema = new Schema(
       required: true,
       trim: true
     },
+    subjectLevel: {
+      type: String,
+      trim: true
+    },
+    startDate: {
+      type: Date
+    },
+    endDate: {
+      type: Date
+    },
     description: {
+      type: String,
+      trim: true
+    },
+    bannerUrl: {
       type: String,
       trim: true
     },

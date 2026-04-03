@@ -10,7 +10,7 @@ const Invitation = require('../models/invitation.model');
 const User = require('../models/user.model');
 const { sendInvitationEmail } = require('../services/email.service');
 
-const { incrementUsage } = require('../middlewares/usage.middleware');
+const { incrementUsage, tryDeleteUploadedFile } = require('../middlewares/usage.middleware');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -28,6 +28,27 @@ function sendError(res, statusCode, message) {
 
 function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function toOptionalTrimmedString(value) {
+  if (value === null) return undefined;
+  if (typeof value === 'undefined') return undefined;
+  if (typeof value !== 'string') return undefined;
+  const t = value.trim();
+  return t ? t : undefined;
+}
+
+function toOptionalDate(value) {
+  if (value === null) return undefined;
+  if (typeof value === 'undefined') return undefined;
+  const d = new Date(value);
+  if (!Number.isFinite(d.getTime())) return null;
+  return d;
+}
+
+function getRequestBaseUrl(req) {
+  const raw = `${req.protocol}://${req.get('host')}`;
+  return raw.replace(/\/+$/, '');
 }
 
 function buildJoinUrl(req, joinCode) {
@@ -55,7 +76,7 @@ function normalizeClassroomDefaultsFromUser(user) {
 
 async function createClass(req, res) {
   try {
-    const { name, description } = req.body || {};
+    const { name, description, subjectLevel, startDate, endDate } = req.body || {};
 
     if (!isNonEmptyString(name)) {
       return sendError(res, 400, 'name is required');
@@ -68,6 +89,18 @@ async function createClass(req, res) {
 
     const defaults = normalizeClassroomDefaultsFromUser(req.user);
 
+    const normalizedSubjectLevel = toOptionalTrimmedString(subjectLevel);
+
+    const parsedStartDate = toOptionalDate(startDate);
+    if (parsedStartDate === null) {
+      return sendError(res, 400, 'startDate must be a valid date');
+    }
+
+    const parsedEndDate = toOptionalDate(endDate);
+    if (parsedEndDate === null) {
+      return sendError(res, 400, 'endDate must be a valid date');
+    }
+
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const joinCode = uuidv4();
       const joinUrl = buildJoinUrl(req, joinCode);
@@ -77,6 +110,9 @@ async function createClass(req, res) {
         const createdClass = await Class.create({
           name: name.trim(),
           description: isNonEmptyString(description) ? description.trim() : undefined,
+          subjectLevel: normalizedSubjectLevel,
+          startDate: parsedStartDate || undefined,
+          endDate: parsedEndDate || undefined,
           teacher: teacherId,
           joinCode,
           qrCodeUrl,
@@ -103,7 +139,7 @@ async function createClass(req, res) {
 async function updateClass(req, res) {
   try {
     const { id } = req.params;
-    const { name, description } = req.body || {};
+    const { name, description, subjectLevel, startDate, endDate } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return sendError(res, 400, 'Invalid class id');
@@ -138,6 +174,40 @@ async function updateClass(req, res) {
         classDoc.description = description.trim();
       } else {
         return sendError(res, 400, 'description must be a string');
+      }
+    }
+
+    if (typeof subjectLevel !== 'undefined') {
+      if (subjectLevel === null) {
+        classDoc.subjectLevel = undefined;
+      } else if (typeof subjectLevel === 'string') {
+        classDoc.subjectLevel = subjectLevel.trim() || undefined;
+      } else {
+        return sendError(res, 400, 'subjectLevel must be a string');
+      }
+    }
+
+    if (typeof startDate !== 'undefined') {
+      if (startDate === null) {
+        classDoc.startDate = undefined;
+      } else {
+        const d = new Date(startDate);
+        if (!Number.isFinite(d.getTime())) {
+          return sendError(res, 400, 'startDate must be a valid date');
+        }
+        classDoc.startDate = d;
+      }
+    }
+
+    if (typeof endDate !== 'undefined') {
+      if (endDate === null) {
+        classDoc.endDate = undefined;
+      } else {
+        const d = new Date(endDate);
+        if (!Number.isFinite(d.getTime())) {
+          return sendError(res, 400, 'endDate must be a valid date');
+        }
+        classDoc.endDate = d;
       }
     }
 
@@ -422,6 +492,10 @@ async function getClassSummary(req, res) {
       id: String(classDoc._id),
       name: classDoc.name,
       description: classDoc.description || '',
+      subjectLevel: classDoc.subjectLevel || '',
+      startDate: classDoc.startDate ? new Date(classDoc.startDate).toISOString() : null,
+      endDate: classDoc.endDate ? new Date(classDoc.endDate).toISOString() : null,
+      bannerUrl: classDoc.bannerUrl || '',
       joinCode: classDoc.joinCode,
       gradingScale: classDoc.gradingScale,
       teacher: {
@@ -436,6 +510,57 @@ async function getClassSummary(req, res) {
     });
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch class summary');
+  }
+}
+
+async function uploadClassBanner(req, res) {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      tryDeleteUploadedFile(req.file);
+      return sendError(res, 400, 'Invalid class id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) {
+      tryDeleteUploadedFile(req.file);
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const classDoc = await Class.findOne({
+      _id: id,
+      teacher: teacherId,
+      isActive: true
+    });
+
+    if (!classDoc) {
+      tryDeleteUploadedFile(req.file);
+      return sendError(res, 404, 'Class not found');
+    }
+
+    if (!req.file || !req.file.filename) {
+      return sendError(res, 400, 'No file provided');
+    }
+
+    const fileUrl = `/uploads/class-banners/${req.file.filename}`;
+
+    classDoc.bannerUrl = fileUrl;
+    await classDoc.save();
+
+    const size = req.uploadSizeMB;
+    if (typeof size === 'number' && Number.isFinite(size) && size > 0) {
+      await incrementUsage(teacherId, { storageMB: size });
+    }
+
+    return res.json({
+      success: true,
+      fileUrl,
+      fileName: req.file.filename
+    });
+  } catch (err) {
+    tryDeleteUploadedFile(req.file);
+    return sendError(res, 500, 'Failed to upload banner');
   }
 }
 
@@ -620,5 +745,6 @@ module.exports = {
   getClassStudents,
   removeStudentFromClass,
   inviteStudents,
-  getClassInvitations
+  getClassInvitations,
+  uploadClassBanner
 };

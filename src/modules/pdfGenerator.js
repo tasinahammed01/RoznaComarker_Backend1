@@ -240,6 +240,7 @@ async function tryFetchImageBuffer(urlOrPath) {
 async function renderImageSection(doc, img) {
   const urlOrPath = safeText(img && (img.url || img.path || img.imageUrl));
   const buf = urlOrPath ? await tryFetchImageBuffer(urlOrPath) : null;
+  const corrections = Array.isArray(img && img.corrections) ? img.corrections : [];
 
   if (!buf) {
     ensureSpace(doc, 30);
@@ -275,6 +276,57 @@ async function renderImageSection(doc, img) {
   doc.restore();
 
   doc.image(buf, L + padX, boxY + 6, { width: imgW, height: imgH });
+
+  const normalizeBox = (bbox) => {
+    if (!bbox || typeof bbox !== 'object') return null;
+    const x = Number(bbox.x);
+    const y = Number(bbox.y);
+    const w = Number(bbox.w);
+    const h = Number(bbox.h);
+    if (![x, y, w, h].every((n) => Number.isFinite(n))) return null;
+    if (w <= 0 || h <= 0) return null;
+    if ([x, y, w, h].every((n) => n >= 0 && n <= 1)) {
+      return { x: x * 100, y: y * 100, w: w * 100, h: h * 100 };
+    }
+    return { x, y, w, h };
+  };
+
+  const renderOverlayBox = (bbox, color, label) => {
+    const normalized = normalizeBox(bbox);
+    if (!normalized) return;
+
+    const left = L + padX + (normalized.x / 100) * imgW;
+    const top = boxY + 6 + (normalized.y / 100) * imgH;
+    const width = (normalized.w / 100) * imgW;
+    const height = (normalized.h / 100) * imgH;
+
+    doc.save();
+    doc.fillOpacity(0.16);
+    doc.strokeOpacity(0.92);
+    doc.roundedRect(left, top, width, height, 2).fillAndStroke(color, color);
+    doc.restore();
+
+    if (label) {
+      const badgeW = Math.max(18, Math.min(28, doc.widthOfString(label, { font: 'Helvetica-Bold', size: 7 }) + 8));
+      const badgeH = 12;
+      const bx = Math.max(left, Math.min(left + width - badgeW, left));
+      const by = Math.max(boxY + 6, top - badgeH - 2);
+      doc.save();
+      doc.roundedRect(bx, by, badgeW, badgeH, 3).fill(color);
+      doc.restore();
+      doc.font('Helvetica-Bold').fontSize(7).fillColor('#FFFFFF').text(label, bx, by + 2, { width: badgeW, align: 'center' });
+    }
+  };
+
+  for (const corr of corrections) {
+    const symbol = safeText(corr && corr.symbol) || 'CK';
+    const color = CORRECTION_COLOR[symbol] || STYLE.colors.primary;
+    const boxes = Array.isArray(corr && corr.bboxList) ? corr.bboxList : [];
+    for (const bbox of boxes) {
+      renderOverlayBox(bbox, color, symbol);
+    }
+  }
+
   doc.y = boxY + imgH + 20;
 }
 
@@ -501,8 +553,12 @@ function renderScoreAndStats(doc, { overallBlock, statRows }) {
     doc.save();
     doc.rect(tableX, ry, tableW, rowH).fill(fill);
     doc.rect(tableX, ry, tableW, rowH).strokeColor(STYLE.colors.cardBorder).lineWidth(0.5).stroke();
-    doc.moveTo(tableX + col1W, ry).lineTo(tableX + col1W, ry + rowH)
-      .strokeColor(STYLE.colors.cardBorder).lineWidth(0.5).stroke();
+    let lx = tableX;
+    for (let i = 1; i < 2; i++) {
+      lx += col1W;
+      doc.moveTo(lx, ry).lineTo(lx, ry + rowH)
+        .strokeColor(STYLE.colors.cardBorder).lineWidth(0.5).stroke();
+    }
     doc.restore();
     doc.font('Helvetica').fontSize(9).fillColor(STYLE.colors.text)
       .text(safeText(row[0]), tableX + 5, ry + 4, { width: col1W - 10 });
@@ -691,6 +747,14 @@ function normalizeCorrections(issues) {
         startChar: safeNumber(c.startChar, NaN),
         endChar: safeNumber(c.endChar, NaN),
         word: safeText(c.word || c.originalText || c.text),
+        bboxList: Array.isArray(c.bboxList)
+          ? c.bboxList.map((b) => ({
+              x: safeNumber(b && b.x, NaN),
+              y: safeNumber(b && b.y, NaN),
+              w: safeNumber(b && b.w, NaN),
+              h: safeNumber(b && b.h, NaN)
+            })).filter((b) => [b.x, b.y, b.w, b.h].every((n) => Number.isFinite(n) && n >= 0))
+          : []
       };
     })
     .filter(Boolean);
@@ -795,7 +859,7 @@ async function generatePdf(submissionData, outputPath) {
   const overallBlock = getOverallScoreBlock({ feedback, submissionFeedback });
 
   const title = 'Submission Feedback Report';
-  const studentEmail = safeText(header.studentName || header.studentEmail);
+  const studentEmail = safeText(header.studentEmail || header.studentName);
   const submissionId = safeText(header.submissionId);
   const dateText = safeText(header.date) || formatDate(new Date());
   const grade = safeText(overallBlock.gradeText);
@@ -831,6 +895,7 @@ async function generatePdf(submissionData, outputPath) {
 
         renderAfterPairSections(doc, {
           startNum: 3, overallBlock, issues, submissionFeedback,
+          feedback,
           teacherComment, aiOverallComments, rubricRows, aiPerCategoryRows,
           strengths, areasForImprovement, actionSteps,
         });
@@ -849,7 +914,10 @@ async function generatePdf(submissionData, outputPath) {
             : 'Transcribed Text (with highlights)';
 
           renderSectionTitle(doc, imgSecNum, imgLabel);
-          await renderImageSection(doc, img);
+          await renderImageSection(doc, {
+            ...img,
+            corrections: issues.filter(c => Number(c.page) === pageNum)
+          });
 
           renderSectionTitle(doc, txtSecNum, txtLabel);
 
@@ -863,6 +931,7 @@ async function generatePdf(submissionData, outputPath) {
         renderAfterPairSections(doc, {
           startNum: images.length * 2 + 1,
           overallBlock, issues, submissionFeedback,
+          feedback, // Pass feedback into the image-based PDF rendering branch
           teacherComment, aiOverallComments, rubricRows, aiPerCategoryRows,
           strengths, areasForImprovement, actionSteps,
         });
@@ -893,7 +962,7 @@ async function generatePdf(submissionData, outputPath) {
 // SECTIONS AFTER THE IMAGE/TRANSCRIPTION PAIRS
 // ─────────────────────────────────────────────────────────────────────────────
 function renderAfterPairSections(doc, {
-  startNum, overallBlock, issues, submissionFeedback,
+  startNum, overallBlock, issues, submissionFeedback, feedback,
   teacherComment, aiOverallComments, rubricRows, aiPerCategoryRows,
   strengths, areasForImprovement, actionSteps,
 }) {
@@ -901,38 +970,44 @@ function renderAfterPairSections(doc, {
 
   // Score & Statistics
   renderSectionTitle(doc, n++, 'Score & Statistics');
+
   renderScoreAndStats(doc, {
     overallBlock,
     statRows: buildStatRows({ issues, submissionFeedback }),
   });
 
   // Detailed Feedback
-  renderSectionTitle(doc, n++, 'Detailed Feedback');
+  renderSectionTitle(doc, n++, 'Detailed Feedback & Suggestions');
 
-  doc.font('Helvetica-Bold').fontSize(11).fillColor(STYLE.colors.neutral).text('Teacher Comments');
-  doc.moveDown(0.25);
-  if (teacherComment) {
+  const renderTextCard = (title, text, emptyText) => {
+    const body = safeText(text) || emptyText;
+    const L = doc.page.margins.left;
+    const W = pageContentWidth(doc);
+    const pad = STYLE.spacing.cardPadding;
+    doc.font('Helvetica-Bold').fontSize(11);
+    const titleH = doc.heightOfString(safeText(title), { width: W - pad * 2 - 5 });
+    doc.font('Helvetica').fontSize(9.5);
+    const bodyH = doc.heightOfString(body, { width: W - pad * 2 - 5 });
+    const h = pad + titleH + 6 + bodyH + pad;
+    ensureSpace(doc, h + 6);
+    const y = doc.y;
+    doc.save();
+    doc.roundedRect(L, y, W, h, 8).fillAndStroke('#FFFFFF', STYLE.colors.cardBorder);
+    doc.rect(L, y, 5, h).fill(STYLE.colors.primary);
+    doc.restore();
+    doc.font('Helvetica-Bold').fontSize(11).fillColor(STYLE.colors.neutral)
+      .text(safeText(title), L + pad + 5, y + pad, { width: W - pad * 2 - 5 });
     doc.font('Helvetica').fontSize(9.5).fillColor(STYLE.colors.text)
-      .text(teacherComment, { width: pageContentWidth(doc) });
-  } else {
-    doc.font('Helvetica-Oblique').fontSize(9.5).fillColor(STYLE.colors.headerFooter)
-      .text('No comments provided');
-  }
-  doc.moveDown(0.7);
+      .text(body, L + pad + 5, y + pad + titleH + 6, { width: W - pad * 2 - 5 });
+    doc.y = y + h + 10;
+  };
 
-  doc.font('Helvetica-Bold').fontSize(11).fillColor(STYLE.colors.neutral).text('AI Comments');
-  doc.moveDown(0.25);
-  if (aiOverallComments) {
-    doc.font('Helvetica').fontSize(9.5).fillColor(STYLE.colors.text)
-      .text(aiOverallComments, { width: pageContentWidth(doc) });
-  } else {
-    doc.font('Helvetica-Oblique').fontSize(9.5).fillColor(STYLE.colors.headerFooter)
-      .text('No AI comments available');
-  }
-  doc.moveDown(0.7);
+  renderTextCard('Teacher Comments', teacherComment, 'No teacher comments provided.');
+  renderTextCard('AI Overall Comments', aiOverallComments, 'No AI overall comments available.');
 
   // Rubric Scores
   renderSectionTitle(doc, n++, 'Rubric Scores');
+
   renderTable(
     doc,
     ['Criteria', 'Score', 'Max Score', 'Comment'],
@@ -947,7 +1022,7 @@ function renderAfterPairSections(doc, {
 
   // AI Per-Category (optional)
   if (aiPerCategoryRows.length > 0) {
-    renderSectionTitle(doc, n++, 'AI Per Category Feedback');
+    renderSectionTitle(doc, n++, 'AI Per-Category Feedback');
     renderTable(
       doc,
       ['Category', 'Score', 'Feedback'],
@@ -955,6 +1030,12 @@ function renderAfterPairSections(doc, {
       { columnWidths: [130, 65, 305] }
     );
   }
+
+  renderTextCard(
+    'Override Reason',
+    feedback && feedback.overrideReason,
+    'No override reason provided.'
+  );
 
   // Strengths / Areas (optional)
   if (strengths.length || areasForImprovement.length || actionSteps.length) {
@@ -964,9 +1045,32 @@ function renderAfterPairSections(doc, {
     renderCard(doc, 'Action Steps', actionSteps, '#6a1b9a');
   }
 
+  const imageAnnotationLines = Array.isArray(feedback && feedback.annotations)
+    ? feedback.annotations
+        .map((a) => {
+          const page = safeText(a && a.page);
+          const comment = safeText(a && a.comment);
+          const x = Number(a && a.x);
+          const y = Number(a && a.y);
+          if (!comment) return null;
+          const meta = [page ? `Page ${page}` : '', Number.isFinite(x) && Number.isFinite(y) ? `(${Math.round(x)}, ${Math.round(y)})` : '']
+            .filter(Boolean)
+            .join(' ');
+          return meta ? `${meta}: ${comment}` : comment;
+        })
+        .filter(Boolean)
+    : [];
+
+  renderTextCard(
+    'Image Annotations',
+    imageAnnotationLines.length ? imageAnnotationLines.join('\n') : '',
+    'No image annotations available.'
+  );
+
   // Detected Issues (optional)
   if (issues.length > 0) {
     renderSectionTitle(doc, n++, 'Detected Issues');
+
     renderDetectedIssues(doc, issues);
   }
 }

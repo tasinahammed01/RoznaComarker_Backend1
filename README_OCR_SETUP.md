@@ -39,7 +39,7 @@ java -cp languagetool-server.jar org.languagetool.server.HTTPServer --port 8081
 Add the URL to your backend `.env`:
 
 ```bash
-LANGUAGETOOL_URL=http://localhost:8081
+LANGUAGETOOL_URL=http://82.112.234.151:8081
 LANGUAGETOOL_DEFAULT_LANGUAGE=en-US
 LANGUAGETOOL_TIMEOUT_MS=15000
 ```

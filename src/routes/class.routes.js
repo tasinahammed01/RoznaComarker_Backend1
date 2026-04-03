@@ -7,7 +7,14 @@ const { requireRole } = require('../middlewares/role.middleware');
 const { body, param } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
 
-const { enforceUsageLimit } = require('../middlewares/usage.middleware');
+const { enforceUsageLimit, enforceStorageLimitFromUploadedFile } = require('../middlewares/usage.middleware');
+
+const {
+  upload,
+  setUploadType,
+  handleUploadError,
+  validateUploadedFileSignature
+} = require('../middlewares/upload.middleware');
 
 const router = express.Router();
 
@@ -60,6 +67,9 @@ router.post(
   requireRole('teacher'),
   body('name').isString().trim().notEmpty().withMessage('name is required'),
   body('description').optional({ nullable: true }).isString().withMessage('description must be a string'),
+  body('subjectLevel').optional({ nullable: true }).isString().trim().withMessage('subjectLevel must be a string'),
+  body('startDate').optional({ nullable: true }).isISO8601().withMessage('startDate must be a valid date'),
+  body('endDate').optional({ nullable: true }).isISO8601().withMessage('endDate must be a valid date'),
   handleValidationResult,
   enforceUsageLimit('classes', 1),
   classController.createClass
@@ -119,7 +129,7 @@ router.get(
 /**
  * @openapi
  * /api/classes/{id}:
- *   patch:
+ *   put:
  *     tags:
  *       - Classes
  *     summary: Update a class (Teacher)
@@ -157,15 +167,32 @@ router.get(
  *       404:
  *         description: Class not found
  */
-router.patch(
+router.put(
   '/:id',
   verifyJwtToken,
   requireRole('teacher'),
   param('id').isMongoId().withMessage('Invalid class id'),
   body('name').optional().isString().trim().notEmpty().withMessage('name must be a non-empty string'),
   body('description').optional({ nullable: true }).isString().withMessage('description must be a string'),
+  body('subjectLevel').optional({ nullable: true }).isString().trim().withMessage('subjectLevel must be a string'),
+  body('startDate').optional({ nullable: true }).isISO8601().withMessage('startDate must be a valid date'),
+  body('endDate').optional({ nullable: true }).isISO8601().withMessage('endDate must be a valid date'),
   handleValidationResult,
   classController.updateClass
+);
+
+router.post(
+  '/:id/banner',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid class id'),
+  handleValidationResult,
+  setUploadType('class-banners'),
+  upload.single('file'),
+  handleUploadError,
+  validateUploadedFileSignature,
+  enforceStorageLimitFromUploadedFile(),
+  classController.uploadClassBanner
 );
 
 /**

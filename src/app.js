@@ -70,6 +70,7 @@ fs.mkdirSync(path.join(uploadsRoot, 'original'), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, 'processed'), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, 'transcripts'), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, 'avatars'), { recursive: true });
+fs.mkdirSync(path.join(uploadsRoot, 'class-banners'), { recursive: true });
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -112,6 +113,7 @@ app.use('/uploads/feedback', createCorsMiddleware(), express.static(path.join(up
 app.use('/uploads/avatars', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'avatars')));
 app.use('/uploads/original', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'original')));
 app.use('/uploads/processed', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'processed')));
+app.use('/uploads/class-banners', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'class-banners')));
 
 app.use('/api', healthRoutes);
 app.use('/api/auth', authRoutes);

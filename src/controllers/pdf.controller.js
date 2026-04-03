@@ -135,13 +135,14 @@ async function downloadSubmissionPdf(req, res, next) {
 
     const imageUrl = images.length ? images[0].url : '';
 
-    const assignmentTeacherEmail =
-      submission.assignment && typeof submission.assignment === 'object'
-        ? (
-            (submission.assignment.teacher && typeof submission.assignment.teacher === 'object' && submission.assignment.teacher.email)
-              ? String(submission.assignment.teacher.email)
-              : ''
-          )
+    const studentEmail =
+      submission.student && typeof submission.student === 'object'
+        ? String(submission.student.email || submission.student.userEmail || '').trim()
+        : '';
+
+    const studentName =
+      submission.student && typeof submission.student === 'object'
+        ? String(submission.student.displayName || submission.student.email || '').trim()
         : '';
 
     const assignmentPublishDateRaw =
@@ -150,9 +151,8 @@ async function downloadSubmissionPdf(req, res, next) {
         : null;
 
     const header = {
-      studentName: assignmentTeacherEmail || ((submission.student && typeof submission.student === 'object')
-        ? (submission.student.displayName || submission.student.email || '')
-        : ''),
+      studentName,
+      studentEmail,
       submissionId: String(submission._id),
       date: assignmentPublishDateRaw ? new Date(assignmentPublishDateRaw).toLocaleString() : (submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : '')
     };

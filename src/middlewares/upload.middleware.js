@@ -11,10 +11,11 @@ const DEFAULT_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = new Set([
   'application/pdf',
   'image/jpeg',
-  'image/png'
+  'image/png',
+  'image/webp'
 ]);
 
-const ALLOWED_EXTENSIONS = new Set(['.pdf', '.jpg', '.jpeg', '.png']);
+const ALLOWED_EXTENSIONS = new Set(['.pdf', '.jpg', '.jpeg', '.png', '.webp']);
 
 function getMaxFileSizeBytes() {
   const parsed = Number(process.env.MAX_FILE_SIZE);
@@ -40,6 +41,8 @@ function resolveUploadFolder(type) {
 
   if (type === 'avatars') return path.join(uploadsRoot, 'avatars');
 
+  if (type === 'class-banners') return path.join(uploadsRoot, 'class-banners');
+
   return path.join(uploadsRoot, 'uploads');
 }
 
@@ -51,6 +54,7 @@ function getExtensionForMime(mime) {
   if (mime === 'application/pdf') return '.pdf';
   if (mime === 'image/png') return '.png';
   if (mime === 'image/jpeg') return '.jpg';
+  if (mime === 'image/webp') return '.webp';
   return null;
 }
 
@@ -156,7 +160,7 @@ const upload = multer({
     const ext = normalizeExtension(path.extname(String(file && file.originalname)));
 
     if (!file || !file.mimetype || !ALLOWED_MIME_TYPES.has(file.mimetype) || !ALLOWED_EXTENSIONS.has(ext)) {
-      const err = new Error('Invalid file type. Only PDF, JPG, JPEG, and PNG are allowed.');
+      const err = new Error('Invalid file type. Only PDF, JPG, JPEG, PNG, and WEBP are allowed.');
       err.statusCode = 400;
       return cb(err);
     }

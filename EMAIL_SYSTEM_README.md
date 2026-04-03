@@ -28,7 +28,7 @@ SENDGRID_API_KEY=your_sendgrid_api_key_here
 EMAIL_FROM=noreply@rozna.com
 
 # Frontend URL for verification/reset links
-FRONTEND_URL=http://localhost:4200
+FRONTEND_URL=http://82.112.234.151:4200
 ```
 
 ### 2. SendGrid Setup
@@ -174,12 +174,12 @@ const result = await emailService.sendVerificationEmail('user@example.com', veri
 ### Using curl
 ```bash
 # Test OTP endpoint
-curl -X POST http://localhost:3000/api/email-auth/send-otp \
+curl -X POST http://82.112.234.151:5000/api/email-auth/send-otp \
   -H "Content-Type: application/json" \
   -d '{"email": "test@example.com"}'
 
 # Test verification endpoint
-curl -X POST http://localhost:3000/api/email-auth/verify-email \
+curl -X POST http://82.112.234.151:5000/api/email-auth/verify-email \
   -H "Content-Type: application/json" \
   -d '{"email": "test@example.com"}'
 ```
