@@ -14,7 +14,7 @@ const openai = new OpenAI({
   baseURL: process.env.OPENROUTER_BASE_URL,
   timeout: parseInt(process.env.OPENROUTER_TIMEOUT_MS) || 60000,
   defaultHeaders: {
-    'HTTP-Referer': process.env.FRONTEND_URL || 'http://localhost:4200',
+    'HTTP-Referer': process.env.FRONTEND_URL || 'http://82.112.234.151:4200',
     'X-Title': 'RoznaComarker Flashcards'
   }
 });
@@ -778,7 +778,7 @@ async function shareFlashcardSet(req, res) {
     set.isPublic   = true;
     await set.save();
 
-    const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:4200').replace(/\/$/, '');
+    const frontendUrl = (process.env.FRONTEND_URL || 'http://82.112.234.151:4200').replace(/\/$/, '');
     const shareUrl = `${frontendUrl}/shared/flashcards/${shareToken}`;
 
     return sendSuccess(res, { shareUrl, shareToken });
