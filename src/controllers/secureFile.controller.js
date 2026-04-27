@@ -11,7 +11,8 @@ const { ApiError } = require('../middlewares/error.middleware');
 function isSafeStoredFilename(filename) {
   const value = String(filename || '');
   if (value !== path.basename(value)) return false;
-  return /^[0-9a-fA-F-]{36}\.(pdf|jpg|png)$/.test(value);
+  // Must align with ALLOWED_EXTENSIONS in upload.middleware.js.
+  return /^[0-9a-fA-F-]{36}\.(pdf|jpg|jpeg|png|webp)$/.test(value);
 }
 
 async function serveOriginal(req, res, next) {

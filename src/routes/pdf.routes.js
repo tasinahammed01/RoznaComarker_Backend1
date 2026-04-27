@@ -18,4 +18,31 @@ router.get(
   pdfController.downloadSubmissionPdf
 );
 
+router.get(
+  '/download-worksheet/:submissionId',
+  verifyJwtToken,
+  requireRole(['student', 'teacher']),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  pdfController.downloadWorksheetSubmissionPdf
+);
+
+router.get(
+  '/worksheet-report/:worksheetId',
+  verifyJwtToken,
+  requireRole(['teacher']),
+  param('worksheetId').isMongoId().withMessage('Invalid worksheet id'),
+  handleValidationResult,
+  pdfController.downloadWorksheetReportPdf
+);
+
+router.get(
+  '/flashcard-report/:setId',
+  verifyJwtToken,
+  requireRole(['teacher']),
+  param('setId').isMongoId().withMessage('Invalid flashcard set id'),
+  handleValidationResult,
+  pdfController.downloadFlashcardReportPdf
+);
+
 module.exports = router;

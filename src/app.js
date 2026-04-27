@@ -26,6 +26,9 @@ const subscriptionRoutes = require('./routes/subscription.routes');
 const writingCorrectionsRoutes = require('./routes/writingCorrections.routes');
 const notificationRoutes = require('./routes/notification.routes');
 const rubricRoutes = require('./routes/rubric.routes');
+const flashcardRoutes = require('./routes/flashcard.routes');
+const sharedFlashcardRoutes = require('./routes/sharedFlashcard.routes');
+const worksheetRoutes = require('./routes/worksheet.routes');
 const notFound = require('./middlewares/notFound.middleware');
 const { errorHandler } = require('./middlewares/error.middleware');
 
@@ -119,7 +122,9 @@ app.use('/api', healthRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/email-auth', emailAuthRoutes);
 app.use('/api/users', userRoutes);
-app.use('/api/demo', demoRoutes);
+if (process.env.NODE_ENV === 'development') {
+  app.use('/api/demo', demoRoutes);
+}
 app.use('/api/classes', classRoutes);
 app.use('/api/memberships', membershipRoutes);
 app.use('/api/assignments', assignmentRoutes);
@@ -133,6 +138,9 @@ app.use('/api/subscription', subscriptionRoutes);
 app.use('/api/writing-corrections', writingCorrectionsRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/rubrics', rubricRoutes);
+app.use('/api/flashcards', flashcardRoutes);
+app.use('/api/shared', sharedFlashcardRoutes);
+app.use('/api/worksheets', worksheetRoutes);
 
 app.post(
   '/upload',
@@ -179,9 +187,11 @@ app.get('/files/submissions/:filename', (req, res) => {
   return res.redirect(`/uploads/submissions/${encodeURIComponent(filename)}`);
 });
 
-const swaggerSpec = createSwaggerSpec();
-app.get('/api/docs.json', (req, res) => res.json(swaggerSpec));
-app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+if (process.env.NODE_ENV !== 'production') {
+  const swaggerSpec = createSwaggerSpec();
+  app.get('/api/docs.json', (req, res) => res.json(swaggerSpec));
+  app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+}
 
 // Root health check endpoint
 app.get('/', (req, res) => {

@@ -29,6 +29,8 @@ router.post('/reset-password', authController.resetPasswordValidation, authContr
  * @desc    Test email functionality
  * @access  Public (Development only)
  */
-router.post('/test-email', authController.testEmailValidation, authController.testEmail);
+if (process.env.NODE_ENV === 'development') {
+  router.post('/test-email', authController.testEmailValidation, authController.testEmail);
+}
 
 module.exports = router;

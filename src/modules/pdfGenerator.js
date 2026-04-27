@@ -3,6 +3,7 @@ const path = require('path');
 const PDFDocument = require('pdfkit');
 const { fetch } = require('undici');
 const sizeOf = require('image-size');
+const logger = require('../utils/logger');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STYLE TOKENS  (matches the target "submission-feedback__2_.pdf")
@@ -948,7 +949,7 @@ async function generatePdf(submissionData, outputPath) {
     render()
       .then(() => doc.end())
       .catch(err => {
-        try { console.error('[PDF ERROR]', err); } catch { /* ignore */ }
+        try { logger.error(`[PDF ERROR] ${err && err.message ? err.message : err}`); } catch { /* ignore */ }
         try { doc.end(); } catch { /* ignore */ }
         reject(new Error(`PDF generation failed: ${err?.message ?? String(err)}`));
       });

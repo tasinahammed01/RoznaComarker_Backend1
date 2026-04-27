@@ -1,3 +1,5 @@
+const logger = require('./logger');
+
 function safeJsonParse(text) {
   if (!text) return null;
 
@@ -11,7 +13,7 @@ function safeJsonParse(text) {
         .trim();
       return JSON.parse(cleaned);
     } catch (err2) {
-      console.error("AI JSON parse failed:", err2);
+      logger.error(`AI JSON parse failed: ${err2 && err2.message ? err2.message : err2}`);
       return null;
     }
   }

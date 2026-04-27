@@ -13,8 +13,12 @@ function toMessage(value) {
   }
 }
 
+const isProd = () => process.env.NODE_ENV === 'production';
+
 const logger = {
   info(message) {
+    // info/debug are verbose; suppress in production. warn/error always emit.
+    if (isProd()) return;
     console.log(format('INFO', toMessage(message)));
   },
   warn(message) {
@@ -24,9 +28,8 @@ const logger = {
     console.error(format('ERROR', toMessage(message)));
   },
   debug(message) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.debug(format('DEBUG', toMessage(message)));
-    }
+    if (isProd()) return;
+    console.debug(format('DEBUG', toMessage(message)));
   }
 };
 

@@ -1,4 +1,5 @@
 const { fetchCompat, buildTimeoutSignal } = require('./httpClient.service');
+const logger = require('../utils/logger');
 
 function safeString(v) {
   return typeof v === 'string' ? v : (v == null ? '' : String(v));
@@ -207,7 +208,7 @@ async function formatRubricFromTemplateParsed({ parsedRubric }) {
   const apiKey = safeString(process.env.OPENAI_API_KEY).trim();
   if (!apiKey) {
     const fallback = coerceParsedTemplateToRubric(input) || normalizeRubricJson(input) || input;
-    console.error('Rubric AI formatting error: OPENAI_API_KEY missing. Using fallback rubric.');
+    logger.error('Rubric AI formatting error: OPENAI_API_KEY missing. Using fallback rubric.');
     return fallback;
   }
 
@@ -245,12 +246,7 @@ async function formatRubricFromTemplateParsed({ parsedRubric }) {
     });
   } catch (e) {
     const fallback = coerceParsedTemplateToRubric(input) || normalizeRubricJson(input) || input;
-    console.error('Rubric AI formatting error: request failed. Using fallback rubric.', {
-      model,
-      endpoint,
-      isTimeout: isAbortError(e),
-      message: e && typeof e === 'object' ? safeString(e.message) : safeString(e)
-    });
+    logger.error(`Rubric AI formatting error: request failed. Using fallback rubric. model=${model} endpoint=${endpoint} isTimeout=${isAbortError(e)} message=${e && typeof e === 'object' ? safeString(e.message) : safeString(e)}`);
     return fallback;
   } finally {
     cancel();
@@ -279,15 +275,7 @@ async function formatRubricFromTemplateParsed({ parsedRubric }) {
       }
     }
 
-    console.error('Rubric AI formatting error: provider returned non-2xx. Using fallback rubric.', {
-      model,
-      endpoint,
-      status: resp.status,
-      statusText: safeString(resp.statusText),
-      message,
-      responseBody: responseBody && responseBody.length > 2000 ? responseBody.slice(0, 2000) : responseBody
-    });
-
+    logger.error(`Rubric AI formatting error: provider returned non-2xx. Using fallback rubric. model=${model} endpoint=${endpoint} status=${resp.status} statusText=${safeString(resp.statusText)} message=${message}`);
     return fallback;
   }
 
@@ -295,7 +283,7 @@ async function formatRubricFromTemplateParsed({ parsedRubric }) {
   const content = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
   if (!content) {
     const fallback = coerceParsedTemplateToRubric(input) || normalizeRubricJson(input) || input;
-    console.error('Rubric AI formatting error: empty response content. Using fallback rubric.', { model, endpoint });
+    logger.error(`Rubric AI formatting error: empty response content. Using fallback rubric. model=${model} endpoint=${endpoint}`);
     return fallback;
   }
 
@@ -303,11 +291,7 @@ async function formatRubricFromTemplateParsed({ parsedRubric }) {
   const normalized = normalizeRubricJson(parsed);
   if (!normalized) {
     const fallback = coerceParsedTemplateToRubric(input) || normalizeRubricJson(input) || input;
-    console.error('Rubric AI formatting error: invalid JSON response. Using fallback rubric.', {
-      model,
-      endpoint,
-      sample: content.length > 2000 ? content.slice(0, 2000) : content
-    });
+    logger.error(`Rubric AI formatting error: invalid JSON response. Using fallback rubric. model=${model} endpoint=${endpoint} sample=${content.length > 2000 ? content.slice(0, 2000) : content}`);
     return fallback;
   }
 

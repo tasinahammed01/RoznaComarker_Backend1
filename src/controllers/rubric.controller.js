@@ -3,6 +3,7 @@ const fs = require('fs');
 const rubricFileParserService = require('../services/rubricFileParser.service');
 const rubricAIParserService = require('../services/rubricAIParser.service');
 const rubricAIFormatterService = require('../services/rubricAIFormatter.service');
+const logger = require('../utils/logger');
 
 const {
   RubricDocxTemplateError,
@@ -107,7 +108,7 @@ async function parseRubricTemplate(req, res) {
         parsedRubric: parsedRubricDesigner
       });
     } catch (aiError) {
-      console.warn('AI rubric formatting failed. Using parsed rubric.', aiError);
+      logger.warn(`AI rubric formatting failed. Using parsed rubric. ${aiError && aiError.message ? aiError.message : aiError}`);
       formattedRubric = parsedRubricDesigner;
     }
 

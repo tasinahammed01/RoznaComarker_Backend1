@@ -35,8 +35,18 @@ const assignmentSchema = new Schema(
     },
     writingType: {
       type: String,
-      required: true,
+      required: false,
       trim: true
+    },
+    /** PART 1 — resourceType/resourceId allow flashcard and worksheet assignments */
+    resourceType: {
+      type: String,
+      enum: ['essay', 'flashcard', 'worksheet'],
+      default: 'essay'
+    },
+    resourceId: {
+      type: String,
+      default: null
     },
     instructions: {
       type: String,
@@ -85,5 +95,7 @@ const assignmentSchema = new Schema(
     timestamps: true
   }
 );
+
+assignmentSchema.index({ resourceType: 1, resourceId: 1 });
 
 module.exports = mongoose.model('Assignment', assignmentSchema);

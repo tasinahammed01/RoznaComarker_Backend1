@@ -1,5 +1,6 @@
 const { body, validationResult } = require('express-validator');
 const emailService = require('../services/emailService');
+const logger = require('../utils/logger');
 
 class AuthController {
   async sendOTP(req, res) {
@@ -28,9 +29,7 @@ class AuthController {
       if (result.success) {
         res.status(200).json({
           success: true,
-          message: 'OTP sent successfully',
-          messageId: result.messageId,
-          otp: otp // Remove this in production, only for testing
+          message: 'OTP sent to your email'
         });
       } else {
         res.status(500).json({
@@ -40,7 +39,7 @@ class AuthController {
         });
       }
     } catch (error) {
-      console.error('Error in sendOTP controller:', error.message);
+      logger.error(`Error in sendOTP controller: ${error.message}`);
       res.status(500).json({
         success: false,
         message: 'Internal server error',
@@ -86,7 +85,7 @@ class AuthController {
         });
       }
     } catch (error) {
-      console.error('Error in verifyEmail controller:', error.message);
+      logger.error(`Error in verifyEmail controller: ${error.message}`);
       res.status(500).json({
         success: false,
         message: 'Internal server error',
@@ -132,7 +131,7 @@ class AuthController {
         });
       }
     } catch (error) {
-      console.error('Error in resetPassword controller:', error.message);
+      logger.error(`Error in resetPassword controller: ${error.message}`);
       res.status(500).json({
         success: false,
         message: 'Internal server error',
@@ -191,7 +190,7 @@ class AuthController {
         });
       }
     } catch (error) {
-      console.error('Error in testEmail controller:', error.message);
+      logger.error(`Error in testEmail controller: ${error.message}`);
       res.status(500).json({
         success: false,
         message: 'Internal server error',

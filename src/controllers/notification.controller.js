@@ -2,6 +2,7 @@ const Notification = require('../models/notification.model');
 const { verifyJwt } = require('../utils/jwt');
 const User = require('../models/user.model');
 const { registerStream } = require('../services/notificationRealtime.service');
+const { consumeToken: consumeSseToken } = require('../services/sseToken.service');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -106,11 +107,29 @@ function getBearerTokenFromHeader(req) {
 }
 
 async function resolveUserForSse(req) {
-  const tokenFromQuery = req.query && req.query.token ? String(req.query.token) : '';
-  const token = tokenFromQuery || getBearerTokenFromHeader(req);
-  if (!token) return null;
+  // Preferred: one-time SSE token in query (issued via POST /api/auth/sse-token).
+  // Long-lived JWTs are NOT accepted via query string to avoid token leakage in
+  // logs, browser history, and referrer headers.
+  const sseTokenFromQuery = req.query && req.query.sseToken ? String(req.query.sseToken) : '';
+  if (sseTokenFromQuery) {
+    const userId = consumeSseToken(sseTokenFromQuery);
+    if (!userId) return null;
+    const user = await User.findById(userId);
+    if (!user || user.isActive === false) return null;
+    return user;
+  }
 
-  const payload = verifyJwt(token);
+  // Fallback: standard Bearer header (used by non-browser SSE clients that
+  // can set headers, e.g. server-to-server). EventSource cannot set headers.
+  const headerToken = getBearerTokenFromHeader(req);
+  if (!headerToken) return null;
+
+  let payload;
+  try {
+    payload = verifyJwt(headerToken);
+  } catch {
+    return null;
+  }
   const userId = payload && payload.id;
   if (!userId) return null;
 

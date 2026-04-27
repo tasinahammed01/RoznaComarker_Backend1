@@ -3,6 +3,7 @@ const express = require('express');
 const { verifyFirebaseToken } = require('../middlewares/firebaseAuth.middleware');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { signJwt } = require('../utils/jwt');
+const { issueToken: issueSseToken } = require('../services/sseToken.service');
 
 const { createSensitiveRateLimiter } = require('../middlewares/rateLimit.middleware');
 
@@ -123,6 +124,34 @@ router.get('/jwt-test', verifyJwtToken, async (req, res) => {
   return res.json({
     success: true,
     message: 'JWT protected route access granted'
+  });
+});
+
+/**
+ * @openapi
+ * /api/auth/sse-token:
+ *   post:
+ *     tags:
+ *       - Auth
+ *     summary: Issue a short-lived one-time token for SSE connections
+ *     description: |
+ *       Returns a one-time token (60 second TTL, single-use) that can be passed
+ *       as the `?token=` query parameter when opening an EventSource. This avoids
+ *       sending the long-lived JWT in URLs.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: One-time SSE token
+ *       401:
+ *         description: Unauthorized
+ */
+router.post('/sse-token', verifyJwtToken, async (req, res) => {
+  const sseToken = issueSseToken(req.user._id);
+  return res.json({
+    success: true,
+    sseToken,
+    expiresInSeconds: 60
   });
 });
 

@@ -5,6 +5,9 @@ const Assignment = require('../models/assignment.model');
 const Class = require('../models/class.model');
 const Membership = require('../models/membership.model');
 const Submission = require('../models/Submission');
+const FlashcardSubmission = require('../models/FlashcardSubmission');
+const FlashcardSet = require('../models/FlashcardSet');
+const WorksheetSubmission = require('../models/WorksheetSubmission');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 
 const {
@@ -60,6 +63,69 @@ function safeCellString(v) {
     }
   }
   return '';
+}
+
+async function filterAssignmentsWithAvailableResources(assignments) {
+  if (!Array.isArray(assignments) || assignments.length === 0) {
+    return [];
+  }
+
+  const flashcardAssignments = assignments.filter((assignment) => assignment && assignment.resourceType === 'flashcard');
+  if (flashcardAssignments.length === 0) {
+    return assignments;
+  }
+
+  const flashcardResourceIds = Array.from(new Set(
+    flashcardAssignments
+      .map((assignment) => safeString(assignment.resourceId).trim())
+      .filter((resourceId) => resourceId.length > 0 && mongoose.Types.ObjectId.isValid(resourceId))
+  ));
+
+  const existingSetIds = new Set();
+  if (flashcardResourceIds.length > 0) {
+    const sets = await FlashcardSet.find({ _id: { $in: flashcardResourceIds } }).select('_id').lean();
+    for (const set of sets || []) {
+      existingSetIds.add(String(set._id));
+    }
+  }
+
+  const staleAssignmentIds = [];
+  const filteredAssignments = [];
+
+  for (const assignment of assignments) {
+    if (!assignment || assignment.resourceType !== 'flashcard') {
+      filteredAssignments.push(assignment);
+      continue;
+    }
+
+    const resourceId = safeString(assignment.resourceId).trim();
+    const hasValidResource = resourceId.length > 0
+      && mongoose.Types.ObjectId.isValid(resourceId)
+      && existingSetIds.has(resourceId);
+
+    if (!hasValidResource) {
+      if (assignment._id) {
+        staleAssignmentIds.push(assignment._id);
+      }
+      continue;
+    }
+
+    filteredAssignments.push(assignment);
+  }
+
+  if (staleAssignmentIds.length > 0) {
+    await Assignment.updateMany(
+      { _id: { $in: staleAssignmentIds }, isActive: true },
+      { $set: { isActive: false } }
+    );
+
+    logger.warn({
+      message: 'Deactivated stale flashcard assignments with missing resources',
+      assignmentIds: staleAssignmentIds.map((id) => String(id))
+    });
+  }
+
+  return filteredAssignments;
 }
 
 function stripMarkdownCodeFences(text) {
@@ -489,14 +555,29 @@ function rubricDesignerToRubrics(value) {
 
 async function createAssignment(req, res) {
   try {
-    const { title, writingType, instructions, rubric, rubrics, deadline, classId, allowLateResubmission } = req.body || {};
+    const {
+      title, writingType, instructions, rubric, rubrics, deadline,
+      classId, allowLateResubmission,
+      /** PART 1 — resource fields for flashcard / worksheet assignments */
+      resourceType, resourceId
+    } = req.body || {};
 
     if (!isNonEmptyString(title)) {
       return sendError(res, 400, 'title is required');
     }
 
-    if (!isNonEmptyString(writingType)) {
-      return sendError(res, 400, 'writingType is required');
+    const resolvedResourceType = resourceType || 'essay';
+    if (!['essay', 'flashcard', 'worksheet'].includes(resolvedResourceType)) {
+      return sendError(res, 400, 'resourceType must be essay, flashcard, or worksheet');
+    }
+
+    const resolvedWritingType = writingType || (resolvedResourceType !== 'essay' ? resolvedResourceType : null);
+    if (!isNonEmptyString(resolvedWritingType)) {
+      return sendError(res, 400, 'writingType is required for essay assignments');
+    }
+
+    if (resolvedResourceType !== 'essay' && !isNonEmptyString(resourceId)) {
+      return sendError(res, 400, 'resourceId is required for flashcard/worksheet assignments');
     }
 
     if (!mongoose.Types.ObjectId.isValid(classId)) {
@@ -552,7 +633,9 @@ async function createAssignment(req, res) {
       try {
         const created = await Assignment.create({
           title: title.trim(),
-          writingType: writingType.trim(),
+          writingType: resolvedWritingType.trim(),
+          resourceType: resolvedResourceType,
+          resourceId: resourceId || null,
           instructions: normalizedInstructions,
           rubric: normalizedRubric,
           rubrics: normalizedRubrics,
@@ -590,6 +673,8 @@ async function createAssignment(req, res) {
                 : 'Teacher';
 
             const className = classDoc && classDoc.name ? String(classDoc.name) : 'Class';
+            const typeLabel = created.resourceType === 'flashcard' ? 'flashcard set'
+              : created.resourceType === 'worksheet' ? 'worksheet' : 'assignment';
 
             await Promise.all(
               studentIds.map((studentId) =>
@@ -597,11 +682,13 @@ async function createAssignment(req, res) {
                   recipientId: studentId,
                   actorId: teacherId,
                   type: 'assignment_uploaded',
-                  title: 'New assignment uploaded',
-                  description: `${teacherDisplay} uploaded a new assignment in ${className}: ${created.title}`,
+                  title: `New ${typeLabel} assigned`,
+                  description: `${teacherDisplay} assigned a new ${typeLabel} in ${className}: ${created.title}`,
                   data: {
                     classId: String(classDoc._id),
                     assignmentId: String(created._id),
+                    resourceType: created.resourceType,
+                    resourceId: created.resourceId || null,
                     route: {
                       path: '/student/my-classes/detail',
                       params: [String(classDoc._id)]
@@ -837,7 +924,7 @@ async function updateAssignmentRubrics(req, res) {
     }
 
     // Log final rubrics payload going into MongoDB for production debugging.
-    console.log('Normalized Rubrics:', JSON.stringify(normalizedRubrics, null, 2));
+    logger.debug(`Normalized Rubrics: ${JSON.stringify(normalizedRubrics, null, 2)}`);
 
     assignment.rubrics = normalizedRubrics;
 
@@ -845,8 +932,7 @@ async function updateAssignmentRubrics(req, res) {
     try {
       saved = await assignment.save();
     } catch (err) {
-      console.error('Failed to save assignment rubrics');
-      console.error(err);
+      logger.error(`Failed to save assignment rubrics: ${err && err.message ? err.message : err}`);
       return sendError(res, 500, 'Failed to update rubrics');
     }
 
@@ -898,13 +984,85 @@ async function deleteAssignment(req, res) {
     assignment.isActive = false;
     const saved = await assignment.save();
 
+    const resourceType = safeString(assignment.resourceType).trim();
+    const resourceId = safeString(assignment.resourceId).trim();
+    const classId = assignment.class ? String(assignment.class) : '';
+
+    if (
+      resourceType === 'flashcard'
+      && resourceId.length > 0
+      && mongoose.Types.ObjectId.isValid(resourceId)
+      && classId.length > 0
+      && mongoose.Types.ObjectId.isValid(classId)
+    ) {
+      const hasOtherActiveAssignments = await Assignment.exists({
+        _id: { $ne: assignment._id },
+        resourceType: 'flashcard',
+        resourceId,
+        class: classId,
+        isActive: true
+      });
+
+      if (!hasOtherActiveAssignments) {
+        await FlashcardSet.updateOne(
+          { _id: resourceId },
+          { $pull: { assignedClasses: assignment.class } }
+        );
+      }
+    }
+
+    // Cascade delete submissions tied to this assignment
+    try {
+      if (resourceType === 'flashcard') {
+        await FlashcardSubmission.deleteMany({ assignmentId: assignment._id });
+      } else if (resourceType === 'worksheet') {
+        await WorksheetSubmission.deleteMany({ assignmentId: assignment._id });
+      } else {
+        await Submission.deleteMany({ assignment: assignment._id });
+      }
+    } catch (cascadeErr) {
+      logger.warn('deleteAssignment: cascade submissions delete failed', cascadeErr);
+    }
+
     await Class.updateOne(
       { _id: assignment.class, teacher: teacherId, isActive: true },
       { $set: { updatedAt: new Date() } }
     );
 
+    setImmediate(async () => {
+      try {
+        const memberships = await Membership.find({ class: assignment.class, status: 'active' }).select('student').lean();
+        const classDoc = await Class.findById(assignment.class).select('name').lean();
+        const studentIds = (memberships || []).map((m) => m && m.student).filter(Boolean);
+        const teacherDisplay = String(req.user.displayName || req.user.email || 'Teacher');
+        const className = classDoc && classDoc.name ? String(classDoc.name) : 'Class';
+        const typeLabel = resourceType === 'flashcard' ? 'flashcard set'
+          : resourceType === 'worksheet' ? 'worksheet' : 'assignment';
+
+        await Promise.all(studentIds.map((studentId) =>
+          createNotification({
+            recipientId: studentId,
+            actorId: teacherId,
+            type: 'assignment_removed',
+            title: `${assignment.title} removed`,
+            description: `${teacherDisplay} removed a ${typeLabel} from ${className}: ${assignment.title}`,
+            data: {
+              classId: String(assignment.class),
+              assignmentId: String(assignment._id),
+              resourceType: resourceType || null,
+              resourceId: resourceId || null,
+              route: { path: '/student/my-classes/detail', params: [String(assignment.class)] }
+            }
+          })
+        ));
+      } catch (err) {
+        logger.warn('deleteAssignment: notification error', err);
+      }
+    });
+
     return sendSuccess(res, saved);
   } catch (err) {
+    logger.error('deleteAssignment failed', err);
     return sendError(res, 500, 'Failed to delete assignment');
   }
 }
@@ -941,7 +1099,9 @@ async function getClassAssignments(req, res) {
       .populate('class')
       .populate('teacher', '_id email displayName photoURL role');
 
-    return sendSuccess(res, assignments);
+    const filteredAssignments = await filterAssignmentsWithAvailableResources(assignments);
+
+    return sendSuccess(res, filteredAssignments);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch assignments');
   }
@@ -972,7 +1132,12 @@ async function getAssignmentByIdForTeacher(req, res) {
       return sendError(res, 404, 'Assignment not found');
     }
 
-    return sendSuccess(res, assignment);
+    const [filteredAssignment] = await filterAssignmentsWithAvailableResources([assignment]);
+    if (!filteredAssignment) {
+      return sendError(res, 404, 'Assignment not found');
+    }
+
+    return sendSuccess(res, filteredAssignment);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch assignment');
   }
@@ -1313,7 +1478,9 @@ async function getMyAssignments(req, res) {
       })
       .populate('teacher', '_id email displayName photoURL role');
 
-    return sendSuccess(res, assignments);
+    const filteredAssignments = await filterAssignmentsWithAvailableResources(assignments);
+
+    return sendSuccess(res, filteredAssignments);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch assignments');
   }
@@ -1346,9 +1513,14 @@ async function getAssignmentById(req, res) {
       return sendError(res, 404, 'Assignment not found');
     }
 
+    const [filteredAssignment] = await filterAssignmentsWithAvailableResources([assignment]);
+    if (!filteredAssignment || !filteredAssignment.class || filteredAssignment.class.isActive === false) {
+      return sendError(res, 404, 'Assignment not found');
+    }
+
     const membership = await Membership.findOne({
       student: studentId,
-      class: assignment.class._id,
+      class: filteredAssignment.class._id,
       status: 'active'
     });
 
@@ -1356,9 +1528,157 @@ async function getAssignmentById(req, res) {
       return sendError(res, 403, 'Forbidden');
     }
 
-    return sendSuccess(res, assignment);
+    return sendSuccess(res, filteredAssignment);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch assignment');
+  }
+}
+
+/**
+ * POST /api/assignments/:id/submit — student submits a flashcard assignment result.
+ * @param {string} req.params.id — assignmentId
+ * @param {number} req.body.score — percentage 0-100
+ * @param {number} req.body.timeTaken — seconds
+ * @param {Array}  req.body.results — array of { cardId, status }
+ * @returns {object} FlashcardSubmission document
+ */
+async function submitFlashcardAssignment(req, res) {
+  try {
+    const { id: assignmentId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(assignmentId)) {
+      return sendError(res, 400, 'Invalid assignment id');
+    }
+
+    const studentId = req.user && req.user._id;
+    if (!studentId) return sendError(res, 401, 'Unauthorized');
+
+    const assignment = await Assignment.findOne({ _id: assignmentId, isActive: true });
+    if (!assignment || assignment.resourceType !== 'flashcard') {
+      return sendError(res, 404, 'Flashcard assignment not found');
+    }
+
+    const [filteredAssignment] = await filterAssignmentsWithAvailableResources([assignment]);
+    if (!filteredAssignment || filteredAssignment.resourceType !== 'flashcard') {
+      return sendError(res, 404, 'Flashcard assignment not found');
+    }
+
+    const membership = await Membership.findOne({ student: studentId, class: filteredAssignment.class, status: 'active' });
+    if (!membership) return sendError(res, 403, 'Not enrolled in this class');
+
+    const existing = await FlashcardSubmission.findOne({ assignmentId, userId: studentId });
+    if (existing) return sendSuccess(res, existing);
+
+    const { score, timeTaken, results, completedAt, template, totalCards, cardResults } = req.body || {};
+    const resolvedTemplate = ['term-def', 'qa', 'concept'].includes(template) ? template : 'term-def';
+    const sub = await FlashcardSubmission.create({
+      flashcardSetId: filteredAssignment.resourceId,
+      userId: studentId,
+      assignmentId,
+      score:       typeof score === 'number' ? score : 0,
+      timeTaken:   typeof timeTaken === 'number' ? timeTaken : 0,
+      results:     Array.isArray(results) ? results : [],
+      template:    resolvedTemplate,
+      totalCards:  typeof totalCards === 'number' ? totalCards : undefined,
+      cardResults: Array.isArray(cardResults) ? cardResults : [],
+      submittedAt: completedAt ? new Date(completedAt) : new Date()
+    });
+
+    setImmediate(async () => {
+      try {
+        const teacherId = filteredAssignment && filteredAssignment.teacher ? String(filteredAssignment.teacher) : '';
+        if (!teacherId || !mongoose.Types.ObjectId.isValid(teacherId)) {
+          return;
+        }
+
+        const studentDisplay = String(req.user?.displayName || req.user?.email || 'Student');
+        const assignmentTitle = String(filteredAssignment.title || 'Flashcard assignment');
+
+        await createNotification({
+          recipientId: teacherId,
+          actorId: studentId,
+          type: 'assignment_submitted',
+          title: 'Assignment submitted',
+          description: `${studentDisplay} submitted ${assignmentTitle}`,
+          data: {
+            classId: String(filteredAssignment.class || ''),
+            assignmentId: String(filteredAssignment._id || assignmentId),
+            submissionId: String(sub._id || ''),
+            studentId: String(studentId || ''),
+            route: {
+              path: '/flashcards',
+              params: [String(filteredAssignment.resourceId || ''), 'report'],
+              queryParams: {
+                assignmentId: String(filteredAssignment._id || assignmentId)
+              }
+            }
+          }
+        });
+      } catch (notifyErr) {
+        logger.warn('submitFlashcardAssignment notification error', notifyErr);
+      }
+    });
+
+    return sendSuccess(res, sub);
+  } catch (err) {
+    logger.error('submitFlashcardAssignment error:', err);
+    return sendError(res, 500, 'Failed to submit assignment');
+  }
+}
+
+/**
+ * GET /api/assignments/:id/my-submission — student checks if they already submitted.
+ * @param {string} req.params.id — assignmentId
+ * @returns {object} FlashcardSubmission document or 404
+ */
+async function getMyFlashcardSubmission(req, res) {
+  try {
+    const { id: assignmentId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(assignmentId)) {
+      return sendError(res, 400, 'Invalid assignment id');
+    }
+
+    const studentId = req.user && req.user._id;
+    if (!studentId) return sendError(res, 401, 'Unauthorized');
+
+    const sub = await FlashcardSubmission.findOne({ assignmentId, userId: studentId }).lean();
+    if (!sub) return sendSuccess(res, null);
+
+    const set = await FlashcardSet.findById(sub.flashcardSetId).select('cards template').lean();
+    const cards = set
+      ? (set.cards || []).map(c => ({ _id: String(c._id), front: c.front, back: c.back, template: c.template }))
+      : [];
+
+    return sendSuccess(res, { ...sub, cards, template: sub.template || set?.template || 'term-def' });
+  } catch (err) {
+    return sendError(res, 500, 'Failed to fetch submission');
+  }
+}
+
+/**
+ * GET /api/assignments/:id/submissions — teacher views all submissions for a flashcard assignment.
+ * @param {string} req.params.id — assignmentId
+ * @returns {Array} array of submissions populated with user info
+ */
+async function getFlashcardAssignmentSubmissions(req, res) {
+  try {
+    const { id: assignmentId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(assignmentId)) {
+      return sendError(res, 400, 'Invalid assignment id');
+    }
+
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) return sendError(res, 401, 'Unauthorized');
+
+    const assignment = await Assignment.findOne({ _id: assignmentId, teacher: teacherId, isActive: true });
+    if (!assignment) return sendError(res, 404, 'Assignment not found');
+
+    const subs = await FlashcardSubmission.find({ assignmentId })
+      .populate('userId', '_id email displayName photoURL')
+      .sort({ submittedAt: -1 });
+
+    return sendSuccess(res, subs);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to fetch submissions');
   }
 }
 
@@ -1372,5 +1692,8 @@ module.exports = {
   getAssignmentById,
   getAssignmentByIdForTeacher,
   generateRubricDesignerFromPrompt,
-  uploadRubricFileForAssignment
+  uploadRubricFileForAssignment,
+  submitFlashcardAssignment,
+  getMyFlashcardSubmission,
+  getFlashcardAssignmentSubmissions
 };

@@ -2,6 +2,7 @@ const express = require('express');
 
 const userController = require('../controllers/user.controller');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
+const { requireRole } = require('../middlewares/role.middleware');
 
 const {
   upload,
@@ -22,7 +23,7 @@ const router = express.Router();
  *     description: User lookup and admin actions
  */
 
-// TEMP route (development only)
+// DEV ONLY - remove before production
 /**
  * @openapi
  * /api/users/mock-sync:
@@ -159,8 +160,10 @@ router.get(
  *   patch:
  *     tags:
  *       - Users
- *     summary: Deactivate a user
- *     description: Not protected by JWT in current backend.
+ *     summary: Deactivate a user (Admin only)
+ *     description: Requires JWT + role `admin`.
+ *     security:
+ *       - bearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
@@ -177,6 +180,8 @@ router.get(
  */
 router.patch(
   '/:id/deactivate',
+  verifyJwtToken,
+  requireRole('admin'),
   param('id').isMongoId().withMessage('Invalid user id'),
   handleValidationResult,
   userController.deactivateUser
@@ -185,6 +190,7 @@ router.patch(
 router.patch(
   '/me/role',
   verifyJwtToken,
+  requireRole('admin'),
   body('role').isString().trim().notEmpty().withMessage('role is required'),
   handleValidationResult,
   userController.setMyRole

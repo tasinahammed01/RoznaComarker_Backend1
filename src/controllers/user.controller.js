@@ -74,6 +74,9 @@ function normalizeClassroomDefaultsPayload(payload) {
 }
 
 async function createOrGetUser(req, res) {
+  if (process.env.NODE_ENV !== 'development') {
+    return res.status(404).json({ message: 'Not found' });
+  }
   try {
     const { firebaseUid, email, displayName, photoURL } = req.body || {};
 
@@ -242,6 +245,10 @@ async function uploadMyAvatar(req, res) {
   }
 }
 
+const ALLOWED_ROLE_TRANSITIONS = {
+  admin: ['teacher', 'student']
+};
+
 async function setMyRole(req, res) {
   try {
     const role = req && req.body && req.body.role;
@@ -252,14 +259,18 @@ async function setMyRole(req, res) {
 
     const normalizedRole = role.trim();
 
-    if (!['teacher', 'student'].includes(normalizedRole)) {
-      return sendError(res, 400, 'Invalid role');
-    }
-
     const user = req && req.user;
 
     if (!user) {
       return sendError(res, 401, 'Unauthorized');
+    }
+
+    const userRole = user.role;
+    if (!ALLOWED_ROLE_TRANSITIONS[userRole] || !ALLOWED_ROLE_TRANSITIONS[userRole].includes(normalizedRole)) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are not authorized to assign this role'
+      });
     }
 
     user.role = normalizedRole;

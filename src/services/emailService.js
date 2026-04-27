@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const logger = require('../utils/logger');
 require('dotenv').config();
 
 class EmailService {
@@ -10,7 +11,7 @@ class EmailService {
   initializeTransporter() {
     try {
       if (!process.env.SENDGRID_API_KEY) {
-        console.warn('SendGrid API key not found in environment variables');
+        logger.warn('SendGrid API key not found in environment variables');
         return;
       }
 
@@ -29,13 +30,13 @@ class EmailService {
 
       this.transporter.verify((error, success) => {
         if (error) {
-          console.error('Email transporter verification failed:', error.message);
+          logger.error(`Email transporter verification failed: ${error.message}`);
         } else {
-          console.log('Email transporter is ready to send messages');
+          logger.info('Email transporter is ready to send messages');
         }
       });
     } catch (error) {
-      console.error('Failed to initialize email transporter:', error.message);
+      logger.error(`Failed to initialize email transporter: ${error.message}`);
     }
   }
 
@@ -64,7 +65,7 @@ class EmailService {
         response: info.response
       };
     } catch (error) {
-      console.error('Failed to send email:', error.message);
+      logger.error(`Failed to send email: ${error.message}`);
       return {
         success: false,
         error: error.message,
@@ -84,7 +85,7 @@ class EmailService {
 
       return await this.sendEmail({ to, subject, html });
     } catch (error) {
-      console.error('Failed to send OTP email:', error.message);
+      logger.error(`Failed to send OTP email: ${error.message}`);
       return {
         success: false,
         error: error.message
@@ -103,7 +104,7 @@ class EmailService {
 
       return await this.sendEmail({ to, subject, html });
     } catch (error) {
-      console.error('Failed to send verification email:', error.message);
+      logger.error(`Failed to send verification email: ${error.message}`);
       return {
         success: false,
         error: error.message
@@ -122,7 +123,7 @@ class EmailService {
 
       return await this.sendEmail({ to, subject, html });
     } catch (error) {
-      console.error('Failed to send reset password email:', error.message);
+      logger.error(`Failed to send reset password email: ${error.message}`);
       return {
         success: false,
         error: error.message

@@ -100,6 +100,21 @@ function detectSignatureKind(buf) {
     return 'image/jpeg';
   }
 
+  // WEBP: RIFF (52 49 46 46) ?? ?? ?? ?? WEBP (57 45 42 50)
+  if (
+    buf.length >= 12 &&
+    buf[0] === 0x52 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x46 &&
+    buf[8] === 0x57 &&
+    buf[9] === 0x45 &&
+    buf[10] === 0x42 &&
+    buf[11] === 0x50
+  ) {
+    return 'image/webp';
+  }
+
   return null;
 }
 
@@ -208,7 +223,7 @@ function validateUploadedFileSignature(req, res, next) {
 
           return res.status(400).json({
             success: false,
-            message: 'Invalid file type. Only PDF, JPG, JPEG, and PNG are allowed.'
+            message: 'Invalid file type. Only PDF, JPG, JPEG, PNG, and WEBP are allowed.'
           });
         }
       } finally {

@@ -10,6 +10,7 @@ const File = require('../models/File');
 const User = require('../models/user.model');
 
 const uploadService = require('../services/upload.service');
+const logger = require('../utils/logger');
 const {
   RubricExcelTemplateError,
   parseRubricDesignerFromExcelTemplate
@@ -434,7 +435,7 @@ async function getSubmissionFeedback(req, res) {
   try {
     const { submissionId } = req.params;
 
-    console.log('Checking dynamic fields for submission', submissionId);
+    logger.debug(`Checking dynamic fields for submission ${submissionId}`);
 
     const userId = req.user && req.user._id;
     const role = req.user && req.user.role;
@@ -466,8 +467,8 @@ async function getSubmissionFeedback(req, res) {
 
     let feedback = await SubmissionFeedback.findOne({ submissionId: submission._id });
     if (!feedback) {
-      console.log('Generating dynamic AI Feedback for submission', submissionId);
-      console.log('Dynamic summary generation for submission', submissionId);
+      logger.debug(`Generating dynamic AI Feedback for submission ${submissionId}`);
+      logger.debug(`Dynamic summary generation for submission ${submissionId}`);
       // Hybrid model: if feedback doesn't exist, generate AI defaults on the backend and persist.
       const classDoc = await Class.findById(submission.class).select('_id teacher');
       const teacherId = role === 'teacher' ? userId : (classDoc && classDoc.teacher ? classDoc.teacher : null);
@@ -546,7 +547,7 @@ async function getSubmissionFeedback(req, res) {
 
       const overallRubricScore = clamp5((grammarMechanics + structureOrganization + contentRelevance) / 3);
 
-      console.log('Dynamic AI rubric generated for submission', submissionId);
+      logger.debug(`Dynamic AI rubric generated for submission ${submissionId}`);
 
       const rubricComments = buildDynamicRubricComments({
         wordCount,
@@ -593,7 +594,7 @@ async function getSubmissionFeedback(req, res) {
 
       // Teacher comment must start empty and must not be AI-generated.
       aiFeedback.overallComments = '';
-      console.log('Teacher comment initialized as empty');
+      logger.debug('Teacher comment initialized as empty');
 
       const created = await SubmissionFeedback.create({
         submissionId: submission._id,
@@ -847,7 +848,7 @@ async function getSubmissionFeedback(req, res) {
       }
     }
 
-    console.log('[FEEDBACK GET]', submissionId, feedback);
+    logger.debug(`[FEEDBACK GET] ${submissionId}`);
     return sendSuccess(res, feedback);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch feedback');
@@ -1602,9 +1603,9 @@ async function generateAiSubmissionFeedback(req, res) {
   try {
     const { submissionId } = req.params;
 
-    console.log('Checking dynamic fields for submission', submissionId);
+    logger.debug(`Checking dynamic fields for submission ${submissionId}`);
 
-    console.log('Generating dynamic AI Feedback for submission', submissionId);
+    logger.debug(`Generating dynamic AI Feedback for submission ${submissionId}`);
 
     if (!mongoose.Types.ObjectId.isValid(submissionId)) {
       return sendError(res, 400, 'Invalid submission id');
@@ -1615,8 +1616,8 @@ async function generateAiSubmissionFeedback(req, res) {
       return sendError(res, 401, 'Unauthorized');
     }
 
-    console.log('Generate AI for submission', submissionId);
-    console.log('Dynamic summary generation for submission', submissionId);
+    logger.debug(`Generate AI for submission ${submissionId}`);
+    logger.debug(`Dynamic summary generation for submission ${submissionId}`);
 
     const submission = await Submission.findById(submissionId);
     if (!submission) {
@@ -1796,17 +1797,14 @@ async function generateAiSubmissionFeedback(req, res) {
           if (validated) {
             structured = validated;
           } else {
-            console.warn('[generateAiSubmissionFeedback] Invalid AI JSON shape; using fallback');
+            logger.warn('[generateAiSubmissionFeedback] Invalid AI JSON shape; using fallback');
           }
         } else {
-          console.warn('[generateAiSubmissionFeedback] AI provider failed; using fallback', {
-            status: resp && resp.status,
-            statusText: resp && resp.statusText
-          });
+          logger.warn(`[generateAiSubmissionFeedback] AI provider failed; using fallback status=${resp && resp.status} statusText=${resp && resp.statusText}`);
         }
       }
     } catch (e) {
-      console.warn('[generateAiSubmissionFeedback] AI generation exception; using fallback', e);
+      logger.warn(`[generateAiSubmissionFeedback] AI generation exception; using fallback: ${e && e.message ? e.message : e}`);
     }
 
     return res.json({
@@ -1900,7 +1898,7 @@ async function upsertSubmissionFeedback(req, res) {
     }
 
     const body = req.body && typeof req.body === 'object' ? req.body : {};
-    console.log('[FEEDBACK UPSERT]', submissionId, body);
+    logger.debug(`[FEEDBACK UPSERT] ${submissionId}`);
 
     const detailedFeedbackObj = body.detailedFeedback && typeof body.detailedFeedback === 'object' ? body.detailedFeedback : {};
 

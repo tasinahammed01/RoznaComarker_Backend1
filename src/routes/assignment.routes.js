@@ -82,12 +82,14 @@ router.post(
   verifyJwtToken,
   requireRole('teacher'),
   body('title').isString().trim().notEmpty().withMessage('title is required'),
-  body('writingType').isString().trim().notEmpty().withMessage('writingType is required'),
+  body('writingType').optional({ nullable: true }).isString().trim().withMessage('writingType must be a string'),
   body('classId').isMongoId().withMessage('Invalid class id'),
   body('deadline').notEmpty().withMessage('deadline is required'),
   body('instructions').optional({ nullable: true }).isString().withMessage('instructions must be a string'),
   body('rubrics').optional({ nullable: true }),
   body('allowLateResubmission').optional().isBoolean().withMessage('allowLateResubmission must be a boolean'),
+  body('resourceType').optional().isIn(['essay', 'flashcard', 'worksheet']).withMessage('resourceType must be essay, flashcard, or worksheet'),
+  body('resourceId').optional({ nullable: true }).isString().withMessage('resourceId must be a string'),
   handleValidationResult,
   enforceUsageLimit('assignments', 1),
   assignmentController.createAssignment
@@ -265,7 +267,35 @@ router.get(
   assignmentController.getAssignmentByIdForTeacher
 );
 
-// Student routes
+// Student routes — submit flashcard assignment and check own submission
+router.post(
+  '/:id/submit',
+  verifyJwtToken,
+  requireRole('student'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  handleValidationResult,
+  assignmentController.submitFlashcardAssignment
+);
+
+router.get(
+  '/:id/my-submission',
+  verifyJwtToken,
+  requireRole('student'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  handleValidationResult,
+  assignmentController.getMyFlashcardSubmission
+);
+
+// Teacher route — view all student submissions for a flashcard assignment
+router.get(
+  '/:id/submissions',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  handleValidationResult,
+  assignmentController.getFlashcardAssignmentSubmissions
+);
+
 /**
  * @openapi
  * /api/assignments/my:

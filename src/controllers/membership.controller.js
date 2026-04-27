@@ -7,6 +7,7 @@ const { createNotification } = require('../services/notification.service');
 const { publishToUser } = require('../services/notificationRealtime.service');
 
 const { ensureActivePlan, incrementUsage } = require('../middlewares/usage.middleware');
+const logger = require('../utils/logger');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -119,7 +120,7 @@ async function joinClassByCode(req, res) {
 
     } catch (notificationErr) {
       // Log error but don't fail the join process
-      console.error('Failed to send notification:', notificationErr);
+      logger.error(`Failed to send notification: ${notificationErr && notificationErr.message ? notificationErr.message : notificationErr}`);
     }
 
     return sendSuccess(res, {

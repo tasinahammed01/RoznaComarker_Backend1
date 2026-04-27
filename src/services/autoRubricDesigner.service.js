@@ -8,6 +8,7 @@ const { fetchCompat, buildTimeoutSignal } = require('./httpClient.service');
 
 const { safeJsonParse } = require('../utils/aiJsonParser');
 const { normalizeRubricDesignerPayload } = require('../utils/rubricNormalizer');
+const logger = require('../utils/logger');
 
 function safeString(v) {
   return typeof v === 'string' ? v : (v == null ? '' : String(v));
@@ -150,7 +151,7 @@ Rules:
     return { ok: false, skipped: false, reason: 'empty_ai_response' };
   }
 
-  console.log("AI raw response:", rawText);
+  logger.debug(`AI raw response: ${rawText}`);
 
   const parsed = safeJsonParse(rawText);
 
@@ -162,7 +163,7 @@ Rules:
     parsed.rubricDesigner || parsed
   );
 
-  console.log("Parsed rubric:", rubricDesigner);
+  logger.debug(`Parsed rubric: ${JSON.stringify(rubricDesigner)}`);
 
   const sanitizedRubricDesigner = sanitizeRubricDesignerCriteria(rubricDesigner);
 

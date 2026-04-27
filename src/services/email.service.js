@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const logger = require('../utils/logger');
 
 // Create transporter using environment variables
 let transporter = null;
@@ -66,11 +67,11 @@ async function sendInvitationEmail({ to, className, classCode, joinUrl, teacherN
     };
 
     const result = await transporter.sendMail(mailOptions);
-    console.log('Email sent successfully:', result.messageId);
+    logger.info(`Email sent successfully: ${result.messageId}`);
     return { success: true, messageId: result.messageId };
     
   } catch (error) {
-    console.error('Failed to send email:', error);
+    logger.error(`Failed to send email: ${error && error.message ? error.message : error}`);
     return { success: false, error: error.message };
   }
 }
@@ -80,10 +81,10 @@ async function testEmailConfig() {
   try {
     const transporter = getTransporter();
     await transporter.verify();
-    console.log('Email service is ready');
+    logger.info('Email service is ready');
     return { success: true };
   } catch (error) {
-    console.error('Email service configuration error:', error);
+    logger.error(`Email service configuration error: ${error && error.message ? error.message : error}`);
     return { success: false, error: error.message };
   }
 }
