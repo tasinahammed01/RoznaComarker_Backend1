@@ -26,7 +26,7 @@ function createSwaggerSpec() {
 
         ? [{ url: baseUrl }]
 
-        : [{ url: 'http://localhost:5000' }],
+        : [{ url: 'http://82.112.234.151:5000' }],
 
       components: {
 
