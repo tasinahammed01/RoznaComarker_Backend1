@@ -49,6 +49,23 @@ const router = express.Router();
  *                   message: Authorization token missing
  */
 router.post('/login', createSensitiveRateLimiter(), verifyFirebaseToken, async (req, res) => {
+  const { intendedRole } = req.body || {};
+
+  // For EXISTING users, verify the selected role matches their DB role
+  if (!req.isNewUser && intendedRole) {
+    const normalizedIntended = String(intendedRole).toLowerCase();
+    if (
+      (normalizedIntended === 'teacher' || normalizedIntended === 'student') &&
+      req.user.role !== normalizedIntended
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: `Role mismatch: This account is registered as ${req.user.role}. Please select ${req.user.role} and try again.`,
+        actualRole: req.user.role
+      });
+    }
+  }
+
   const token = signJwt(req.user);
 
   return res.json({

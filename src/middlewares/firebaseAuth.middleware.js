@@ -16,12 +16,12 @@ function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-async function createOrGetUserFromFirebase(decodedToken) {
+async function createOrGetUserFromFirebase(decodedToken, intendedRole) {
   const firebaseUid = decodedToken && decodedToken.uid;
   const email = decodedToken && decodedToken.email;
 
   if (!isNonEmptyString(firebaseUid) || !isNonEmptyString(email)) {
-    return null;
+    return { user: null, isNew: false };
   }
 
   const normalizedFirebaseUid = firebaseUid.trim();
@@ -29,8 +29,13 @@ async function createOrGetUserFromFirebase(decodedToken) {
 
   const existingUser = await User.findOne({ firebaseUid: normalizedFirebaseUid });
   if (existingUser) {
-    return existingUser;
+    return { user: existingUser, isNew: false };
   }
+
+  const ALLOWED_ROLES = ['teacher', 'student'];
+  const roleToAssign = (intendedRole && ALLOWED_ROLES.includes(String(intendedRole).toLowerCase()))
+    ? String(intendedRole).toLowerCase()
+    : 'student';
 
   try {
     const createdUser = await User.create({
@@ -41,16 +46,16 @@ async function createOrGetUserFromFirebase(decodedToken) {
         : undefined,
       photoURL: isNonEmptyString(decodedToken.picture)
         ? decodedToken.picture.trim()
-        : undefined
-      // role defaults to student (schema)
+        : undefined,
+      role: roleToAssign
     });
 
-    return createdUser;
+    return { user: createdUser, isNew: true };
   } catch (err) {
     if (err && err.code === 11000) {
       // Another request likely created the user concurrently
       const user = await User.findOne({ firebaseUid: normalizedFirebaseUid });
-      if (user) return user;
+      if (user) return { user, isNew: false };
     }
 
     throw err;
@@ -71,7 +76,8 @@ async function verifyFirebaseToken(req, res, next) {
 
     const decodedToken = await admin.auth().verifyIdToken(token);
 
-    const user = await createOrGetUserFromFirebase(decodedToken);
+    const intendedRole = req.body && req.body.intendedRole;
+    const { user, isNew } = await createOrGetUserFromFirebase(decodedToken, intendedRole);
 
     if (!user) {
       return res.status(401).json({
@@ -97,6 +103,7 @@ async function verifyFirebaseToken(req, res, next) {
     }
 
     req.user = user;
+    req.isNewUser = isNew;
     req.firebase = decodedToken;
 
     return next();
