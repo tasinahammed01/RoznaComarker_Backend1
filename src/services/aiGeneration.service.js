@@ -75,7 +75,7 @@ async function generateWithOpenRouter(messages, options = {}) {
         headers: {
           'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
           'Content-Type': 'application/json',
-          'HTTP-Referer': process.env.FRONTEND_URL || 'http://82.112.234.151:4200',
+          'HTTP-Referer': process.env.FRONTEND_URL || 'http://localhost:4200',
           'X-Title': 'RoznaComarker',
         },
         body: JSON.stringify(requestBody),

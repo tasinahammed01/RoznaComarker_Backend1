@@ -5,10 +5,48 @@ function lowerTrim(v) {
 }
 
 function buildAnswerKeyMaps(worksheet) {
-  const a1Items = worksheet?.activity1?.items ?? [];
-  const a2Items = worksheet?.activity2?.items ?? [];
-  const a3Qs = worksheet?.activity3?.questions ?? [];
-  const a4Sents = worksheet?.activity4?.sentences ?? [];
+  // Check if worksheet uses the new activities array format
+  const activitiesArray = worksheet?.activities ?? [];
+  const usesActivitiesFormat = Array.isArray(activitiesArray) && activitiesArray.length > 0;
+
+  let a1Items = worksheet?.activity1?.items ?? [];
+  let a2Items = worksheet?.activity2?.items ?? [];
+  let a3Qs = worksheet?.activity3?.questions ?? [];
+  let a4Sents = worksheet?.activity4?.sentences ?? [];
+  let a5Pairs = worksheet?.activity5?.pairs ?? [];
+  let a6Qs = worksheet?.activity6?.questions ?? [];
+
+  // Map to track which sectionId each activity type maps to (for new format)
+  const sectionIdMap = new Map();
+
+  // Extract from new activities array format if present
+  if (usesActivitiesFormat) {
+    activitiesArray.forEach((activity, index) => {
+      const data = activity?.data || {};
+      const type = activity?.type || '';
+      const sectionId = `activity_${index}`;
+
+      if (type === 'ordering' || type === 'dragDrop' || type === 'sorting') {
+        a1Items = data?.items ?? [];
+        sectionIdMap.set('activity1', sectionId);
+      } else if (type === 'classification') {
+        a2Items = data?.items ?? [];
+        sectionIdMap.set('activity2', sectionId);
+      } else if (type === 'multipleChoice') {
+        a3Qs = data?.questions ?? [];
+        sectionIdMap.set('activity3', sectionId);
+      } else if (type === 'fillBlanks') {
+        a4Sents = data?.sentences ?? [];
+        sectionIdMap.set('activity4', sectionId);
+      } else if (type === 'matching') {
+        a5Pairs = data?.pairs ?? [];
+        sectionIdMap.set('activity5', sectionId);
+      } else if (type === 'trueFalse') {
+        a6Qs = data?.questions ?? [];
+        sectionIdMap.set('activity6', sectionId);
+      }
+    });
+  }
 
   const a1BySlot = new Map();
   for (const item of a1Items) {
@@ -42,16 +80,45 @@ function buildAnswerKeyMaps(worksheet) {
 
   const a4BlankCount = Array.from(a4ByBlankId.keys()).length;
 
+  // Activity 5: Matching pairs - map pairId to correct match
+  const a5ByPairId = new Map();
+  for (const pair of a5Pairs) {
+    if (pair && pair.pairId != null) {
+      a5ByPairId.set(String(pair.pairId), pair);
+    }
+  }
+
+  // Activity 6: True/False - map questionId to correct answer
+  const a6ByQid = new Map();
+  for (const q of a6Qs) {
+    if (q && q.id != null) {
+      a6ByQid.set(String(q.id), q);
+    }
+  }
+
+  // Support new activities array format
+  const activitiesByIndex = new Map();
+  for (let i = 0; i < activitiesArray.length; i++) {
+    activitiesByIndex.set(i, activitiesArray[i]);
+  }
+
   return {
     a1Items,
     a2Items,
     a3Qs,
     a4Sents,
+    a5Pairs,
+    a6Qs,
     a1BySlot,
     a2ById,
     a3ByQid,
     a4ByBlankId,
     a4BlankCount,
+    a5ByPairId,
+    a6ByQid,
+    activitiesArray,
+    activitiesByIndex,
+    sectionIdMap,
   };
 }
 
@@ -61,15 +128,34 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
     a1Items,
     a2Items,
     a3Qs,
+    a5Pairs,
+    a6Qs,
     a1BySlot,
     a2ById,
     a3ByQid,
     a4ByBlankId,
     a4BlankCount,
+    a5ByPairId,
+    a6ByQid,
+    sectionIdMap,
   } = buildAnswerKeyMaps(worksheet);
 
+  // Helper to normalize sectionId - map activity_N to activity type
+  const normalizeSectionId = (sectionId) => {
+    // If it's already activity1-6, return as-is
+    if (/^activity[1-6]$/.test(sectionId)) return sectionId;
+    // If it's activity_0, activity_1, etc., map to activity type based on sectionIdMap
+    if (sectionIdMap && sectionIdMap.has(sectionId)) {
+      // Reverse lookup: find which activity type this sectionId maps to
+      for (const [activityType, mappedSectionId] of sectionIdMap.entries()) {
+        if (mappedSectionId === sectionId) return activityType;
+      }
+    }
+    return sectionId;
+  };
+
   const graded = normalizedAnswers.map((a) => {
-    const sectionId = normalizeString(a?.sectionId);
+    const sectionId = normalizeSectionId(normalizeString(a?.sectionId));
     const questionId = normalizeString(a?.questionId);
     const studentAnswer = normalizeString(a?.studentAnswer);
 
@@ -96,7 +182,22 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
       const given = lowerTrim(studentAnswer);
       isCorrect = Boolean(part && correct && given && given === correct);
       feedback = isCorrect ? 'Correct!' : `Incorrect. Correct: ${part?.correctAnswer ?? '?'}`;
+    } else if (sectionId === 'activity5') {
+      // Activity 5: Matching pairs
+      const pair = a5ByPairId.get(questionId);
+      const correctMatch = normalizeString(pair?.rightItem?.text || pair?.correctMatch);
+      const givenMatch = lowerTrim(studentAnswer);
+      isCorrect = Boolean(pair && correctMatch && givenMatch && givenMatch === lowerTrim(correctMatch));
+      feedback = isCorrect ? 'Correct match!' : `Incorrect. Correct match: ${correctMatch || '?'}`;
+    } else if (sectionId === 'activity6') {
+      // Activity 6: True/False
+      const q = a6ByQid.get(questionId);
+      const correctAnswer = normalizeString(q?.correctAnswer); // Should be 'true' or 'false'
+      const givenAnswer = lowerTrim(studentAnswer);
+      isCorrect = Boolean(q && correctAnswer && givenAnswer && givenAnswer === lowerTrim(correctAnswer));
+      feedback = isCorrect ? 'Correct!' : `Incorrect. Correct: ${correctAnswer || '?'}`;
     } else {
+      // Fallback for activities array format or other types
       isCorrect = Boolean(a?.isCorrect);
       feedback = isCorrect ? 'Correct!' : 'Incorrect.';
     }
@@ -117,7 +218,9 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
     (Array.isArray(a1Items) ? a1Items.length : 0) +
     (Array.isArray(a2Items) ? a2Items.length : 0) +
     (Array.isArray(a3Qs) ? a3Qs.length : 0) +
-    (Number(a4BlankCount) || 0);
+    (Number(a4BlankCount) || 0) +
+    (Array.isArray(a5Pairs) ? a5Pairs.length : 0) +
+    (Array.isArray(a6Qs) ? a6Qs.length : 0);
 
   const percentage = totalPointsPossible > 0
     ? Math.round((totalPointsEarned / totalPointsPossible) * 100)
@@ -128,14 +231,20 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
     activity2: { earned: 0, possible: Array.isArray(a2Items) ? a2Items.length : 0 },
     activity3: { earned: 0, possible: Array.isArray(a3Qs) ? a3Qs.length : 0 },
     activity4: { earned: 0, possible: Number(a4BlankCount) || 0 },
+    activity5: { earned: 0, possible: Array.isArray(a5Pairs) ? a5Pairs.length : 0 },
+    activity6: { earned: 0, possible: Array.isArray(a6Qs) ? a6Qs.length : 0 },
   };
 
   for (const a of graded) {
     if (!a || a.pointsEarned !== 1) continue;
-    if (a.sectionId === 'activity1') breakdown.activity1.earned += 1;
-    else if (a.sectionId === 'activity2') breakdown.activity2.earned += 1;
-    else if (a.sectionId === 'activity3') breakdown.activity3.earned += 1;
-    else if (a.sectionId === 'activity4') breakdown.activity4.earned += 1;
+    // Normalize sectionId for breakdown tracking
+    const normalizedSectionId = normalizeSectionId(a.sectionId);
+    if (normalizedSectionId === 'activity1') breakdown.activity1.earned += 1;
+    else if (normalizedSectionId === 'activity2') breakdown.activity2.earned += 1;
+    else if (normalizedSectionId === 'activity3') breakdown.activity3.earned += 1;
+    else if (normalizedSectionId === 'activity4') breakdown.activity4.earned += 1;
+    else if (normalizedSectionId === 'activity5') breakdown.activity5.earned += 1;
+    else if (normalizedSectionId === 'activity6') breakdown.activity6.earned += 1;
   }
 
   return {

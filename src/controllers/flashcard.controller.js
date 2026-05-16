@@ -918,7 +918,7 @@ async function shareFlashcardSet(req, res) {
     set.isPublic   = true;
     await set.save();
 
-    const frontendUrl = (process.env.FRONTEND_URL || 'http://82.112.234.151:4200').replace(/\/$/, '');
+    const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:4200').replace(/\/$/, '');
     const shareUrl = `${frontendUrl}/shared/flashcards/${shareToken}`;
 
     return sendSuccess(res, { shareUrl, shareToken });
