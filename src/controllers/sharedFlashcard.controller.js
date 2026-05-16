@@ -21,6 +21,7 @@ function sendError(res, statusCode, message, extra = {}) {
 /**
  * GET /api/shared/flashcards/:shareToken — public, no auth required.
  * Returns card data (title + cards) if set is public. Strips internal IDs from response.
+ * Returns 404 if set was deleted or share token was revoked.
  * @param {string} req.params.shareToken — uuid v4 token stored on FlashcardSet
  * @returns {{ title, description, cards, shareToken }}
  */
@@ -36,7 +37,8 @@ async function getSharedSet(req, res) {
       .lean();
 
     if (!set) {
-      return sendError(res, 404, 'This flashcard set is no longer available');
+      // Set was deleted or share token was revoked
+      return sendError(res, 404, 'This flashcard set has been deleted or is no longer available');
     }
 
     return sendSuccess(res, {

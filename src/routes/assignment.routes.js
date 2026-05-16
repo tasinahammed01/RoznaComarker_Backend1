@@ -3,6 +3,7 @@ const express = require('express');
 const multer = require('multer');
 
 const assignmentController = require('../controllers/assignment.controller');
+const flashcardProgressController = require('../controllers/flashcardProgress.controller');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { requireRole } = require('../middlewares/role.middleware');
 
@@ -294,6 +295,17 @@ router.get(
   param('id').isMongoId().withMessage('Invalid assignment id'),
   handleValidationResult,
   assignmentController.getFlashcardAssignmentSubmissions
+);
+
+// Teacher route — get detailed progress for all students in a flashcard assignment
+// Returns not_started, in_progress, completed statuses for real-time tracking
+router.get(
+  '/:id/progress',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  handleValidationResult,
+  flashcardProgressController.getAssignmentProgress
 );
 
 /**

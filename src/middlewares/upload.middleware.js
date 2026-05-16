@@ -43,6 +43,8 @@ function resolveUploadFolder(type) {
 
   if (type === 'class-banners') return path.join(uploadsRoot, 'class-banners');
 
+  if (type === 'flashcards') return path.join(uploadsRoot, 'flashcards');
+
   return path.join(uploadsRoot, 'uploads');
 }
 

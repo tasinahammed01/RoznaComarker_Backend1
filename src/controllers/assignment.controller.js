@@ -8,6 +8,7 @@ const Submission = require('../models/Submission');
 const FlashcardSubmission = require('../models/FlashcardSubmission');
 const FlashcardSet = require('../models/FlashcardSet');
 const WorksheetSubmission = require('../models/WorksheetSubmission');
+const Worksheet = require('../models/Worksheet');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 
 const {
@@ -71,46 +72,86 @@ async function filterAssignmentsWithAvailableResources(assignments) {
   }
 
   const flashcardAssignments = assignments.filter((assignment) => assignment && assignment.resourceType === 'flashcard');
-  if (flashcardAssignments.length === 0) {
+  const worksheetAssignments = assignments.filter((assignment) => assignment && assignment.resourceType === 'worksheet');
+  
+  if (flashcardAssignments.length === 0 && worksheetAssignments.length === 0) {
     return assignments;
-  }
-
-  const flashcardResourceIds = Array.from(new Set(
-    flashcardAssignments
-      .map((assignment) => safeString(assignment.resourceId).trim())
-      .filter((resourceId) => resourceId.length > 0 && mongoose.Types.ObjectId.isValid(resourceId))
-  ));
-
-  const existingSetIds = new Set();
-  if (flashcardResourceIds.length > 0) {
-    const sets = await FlashcardSet.find({ _id: { $in: flashcardResourceIds } }).select('_id').lean();
-    for (const set of sets || []) {
-      existingSetIds.add(String(set._id));
-    }
   }
 
   const staleAssignmentIds = [];
   const filteredAssignments = [];
 
-  for (const assignment of assignments) {
-    if (!assignment || assignment.resourceType !== 'flashcard') {
-      filteredAssignments.push(assignment);
-      continue;
-    }
+  // Filter flashcard assignments
+  if (flashcardAssignments.length > 0) {
+    const flashcardResourceIds = Array.from(new Set(
+      flashcardAssignments
+        .map((assignment) => safeString(assignment.resourceId).trim())
+        .filter((resourceId) => resourceId.length > 0 && mongoose.Types.ObjectId.isValid(resourceId))
+    ));
 
-    const resourceId = safeString(assignment.resourceId).trim();
-    const hasValidResource = resourceId.length > 0
-      && mongoose.Types.ObjectId.isValid(resourceId)
-      && existingSetIds.has(resourceId);
-
-    if (!hasValidResource) {
-      if (assignment._id) {
-        staleAssignmentIds.push(assignment._id);
+    const existingSetIds = new Set();
+    if (flashcardResourceIds.length > 0) {
+      const sets = await FlashcardSet.find({ _id: { $in: flashcardResourceIds } }).select('_id').lean();
+      for (const set of sets || []) {
+        existingSetIds.add(String(set._id));
       }
-      continue;
     }
 
-    filteredAssignments.push(assignment);
+    for (const assignment of flashcardAssignments) {
+      const resourceId = safeString(assignment.resourceId).trim();
+      const hasValidResource = resourceId.length > 0
+        && mongoose.Types.ObjectId.isValid(resourceId)
+        && existingSetIds.has(resourceId);
+
+      if (!hasValidResource) {
+        if (assignment._id) {
+          staleAssignmentIds.push(assignment._id);
+        }
+        continue;
+      }
+
+      filteredAssignments.push(assignment);
+    }
+  }
+
+  // Filter worksheet assignments
+  if (worksheetAssignments.length > 0) {
+    const worksheetResourceIds = Array.from(new Set(
+      worksheetAssignments
+        .map((assignment) => safeString(assignment.resourceId).trim())
+        .filter((resourceId) => resourceId.length > 0 && mongoose.Types.ObjectId.isValid(resourceId))
+    ));
+
+    const existingWorksheetIds = new Set();
+    if (worksheetResourceIds.length > 0) {
+      const worksheets = await Worksheet.find({ _id: { $in: worksheetResourceIds } }).select('_id').lean();
+      for (const ws of worksheets || []) {
+        existingWorksheetIds.add(String(ws._id));
+      }
+    }
+
+    for (const assignment of worksheetAssignments) {
+      const resourceId = safeString(assignment.resourceId).trim();
+      const hasValidResource = resourceId.length > 0
+        && mongoose.Types.ObjectId.isValid(resourceId)
+        && existingWorksheetIds.has(resourceId);
+
+      if (!hasValidResource) {
+        if (assignment._id) {
+          staleAssignmentIds.push(assignment._id);
+        }
+        continue;
+      }
+
+      filteredAssignments.push(assignment);
+    }
+  }
+
+  // Include non-resource assignments (essay type)
+  for (const assignment of assignments) {
+    if (!assignment || assignment.resourceType !== 'flashcard' && assignment.resourceType !== 'worksheet') {
+      filteredAssignments.push(assignment);
+    }
   }
 
   if (staleAssignmentIds.length > 0) {
@@ -120,7 +161,7 @@ async function filterAssignmentsWithAvailableResources(assignments) {
     );
 
     logger.warn({
-      message: 'Deactivated stale flashcard assignments with missing resources',
+      message: 'Deactivated stale assignments with missing resources',
       assignmentIds: staleAssignmentIds.map((id) => String(id))
     });
   }
@@ -1101,7 +1142,33 @@ async function getClassAssignments(req, res) {
 
     const filteredAssignments = await filterAssignmentsWithAvailableResources(assignments);
 
-    return sendSuccess(res, filteredAssignments);
+    // Add submission counts for each assignment
+    const assignmentsWithCounts = await Promise.all(
+      filteredAssignments.map(async (assignment) => {
+        let submittedCount = 0;
+        
+        if (assignment.resourceType === 'essay') {
+          submittedCount = await Submission.countDocuments({
+            assignmentId: assignment._id
+          });
+        } else if (assignment.resourceType === 'flashcard') {
+          submittedCount = await FlashcardSubmission.countDocuments({
+            assignmentId: assignment._id
+          });
+        } else if (assignment.resourceType === 'worksheet') {
+          submittedCount = await WorksheetSubmission.countDocuments({
+            assignmentId: assignment._id
+          });
+        }
+
+        return {
+          ...assignment.toObject(),
+          submitted: submittedCount
+        };
+      })
+    );
+
+    return sendSuccess(res, assignmentsWithCounts);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch assignments');
   }
@@ -1566,22 +1633,38 @@ async function submitFlashcardAssignment(req, res) {
     if (!membership) return sendError(res, 403, 'Not enrolled in this class');
 
     const existing = await FlashcardSubmission.findOne({ assignmentId, userId: studentId });
-    if (existing) return sendSuccess(res, existing);
-
     const { score, timeTaken, results, completedAt, template, totalCards, cardResults } = req.body || {};
     const resolvedTemplate = ['term-def', 'qa', 'concept'].includes(template) ? template : 'term-def';
-    const sub = await FlashcardSubmission.create({
-      flashcardSetId: filteredAssignment.resourceId,
-      userId: studentId,
-      assignmentId,
-      score:       typeof score === 'number' ? score : 0,
-      timeTaken:   typeof timeTaken === 'number' ? timeTaken : 0,
-      results:     Array.isArray(results) ? results : [],
-      template:    resolvedTemplate,
-      totalCards:  typeof totalCards === 'number' ? totalCards : undefined,
-      cardResults: Array.isArray(cardResults) ? cardResults : [],
-      submittedAt: completedAt ? new Date(completedAt) : new Date()
-    });
+
+    let sub;
+    if (existing) {
+      sub = await FlashcardSubmission.findOneAndUpdate(
+        { assignmentId, userId: studentId },
+        {
+          score:       typeof score === 'number' ? score : 0,
+          timeTaken:   typeof timeTaken === 'number' ? timeTaken : 0,
+          results:     Array.isArray(results) ? results : [],
+          template:    resolvedTemplate,
+          totalCards:  typeof totalCards === 'number' ? totalCards : undefined,
+          cardResults: Array.isArray(cardResults) ? cardResults : [],
+          submittedAt: completedAt ? new Date(completedAt) : new Date()
+        },
+        { new: true }
+      );
+    } else {
+      sub = await FlashcardSubmission.create({
+        flashcardSetId: filteredAssignment.resourceId,
+        userId: studentId,
+        assignmentId,
+        score:       typeof score === 'number' ? score : 0,
+        timeTaken:   typeof timeTaken === 'number' ? timeTaken : 0,
+        results:     Array.isArray(results) ? results : [],
+        template:    resolvedTemplate,
+        totalCards:  typeof totalCards === 'number' ? totalCards : undefined,
+        cardResults: Array.isArray(cardResults) ? cardResults : [],
+        submittedAt: completedAt ? new Date(completedAt) : new Date()
+      });
+    }
 
     setImmediate(async () => {
       try {

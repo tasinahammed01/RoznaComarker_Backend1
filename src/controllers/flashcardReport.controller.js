@@ -1,5 +1,6 @@
 const FlashcardSet = require('../models/FlashcardSet');
 const FlashcardSubmission = require('../models/FlashcardSubmission');
+const StudentFlashcardProgress = require('../models/StudentFlashcardProgress');
 
 function sendSuccess(res, data) {
   return res.json({ success: true, data });
@@ -29,6 +30,22 @@ async function getReport(req, res) {
       .populate('userId', 'displayName email')
       .lean();
 
+    // Also fetch progress records for real-time status
+    const progressFilter = { flashcardSetId: id };
+    if (assignmentId) {
+      progressFilter.assignmentId = assignmentId;
+    }
+    const progressRecords = await StudentFlashcardProgress.find(progressFilter)
+      .populate('studentId', 'displayName email')
+      .lean();
+
+    // Create a map of progress by student ID
+    const progressMap = new Map();
+    progressRecords.forEach(p => {
+      const studentId = String(p.studentId?._id || p.studentId);
+      progressMap.set(studentId, p);
+    });
+
     const totalSubmissions = submissions.length;
 
     const averageScore =
@@ -45,17 +62,30 @@ async function getReport(req, res) {
         ? sortedTimes[mid]
         : Math.round((sortedTimes[mid - 1] + sortedTimes[mid]) / 2);
 
-    const participants = submissions.map((s) => ({
-      userId: s.userId && s.userId._id ? String(s.userId._id) : String(s.userId),
-      userName:
-        s.userId && (s.userId.displayName || s.userId.email)
-          ? s.userId.displayName || s.userId.email
-          : 'Unknown',
-      score: s.score || 0,
-      timeTaken: s.timeTaken || 0,
-      submittedAt: s.submittedAt,
-      status: 'completed',
-    }));
+    const participants = submissions.map((s) => {
+      const userId = s.userId && s.userId._id ? String(s.userId._id) : String(s.userId);
+      const progress = progressMap.get(userId);
+
+      // Determine status - use progress record if available, otherwise derive from submission
+      let status = 'completed'; // submissions mean completed
+      if (progress) {
+        status = progress.status;
+      }
+
+      return {
+        userId,
+        userName:
+          s.userId && (s.userId.displayName || s.userId.email)
+            ? s.userId.displayName || s.userId.email
+            : 'Unknown',
+        score: s.score || 0,
+        timeTaken: s.timeTaken || 0,
+        submittedAt: s.submittedAt,
+        status,
+        completedCards: progress?.completedCards || s.totalCards || 0,
+        totalCards: progress?.totalCards || s.totalCards || 0,
+      };
+    });
 
     const cards = set.cards.map((card) => {
       const cardIdStr = String(card._id);
@@ -84,6 +114,10 @@ async function getReport(req, res) {
 
     return sendSuccess(res, report);
   } catch (err) {
+    // If the flashcard set was deleted during report generation, return 404
+    if (err.name === 'CastError' || err.message?.includes('Cast to ObjectId failed')) {
+      return sendError(res, 404, 'Flashcard set not found');
+    }
     return sendError(res, 500, 'Internal server error');
   }
 }

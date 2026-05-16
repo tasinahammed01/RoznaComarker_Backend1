@@ -1,0 +1,210 @@
+[dotenv@17.3.1] injecting env (38) from .env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[dotenv@17.3.1] injecting env (0) from .env -- tip: ⚙️  enable debug logging with { debug: true }
+[2026-05-10T18:16:21.164Z] WARN: {"message":"GOOGLE_APPLICATION_CREDENTIALS path invalid; using fallback backend/key/vision_key.json","configured":"D:\\Client Project Fiverr\\1st project\\ProjectRozna\\backend\\key\\roznaKey_vision_key.json","fallback":"D:\\Client Project Fiverr\\1st project\\ProjectRozna\\backend\\key\\vision_key.json"}
+(node:8708) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[2026-05-10T18:16:23.051Z] ERROR: Email transporter verification failed: Invalid login: 535 Authentication failed: The provided authorization grant is invalid, expired, or revoked
+[2026-05-10T18:16:23.086Z] INFO: MongoDB connected
+[2026-05-10T18:16:24.116Z] INFO: [STARTUP] Ensured partial unique shareToken_1 index
+===== TEST B PAYLOAD =====
+{"inputType":"topic","content":"Human Body","language":"English","difficulty":"medium","activityTypes":["Multiple Choice","True/False"]}
+[GENERATE WORKSHEET] req.body: {"inputType":"topic","content":"Human Body","language":"English","difficulty":"medium","activityTypes":["Multiple Choice","True/False"]}
+[GENERATE WORKSHEET] Raw response: {
+  "title": "Exploring the Human Body",
+  "description": "Learn about the different systems and organs that make up the human body.",
+  "subject": "Science",
+  "tags": ["Human Body", "Anatomy", "Physiology"],
+  "estimatedMinutes": 20,
+  "conceptExplanation": {
+    "title": "The Human Body: A Comple
+[RAW AI TEXT] {
+  "title": "Exploring the Human Body",
+  "description": "Learn about the different systems and organs that make up the human body.",
+  "subject": "Science",
+  "tags": ["Human Body", "Anatomy", "Physiology"],
+  "estimatedMinutes": 20,
+  "conceptExplanation": {
+    "title": "The Human Body: A Complex System",
+    "body": "The human body is made up of many different systems that work together to keep us alive and functioning properly. The skeletal system provides support and protection for the body, while the muscular system allows us to move and maintain posture. The nervous system, which includes the brain and spinal cord, controls our movements and sends signals to the rest of the body. The circulatory system, also known as the cardiovascular system, transports blood throughout the body, supplying oxygen and nutrients to our cells. The respiratory system brings oxygen into the body and removes carbon dioxide. The digestive system breaks down the food we eat into nutrients that our body can use. Finally, the integumentary system protects our body from external damage and helps to regulate body temperature.",
+    "keyPoints": ["Skeletal System", "Muscular System", "Nervous System"],
+    "examples": ["The skeletal system includes bones, cartilage, and ligaments.", "The muscular system includes skeletal muscles, smooth muscles, and cardiac muscle."],
+    "tips": ["The human body is made up of approximately 60% water.", "The largest organ in the human body is the skin."],
+    "timeline": [{"event": "The human body develops from a fertilized egg cell.", "order": 1}],
+    "formulas": [{"formula": "Heart rate = 100,000 beats per day", "explanation": "The heart beats approximately 100,000 times per day."}],
+    "processSteps": [{"step": 1, "description": "The heart pumps blood throughout the body."}]
+  },
+  "activities": [
+    {
+      "type": "ordering",
+      "title": "Activity 1: Organize the Human Body Systems",
+      "instructions": "Put the human body systems in the correct order from head to toe.",
+      "data": {
+        "items": [{"id":"a1_1","emoji":"🦴","name":"Skeletal System","role":"Supports the body","correctOrder":1},
+                  {"id":"a1_2","emoji":"💪","name":"Muscular System","role":"Allows movement","correctOrder":2},
+                  {"id":"a1_3","emoji":"🧠","name":"Nervous System","role":"Controls movements and sends signals","correctOrder":3},
+                  {"id":"a1_4","emoji":"❤️","name":"Circulatory System","role":"Transports blood","correctOrder":4},
+                  {"id":"a1_5","emoji":"🌿","name":"Respiratory System","role":"Brings oxygen into the body","correctOrder":5},
+                  {"id":"a1_6","emoji":"🍴","name":"Digestive System","role":"Breaks down food","correctOrder":6},
+                  {"id":"a1_7","emoji":"🧖‍♀️","name":"Integumentary System","role":"Protects the body","correctOrder":7}]
+      },
+      "order": 1
+    },
+    {
+      "type": "classification",
+      "title": "Activity 2: Classify the Human Body Organs",
+      "instructions": "Classify each organ as either skeletal, muscular, nervous, or circulatory.",
+      "data": {
+        "categories": ["Skeletal", "Muscular", "Nervous", "Circulatory"],
+        "items": [{"id":"a2_1","emoji":"🦴","name":"Heart","description":"Pumps blood throughout the body","correctCategory":"Circulatory"},
+                  {"id":"a2_2","emoji":"💪","name":"Muscle","description":"Allows movement","correctCategory":"Muscular"},
+                  {"id":"a2_3","emoji":"🧠","name":"Brain","description":"Controls movements and sends signals","correctCategory":"Nervous"},
+                  {"id":"a2_4","emoji":"🦴","name":"Ribcage","description":"Protects the heart and lungs","correctCategory":"Skeletal"}]
+      },
+      "order": 2
+    },
+    {
+      "type": "multipleChoice",
+      "title": "Activity 3: What is the Function of the Respiratory System?",
+      "instructions": "Choose the correct answer.",
+      "data": {
+        "questions": [{"id":"a3_q1","text":"What is the primary function of the respiratory system?","options":["To break down food into nutrients","To transport blood throughout the body","To bring oxygen into the body and remove carbon dioxide","To regulate body temperature"],"correctAnswer":"To bring oxygen into the body and remove carbon dioxide"}]
+      },
+      "order": 3
+    },
+    {
+      "type": "fillBlanks",
+      "title": "Activity 4: Fill in the Blanks",
+      "instructions": "Fill in the blanks with the correct words.",
+      "data": {
+        "wordBank": ["skeletal", "muscular", "nervous", "circulatory"],
+        "sentences": [{
+          "id": "a4_s1",
+          "parts": [
+            {"type":"text","value":"The human body is made up of many different "},
+            {"type":"blank","blankId":"b1","correctAnswer":"skeletal"},
+            {"type":"text","value":" systems that work together to keep us alive and functioning properly."}
+          ]
+        }]
+      },
+      "order": 4
+    }
+  ]
+}
+[CLEANED TEXT] {
+  "title": "Exploring the Human Body",
+  "description": "Learn about the different systems and organs that make up the human body.",
+  "subject": "Science",
+  "tags": ["Human Body", "Anatomy", "Physiology"],
+  "estimatedMinutes": 20,
+  "conceptExplanation": {
+    "title": "The Human Body: A Complex System",
+    "body": "The human body is made up of many different systems that work together to keep us alive and functioning properly. The skeletal system provides support and protection for the body, while the muscular system allows us to move and maintain posture. The nervous system, which includes the brain and spinal cord, controls our movements and sends signals to the rest of the body. The circulatory system, also known as the cardiovascular system, transports blood throughout the body, supplying oxygen and nutrients to our cells. The respiratory system brings oxygen into the body and removes carbon dioxide. The digestive system breaks down the food we eat into nutrients that our body can use. Finally, the integumentary system protects our body from external damage and helps to regulate body temperature.",
+    "keyPoints": ["Skeletal System", "Muscular System", "Nervous System"],
+    "examples": ["The skeletal system includes bones, cartilage, and ligaments.", "The muscular system includes skeletal muscles, smooth muscles, and cardiac muscle."],
+    "tips": ["The human body is made up of approximately 60% water.", "The largest organ in the human body is the skin."],
+    "timeline": [{"event": "The human body develops from a fertilized egg cell.", "order": 1}],
+    "formulas": [{"formula": "Heart rate = 100,000 beats per day", "explanation": "The heart beats approximately 100,000 times per day."}],
+    "processSteps": [{"step": 1, "description": "The heart pumps blood throughout the body."}]
+  },
+  "activities": [
+    {
+      "type": "ordering",
+      "title": "Activity 1: Organize the Human Body Systems",
+      "instructions": "Put the human body systems in the correct order from head to toe.",
+      "data": {
+        "items": [{"id":"a1_1","emoji":"🦴","name":"Skeletal System","role":"Supports the body","correctOrder":1},
+                  {"id":"a1_2","emoji":"💪","name":"Muscular System","role":"Allows movement","correctOrder":2},
+                  {"id":"a1_3","emoji":"🧠","name":"Nervous System","role":"Controls movements and sends signals","correctOrder":3},
+                  {"id":"a1_4","emoji":"❤️","name":"Circulatory System","role":"Transports blood","correctOrder":4},
+                  {"id":"a1_5","emoji":"🌿","name":"Respiratory System","role":"Brings oxygen into the body","correctOrder":5},
+                  {"id":"a1_6","emoji":"🍴","name":"Digestive System","role":"Breaks down food","correctOrder":6},
+                  {"id":"a1_7","emoji":"🧖‍♀️","name":"Integumentary System","role":"Protects the body","correctOrder":7}]
+      },
+      "order": 1
+    },
+    {
+      "type": "classification",
+      "title": "Activity 2: Classify the Human Body Organs",
+      "instructions": "Classify each organ as either skeletal, muscular, nervous, or circulatory.",
+      "data": {
+        "categories": ["Skeletal", "Muscular", "Nervous", "Circulatory"],
+        "items": [{"id":"a2_1","emoji":"🦴","name":"Heart","description":"Pumps blood throughout the body","correctCategory":"Circulatory"},
+                  {"id":"a2_2","emoji":"💪","name":"Muscle","description":"Allows movement","correctCategory":"Muscular"},
+                  {"id":"a2_3","emoji":"🧠","name":"Brain","description":"Controls movements and sends signals","correctCategory":"Nervous"},
+                  {"id":"a2_4","emoji":"🦴","name":"Ribcage","description":"Protects the heart and lungs","correctCategory":"Skeletal"}]
+      },
+      "order": 2
+    },
+    {
+      "type": "multipleChoice",
+      "title": "Activity 3: What is the Function of the Respiratory System?",
+      "instructions": "Choose the correct answer.",
+      "data": {
+        "questions": [{"id":"a3_q1","text":"What is the primary function of the respiratory system?","options":["To break down food into nutrients","To transport blood throughout the body","To bring oxygen into the body and remove carbon dioxide","To regulate body temperature"],"correctAnswer":"To bring oxygen into the body and remove carbon dioxide"}]
+      },
+      "order": 3
+    },
+    {
+      "type": "fillBlanks",
+      "title": "Activity 4: Fill in the Blanks",
+      "instructions": "Fill in the blanks with the correct words.",
+      "data": {
+        "wordBank": ["skeletal", "muscular", "nervous", "circulatory"],
+        "sentences": [{
+          "id": "a4_s1",
+          "parts": [
+            {"type":"text","value":"The human body is made up of many different "},
+            {"type":"blank","blankId":"b1","correctAnswer":"skeletal"},
+            {"type":"text","value":" systems that work together to keep us alive and functioning properly."}
+          ]
+        }]
+      },
+      "order": 4
+    }
+  ]
+}
+[PARSED OBJECT KEYS] [
+  'title',
+  'description',
+  'subject',
+  'tags',
+  'estimatedMinutes',
+  'conceptExplanation',
+  'activities'
+]
+[ACTIVITIES VALUE] [
+  {
+    type: 'ordering',
+    title: 'Activity 1: Organize the Human Body Systems',
+    instructions: 'Put the human body systems in the correct order from head to toe.',
+    data: { items: [Array] },
+    order: 1
+  },
+  {
+    type: 'classification',
+    title: 'Activity 2: Classify the Human Body Organs',
+    instructions: 'Classify each organ as either skeletal, muscular, nervous, or circulatory.',
+    data: { categories: [Array], items: [Array] },
+    order: 2
+  },
+  {
+    type: 'multipleChoice',
+    title: 'Activity 3: What is the Function of the Respiratory System?',
+    instructions: 'Choose the correct answer.',
+    data: { questions: [Array] },
+    order: 3
+  },
+  {
+    type: 'fillBlanks',
+    title: 'Activity 4: Fill in the Blanks',
+    instructions: 'Fill in the blanks with the correct words.',
+    data: { wordBank: [Array], sentences: [Array] },
+    order: 4
+  }
+]
+[ACTIVITIES LENGTH] 4
+[0mPOST /api/worksheets/generate [32m200[0m 15458.391 ms - 4439[0m
+===== TEST B RESPONSE STATUS =====
+200
+===== TEST B RESPONSE BODY =====
+{"success":true,"worksheet":{"title":"Exploring the Human Body","description":"Learn about the different systems and organs that make up the human body.","subject":"Science","tags":["Human Body","Anatomy","Physiology"],"estimatedMinutes":20,"conceptExplanation":{"title":"The Human Body: A Complex System","body":"The human body is made up of many different systems that work together to keep us alive and functioning properly. The skeletal system provides support and protection for the body, while the muscular system allows us to move and maintain posture. The nervous system, which includes the brain and spinal cord, controls our movements and sends signals to the rest of the body. The circulatory system, also known as the cardiovascular system, transports blood throughout the body, supplying oxygen and nutrients to our cells. The respiratory system brings oxygen into the body and removes carbon dioxide. The digestive system breaks down the food we eat into nutrients that our body can use. Finally, the integumentary system protects our body from external damage and helps to regulate body temperature.","keyPoints":["Skeletal System","Muscular System","Nervous System"],"examples":["The skeletal system includes bones, cartilage, and ligaments.","The muscular system includes skeletal muscles, smooth muscles, and cardiac muscle."],"tips":["The human body is made up of approximately 60% water.","The largest organ in the human body is the skin."],"timeline":[{"event":"The human body develops from a fertilized egg cell.","order":1}],"formulas":[{"formula":"Heart rate = 100,000 beats per day","explanation":"The heart beats approximately 100,000 times per day."}],"processSteps":[{"step":1,"description":"The heart pumps blood throughout the body."}]},"activities":[{"type":"ordering","title":"Activity 1: Organize the Human Body Systems","instructions":"Put the human body systems in the correct order from head to toe.","data":{"items":[{"id":"a1_1","emoji":"🦴","name":"Skeletal System","role":"Supports the body","correctOrder":1},{"id":"a1_2","emoji":"💪","name":"Muscular System","role":"Allows movement","correctOrder":2},{"id":"a1_3","emoji":"🧠","name":"Nervous System","role":"Controls movements and sends signals","correctOrder":3},{"id":"a1_4","emoji":"❤️","name":"Circulatory System","role":"Transports blood","correctOrder":4},{"id":"a1_5","emoji":"🌿","name":"Respiratory System","role":"Brings oxygen into the body","correctOrder":5},{"id":"a1_6","emoji":"🍴","name":"Digestive System","role":"Breaks down food","correctOrder":6},{"id":"a1_7","emoji":"🧖‍♀️","name":"Integumentary System","role":"Protects the body","correctOrder":7}]},"order":1},{"type":"classification","title":"Activity 2: Classify the Human Body Organs","instructions":"Classify each organ as either skeletal, muscular, nervous, or circulatory.","data":{"categories":["Skeletal","Muscular","Nervous","Circulatory"],"items":[{"id":"a2_1","emoji":"🦴","name":"Heart","description":"Pumps blood throughout the body","correctCategory":"Circulatory"},{"id":"a2_2","emoji":"💪","name":"Muscle","description":"Allows movement","correctCategory":"Muscular"},{"id":"a2_3","emoji":"🧠","name":"Brain","description":"Controls movements and sends signals","correctCategory":"Nervous"},{"id":"a2_4","emoji":"🦴","name":"Ribcage","description":"Protects the heart and lungs","correctCategory":"Skeletal"}]},"order":2},{"type":"multipleChoice","title":"Activity 3: What is the Function of the Respiratory System?","instructions":"Choose the correct answer.","data":{"questions":[{"id":"a3_q1","text":"What is the primary function of the respiratory system?","options":["To break down food into nutrients","To transport blood throughout the body","To bring oxygen into the body and remove carbon dioxide","To regulate body temperature"],"correctAnswer":"To bring oxygen into the body and remove carbon dioxide"}]},"order":3},{"type":"fillBlanks","title":"Activity 4: Fill in the Blanks","instructions":"Fill in the blanks with the correct words.","data":{"wordBank":["skeletal","muscular","nervous","circulatory"],"sentences":[{"id":"a4_s1","parts":[{"type":"text","value":"The human body is made up of many different "},{"type":"blank","blankId":"b1","correctAnswer":"skeletal"},{"type":"text","value":" systems that work together to keep us alive and functioning properly."}]}]},"order":4}]},"sourceContent":"Human Body"}

@@ -7,6 +7,9 @@ const WorksheetSubmission = require('../models/WorksheetSubmission');
 const Worksheet = require('../models/Worksheet');
 const FlashcardSet = require('../models/FlashcardSet');
 const FlashcardSubmission = require('../models/FlashcardSubmission');
+const Assignment = require('../models/assignment.model');
+const Membership = require('../models/membership.model');
+const User = require('../models/user.model');
 const logger = require('../utils/logger');
 
 const uploadService = require('../services/upload.service');
@@ -261,7 +264,13 @@ async function downloadWorksheetSubmissionPdf(req, res, next) {
 
     const tmpDir    = path.join(os.tmpdir(), 'rozna-pdf');
     const outFile   = path.join(tmpDir, `worksheet-submission-${String(submission._id)}-${uuidv4()}.pdf`);
-    const savedPath = await generateWorksheetSubmissionPdf({ worksheet: ws, submission, studentName, submittedAt }, outFile);
+    const savedPath = await generateWorksheetSubmissionPdf({ 
+      worksheet: ws, 
+      submission, 
+      studentName, 
+      submittedAt,
+      assignment: submission.assignmentId 
+    }, outFile);
 
     const safeFilename = 'worksheet-submission.pdf';
     res.setHeader('Content-Type', 'application/pdf');
@@ -305,13 +314,39 @@ async function downloadWorksheetReportPdf(req, res, next) {
     if (!worksheet) throw new ApiError(404, 'Worksheet not found');
     if (String(worksheet.createdBy) !== String(user._id)) throw new ApiError(403, 'Forbidden');
 
+    // Fetch all assignments for this worksheet
+    const assignments = await Assignment.find({
+      resourceType: 'worksheet',
+      resourceId: worksheetId,
+      isActive: true,
+    }).lean();
+    
+    // Calculate total assigned students
+    const assignmentIds = assignments.map(a => a._id);
+    const totalAssigned = await Membership.countDocuments({
+      class: { $in: assignments.map(a => a.class) },
+      status: 'active',
+    });
+    
+    // Get teacher info
+    const teacher = await User.findById(worksheet.createdBy).select('displayName email').lean();
+    
+    // Get assignment info (use first assignment or most recent)
+    const assignment = assignments.length > 0 ? assignments[0] : null;
+
     const submissions = await WorksheetSubmission.find({ worksheetId })
       .populate('studentId', '_id email displayName')
       .sort({ submittedAt: -1 });
 
     const tmpDir    = path.join(os.tmpdir(), 'rozna-pdf');
     const outFile   = path.join(tmpDir, `worksheet-report-${worksheetId}-${uuidv4()}.pdf`);
-    const savedPath = await generateWorksheetReportPdf({ worksheet, submissions }, outFile);
+    const savedPath = await generateWorksheetReportPdf({ 
+      worksheet, 
+      submissions, 
+      assignment,
+      teacher,
+      totalAssigned 
+    }, outFile);
 
     const safeFilename = 'worksheet-report.pdf';
     res.setHeader('Content-Type', 'application/pdf');

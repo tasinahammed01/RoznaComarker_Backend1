@@ -1,6 +1,7 @@
 const env = require('./config/env');
 const connectDB = require('./config/db');
 const logger = require('./utils/logger');
+const { validateAIConfig } = require('./services/aiGeneration.service');
 
 const Plan = require('./models/Plan');
 
@@ -38,6 +39,19 @@ process.on('uncaughtException', (err) => {
 
 async function start() {
   await connectDB();
+
+  // Validate AI provider configuration
+  const aiConfigValidation = validateAIConfig();
+  if (!aiConfigValidation.isValid) {
+    throw new Error('AI configuration validation failed. Check server logs for details.');
+  }
+
+  // Debug: Check Unsplash configuration
+  if (process.env.UNSPLASH_ACCESS_KEY) {
+    logger.info('Unsplash configured: true');
+  } else {
+    logger.warn('Unsplash configured: false (UNSPLASH_ACCESS_KEY not set)');
+  }
 
   if (process.env.SEED_DEFAULT_PLANS === 'true') {
     try {

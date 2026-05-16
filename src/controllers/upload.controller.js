@@ -1,4 +1,5 @@
 const logger = require('../utils/logger');
+const path = require('path');
 
 const uploadService = require('../services/upload.service');
 
@@ -66,8 +67,57 @@ async function saveTranscript(req, res, next) {
   }
 }
 
+async function uploadFlashcardImage(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No file uploaded'
+      });
+    }
+
+    // Generate unique filename
+    const timestamp = Date.now();
+    const randomString = Math.random().toString(36).substring(2, 15);
+    const ext = path.extname(req.file.originalname);
+    const filename = `flashcard-${timestamp}-${randomString}${ext}`;
+
+    // Store file in flashcards directory
+    const fs = require('fs');
+    const uploadBasePath = (process.env.UPLOAD_BASE_PATH || 'uploads').trim() || 'uploads';
+    const flashcardsDir = path.join(__dirname, '..', '..', uploadBasePath, 'flashcards');
+    
+    // Ensure directory exists
+    if (!fs.existsSync(flashcardsDir)) {
+      fs.mkdirSync(flashcardsDir, { recursive: true });
+    }
+
+    const filepath = path.join(flashcardsDir, filename);
+    fs.writeFileSync(filepath, req.file.buffer);
+
+    // Return the URL
+    const imageUrl = `/uploads/flashcards/${filename}`;
+    
+    logger.info(`[UPLOAD] Flashcard image uploaded: ${filename}`);
+
+    res.json({
+      success: true,
+      data: {
+        imageUrl
+      }
+    });
+  } catch (error) {
+    logger.error('[UPLOAD] Flashcard image upload error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upload image'
+    });
+  }
+}
+
 module.exports = {
   uploadOriginal,
   uploadProcessed,
-  saveTranscript
+  saveTranscript,
+  uploadFlashcardImage
 };

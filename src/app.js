@@ -29,6 +29,7 @@ const rubricRoutes = require('./routes/rubric.routes');
 const flashcardRoutes = require('./routes/flashcard.routes');
 const sharedFlashcardRoutes = require('./routes/sharedFlashcard.routes');
 const worksheetRoutes = require('./routes/worksheet.routes');
+const unsplashRoutes = require('./routes/unsplash.routes');
 const notFound = require('./middlewares/notFound.middleware');
 const { errorHandler } = require('./middlewares/error.middleware');
 
@@ -74,6 +75,7 @@ fs.mkdirSync(path.join(uploadsRoot, 'processed'), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, 'transcripts'), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, 'avatars'), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, 'class-banners'), { recursive: true });
+fs.mkdirSync(path.join(uploadsRoot, 'flashcards'), { recursive: true });
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -117,6 +119,7 @@ app.use('/uploads/avatars', createCorsMiddleware(), express.static(path.join(upl
 app.use('/uploads/original', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'original')));
 app.use('/uploads/processed', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'processed')));
 app.use('/uploads/class-banners', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'class-banners')));
+app.use('/uploads/flashcards', createCorsMiddleware(), express.static(path.join(uploadsRoot, 'flashcards')));
 
 app.use('/api', healthRoutes);
 app.use('/api/auth', authRoutes);
@@ -141,6 +144,7 @@ app.use('/api/rubrics', rubricRoutes);
 app.use('/api/flashcards', flashcardRoutes);
 app.use('/api/shared', sharedFlashcardRoutes);
 app.use('/api/worksheets', worksheetRoutes);
+app.use('/api/unsplash', unsplashRoutes);
 
 app.post(
   '/upload',

@@ -2,13 +2,25 @@ const express = require('express');
 
 const flashcardController = require('../controllers/flashcard.controller');
 const flashcardReportController = require('../controllers/flashcardReport.controller');
+const flashcardProgressController = require('../controllers/flashcardProgress.controller');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { requireRole } = require('../middlewares/role.middleware');
+const { upload, setUploadType, handleUploadError, validateUploadedFileSignature } = require('../middlewares/upload.middleware');
 
 const router = express.Router();
 
 router.post('/generate',     verifyJwtToken, requireRole('teacher'), flashcardController.generateFlashcards);
 router.post('/grade-answer', verifyJwtToken, flashcardController.gradeAnswer);
+
+router.post(
+  '/upload/flashcard-image',
+  verifyJwtToken,
+  setUploadType('flashcards'),
+  upload.single('file'),
+  handleUploadError,
+  validateUploadedFileSignature,
+  flashcardController.uploadFlashcardImage
+);
 
 router.get('/',  verifyJwtToken, requireRole('teacher'), flashcardController.getAllSets);
 router.post('/', verifyJwtToken, requireRole('teacher'), flashcardController.createSet);
@@ -24,5 +36,10 @@ router.post('/:id/assign', verifyJwtToken, requireRole('teacher'), flashcardCont
 /** PART 2 — share link management (teacher only) */
 router.post('/:id/share',  verifyJwtToken, requireRole('teacher'), flashcardController.shareFlashcardSet);
 router.delete('/:id/share', verifyJwtToken, requireRole('teacher'), flashcardController.revokeShare);
+
+/** PART 3 — real-time progress tracking (student) */
+router.patch('/:id/progress', verifyJwtToken, requireRole('student'), flashcardProgressController.saveProgress);
+router.get('/:id/progress', verifyJwtToken, requireRole('student'), flashcardProgressController.getProgress);
+router.delete('/:id/progress', verifyJwtToken, requireRole('student'), flashcardProgressController.resetProgress);
 
 module.exports = router;

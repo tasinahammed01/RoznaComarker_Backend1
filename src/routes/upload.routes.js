@@ -82,4 +82,13 @@ router.post(
   uploadController.saveTranscript
 );
 
+router.post(
+  '/flashcard-image',
+  verifyJwtToken,
+  setUploadType('flashcard'),
+  upload.single('file'),
+  handleUploadError,
+  uploadController.uploadFlashcardImage
+);
+
 module.exports = router;

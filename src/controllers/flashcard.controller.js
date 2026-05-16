@@ -1,6 +1,5 @@
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
-const OpenAI = require('openai');
 const FlashcardSet = require('../models/FlashcardSet');
 const FlashcardSubmission = require('../models/FlashcardSubmission');
 const Class = require('../models/class.model');
@@ -8,16 +7,7 @@ const Membership = require('../models/membership.model');
 const Assignment = require('../models/assignment.model');
 const { createNotification } = require('../services/notification.service');
 const logger = require('../utils/logger');
-
-const openai = new OpenAI({
-  apiKey:  process.env.OPENROUTER_API_KEY,
-  baseURL: process.env.OPENROUTER_BASE_URL,
-  timeout: parseInt(process.env.OPENROUTER_TIMEOUT_MS) || 60000,
-  defaultHeaders: {
-    'HTTP-Referer': process.env.FRONTEND_URL || 'http://82.112.234.151:4200',
-    'X-Title': 'RoznaComarker Flashcards'
-  }
-});
+const { generateChatCompletion } = require('../services/aiGeneration.service');
 
 function sendSuccess(res, data, statusCode = 200) {
   return res.status(statusCode).json({ success: true, data });
@@ -270,26 +260,83 @@ function normalizeGeneratedCards(cards, requestedCount) {
   return unique;
 }
 
+/**
+ * Search Unsplash for images based on a query
+ * Returns an array of image URLs
+ */
+async function searchUnsplashImages(query, perPage = 1) {
+  try {
+    const unsplashAccessKey = process.env.UNSPLASH_ACCESS_KEY;
+    if (!unsplashAccessKey) {
+      console.warn('[UNSPLASH] UNSPLASH_ACCESS_KEY not configured');
+      return [];
+    }
+
+    const response = await fetch(`https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=${perPage}`, {
+      headers: {
+        'Authorization': `Client-ID ${unsplashAccessKey}`
+      }
+    });
+
+    if (!response.ok) {
+      console.warn('[UNSPLASH] Search failed:', response.status, response.statusText);
+      return [];
+    }
+
+    const data = await response.json();
+    return data.results?.map(result => result.urls?.regular) || [];
+  } catch (error) {
+    console.error('[UNSPLASH] Search error:', error.message);
+    return [];
+  }
+}
+
+/**
+ * Add images to flashcard cards using Unsplash
+ * Searches for images based on the card's front text (term/concept)
+ */
+async function addImagesToCards(cards, content) {
+  const cardsWithImages = await Promise.all(cards.map(async (card, index) => {
+    // Use the card's front text as search query
+    const searchQuery = card.front || card.question || content || 'education';
+    const images = await searchUnsplashImages(searchQuery, 1);
+    
+    return {
+      ...card,
+      frontImage: images[0] || null,
+      backImage: null // Could add back images if needed
+    };
+  }));
+  
+  return cardsWithImages;
+}
+
 async function generateFlashcards(req, res) {
-  console.log('[GENERATE] req.body:', req.body);
-  console.log('[GENERATE] OPENROUTER_API_KEY exists:', !!process.env.OPENROUTER_API_KEY);
-  console.log('[GENERATE] LLAMA_MODEL:', process.env.LLAMA_MODEL);
-  console.log('[GENERATE] OPENROUTER_BASE_URL:', process.env.OPENROUTER_BASE_URL);
+  console.log('[FLASHCARD GENERATION START] Request received');
 
   try {
-    const { content, template, cardCount, language } = req.body;
+    const { content, template, cardCount, language, addImage, includeImages } = req.body;
     const count = cardCount === 'auto' || !cardCount ? 10 : parseInt(cardCount) || 10;
     const resolvedTemplate = ['term-def', 'qa', 'concept'].includes(template) ? template : 'term-def';
     const resolvedLanguage = language || 'English';
+    const shouldAddImages = addImage || includeImages;
+
+    console.log('[FLASHCARD GENERATION] Parameters:', {
+      content,
+      template: resolvedTemplate,
+      count,
+      language: resolvedLanguage,
+      addImages: shouldAddImages
+    });
 
     const userPrompt = buildFlashcardPrompt(content, resolvedTemplate, count, resolvedLanguage);
 
-    const completion = await openai.chat.completions.create({
-      model: process.env.LLAMA_MODEL || 'meta-llama/llama-3-8b-instruct',
-      messages: [
-        {
-          role: 'system',
-          content: `You are a flashcard generation assistant.
+    console.log('[OPENROUTER REQUEST] Sending request to AI provider');
+
+    let rawText = await generateChatCompletion([
+      {
+        role: 'system',
+        content: `You are a flashcard generation assistant.
 You must respond with ONLY a valid JSON array.
 Do not write any explanation, introduction, or conclusion.
 Do not use markdown or code fences.
@@ -300,19 +347,18 @@ No text before [. No text after ].`
           role: 'user',
           content: userPrompt
         }
-      ],
-      temperature: 0.5,
-      max_tokens: 3000
+    ], {
+      temperature: 0.4,
+      max_tokens: 4000,
     });
 
-    let rawText = completion.choices?.[0]?.message?.content;
-
     if (!rawText) {
-      console.error('[GENERATE] Empty response from OpenAI');
+      console.error('[FLASHCARD GENERATION] Empty response from AI');
       return sendError(res, 500, 'Empty response from AI');
     }
 
-    console.log('[GENERATE] Raw AI response:', rawText.substring(0, 200));
+    console.log('[OPENROUTER RESPONSE] Response length:', rawText.length);
+    console.log('[OPENROUTER RESPONSE] First 200 chars:', rawText.substring(0, 200));
 
     rawText = normalizeGeneratedJsonText(rawText);
 
@@ -324,18 +370,28 @@ No text before [. No text after ].`
       rawText = rawText.slice(firstBracketIndex);
     }
 
+    console.log('[JSON PARSE] Attempting to parse AI response');
+
     let cards = tryParseGeneratedCards(rawText);
 
     if (!cards) {
-      console.error('[GENERATE] JSON parse failed: attempting recovery');
-      console.error('[GENERATE] Raw text was:', rawText);
+      console.error('[JSON PARSE FAILED] Standard parsing failed, attempting recovery');
+      console.error('[JSON PARSE FAILED] Raw text after normalization:', rawText.substring(0, 500));
       cards = recoverGeneratedCards(rawText);
+    }
+
+    if (cards && cards.length > 0) {
+      console.log('[JSON PARSE SUCCESS] Parsed', cards.length, 'cards from AI response');
+    } else {
+      console.error('[JSON PARSE FAILED] Recovery also failed, no valid cards found');
+      return sendError(res, 500, 'AI response could not be parsed into valid flashcards');
     }
 
     cards = normalizeGeneratedCards(cards, count);
 
     if (cards.length === 0) {
-      return sendError(res, 500, 'AI returned no valid cards');
+      console.error('[FLASHCARD GENERATION] Normalization resulted in zero cards');
+      return sendError(res, 500, 'AI returned no valid cards after normalization');
     }
 
     if (cards.length < count) {
@@ -344,28 +400,50 @@ No text before [. No text after ].`
         requestedCount: count,
         recoveredCount: cards.length
       });
+      console.warn('[FLASHCARD GENERATION] Partial recovery: requested', count, 'got', cards.length);
     }
 
-    console.log('[GENERATE] Successfully parsed', cards.length, 'cards');
+    // Add images if requested
+    if (shouldAddImages) {
+      console.log('[FLASHCARD GENERATION] Adding images to flashcards via Unsplash');
+      try {
+        cards = await addImagesToCards(cards, content);
+        console.log('[FLASHCARD GENERATION] Successfully added images to', cards.length, 'cards');
+      } catch (imageError) {
+        console.error('[FLASHCARD GENERATION] Image addition failed, continuing without images:', imageError.message);
+        // Continue without images rather than failing
+      }
+    }
+
+    console.log('[FLASHCARD GENERATION COMPLETE] Successfully generated', cards.length, 'flashcards');
     return sendSuccess(res, cards);
   } catch (error) {
-    console.error('[GENERATE] Full error:', error);
-    console.error('[GENERATE] Error message:', error.message);
-    console.error('[GENERATE] Error status:', error.status);
-    console.error('[GENERATE] Error type:', error.constructor.name);
-    if (error.status === 402) {
-      console.error('[GENERATE] OpenRouter: insufficient credits');
-      return res.status(500).json({ success: false, message: 'AI service credits exhausted. Contact admin.' });
+    console.error('[FLASHCARD GENERATION ERROR] Generation failed:', error.message);
+    console.error('[FLASHCARD GENERATION ERROR] Error details:', {
+      name: error.name,
+      code: error.code,
+      status: error.status,
+      response: error.response?.data || 'No response data'
+    });
+
+    // Handle specific error cases
+    if (error.status === 402 || error.code === 'insufficient_quota') {
+      return sendError(res, 500, 'AI service credits exhausted. Contact admin.');
     }
-    if (error.status === 429) {
-      console.error('[GENERATE] OpenRouter: rate limited');
-      return res.status(500).json({ success: false, message: 'AI service rate limited. Try again in a moment.' });
+    if (error.status === 429 || error.code === 'rate_limit_exceeded') {
+      return sendError(res, 500, 'AI service rate limited. Try again in a moment.');
     }
-    if (error.status === 401) {
-      console.error('[GENERATE] OpenRouter: invalid API key');
-      return res.status(500).json({ success: false, message: 'AI service authentication failed.' });
+    if (error.status === 401 || error.code === 'invalid_api_key') {
+      return sendError(res, 500, 'AI service authentication failed. Check API key configuration.');
     }
-    return sendError(res, 500, error.message || 'Generation failed');
+    if (error.status === 400 || error.code === 'invalid_request') {
+      return sendError(res, 500, 'Invalid model ID or request format.');
+    }
+    if (error.name === 'AbortError' || error.code === 'ETIMEDOUT') {
+      return sendError(res, 500, 'AI service request timed out. Try again.');
+    }
+
+    return sendError(res, 500, error.message || 'Flashcard generation failed');
   }
 }
 
@@ -513,9 +591,17 @@ async function getSetById(req, res) {
 async function updateSet(req, res) {
   try {
     const { id } = req.params;
+    const { title, ...rest } = req.body;
+
+    if (title !== undefined && !String(title).trim()) {
+      return sendError(res, 400, 'Title cannot be empty');
+    }
+
+    const updateData = title !== undefined ? { ...rest, title: String(title).trim() } : rest;
+
     const set = await FlashcardSet.findOneAndUpdate(
       { _id: id, ownerId: req.user._id },
-      { $set: req.body },
+      { $set: updateData },
       { new: true, runValidators: true }
     );
     if (!set) {
@@ -528,39 +614,96 @@ async function updateSet(req, res) {
 }
 
 async function deleteSet(req, res) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { id } = req.params;
+    const userId = req.user._id;
 
-    const set = await FlashcardSet.findOneAndDelete({ _id: id, ownerId: req.user._id });
+    // Verify ownership
+    const set = await FlashcardSet.findOne({ _id: id, ownerId: userId }).session(session);
     if (!set) {
+      await session.abortTransaction();
+      session.endSession();
       return sendError(res, 404, 'Flashcard set not found or not authorised');
     }
 
-    // Cascade: deactivate all assignments referencing this flashcard set, and
-    // delete their flashcard submissions.
-    try {
-      const assignments = await Assignment.find({
-        resourceType: 'flashcard',
-        resourceId: String(id),
-        isActive: true
-      }).select('_id').lean();
+    // Find all active assignments referencing this flashcard set
+    const assignments = await Assignment.find({
+      resourceType: 'flashcard',
+      resourceId: String(id),
+      isActive: true
+    }).select('_id class').session(session);
 
-      const assignmentIds = (assignments || []).map((a) => a._id);
+    const assignmentIds = (assignments || []).map((a) => a._id);
+    const affectedClassIds = (assignments || []).map((a) => a.class).filter(Boolean);
 
-      if (assignmentIds.length) {
-        await Assignment.updateMany(
-          { _id: { $in: assignmentIds } },
-          { $set: { isActive: false } }
-        );
-        await FlashcardSubmission.deleteMany({ assignmentId: { $in: assignmentIds } });
-      }
-    } catch (cascadeErr) {
-      logger.warn('deleteSet: cascade assignment cleanup failed', cascadeErr);
+    // Cascade 1: Deactivate assignments
+    if (assignmentIds.length > 0) {
+      await Assignment.updateMany(
+        { _id: { $in: assignmentIds } },
+        { $set: { isActive: false } },
+        { session }
+      );
     }
 
-    await FlashcardSubmission.deleteMany({ flashcardSetId: id });
-    return sendSuccess(res, null);
+    // Cascade 2: Delete flashcard submissions linked to these assignments
+    if (assignmentIds.length > 0) {
+      await FlashcardSubmission.deleteMany(
+        { assignmentId: { $in: assignmentIds } },
+        { session }
+      );
+    }
+
+    // Cascade 3: Delete all flashcard submissions directly linked to this set
+    await FlashcardSubmission.deleteMany(
+      { flashcardSetId: id },
+      { session }
+    );
+
+    // Delete the flashcard set itself (this also removes it from FlashcardSet.assignedClasses arrays)
+    await FlashcardSet.deleteOne({ _id: id }, { session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    // Fire-and-forget notifications to affected students
+    if (assignmentIds.length > 0) {
+      setImmediate(async () => {
+        try {
+          const memberships = await Membership.find({
+            class: { $in: affectedClassIds },
+            status: 'active'
+          }).select('student').lean();
+
+          const studentIds = (memberships || []).map((m) => m.student).filter(Boolean);
+          const teacherDisplay = String(req.user.displayName || req.user.email || 'Teacher');
+
+          await Promise.all(studentIds.map((sId) =>
+            createNotification({
+              recipientId: sId,
+              actorId: userId,
+              type: 'assignment_removed',
+              title: 'Flashcard set removed',
+              description: `${teacherDisplay} removed the flashcard set "${set.title}"`,
+              data: {
+                resourceType: 'flashcard',
+                resourceId: String(id),
+                assignmentIds: assignmentIds.map(String)
+              }
+            })
+          ));
+        } catch (notifyErr) {
+          logger.warn('deleteSet: notification error', notifyErr);
+        }
+      });
+    }
+
+    return sendSuccess(res, { message: 'Flashcard set deleted successfully' });
   } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
     logger.error('deleteSet failed', err);
     return sendError(res, 500, 'Internal server error');
   }
@@ -603,13 +746,13 @@ async function assignSet(req, res) {
       return sendError(res, 400, 'classId is required');
     }
     if (!mongoose.Types.ObjectId.isValid(classId)) {
-      return sendError(res, 400, 'Invalid classId');
+      return sendError(res, 400, 'Invalid classId format — classId must be a valid MongoDB ObjectId (24-character hex string)');
     }
 
     const teacherId = req.user._id;
     const cls = await Class.findOne({ _id: classId, teacher: teacherId });
     if (!cls) {
-      return sendError(res, 403, 'Class not found or does not belong to you');
+      return sendError(res, 404, 'Class not found or does not belong to you');
     }
 
     const set = await FlashcardSet.findOneAndUpdate(
@@ -728,17 +871,14 @@ Respond with ONLY one of these — nothing else:
 {"isCorrect":false}`;
 
   try {
-    const completion = await openai.chat.completions.create({
-      model:       process.env.LLAMA_MODEL || 'meta-llama/llama-3-8b-instruct',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user',   content: userPrompt  },
-      ],
+    const raw = await generateChatCompletion([
+      { role: 'system', content: systemPrompt },
+      { role: 'user',   content: userPrompt  },
+    ], {
       temperature: 0,
-      max_tokens:  20,
+      max_tokens: 20,
     });
 
-    const raw     = (completion.choices?.[0]?.message?.content ?? '').trim();
     const cleaned = raw
       .replace(/^```json\s*/i, '')
       .replace(/^```\s*/i, '')
@@ -810,6 +950,31 @@ async function revokeShare(req, res) {
   }
 }
 
+/**
+ * POST /api/flashcards/upload/flashcard-image — upload a flashcard image.
+ * Accepts multipart/form-data with field name 'file'.
+ * Returns { imageUrl: "/uploads/flashcards/abc123.png" }
+ */
+async function uploadFlashcardImage(req, res) {
+  try {
+    if (!req.file) {
+      return sendError(res, 400, 'No file uploaded');
+    }
+
+    const filePath = req.file.path;
+    const fileName = req.file.filename;
+
+    // Build the public URL
+    const imageUrl = `/uploads/flashcards/${fileName}`;
+
+    console.log('[UPLOAD FLASHCARD IMAGE] File uploaded:', imageUrl);
+    return sendSuccess(res, { imageUrl });
+  } catch (err) {
+    console.error('[UPLOAD FLASHCARD IMAGE] Error:', err);
+    return sendError(res, 500, 'Image upload failed');
+  }
+}
+
 module.exports = {
   generateFlashcards,
   getAllSets,
@@ -822,4 +987,5 @@ module.exports = {
   gradeAnswer,
   shareFlashcardSet,
   revokeShare,
+  uploadFlashcardImage,
 };

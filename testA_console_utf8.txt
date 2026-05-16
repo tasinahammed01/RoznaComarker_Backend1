@@ -1,0 +1,213 @@
+[dotenv@17.3.1] injecting env (38) from .env -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+[dotenv@17.3.1] injecting env (0) from .env -- tip: ⚙️  override existing env vars with { override: true }
+[2026-05-10T18:15:19.416Z] WARN: {"message":"GOOGLE_APPLICATION_CREDENTIALS path invalid; using fallback backend/key/vision_key.json","configured":"D:\\Client Project Fiverr\\1st project\\ProjectRozna\\backend\\key\\roznaKey_vision_key.json","fallback":"D:\\Client Project Fiverr\\1st project\\ProjectRozna\\backend\\key\\vision_key.json"}
+(node:9820) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[2026-05-10T18:15:21.685Z] INFO: MongoDB connected
+[2026-05-10T18:15:22.117Z] ERROR: Email transporter verification failed: Invalid login: 535 Authentication failed: The provided authorization grant is invalid, expired, or revoked
+[2026-05-10T18:15:22.704Z] INFO: [STARTUP] Ensured partial unique shareToken_1 index
+===== TEST A PAYLOAD =====
+{"inputType":"topic","content":"Human Body","language":"English","difficulty":"medium","activityTypes":null}
+[GENERATE WORKSHEET] req.body: {"inputType":"topic","content":"Human Body","language":"English","difficulty":"medium","activityTypes":null}
+[GENERATE WORKSHEET] Raw response: {
+  "title": "Exploring the Human Body",
+  "description": "Learn about the different systems and organs of the human body",
+  "subject": "Science",
+  "tags": ["Human Body", "Anatomy", "Health"],
+  "estimatedMinutes": 20,
+  "conceptExplanation": {
+    "title": "The Human Body: A Complex System",
+    
+[RAW AI TEXT] {
+  "title": "Exploring the Human Body",
+  "description": "Learn about the different systems and organs of the human body",
+  "subject": "Science",
+  "tags": ["Human Body", "Anatomy", "Health"],
+  "estimatedMinutes": 20,
+  "conceptExplanation": {
+    "title": "The Human Body: A Complex System",
+    "body": "The human body is a complex system made up of different organs and systems that work together to keep us alive. The skeletal system provides support and protection for the body, while the muscular system allows us to move and function. The circulatory system transports blood and oxygen throughout the body, and the nervous system allows us to think and respond to stimuli. The human body is made up of many different systems that work together to keep us healthy and functioning properly.",
+    "keyPoints": ["The human body is made up of different systems", "Each system has a specific function", "The systems work together to keep us healthy"],
+    "examples": ["The heart is a part of the circulatory system", "The brain is a part of the nervous system"],
+    "tips": ["Learn about each system and its functions to better understand the human body", "Remember that the systems work together to keep us healthy"],
+    "timeline": [{"event": "The human body develops from a fertilized egg", "order": 1}],
+    "formulas": [{"formula": "None", "explanation": "There are no specific formulas for the human body"}],
+    "processSteps": [{"step": 1, "description": "Learn about each system and its functions"}]
+  },
+  "activities": [
+    {
+      "type": "ordering",
+      "title": "Activity 1: Organ Order",
+      "instructions": "Put the organs in the correct order from head to toe",
+      "data": {
+        "items": [{"id":"a1_1","emoji":"🧠","name":"Brain","role":"Thinks and controls the body","correctOrder":1},
+                  {"id":"a1_2","emoji":"❤️","name":"Heart","role":"Pumps blood throughout the body","correctOrder":2},
+                  {"id":"a1_3","emoji":"🦴","name":"Spleen","role":"Filters the blood","correctOrder":3},
+                  {"id":"a1_4","emoji":"👣","name":"Foot","role":"Supports the body","correctOrder":4}]
+      },
+      "order": 1
+    },
+    {
+      "type": "classification",
+      "title": "Activity 2: Organ Classification",
+      "instructions": "Classify the organs into the correct category",
+      "data": {
+        "categories": ["Skeletal System", "Circulatory System", "Nervous System"],
+        "items": [{"id":"a2_1","emoji":"🦴","name":"Heart","description":"Pumps blood throughout the body","correctCategory":"Circulatory System"},
+                  {"id":"a2_2","emoji":"🧠","name":"Brain","description":"Thinks and controls the body","correctCategory":"Nervous System"},
+                  {"id":"a2_3","emoji":"🦴","name":"Ribcage","description":"Protects the heart and lungs","correctCategory":"Skeletal System"},
+                  {"id":"a2_4","emoji":"🦴","name":"Spleen","description":"Filters the blood","correctCategory":"Circulatory System"}]
+      },
+      "order": 2
+    },
+    {
+      "type": "multipleChoice",
+      "title": "Activity 3: Multiple Choice",
+      "instructions": "Choose the correct answer for each question",
+      "data": {
+        "questions": [{"id":"a3_q1","text":"What is the main function of the skeletal system?","options":["To pump blood throughout the body","To think and control the body","To provide support and protection for the body","To filter the blood"],"correctAnswer":"To provide support and protection for the body"},
+                    {"id":"a3_q2","text":"Which system allows us to think and respond to stimuli?","options":["Circulatory System","Nervous System","Skeletal System","Muscular System"],"correctAnswer":"Nervous System"}]
+      },
+      "order": 3
+    },
+    {
+      "type": "fillBlanks",
+      "title": "Activity 4: Fill in the Blanks",
+      "instructions": "Fill in the blanks with the correct words",
+      "data": {
+        "wordBank": ["heart", "brain", "spleen", "lungs"],
+        "sentences": [{
+          "id": "a4_s1",
+          "parts": [
+            {"type":"text","value":"The "},
+            {"type":"blank","blankId":"b1","correctAnswer":"heart"},
+            {"type":"text","value":" is a vital organ that pumps blood throughout the body."},
+            {"type":"text","value":" The "},
+            {"type":"blank","blankId":"b2","correctAnswer":"brain"},
+            {"type":"text","value":" is the control center of the body."}
+          ]
+        }]
+      },
+      "order": 4
+    }
+  ]
+}
+[CLEANED TEXT] {
+  "title": "Exploring the Human Body",
+  "description": "Learn about the different systems and organs of the human body",
+  "subject": "Science",
+  "tags": ["Human Body", "Anatomy", "Health"],
+  "estimatedMinutes": 20,
+  "conceptExplanation": {
+    "title": "The Human Body: A Complex System",
+    "body": "The human body is a complex system made up of different organs and systems that work together to keep us alive. The skeletal system provides support and protection for the body, while the muscular system allows us to move and function. The circulatory system transports blood and oxygen throughout the body, and the nervous system allows us to think and respond to stimuli. The human body is made up of many different systems that work together to keep us healthy and functioning properly.",
+    "keyPoints": ["The human body is made up of different systems", "Each system has a specific function", "The systems work together to keep us healthy"],
+    "examples": ["The heart is a part of the circulatory system", "The brain is a part of the nervous system"],
+    "tips": ["Learn about each system and its functions to better understand the human body", "Remember that the systems work together to keep us healthy"],
+    "timeline": [{"event": "The human body develops from a fertilized egg", "order": 1}],
+    "formulas": [{"formula": "None", "explanation": "There are no specific formulas for the human body"}],
+    "processSteps": [{"step": 1, "description": "Learn about each system and its functions"}]
+  },
+  "activities": [
+    {
+      "type": "ordering",
+      "title": "Activity 1: Organ Order",
+      "instructions": "Put the organs in the correct order from head to toe",
+      "data": {
+        "items": [{"id":"a1_1","emoji":"🧠","name":"Brain","role":"Thinks and controls the body","correctOrder":1},
+                  {"id":"a1_2","emoji":"❤️","name":"Heart","role":"Pumps blood throughout the body","correctOrder":2},
+                  {"id":"a1_3","emoji":"🦴","name":"Spleen","role":"Filters the blood","correctOrder":3},
+                  {"id":"a1_4","emoji":"👣","name":"Foot","role":"Supports the body","correctOrder":4}]
+      },
+      "order": 1
+    },
+    {
+      "type": "classification",
+      "title": "Activity 2: Organ Classification",
+      "instructions": "Classify the organs into the correct category",
+      "data": {
+        "categories": ["Skeletal System", "Circulatory System", "Nervous System"],
+        "items": [{"id":"a2_1","emoji":"🦴","name":"Heart","description":"Pumps blood throughout the body","correctCategory":"Circulatory System"},
+                  {"id":"a2_2","emoji":"🧠","name":"Brain","description":"Thinks and controls the body","correctCategory":"Nervous System"},
+                  {"id":"a2_3","emoji":"🦴","name":"Ribcage","description":"Protects the heart and lungs","correctCategory":"Skeletal System"},
+                  {"id":"a2_4","emoji":"🦴","name":"Spleen","description":"Filters the blood","correctCategory":"Circulatory System"}]
+      },
+      "order": 2
+    },
+    {
+      "type": "multipleChoice",
+      "title": "Activity 3: Multiple Choice",
+      "instructions": "Choose the correct answer for each question",
+      "data": {
+        "questions": [{"id":"a3_q1","text":"What is the main function of the skeletal system?","options":["To pump blood throughout the body","To think and control the body","To provide support and protection for the body","To filter the blood"],"correctAnswer":"To provide support and protection for the body"},
+                    {"id":"a3_q2","text":"Which system allows us to think and respond to stimuli?","options":["Circulatory System","Nervous System","Skeletal System","Muscular System"],"correctAnswer":"Nervous System"}]
+      },
+      "order": 3
+    },
+    {
+      "type": "fillBlanks",
+      "title": "Activity 4: Fill in the Blanks",
+      "instructions": "Fill in the blanks with the correct words",
+      "data": {
+        "wordBank": ["heart", "brain", "spleen", "lungs"],
+        "sentences": [{
+          "id": "a4_s1",
+          "parts": [
+            {"type":"text","value":"The "},
+            {"type":"blank","blankId":"b1","correctAnswer":"heart"},
+            {"type":"text","value":" is a vital organ that pumps blood throughout the body."},
+            {"type":"text","value":" The "},
+            {"type":"blank","blankId":"b2","correctAnswer":"brain"},
+            {"type":"text","value":" is the control center of the body."}
+          ]
+        }]
+      },
+      "order": 4
+    }
+  ]
+}
+[PARSED OBJECT KEYS] [
+  'title',
+  'description',
+  'subject',
+  'tags',
+  'estimatedMinutes',
+  'conceptExplanation',
+  'activities'
+]
+[ACTIVITIES VALUE] [
+  {
+    type: 'ordering',
+    title: 'Activity 1: Organ Order',
+    instructions: 'Put the organs in the correct order from head to toe',
+    data: { items: [Array] },
+    order: 1
+  },
+  {
+    type: 'classification',
+    title: 'Activity 2: Organ Classification',
+    instructions: 'Classify the organs into the correct category',
+    data: { categories: [Array], items: [Array] },
+    order: 2
+  },
+  {
+    type: 'multipleChoice',
+    title: 'Activity 3: Multiple Choice',
+    instructions: 'Choose the correct answer for each question',
+    data: { questions: [Array] },
+    order: 3
+  },
+  {
+    type: 'fillBlanks',
+    title: 'Activity 4: Fill in the Blanks',
+    instructions: 'Fill in the blanks with the correct words',
+    data: { wordBank: [Array], sentences: [Array] },
+    order: 4
+  }
+]
+[ACTIVITIES LENGTH] 4
+[0mPOST /api/worksheets/generate [32m200[0m 14700.942 ms - 3960[0m
+===== TEST A RESPONSE STATUS =====
+200
+===== TEST A RESPONSE BODY =====
+{"success":true,"worksheet":{"title":"Exploring the Human Body","description":"Learn about the different systems and organs of the human body","subject":"Science","tags":["Human Body","Anatomy","Health"],"estimatedMinutes":20,"conceptExplanation":{"title":"The Human Body: A Complex System","body":"The human body is a complex system made up of different organs and systems that work together to keep us alive. The skeletal system provides support and protection for the body, while the muscular system allows us to move and function. The circulatory system transports blood and oxygen throughout the body, and the nervous system allows us to think and respond to stimuli. The human body is made up of many different systems that work together to keep us healthy and functioning properly.","keyPoints":["The human body is made up of different systems","Each system has a specific function","The systems work together to keep us healthy"],"examples":["The heart is a part of the circulatory system","The brain is a part of the nervous system"],"tips":["Learn about each system and its functions to better understand the human body","Remember that the systems work together to keep us healthy"],"timeline":[{"event":"The human body develops from a fertilized egg","order":1}],"formulas":[{"formula":"None","explanation":"There are no specific formulas for the human body"}],"processSteps":[{"step":1,"description":"Learn about each system and its functions"}]},"activities":[{"type":"ordering","title":"Activity 1: Organ Order","instructions":"Put the organs in the correct order from head to toe","data":{"items":[{"id":"a1_1","emoji":"🧠","name":"Brain","role":"Thinks and controls the body","correctOrder":1},{"id":"a1_2","emoji":"❤️","name":"Heart","role":"Pumps blood throughout the body","correctOrder":2},{"id":"a1_3","emoji":"🦴","name":"Spleen","role":"Filters the blood","correctOrder":3},{"id":"a1_4","emoji":"👣","name":"Foot","role":"Supports the body","correctOrder":4}]},"order":1},{"type":"classification","title":"Activity 2: Organ Classification","instructions":"Classify the organs into the correct category","data":{"categories":["Skeletal System","Circulatory System","Nervous System"],"items":[{"id":"a2_1","emoji":"🦴","name":"Heart","description":"Pumps blood throughout the body","correctCategory":"Circulatory System"},{"id":"a2_2","emoji":"🧠","name":"Brain","description":"Thinks and controls the body","correctCategory":"Nervous System"},{"id":"a2_3","emoji":"🦴","name":"Ribcage","description":"Protects the heart and lungs","correctCategory":"Skeletal System"},{"id":"a2_4","emoji":"🦴","name":"Spleen","description":"Filters the blood","correctCategory":"Circulatory System"}]},"order":2},{"type":"multipleChoice","title":"Activity 3: Multiple Choice","instructions":"Choose the correct answer for each question","data":{"questions":[{"id":"a3_q1","text":"What is the main function of the skeletal system?","options":["To pump blood throughout the body","To think and control the body","To provide support and protection for the body","To filter the blood"],"correctAnswer":"To provide support and protection for the body"},{"id":"a3_q2","text":"Which system allows us to think and respond to stimuli?","options":["Circulatory System","Nervous System","Skeletal System","Muscular System"],"correctAnswer":"Nervous System"}]},"order":3},{"type":"fillBlanks","title":"Activity 4: Fill in the Blanks","instructions":"Fill in the blanks with the correct words","data":{"wordBank":["heart","brain","spleen","lungs"],"sentences":[{"id":"a4_s1","parts":[{"type":"text","value":"The "},{"type":"blank","blankId":"b1","correctAnswer":"heart"},{"type":"text","value":" is a vital organ that pumps blood throughout the body."},{"type":"text","value":" The "},{"type":"blank","blankId":"b2","correctAnswer":"brain"},{"type":"text","value":" is the control center of the body."}]}]},"order":4}]},"sourceContent":"Human Body"}

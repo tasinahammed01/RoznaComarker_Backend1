@@ -20,6 +20,10 @@ const WorksheetSubmissionSchema = new Schema({
   totalPointsPossible: { type: Number, default: 0 },
   percentage: { type: Number, default: 0 },
   timeTaken: { type: Number, default: 0 },
+  status: { type: String, enum: ['submitted', 'late'], default: 'submitted' },
+  isLate: { type: Boolean, default: false },
+  attempts: { type: Number, default: 1 },
+  lastAttemptAt: { type: Date, default: Date.now },
   submittedAt: { type: Date, default: Date.now },
   gradingStatus: {
     type: String,
@@ -29,5 +33,9 @@ const WorksheetSubmissionSchema = new Schema({
 }, { timestamps: true });
 
 WorksheetSubmissionSchema.index({ assignmentId: 1, studentId: 1 }, { unique: true });
+WorksheetSubmissionSchema.index({ worksheetId: 1, submittedAt: -1 });
+WorksheetSubmissionSchema.index({ studentId: 1, submittedAt: -1 });
+WorksheetSubmissionSchema.index({ assignmentId: 1, submittedAt: -1 });
+WorksheetSubmissionSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model('WorksheetSubmission', WorksheetSubmissionSchema);
