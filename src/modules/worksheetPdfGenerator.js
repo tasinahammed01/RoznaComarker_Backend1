@@ -600,20 +600,66 @@ function renderDocHeader(doc, { worksheetTitle, subtitle, studentName, submitted
     doc.moveDown(0.25);
   }
 
-  // Worksheet metadata (CEFR, grade, subject, etc.)
+  // Worksheet metadata (CEFR, grade, subject, etc.) - structured row with icons
   if (worksheetMeta) {
-    const metaTags = [];
-    if (worksheetMeta.subject) metaTags.push(safeText(worksheetMeta.subject));
-    metaTags.push(`CEFR: ${safeText(worksheetMeta.cefrLevel) || 'Not specified'}`);
-    metaTags.push(`Grade: ${safeText(worksheetMeta.gradeLevel) || 'Not specified'}`);
-    if (worksheetMeta.gradeCategory) metaTags.push(safeText(worksheetMeta.gradeCategory));
-    if (worksheetMeta.difficulty) metaTags.push(formatDifficulty(worksheetMeta.difficulty));
-    
-    if (metaTags.length > 0) {
-      doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xs).fillColor(STYLE.colors.primary)
-        .text(metaTags.join('  •  '), L, doc.y, { width: W });
-      doc.moveDown(0.25);
+    ensureSpace(doc, 60);
+    const metaY = doc.y;
+    const metaH = 50;
+
+    // Green metadata box background
+    doc.save();
+    doc.roundedRect(L, metaY, W, metaH, STYLE.radius.md).fill(STYLE.colors.primary);
+    doc.restore();
+
+    // Metadata row with 4 columns
+    const colGap = STYLE.spacing.lg;
+    const colW = (W - colGap * 3) / 4;
+    const startX = L + STYLE.spacing.lg;
+    const startY = metaY + STYLE.spacing.sm;
+
+    const metaItems = [
+      { icon: '📚', label: 'Subject', value: safeText(worksheetMeta.subject) || '—' },
+      { icon: '🎯', label: 'CEFR', value: safeText(worksheetMeta.cefrLevel) || '—' },
+      { icon: '🏫', label: 'Grade', value: safeText(worksheetMeta.gradeLevel) || '—' },
+      { icon: '⚡', label: 'Difficulty', value: formatDifficulty(worksheetMeta.difficulty) || '—' },
+    ];
+
+    doc.font(STYLE.fonts.main);
+    let colX = startX;
+    metaItems.forEach((item, i) => {
+      // Icon
+      doc.fontSize(14).fillColor(STYLE.colors.white);
+      doc.text(item.icon, colX, startY, { width: colW });
+
+      // Label (uppercase, small, opacity)
+      doc.fontSize(9).fillColor('rgba(255,255,255,0.75)');
+      doc.text(item.label.toUpperCase(), colX, startY + 18, { width: colW });
+
+      // Value (larger, bold, white)
+      doc.font(STYLE.fonts.bold).fontSize(13).fillColor(STYLE.colors.white);
+      doc.text(item.value, colX, startY + 30, { width: colW });
+
+      colX += colW + colGap;
+    });
+
+    // Deadline row below metadata
+    const deadline = worksheetMeta.assignmentDeadline || worksheetMeta.deadline;
+    if (deadline) {
+      const deadlineY = metaY + metaH + STYLE.spacing.sm;
+      const isPast = new Date(deadline) < new Date();
+      const deadlineColor = isPast ? STYLE.colors.error : STYLE.colors.white;
+      const deadlineText = `📅 Due: ${formatDate(deadline)}`;
+
+      doc.font(STYLE.fonts.main).fontSize(11).fillColor(deadlineColor);
+      doc.text(deadlineText, L, deadlineY, { width: W });
+      doc.moveDown(0.35);
+    } else {
+      doc.moveDown(0.35);
     }
+
+    // Divider line
+    doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(1).strokeColor('rgba(255,255,255,0.2)').stroke();
+    doc.y += STYLE.spacing.lg;
   }
 
   const metaParts = [];

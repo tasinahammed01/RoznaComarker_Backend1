@@ -247,6 +247,70 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
     else if (normalizedSectionId === 'activity6') breakdown.activity6.earned += 1;
   }
 
+  // Build sections array with per-section analytics
+  const sections = [];
+  const activityTypeMap = {
+    activity1: 'ordering',
+    activity2: 'classification',
+    activity3: 'multipleChoice',
+    activity4: 'fill-blanks',
+    activity5: 'matching',
+    activity6: 'true-false',
+  };
+
+  const activityNameMap = {
+    activity1: 'Ordering',
+    activity2: 'Classification',
+    activity3: 'Multiple Choice',
+    activity4: 'Fill in the Blanks',
+    activity5: 'Matching Pairs',
+    activity6: 'True/False',
+  };
+
+  // Process each activity section
+  const sectionIds = ['activity1', 'activity2', 'activity3', 'activity4', 'activity5', 'activity6'];
+  
+  for (const sectionId of sectionIds) {
+    const sectionAnswers = graded.filter(a => a.sectionId === sectionId);
+    if (sectionAnswers.length === 0) continue;
+
+    const correctCount = sectionAnswers.filter(a => a.isCorrect).length;
+    const incorrectCount = sectionAnswers.filter(a => !a.isCorrect && a.studentAnswer && a.studentAnswer.trim() !== '').length;
+    const skippedCount = sectionAnswers.filter(a => !a.studentAnswer || a.studentAnswer.trim() === '').length;
+    
+    const sectionEarned = correctCount;
+    const sectionTotal = sectionAnswers.length;
+    const sectionScore = sectionTotal > 0 ? Math.round((sectionEarned / sectionTotal) * 100) : 0;
+
+    // Build per-question results for this section
+    const perQuestionResults = sectionAnswers.map(a => ({
+      questionId: a.questionId,
+      slotId: a.questionId, // For activity1, questionId is slot_N
+      isCorrect: a.isCorrect,
+      studentAnswer: a.studentAnswer,
+      correctAnswer: a.isCorrect ? a.studentAnswer : a.aiGradingFeedback?.replace('Incorrect. Correct: ', '') || '',
+    }));
+
+    sections.push({
+      sectionId,
+      sectionName: activityNameMap[sectionId] || sectionId,
+      activityType: activityTypeMap[sectionId] || 'unknown',
+      earnedPoints: sectionEarned,
+      totalPoints: sectionTotal,
+      score: sectionScore,
+      correctCount,
+      incorrectCount,
+      skippedCount,
+      perQuestionResults,
+    });
+  }
+
+  // Calculate root-level aggregates from sections
+  const earnedPoints = sections.reduce((sum, s) => sum + s.earnedPoints, 0);
+  const totalPoints = sections.reduce((sum, s) => sum + s.totalPoints, 0);
+  const score = totalPoints > 0 ? Math.round((earnedPoints / totalPoints) * 10000) / 100 : 0;
+  const isPassed = score >= 60; // Assuming 60% passing threshold
+
   return {
     gradedAnswers: graded,
     totals: {
@@ -255,6 +319,12 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
       percentage,
       breakdown,
     },
+    // New root-level fields
+    earnedPoints,
+    totalPoints,
+    score,
+    isPassed,
+    sections,
   };
 }
 

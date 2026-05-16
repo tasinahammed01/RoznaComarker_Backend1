@@ -894,13 +894,20 @@ async function submitWorksheet(req, res) {
     }
 
     // ── Authoritative server-side scoring engine (do NOT trust client totals) ─
-    const { gradedAnswers, totals } = gradeWorksheetAnswers({ worksheet, answers });
+    const { gradedAnswers, totals, earnedPoints, totalPoints, score, isPassed, sections } = gradeWorksheetAnswers({ worksheet, answers });
 
     if (existing) {
       existing.answers = gradedAnswers;
+      // Legacy fields (kept for backward compatibility)
       existing.totalPointsEarned = totals.totalPointsEarned;
       existing.totalPointsPossible = totals.totalPointsPossible;
       existing.percentage = totals.percentage;
+      // New root-level fields (single source of truth)
+      existing.earnedPoints = earnedPoints;
+      existing.totalPoints = totalPoints;
+      existing.score = score;
+      existing.isPassed = isPassed;
+      existing.sections = sections;
       existing.timeTaken = Number(timeTaken) || 0;
       existing.gradingStatus = 'auto-graded';
       existing.isLate = isLate;
@@ -910,7 +917,7 @@ async function submitWorksheet(req, res) {
       existing.attempts = (Number(existing.attempts) || 1) + 1;
 
       await existing.save();
-      console.log('[SUBMIT WORKSHEET] Updated:', existing._id, 'score:', totals.totalPointsEarned, '/', totals.totalPointsPossible);
+      console.log('[SUBMIT WORKSHEET] Updated:', existing._id, 'score:', score, '% (', earnedPoints, '/', totalPoints, ')');
 
       // Clear draft after successful submission update
       try {
@@ -937,6 +944,7 @@ async function submitWorksheet(req, res) {
             resourceType: 'worksheet',
             worksheetId: String(worksheet._id),
             percentage: totals.percentage,
+            score: score,
             isLate: isLate,
           },
         });
@@ -959,9 +967,16 @@ async function submitWorksheet(req, res) {
       assignmentId,
       studentId,
       answers: gradedAnswers,
+      // Legacy fields (kept for backward compatibility)
       totalPointsEarned: totals.totalPointsEarned,
       totalPointsPossible: totals.totalPointsPossible,
       percentage: totals.percentage,
+      // New root-level fields (single source of truth)
+      earnedPoints,
+      totalPoints,
+      score,
+      isPassed,
+      sections,
       timeTaken: Number(timeTaken) || 0,
       gradingStatus: 'auto-graded',
       isLate,
@@ -972,7 +987,7 @@ async function submitWorksheet(req, res) {
     });
 
     await created.save();
-    console.log('[SUBMIT WORKSHEET] Saved:', created._id, 'score:', totals.totalPointsEarned, '/', totals.totalPointsPossible);
+    console.log('[SUBMIT WORKSHEET] Saved:', created._id, 'score:', score, '% (', earnedPoints, '/', totalPoints, ')');
 
     // Clear draft after successful submission
     try {
@@ -999,6 +1014,7 @@ async function submitWorksheet(req, res) {
           resourceType: 'worksheet',
           worksheetId: String(worksheet._id),
           percentage: totals.percentage,
+          score: score,
           isLate: isLate,
         },
       });
@@ -1153,7 +1169,7 @@ async function getWorksheetReport(req, res) {
     } = req.query;
 
     const worksheet = await Worksheet.findOne({ _id: worksheetId, createdBy: req.user._id })
-      .select('title totalPoints cefrLevel gradeLevel subject activity1 activity2 activity3 activity4 activity5 activity6')
+      .select('title totalPoints cefrLevel gradeLevel gradeCategory difficulty subject assignmentDeadline activity1 activity2 activity3 activity4 activity5 activity6')
       .lean();
 
     if (!worksheet) return sendError(res, 404, 'Worksheet not found or not authorised');
@@ -1185,7 +1201,7 @@ async function getWorksheetReport(req, res) {
         .lean(),
       // Lightweight projection — only fields needed for aggregate stats
       WorksheetSubmission.find(filter)
-        .select('percentage isLate answers attempts')
+        .select('score percentage isPassed isLate answers attempts')
         .lean(),
     ]);
 
@@ -1211,12 +1227,13 @@ async function getWorksheetReport(req, res) {
     const completionRate = totalAssigned > 0 ? (submittedCount / totalAssigned) * 100 : 0;
 
     // Calculate analytics from all submissions for accuracy
-    const scores = allSubmissionsForAnalytics.map(s => s.percentage || 0);
+    const scores = allSubmissionsForAnalytics.map(s => s.score ?? s.percentage ?? 0);
     const averageScore = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
     const medianScore = scores.length
       ? [...scores].sort((a, b) => a - b)[Math.floor(scores.length / 2)]
       : 0;
-    const passRate = scores.filter(s => s >= 70).length / (scores.length || 1) * 100;
+    const passedCount = allSubmissionsForAnalytics.filter(s => s.isPassed === true || (s.score ?? s.percentage ?? 0) >= 70).length;
+    const passRate = passedCount / (allSubmissionsForAnalytics.length || 1) * 100;
 
     // Analyze per-question performance using ALL submissions (not just current page)
     const questionStats = {};
