@@ -1,90 +1,111 @@
-const mongoose = require('mongoose');
-const QRCode = require('qrcode');
-const { v4: uuidv4 } = require('uuid');
+const mongoose = require("mongoose");
+const QRCode = require("qrcode");
+const { v4: uuidv4 } = require("uuid");
 
-const Class = require('../models/class.model');
-const Membership = require('../models/membership.model');
-const Assignment = require('../models/assignment.model');
-const Submission = require('../models/Submission');
-const Invitation = require('../models/invitation.model');
-const User = require('../models/user.model');
-const { sendInvitationEmail } = require('../services/email.service');
+const Class = require("../models/class.model");
+const Membership = require("../models/membership.model");
+const Assignment = require("../models/assignment.model");
+const Submission = require("../models/Submission");
+const FlashcardSubmission = require("../models/FlashcardSubmission");
+const WorksheetSubmission = require("../models/WorksheetSubmission");
+const Invitation = require("../models/invitation.model");
+const User = require("../models/user.model");
+const { sendInvitationEmail } = require("../services/email.service");
 
-const { incrementUsage, tryDeleteUploadedFile } = require('../middlewares/usage.middleware');
+const {
+  incrementUsage,
+  tryDeleteUploadedFile,
+} = require("../middlewares/usage.middleware");
 
 function sendSuccess(res, data) {
   return res.json({
     success: true,
-    data
+    data,
   });
 }
 
 function sendError(res, statusCode, message) {
   return res.status(statusCode).json({
     success: false,
-    message
+    message,
   });
 }
 
 function isNonEmptyString(value) {
-  return typeof value === 'string' && value.trim().length > 0;
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function toOptionalTrimmedString(value) {
   if (value === null) return undefined;
-  if (typeof value === 'undefined') return undefined;
-  if (typeof value !== 'string') return undefined;
+  if (typeof value === "undefined") return undefined;
+  if (typeof value !== "string") return undefined;
   const t = value.trim();
   return t ? t : undefined;
 }
 
 function toOptionalDate(value) {
   if (value === null) return undefined;
-  if (typeof value === 'undefined') return undefined;
+  if (typeof value === "undefined") return undefined;
   const d = new Date(value);
   if (!Number.isFinite(d.getTime())) return null;
   return d;
 }
 
 function getRequestBaseUrl(req) {
-  const raw = `${req.protocol}://${req.get('host')}`;
-  return raw.replace(/\/+$/, '');
+  const raw = `${req.protocol}://${req.get("host")}`;
+  return raw.replace(/\/+$/, "");
 }
 
 function buildJoinUrl(req, joinCode) {
-  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
   return `${process.env.FRONTEND_URL}/student/join-class?joinCode=${joinCode}`;
 }
 
 function normalizeClassroomDefaultsFromUser(user) {
-  const d = user && user.classroomDefaults && typeof user.classroomDefaults === 'object' ? user.classroomDefaults : {};
-  const gradingScaleRaw = typeof d.gradingScale === 'string' ? d.gradingScale.trim().toLowerCase() : '';
-  const gradingScale = ['score_0_100', 'grade_a_f', 'pass_fail'].includes(gradingScaleRaw) ? gradingScaleRaw : undefined;
+  const d =
+    user && user.classroomDefaults && typeof user.classroomDefaults === "object"
+      ? user.classroomDefaults
+      : {};
+  const gradingScaleRaw =
+    typeof d.gradingScale === "string"
+      ? d.gradingScale.trim().toLowerCase()
+      : "";
+  const gradingScale = ["score_0_100", "grade_a_f", "pass_fail"].includes(
+    gradingScaleRaw,
+  )
+    ? gradingScaleRaw
+    : undefined;
 
   const lateRaw = d.lateSubmissionPenaltyPercent;
-  const lateNum = typeof lateRaw === 'number' ? lateRaw : Number(lateRaw);
-  const lateSubmissionPenaltyPercent = Number.isFinite(lateNum) ? Math.max(0, Math.min(100, lateNum)) : undefined;
+  const lateNum = typeof lateRaw === "number" ? lateRaw : Number(lateRaw);
+  const lateSubmissionPenaltyPercent = Number.isFinite(lateNum)
+    ? Math.max(0, Math.min(100, lateNum))
+    : undefined;
 
-  const autoPublishGrades = typeof d.autoPublishGrades === 'boolean' ? d.autoPublishGrades : undefined;
+  const autoPublishGrades =
+    typeof d.autoPublishGrades === "boolean" ? d.autoPublishGrades : undefined;
 
   return {
     ...(gradingScale ? { gradingScale } : {}),
-    ...(typeof lateSubmissionPenaltyPercent === 'number' ? { lateSubmissionPenaltyPercent } : {}),
-    ...(typeof autoPublishGrades === 'boolean' ? { autoPublishGrades } : {})
+    ...(typeof lateSubmissionPenaltyPercent === "number"
+      ? { lateSubmissionPenaltyPercent }
+      : {}),
+    ...(typeof autoPublishGrades === "boolean" ? { autoPublishGrades } : {}),
   };
 }
 
 async function createClass(req, res) {
   try {
-    const { name, description, subjectLevel, startDate, endDate } = req.body || {};
+    const { name, description, subjectLevel, startDate, endDate } =
+      req.body || {};
 
     if (!isNonEmptyString(name)) {
-      return sendError(res, 400, 'name is required');
+      return sendError(res, 400, "name is required");
     }
 
     const teacherId = req.user && req.user._id;
     if (!teacherId) {
-      return sendError(res, 401, 'Unauthorized');
+      return sendError(res, 401, "Unauthorized");
     }
 
     const defaults = normalizeClassroomDefaultsFromUser(req.user);
@@ -93,12 +114,12 @@ async function createClass(req, res) {
 
     const parsedStartDate = toOptionalDate(startDate);
     if (parsedStartDate === null) {
-      return sendError(res, 400, 'startDate must be a valid date');
+      return sendError(res, 400, "startDate must be a valid date");
     }
 
     const parsedEndDate = toOptionalDate(endDate);
     if (parsedEndDate === null) {
-      return sendError(res, 400, 'endDate must be a valid date');
+      return sendError(res, 400, "endDate must be a valid date");
     }
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -109,103 +130,111 @@ async function createClass(req, res) {
       try {
         const createdClass = await Class.create({
           name: name.trim(),
-          description: isNonEmptyString(description) ? description.trim() : undefined,
+          description: isNonEmptyString(description)
+            ? description.trim()
+            : undefined,
           subjectLevel: normalizedSubjectLevel,
           startDate: parsedStartDate || undefined,
           endDate: parsedEndDate || undefined,
           teacher: teacherId,
           joinCode,
           qrCodeUrl,
-          ...defaults
+          ...defaults,
         });
 
         await incrementUsage(teacherId, { classes: 1 });
 
         return sendSuccess(res, createdClass);
       } catch (err) {
-        if (err && err.code === 11000 && err.keyPattern && err.keyPattern.joinCode) {
+        if (
+          err &&
+          err.code === 11000 &&
+          err.keyPattern &&
+          err.keyPattern.joinCode
+        ) {
           continue;
         }
         throw err;
       }
     }
 
-    return sendError(res, 500, 'Failed to generate unique join code');
+    return sendError(res, 500, "Failed to generate unique join code");
   } catch (err) {
-    return sendError(res, 500, 'Failed to create class');
+    return sendError(res, 500, "Failed to create class");
   }
 }
 
 async function updateClass(req, res) {
   try {
     const { id } = req.params;
-    const { name, description, subjectLevel, startDate, endDate } = req.body || {};
+    const { name, description, subjectLevel, startDate, endDate } =
+      req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      return sendError(res, 400, 'Invalid class id');
+      return sendError(res, 400, "Invalid class id");
     }
 
     const teacherId = req.user && req.user._id;
     if (!teacherId) {
-      return sendError(res, 401, 'Unauthorized');
+      return sendError(res, 401, "Unauthorized");
     }
 
     const classDoc = await Class.findOne({
       _id: id,
       teacher: teacherId,
-      isActive: true
+      isActive: true,
     });
 
     if (!classDoc) {
-      return sendError(res, 404, 'Class not found');
+      return sendError(res, 404, "Class not found");
     }
 
-    if (typeof name !== 'undefined') {
+    if (typeof name !== "undefined") {
       if (!isNonEmptyString(name)) {
-        return sendError(res, 400, 'name must be a non-empty string');
+        return sendError(res, 400, "name must be a non-empty string");
       }
       classDoc.name = name.trim();
     }
 
-    if (typeof description !== 'undefined') {
+    if (typeof description !== "undefined") {
       if (description === null) {
         classDoc.description = undefined;
-      } else if (typeof description === 'string') {
+      } else if (typeof description === "string") {
         classDoc.description = description.trim();
       } else {
-        return sendError(res, 400, 'description must be a string');
+        return sendError(res, 400, "description must be a string");
       }
     }
 
-    if (typeof subjectLevel !== 'undefined') {
+    if (typeof subjectLevel !== "undefined") {
       if (subjectLevel === null) {
         classDoc.subjectLevel = undefined;
-      } else if (typeof subjectLevel === 'string') {
+      } else if (typeof subjectLevel === "string") {
         classDoc.subjectLevel = subjectLevel.trim() || undefined;
       } else {
-        return sendError(res, 400, 'subjectLevel must be a string');
+        return sendError(res, 400, "subjectLevel must be a string");
       }
     }
 
-    if (typeof startDate !== 'undefined') {
+    if (typeof startDate !== "undefined") {
       if (startDate === null) {
         classDoc.startDate = undefined;
       } else {
         const d = new Date(startDate);
         if (!Number.isFinite(d.getTime())) {
-          return sendError(res, 400, 'startDate must be a valid date');
+          return sendError(res, 400, "startDate must be a valid date");
         }
         classDoc.startDate = d;
       }
     }
 
-    if (typeof endDate !== 'undefined') {
+    if (typeof endDate !== "undefined") {
       if (endDate === null) {
         classDoc.endDate = undefined;
       } else {
         const d = new Date(endDate);
         if (!Number.isFinite(d.getTime())) {
-          return sendError(res, 400, 'endDate must be a valid date');
+          return sendError(res, 400, "endDate must be a valid date");
         }
         classDoc.endDate = d;
       }
@@ -214,7 +243,7 @@ async function updateClass(req, res) {
     const saved = await classDoc.save();
     return sendSuccess(res, saved);
   } catch (err) {
-    return sendError(res, 500, 'Failed to update class');
+    return sendError(res, 500, "Failed to update class");
   }
 }
 
@@ -223,22 +252,22 @@ async function deleteClass(req, res) {
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      return sendError(res, 400, 'Invalid class id');
+      return sendError(res, 400, "Invalid class id");
     }
 
     const teacherId = req.user && req.user._id;
     if (!teacherId) {
-      return sendError(res, 401, 'Unauthorized');
+      return sendError(res, 401, "Unauthorized");
     }
 
     const classDoc = await Class.findOne({
       _id: id,
       teacher: teacherId,
-      isActive: true
+      isActive: true,
     });
 
     if (!classDoc) {
-      return sendError(res, 404, 'Class not found');
+      return sendError(res, 404, "Class not found");
     }
 
     classDoc.isActive = false;
@@ -246,7 +275,7 @@ async function deleteClass(req, res) {
 
     return sendSuccess(res, saved);
   } catch (err) {
-    return sendError(res, 500, 'Failed to delete class');
+    return sendError(res, 500, "Failed to delete class");
   }
 }
 
@@ -254,17 +283,17 @@ async function getMyClasses(req, res) {
   try {
     const teacherId = req.user && req.user._id;
     if (!teacherId) {
-      return sendError(res, 401, 'Unauthorized');
+      return sendError(res, 401, "Unauthorized");
     }
 
     const classes = await Class.find({
       teacher: teacherId,
-      isActive: true
+      isActive: true,
     }).sort({ createdAt: -1 });
 
     return sendSuccess(res, classes);
   } catch (err) {
-    return sendError(res, 500, 'Failed to fetch classes');
+    return sendError(res, 500, "Failed to fetch classes");
   }
 }
 
@@ -273,21 +302,21 @@ async function joinByCode(req, res) {
     const { joinCode } = req.params;
 
     if (!isNonEmptyString(joinCode)) {
-      return sendError(res, 400, 'joinCode is required');
+      return sendError(res, 400, "joinCode is required");
     }
 
     const classDoc = await Class.findOne({
       joinCode: joinCode.trim(),
-      isActive: true
-    }).select('_id name description createdAt updatedAt');
+      isActive: true,
+    }).select("_id name description createdAt updatedAt");
 
     if (!classDoc) {
-      return sendError(res, 404, 'Invalid join code');
+      return sendError(res, 404, "Invalid join code");
     }
 
     return sendSuccess(res, classDoc);
   } catch (err) {
-    return sendError(res, 500, 'Failed to verify join code');
+    return sendError(res, 500, "Failed to verify join code");
   }
 }
 
@@ -296,37 +325,37 @@ async function getClassStudents(req, res) {
     const { classId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(classId)) {
-      return sendError(res, 400, 'Invalid class id');
+      return sendError(res, 400, "Invalid class id");
     }
 
     const teacherId = req.user && req.user._id;
     if (!teacherId) {
-      return sendError(res, 401, 'Unauthorized');
+      return sendError(res, 401, "Unauthorized");
     }
 
     const classDoc = await Class.findOne({
       _id: classId,
       teacher: teacherId,
-      isActive: true
+      isActive: true,
     });
 
     if (!classDoc) {
-      return sendError(res, 404, 'Class not found');
+      return sendError(res, 404, "Class not found");
     }
 
     const memberships = await Membership.find({
       class: classDoc._id,
-      status: 'active'
+      status: "active",
     })
       .sort({ joinedAt: -1 })
-      .populate('student', '_id email displayName');
+      .populate("student", "_id email displayName");
 
     const students = memberships
       .map((m) => {
         const student = m && m.student;
-        if (!student || typeof student !== 'object') return null;
+        if (!student || typeof student !== "object") return null;
 
-        const email = student.email || '';
+        const email = student.email || "";
         const name = student.displayName || email;
         const joinedAt = m.joinedAt ? new Date(m.joinedAt).toISOString() : null;
 
@@ -334,14 +363,14 @@ async function getClassStudents(req, res) {
           id: String(student._id),
           name,
           email,
-          joinedAt
+          joinedAt,
         };
       })
       .filter(Boolean);
 
     return sendSuccess(res, students);
   } catch (err) {
-    return sendError(res, 500, 'Failed to fetch class students');
+    return sendError(res, 500, "Failed to fetch class students");
   }
 }
 
@@ -350,39 +379,39 @@ async function removeStudentFromClass(req, res) {
     const { classId, studentId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(classId)) {
-      return sendError(res, 400, 'Invalid class id');
+      return sendError(res, 400, "Invalid class id");
     }
 
     if (!mongoose.Types.ObjectId.isValid(studentId)) {
-      return sendError(res, 400, 'Invalid student id');
+      return sendError(res, 400, "Invalid student id");
     }
 
     const teacherId = req.user && req.user._id;
     if (!teacherId) {
-      return sendError(res, 401, 'Unauthorized');
+      return sendError(res, 401, "Unauthorized");
     }
 
     const classDoc = await Class.findOne({
       _id: classId,
       teacher: teacherId,
-      isActive: true
+      isActive: true,
     });
 
     if (!classDoc) {
-      return sendError(res, 404, 'Class not found');
+      return sendError(res, 404, "Class not found");
     }
 
     const membership = await Membership.findOne({
       class: classDoc._id,
       student: studentId,
-      status: 'active'
+      status: "active",
     });
 
     if (!membership) {
-      return sendError(res, 404, 'Student is not in this class');
+      return sendError(res, 404, "Student is not in this class");
     }
 
-    membership.status = 'left';
+    membership.status = "left";
     const saved = await membership.save();
 
     await incrementUsage(teacherId, { students: -1 });
@@ -392,7 +421,7 @@ async function removeStudentFromClass(req, res) {
 
     return sendSuccess(res, saved);
   } catch (err) {
-    return sendError(res, 500, 'Failed to remove student from class');
+    return sendError(res, 500, "Failed to remove student from class");
   }
 }
 
@@ -401,115 +430,163 @@ async function getClassSummary(req, res) {
     const { classId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(classId)) {
-      return sendError(res, 400, 'Invalid class id');
+      return sendError(res, 400, "Invalid class id");
     }
 
     const user = req.user;
     if (!user || !user._id || !user.role) {
-      return sendError(res, 401, 'Unauthorized');
+      return sendError(res, 401, "Unauthorized");
     }
 
-    const classDoc = await Class.findOne({ _id: classId, isActive: true }).populate(
-      'teacher',
-      '_id email displayName photoURL role'
-    );
+    const classDoc = await Class.findOne({
+      _id: classId,
+      isActive: true,
+    }).populate("teacher", "_id email displayName photoURL role");
 
     if (!classDoc) {
-      return sendError(res, 404, 'Class not found');
+      return sendError(res, 404, "Class not found");
     }
 
-    const teacherId = classDoc.teacher && classDoc.teacher._id ? classDoc.teacher._id : classDoc.teacher;
+    const teacherId =
+      classDoc.teacher && classDoc.teacher._id
+        ? classDoc.teacher._id
+        : classDoc.teacher;
 
-    if (user.role === 'teacher') {
+    if (user.role === "teacher") {
       if (String(teacherId) !== String(user._id)) {
-        return sendError(res, 403, 'Forbidden');
+        return sendError(res, 403, "Forbidden");
       }
     } else {
       const membership = await Membership.findOne({
         class: classDoc._id,
         student: user._id,
-        status: 'active'
+        status: "active",
       });
 
       if (!membership) {
-        return sendError(res, 403, 'Forbidden');
+        return sendError(res, 403, "Forbidden");
       }
     }
 
     const studentsCount = await Membership.countDocuments({
       class: classDoc._id,
-      status: 'active'
+      status: "active",
     });
 
     const assignmentsCount = await Assignment.countDocuments({
       class: classDoc._id,
-      isActive: true
+      isActive: true,
     });
 
     const activeAssignmentIds = await Assignment.find({
       class: classDoc._id,
-      isActive: true
-    }).distinct('_id');
+      isActive: true,
+    }).distinct("_id");
 
-    const submissionsCount = activeAssignmentIds.length
-      ? await Submission.countDocuments({
-          class: classDoc._id,
-          assignment: { $in: activeAssignmentIds }
-        })
-      : 0;
+    // Count submissions from ALL three submission types in parallel.
+    // - Submission         → essay/file-upload assignments  (has a `class` field)
+    // - FlashcardSubmission → flashcard assignments          (only has `assignmentId`, no `class`)
+    // - WorksheetSubmission → worksheet assignments          (only has `assignmentId`, no `class`)
+    const [essayCount, flashcardCount, worksheetCount] =
+      activeAssignmentIds.length
+        ? await Promise.all([
+            Submission.countDocuments({
+              assignment: { $in: activeAssignmentIds },
+            }),
+            FlashcardSubmission.countDocuments({
+              assignmentId: { $in: activeAssignmentIds },
+            }),
+            WorksheetSubmission.countDocuments({
+              assignmentId: { $in: activeAssignmentIds },
+            }),
+          ])
+        : [0, 0, 0];
 
-    // Get the latest timestamp from class, assignments, and submissions
+    const submissionsCount = essayCount + flashcardCount + worksheetCount;
+
+    // Get the latest timestamp from class, assignments, and ALL submission types.
     const classUpdatedAt = classDoc.updatedAt || classDoc.createdAt;
-    
+
     const latestAssignment = await Assignment.findOne({
       class: classDoc._id,
-      isActive: true
-    }).sort({ updatedAt: -1 }).select('updatedAt');
+      isActive: true,
+    })
+      .sort({ updatedAt: -1 })
+      .select("updatedAt");
 
-    const latestSubmission = activeAssignmentIds.length
-      ? await Submission.findOne({
-          class: classDoc._id,
-          assignment: { $in: activeAssignmentIds }
-        })
-          .sort({ updatedAt: -1 })
-          .select('updatedAt')
-      : null;
+    // Find the most-recent submission across all three models.
+    const [latestEssay, latestFlashcard, latestWorksheet] =
+      activeAssignmentIds.length
+        ? await Promise.all([
+            Submission.findOne({ assignment: { $in: activeAssignmentIds } })
+              .sort({ updatedAt: -1 })
+              .select("updatedAt"),
+            FlashcardSubmission.findOne({
+              assignmentId: { $in: activeAssignmentIds },
+            })
+              .sort({ submittedAt: -1 })
+              .select("submittedAt"),
+            WorksheetSubmission.findOne({
+              assignmentId: { $in: activeAssignmentIds },
+            })
+              .sort({ updatedAt: -1 })
+              .select("updatedAt"),
+          ])
+        : [null, null, null];
 
     const assignmentUpdatedAt = latestAssignment?.updatedAt || classUpdatedAt;
-    const submissionUpdatedAt = latestSubmission?.updatedAt || classUpdatedAt;
-    
-    const lastEdited = new Date(Math.max(
-      new Date(classUpdatedAt).getTime(),
-      new Date(assignmentUpdatedAt).getTime(),
-      new Date(submissionUpdatedAt).getTime()
-    ));
+    const submissionUpdatedAt = new Date(
+      Math.max(
+        new Date(classUpdatedAt).getTime(),
+        latestEssay?.updatedAt ? new Date(latestEssay.updatedAt).getTime() : 0,
+        latestFlashcard?.submittedAt
+          ? new Date(latestFlashcard.submittedAt).getTime()
+          : 0,
+        latestWorksheet?.updatedAt
+          ? new Date(latestWorksheet.updatedAt).getTime()
+          : 0,
+      ),
+    );
+
+    const lastEdited = new Date(
+      Math.max(
+        new Date(classUpdatedAt).getTime(),
+        new Date(assignmentUpdatedAt).getTime(),
+        new Date(submissionUpdatedAt).getTime(),
+      ),
+    );
 
     const teacher = classDoc.teacher;
-    const teacherEmail = teacher && teacher.email ? teacher.email : '';
-    const teacherName = (teacher && (teacher.displayName || teacher.email)) || '';
+    const teacherEmail = teacher && teacher.email ? teacher.email : "";
+    const teacherName =
+      (teacher && (teacher.displayName || teacher.email)) || "";
 
     return sendSuccess(res, {
       id: String(classDoc._id),
       name: classDoc.name,
-      description: classDoc.description || '',
-      subjectLevel: classDoc.subjectLevel || '',
-      startDate: classDoc.startDate ? new Date(classDoc.startDate).toISOString() : null,
-      endDate: classDoc.endDate ? new Date(classDoc.endDate).toISOString() : null,
-      bannerUrl: classDoc.bannerUrl || '',
+      description: classDoc.description || "",
+      subjectLevel: classDoc.subjectLevel || "",
+      startDate: classDoc.startDate
+        ? new Date(classDoc.startDate).toISOString()
+        : null,
+      endDate: classDoc.endDate
+        ? new Date(classDoc.endDate).toISOString()
+        : null,
+      bannerUrl: classDoc.bannerUrl || "",
       joinCode: classDoc.joinCode,
       gradingScale: classDoc.gradingScale,
       teacher: {
         id: teacher && teacher._id ? String(teacher._id) : String(teacherId),
         name: teacherName,
-        email: teacherEmail
+        email: teacherEmail,
       },
       studentsCount,
       assignmentsCount,
       submissionsCount,
-      lastEdited: lastEdited.toISOString()
+      lastEdited: lastEdited.toISOString(),
     });
   } catch (err) {
-    return sendError(res, 500, 'Failed to fetch class summary');
+    return sendError(res, 500, "Failed to fetch class summary");
   }
 }
 
@@ -519,28 +596,28 @@ async function uploadClassBanner(req, res) {
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       tryDeleteUploadedFile(req.file);
-      return sendError(res, 400, 'Invalid class id');
+      return sendError(res, 400, "Invalid class id");
     }
 
     const teacherId = req.user && req.user._id;
     if (!teacherId) {
       tryDeleteUploadedFile(req.file);
-      return sendError(res, 401, 'Unauthorized');
+      return sendError(res, 401, "Unauthorized");
     }
 
     const classDoc = await Class.findOne({
       _id: id,
       teacher: teacherId,
-      isActive: true
+      isActive: true,
     });
 
     if (!classDoc) {
       tryDeleteUploadedFile(req.file);
-      return sendError(res, 404, 'Class not found');
+      return sendError(res, 404, "Class not found");
     }
 
     if (!req.file || !req.file.filename) {
-      return sendError(res, 400, 'No file provided');
+      return sendError(res, 400, "No file provided");
     }
 
     const fileUrl = `/uploads/class-banners/${req.file.filename}`;
@@ -549,18 +626,18 @@ async function uploadClassBanner(req, res) {
     await classDoc.save();
 
     const size = req.uploadSizeMB;
-    if (typeof size === 'number' && Number.isFinite(size) && size > 0) {
+    if (typeof size === "number" && Number.isFinite(size) && size > 0) {
       await incrementUsage(teacherId, { storageMB: size });
     }
 
     return res.json({
       success: true,
       fileUrl,
-      fileName: req.file.filename
+      fileName: req.file.filename,
     });
   } catch (err) {
     tryDeleteUploadedFile(req.file);
-    return sendError(res, 500, 'Failed to upload banner');
+    return sendError(res, 500, "Failed to upload banner");
   }
 }
 
@@ -570,33 +647,37 @@ async function inviteStudents(req, res) {
     const { emails } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(classId)) {
-      return sendError(res, 400, 'Invalid class id');
+      return sendError(res, 400, "Invalid class id");
     }
 
     if (!Array.isArray(emails) || emails.length === 0) {
-      return sendError(res, 400, 'emails array is required');
+      return sendError(res, 400, "emails array is required");
     }
 
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    const invalidEmails = emails.filter(email => !emailRegex.test(email));
+    const invalidEmails = emails.filter((email) => !emailRegex.test(email));
     if (invalidEmails.length > 0) {
-      return sendError(res, 400, `Invalid email format: ${invalidEmails.join(', ')}`);
+      return sendError(
+        res,
+        400,
+        `Invalid email format: ${invalidEmails.join(", ")}`,
+      );
     }
 
     const teacherId = req.user && req.user._id;
     if (!teacherId) {
-      return sendError(res, 401, 'Unauthorized');
+      return sendError(res, 401, "Unauthorized");
     }
 
     const classDoc = await Class.findOne({
       _id: classId,
       teacher: teacherId,
-      isActive: true
+      isActive: true,
     });
 
     if (!classDoc) {
-      return sendError(res, 404, 'Class not found');
+      return sendError(res, 404, "Class not found");
     }
 
     const results = [];
@@ -604,37 +685,40 @@ async function inviteStudents(req, res) {
 
     for (const email of emails) {
       const trimmedEmail = email.toLowerCase().trim();
-      
+
       try {
         // Check if user already exists
         const existingUser = await User.findOne({ email: trimmedEmail });
-        
+
         // Check if student is already a member
         if (existingUser) {
           const existingMembership = await Membership.findOne({
             class: classDoc._id,
             student: existingUser._id,
-            status: 'active'
+            status: "active",
           });
-          
+
           if (existingMembership) {
             results.push({
               email: trimmedEmail,
-              status: 'already_joined',
-              message: 'Student is already a member of this class'
+              status: "already_joined",
+              message: "Student is already a member of this class",
             });
             continue;
           }
         }
 
         // Check if invitation already exists and is valid
-        const existingInvitation = await Invitation.findValidInvitation(classDoc._id, trimmedEmail);
+        const existingInvitation = await Invitation.findValidInvitation(
+          classDoc._id,
+          trimmedEmail,
+        );
         if (existingInvitation) {
           results.push({
             email: trimmedEmail,
-            status: 'already_invited',
-            message: 'Invitation already sent',
-            invitationId: existingInvitation._id
+            status: "already_invited",
+            message: "Invitation already sent",
+            invitationId: existingInvitation._id,
           });
           continue;
         }
@@ -643,7 +727,7 @@ async function inviteStudents(req, res) {
         const invitation = await Invitation.create({
           class: classDoc._id,
           teacher: teacherId,
-          email: trimmedEmail
+          email: trimmedEmail,
         });
 
         // Send email invitation
@@ -652,33 +736,32 @@ async function inviteStudents(req, res) {
           className: classDoc.name,
           classCode: classDoc.joinCode,
           joinUrl,
-          teacherName: req.user?.displayName || req.user?.email
+          teacherName: req.user?.displayName || req.user?.email,
         });
 
         if (emailResult.success) {
           results.push({
             email: trimmedEmail,
-            status: 'invited',
-            message: 'Invitation sent successfully',
+            status: "invited",
+            message: "Invitation sent successfully",
             invitationId: invitation._id,
             token: invitation.token,
             joinUrl,
             joinCode: classDoc.joinCode,
-            expiresAt: invitation.expiresAt
+            expiresAt: invitation.expiresAt,
           });
         } else {
           results.push({
             email: trimmedEmail,
-            status: 'error',
-            message: `Failed to send email: ${emailResult.error}`
+            status: "error",
+            message: `Failed to send email: ${emailResult.error}`,
           });
         }
-
       } catch (err) {
         results.push({
           email: trimmedEmail,
-          status: 'error',
-          message: err.message || 'Failed to send invitation'
+          status: "error",
+          message: err.message || "Failed to send invitation",
         });
       }
     }
@@ -689,15 +772,16 @@ async function inviteStudents(req, res) {
       results,
       summary: {
         total: emails.length,
-        invited: results.filter(r => r.status === 'invited').length,
-        already_joined: results.filter(r => r.status === 'already_joined').length,
-        already_invited: results.filter(r => r.status === 'already_invited').length,
-        errors: results.filter(r => r.status === 'error').length
-      }
+        invited: results.filter((r) => r.status === "invited").length,
+        already_joined: results.filter((r) => r.status === "already_joined")
+          .length,
+        already_invited: results.filter((r) => r.status === "already_invited")
+          .length,
+        errors: results.filter((r) => r.status === "error").length,
+      },
     });
-
   } catch (err) {
-    return sendError(res, 500, 'Failed to send invitations');
+    return sendError(res, 500, "Failed to send invitations");
   }
 }
 
@@ -706,32 +790,31 @@ async function getClassInvitations(req, res) {
     const { classId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(classId)) {
-      return sendError(res, 400, 'Invalid class id');
+      return sendError(res, 400, "Invalid class id");
     }
 
     const teacherId = req.user && req.user._id;
     if (!teacherId) {
-      return sendError(res, 401, 'Unauthorized');
+      return sendError(res, 401, "Unauthorized");
     }
 
     const classDoc = await Class.findOne({
       _id: classId,
       teacher: teacherId,
-      isActive: true
+      isActive: true,
     });
 
     if (!classDoc) {
-      return sendError(res, 404, 'Class not found');
+      return sendError(res, 404, "Class not found");
     }
 
     const invitations = await Invitation.find({ class: classDoc._id })
       .sort({ invitedAt: -1 })
-      .select('email status invitedAt expiresAt acceptedAt token');
+      .select("email status invitedAt expiresAt acceptedAt token");
 
     return sendSuccess(res, invitations);
-
   } catch (err) {
-    return sendError(res, 500, 'Failed to fetch invitations');
+    return sendError(res, 500, "Failed to fetch invitations");
   }
 }
 
@@ -746,5 +829,5 @@ module.exports = {
   removeStudentFromClass,
   inviteStudents,
   getClassInvitations,
-  uploadClassBanner
+  uploadClassBanner,
 };

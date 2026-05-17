@@ -1,4 +1,4 @@
-const OpenAI = require('openai');
+const OpenAI = require("openai");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI GENERATION SERVICE
@@ -9,19 +9,22 @@ const OpenAI = require('openai');
  * Includes retry mechanism, timeout handling, and comprehensive error handling.
  */
 
-const AI_PROVIDER = process.env.AI_PROVIDER || 'openrouter';
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const OPENROUTER_MODEL = process.env.LLAMA_MODEL || 'meta-llama/llama-3-8b-instruct';
-const OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
-const OPENROUTER_TIMEOUT_MS = parseInt(process.env.OPENROUTER_TIMEOUT_MS) || 60000;
+const AI_PROVIDER = process.env.AI_PROVIDER || "openrouter";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const OPENROUTER_MODEL =
+  process.env.LLAMA_MODEL || "meta-llama/llama-3-8b-instruct";
+const OPENROUTER_BASE_URL =
+  process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
+const OPENROUTER_TIMEOUT_MS =
+  parseInt(process.env.OPENROUTER_TIMEOUT_MS) || 60000;
 const MAX_RETRIES = parseInt(process.env.AI_MAX_RETRIES) || 3;
 const RETRY_DELAY_MS = parseInt(process.env.AI_RETRY_DELAY_MS) || 1000;
 
-console.log('[AI GENERATION] Provider:', AI_PROVIDER);
-console.log('[AI GENERATION] OpenAI model:', OPENAI_MODEL);
-console.log('[AI GENERATION] OpenRouter model:', OPENROUTER_MODEL);
-console.log('[AI GENERATION] Max retries:', MAX_RETRIES);
-console.log('[AI GENERATION] Retry delay:', RETRY_DELAY_MS, 'ms');
+console.log("[AI GENERATION] Provider:", AI_PROVIDER);
+console.log("[AI GENERATION] OpenAI model:", OPENAI_MODEL);
+console.log("[AI GENERATION] OpenRouter model:", OPENROUTER_MODEL);
+console.log("[AI GENERATION] Max retries:", MAX_RETRIES);
+console.log("[AI GENERATION] Retry delay:", RETRY_DELAY_MS, "ms");
 
 // OpenAI client (for OpenAI provider)
 let openaiClient = null;
@@ -36,7 +39,7 @@ if (process.env.OPENAI_API_KEY) {
  * Sleep utility for retry delays
  */
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -68,15 +71,18 @@ async function generateWithOpenRouter(messages, options = {}) {
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      console.log(`[AI GENERATION] OpenRouter attempt ${attempt + 1}/${MAX_RETRIES} with model: ${OPENROUTER_MODEL}`);
+      console.log(
+        `[AI GENERATION] OpenRouter attempt ${attempt + 1}/${MAX_RETRIES} with model: ${OPENROUTER_MODEL}`,
+      );
 
       const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': process.env.FRONTEND_URL || 'http://localhost:4200',
-          'X-Title': 'RoznaComarker',
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer":
+            process.env.FRONTEND_URL || "http://82.112.234.151:4200",
+          "X-Title": "RoznaComarker",
         },
         body: JSON.stringify(requestBody),
         signal: AbortSignal.timeout(OPENROUTER_TIMEOUT_MS),
@@ -84,15 +90,22 @@ async function generateWithOpenRouter(messages, options = {}) {
 
       if (!response.ok) {
         const errorData = await response.text();
-        console.error(`[AI GENERATION] OpenRouter attempt ${attempt + 1} failed (${response.status}):`, errorData);
+        console.error(
+          `[AI GENERATION] OpenRouter attempt ${attempt + 1} failed (${response.status}):`,
+          errorData,
+        );
 
         // Don't retry on authentication or invalid request errors
         if (response.status === 401 || response.status === 400) {
-          throw new Error(`OpenRouter API error (${response.status}): ${errorData}`);
+          throw new Error(
+            `OpenRouter API error (${response.status}): ${errorData}`,
+          );
         }
 
         // Retry on rate limit, server errors, or timeout
-        lastError = new Error(`OpenRouter API error (${response.status}): ${errorData}`);
+        lastError = new Error(
+          `OpenRouter API error (${response.status}): ${errorData}`,
+        );
         if (attempt < MAX_RETRIES - 1) {
           console.log(`[AI GENERATION] Retrying in ${RETRY_DELAY_MS}ms...`);
           await sleep(RETRY_DELAY_MS);
@@ -104,27 +117,39 @@ async function generateWithOpenRouter(messages, options = {}) {
       const data = await response.json();
 
       // Normalize response to match OpenAI format
-      const content = data.choices?.[0]?.message?.content || '';
-      console.log('[AI GENERATION] OpenRouter response length:', content.length);
+      const content = data.choices?.[0]?.message?.content || "";
+      console.log(
+        "[AI GENERATION] OpenRouter response length:",
+        content.length,
+      );
 
       return content;
     } catch (error) {
       lastError = error;
 
       // Don't retry on AbortError (timeout) if it's the last attempt
-      if (error.name === 'AbortError' || error.code === 'ETIMEDOUT') {
-        console.error(`[AI GENERATION] OpenRouter attempt ${attempt + 1} timed out`);
+      if (error.name === "AbortError" || error.code === "ETIMEDOUT") {
+        console.error(
+          `[AI GENERATION] OpenRouter attempt ${attempt + 1} timed out`,
+        );
         if (attempt < MAX_RETRIES - 1) {
           console.log(`[AI GENERATION] Retrying in ${RETRY_DELAY_MS}ms...`);
           await sleep(RETRY_DELAY_MS);
           continue;
         }
-        throw new Error('OpenRouter request timed out after multiple retries');
+        throw new Error("OpenRouter request timed out after multiple retries");
       }
 
       // Retry on network errors
-      if (error.code === 'ECONNRESET' || error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-        console.error(`[AI GENERATION] OpenRouter attempt ${attempt + 1} network error:`, error.code);
+      if (
+        error.code === "ECONNRESET" ||
+        error.code === "ENOTFOUND" ||
+        error.code === "ECONNREFUSED"
+      ) {
+        console.error(
+          `[AI GENERATION] OpenRouter attempt ${attempt + 1} network error:`,
+          error.code,
+        );
         if (attempt < MAX_RETRIES - 1) {
           console.log(`[AI GENERATION] Retrying in ${RETRY_DELAY_MS}ms...`);
           await sleep(RETRY_DELAY_MS);
@@ -137,7 +162,9 @@ async function generateWithOpenRouter(messages, options = {}) {
     }
   }
 
-  throw lastError || new Error('OpenRouter generation failed after all retries');
+  throw (
+    lastError || new Error("OpenRouter generation failed after all retries")
+  );
 }
 
 /**
@@ -154,14 +181,16 @@ async function generateWithOpenAI(messages, options = {}) {
   } = options;
 
   if (!openaiClient) {
-    throw new Error('OpenAI client not initialized. Check OPENAI_API_KEY.');
+    throw new Error("OpenAI client not initialized. Check OPENAI_API_KEY.");
   }
 
   let lastError = null;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      console.log(`[AI GENERATION] OpenAI attempt ${attempt + 1}/${MAX_RETRIES} with model: ${OPENAI_MODEL}`);
+      console.log(
+        `[AI GENERATION] OpenAI attempt ${attempt + 1}/${MAX_RETRIES} with model: ${OPENAI_MODEL}`,
+      );
 
       const completion = await openaiClient.chat.completions.create({
         model: OPENAI_MODEL,
@@ -171,8 +200,8 @@ async function generateWithOpenAI(messages, options = {}) {
         response_format,
       });
 
-      const content = completion.choices?.[0]?.message?.content || '';
-      console.log('[AI GENERATION] OpenAI response length:', content.length);
+      const content = completion.choices?.[0]?.message?.content || "";
+      console.log("[AI GENERATION] OpenAI response length:", content.length);
 
       return content;
     } catch (error) {
@@ -194,7 +223,7 @@ async function generateWithOpenAI(messages, options = {}) {
     }
   }
 
-  throw lastError || new Error('OpenAI generation failed after all retries');
+  throw lastError || new Error("OpenAI generation failed after all retries");
 }
 
 /**
@@ -205,16 +234,23 @@ async function generateWithOpenAI(messages, options = {}) {
  */
 async function generateChatCompletion(messages, options = {}) {
   try {
-    if (AI_PROVIDER === 'openai') {
+    if (AI_PROVIDER === "openai") {
       return await generateWithOpenAI(messages, options);
-    } else if (AI_PROVIDER === 'openrouter') {
+    } else if (AI_PROVIDER === "openrouter") {
       return await generateWithOpenRouter(messages, options);
     } else {
-      console.warn('[AI GENERATION] Unknown provider:', AI_PROVIDER, ', falling back to OpenRouter');
+      console.warn(
+        "[AI GENERATION] Unknown provider:",
+        AI_PROVIDER,
+        ", falling back to OpenRouter",
+      );
       return await generateWithOpenRouter(messages, options);
     }
   } catch (error) {
-    console.error('[AI GENERATION] Error:', error.response?.data || error.message);
+    console.error(
+      "[AI GENERATION] Error:",
+      error.response?.data || error.message,
+    );
     throw error;
   }
 }
@@ -227,68 +263,80 @@ function validateAIConfig() {
   const warnings = [];
   const errors = [];
 
-  console.log('[AI CONFIG] Validating AI provider configuration...');
+  console.log("[AI CONFIG] Validating AI provider configuration...");
 
   // Validate provider
-  if (!['openai', 'openrouter'].includes(AI_PROVIDER)) {
-    errors.push(`Invalid AI_PROVIDER: ${AI_PROVIDER}. Must be 'openai' or 'openrouter'.`);
+  if (!["openai", "openrouter"].includes(AI_PROVIDER)) {
+    errors.push(
+      `Invalid AI_PROVIDER: ${AI_PROVIDER}. Must be 'openai' or 'openrouter'.`,
+    );
   }
 
   // Validate OpenAI config
-  if (AI_PROVIDER === 'openai') {
+  if (AI_PROVIDER === "openai") {
     if (!process.env.OPENAI_API_KEY) {
-      errors.push('OPENAI_API_KEY is required when AI_PROVIDER=openai');
+      errors.push("OPENAI_API_KEY is required when AI_PROVIDER=openai");
     }
     if (!OPENAI_MODEL) {
-      warnings.push('OPENAI_MODEL not set, using default: gpt-4o-mini');
+      warnings.push("OPENAI_MODEL not set, using default: gpt-4o-mini");
     }
   }
 
   // Validate OpenRouter config
-  if (AI_PROVIDER === 'openrouter') {
+  if (AI_PROVIDER === "openrouter") {
     if (!process.env.OPENROUTER_API_KEY) {
-      errors.push('OPENROUTER_API_KEY is required when AI_PROVIDER=openrouter');
+      errors.push("OPENROUTER_API_KEY is required when AI_PROVIDER=openrouter");
     }
     if (!OPENROUTER_MODEL) {
-      warnings.push('LLAMA_MODEL not set, using default: meta-llama/llama-3-8b-instruct');
+      warnings.push(
+        "LLAMA_MODEL not set, using default: meta-llama/llama-3-8b-instruct",
+      );
     }
     if (!OPENROUTER_BASE_URL) {
-      warnings.push('OPENROUTER_BASE_URL not set, using default: https://openrouter.ai/api/v1');
+      warnings.push(
+        "OPENROUTER_BASE_URL not set, using default: https://openrouter.ai/api/v1",
+      );
     }
   }
 
   // Validate timeout config
   if (OPENROUTER_TIMEOUT_MS < 5000) {
-    warnings.push(`OPENROUTER_TIMEOUT_MS is very low (${OPENROUTER_TIMEOUT_MS}ms). Consider increasing to at least 10000ms.`);
+    warnings.push(
+      `OPENROUTER_TIMEOUT_MS is very low (${OPENROUTER_TIMEOUT_MS}ms). Consider increasing to at least 10000ms.`,
+    );
   }
 
   // Validate retry config
   if (MAX_RETRIES < 1) {
-    warnings.push(`AI_MAX_RETRIES is less than 1 (${MAX_RETRIES}). Retry mechanism disabled.`);
+    warnings.push(
+      `AI_MAX_RETRIES is less than 1 (${MAX_RETRIES}). Retry mechanism disabled.`,
+    );
   }
   if (RETRY_DELAY_MS < 500) {
-    warnings.push(`AI_RETRY_DELAY_MS is very low (${RETRY_DELAY_MS}ms). Consider increasing to at least 1000ms.`);
+    warnings.push(
+      `AI_RETRY_DELAY_MS is very low (${RETRY_DELAY_MS}ms). Consider increasing to at least 1000ms.`,
+    );
   }
 
   // Log results
   if (errors.length > 0) {
-    console.error('[AI CONFIG] Configuration errors:');
-    errors.forEach(err => console.error('  -', err));
+    console.error("[AI CONFIG] Configuration errors:");
+    errors.forEach((err) => console.error("  -", err));
   }
 
   if (warnings.length > 0) {
-    console.warn('[AI CONFIG] Configuration warnings:');
-    warnings.forEach(warn => console.warn('  -', warn));
+    console.warn("[AI CONFIG] Configuration warnings:");
+    warnings.forEach((warn) => console.warn("  -", warn));
   }
 
   if (errors.length === 0 && warnings.length === 0) {
-    console.log('[AI CONFIG] Configuration is valid');
+    console.log("[AI CONFIG] Configuration is valid");
   }
 
   return {
     isValid: errors.length === 0,
     errors,
-    warnings
+    warnings,
   };
 }
 
