@@ -40,6 +40,9 @@ const {
 const { generateChatCompletion } = require("../services/aiGeneration.service");
 const multer = require("multer");
 const { jsonrepair } = require("jsonrepair");
+const {
+  generateHtmlWorksheetFromFile,
+} = require("../services/geminiWorksheet.service");
 
 // Configure multer for in-memory file storage (temp)
 const upload = multer({
@@ -1993,7 +1996,7 @@ async function shareWorksheet(req, res) {
       }
     }
 
-    const shareUrl = `${process.env.FRONTEND_URL || "http://82.112.234.151:4200"}/shared/worksheets/${worksheet.shareToken}`;
+    const shareUrl = `${process.env.FRONTEND_URL || "http://localhost:4200"}/shared/worksheets/${worksheet.shareToken}`;
 
     return res.json({
       success: true,
@@ -2211,6 +2214,86 @@ async function deleteWorksheetDraft(req, res) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GEMINI HTML WORKSHEET GENERATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/worksheets/gemini-html-generate
+ * Teacher uploads a file; Gemini 1.5 Flash returns a ready-to-print HTML worksheet.
+ * The returned HTML is NOT saved to the database — the teacher downloads it as PDF.
+ */
+async function generateHtmlWorksheet(req, res) {
+  console.log("[GEMINI HTML WORKSHEET] Request received");
+
+  if (!req.file) {
+    return sendError(res, 400, "No file uploaded. Please attach a file.");
+  }
+
+  try {
+    // Reuse existing validation logic
+    const validation = validateFile(req.file);
+    if (!validation.valid) {
+      return sendError(res, 400, validation.error);
+    }
+
+    console.log(
+      "[GEMINI HTML WORKSHEET] File validated:",
+      req.file.originalname,
+      req.file.mimetype,
+      `${(req.file.size / 1024).toFixed(1)} KB`,
+    );
+
+    // Parse teacher form options from multipart body
+    let activityTypes;
+    try {
+      activityTypes = req.body.activityTypes
+        ? JSON.parse(req.body.activityTypes)
+        : null;
+    } catch {
+      activityTypes = null;
+    }
+
+    const options = {
+      subject: req.body.subject || "",
+      gradeLevel: req.body.gradeLevel || "",
+      gradeCategory: req.body.gradeCategory || "",
+      difficulty: req.body.difficulty || "medium",
+      language: req.body.language || "English",
+      cefrLevel: req.body.cefrLevel || "",
+      activityTypes: activityTypes,
+      theme: req.body.theme || "modern",
+    };
+
+    console.log("[GEMINI HTML WORKSHEET] Options:", JSON.stringify(options));
+
+    const { html, title } = await generateHtmlWorksheetFromFile(
+      req.file.buffer,
+      req.file.mimetype,
+      req.file.originalname,
+      options,
+    );
+
+    console.log(
+      `[GEMINI HTML WORKSHEET] Success — title: "${title}", html length: ${html.length}`,
+    );
+
+    return res.json({
+      success: true,
+      html,
+      title,
+      fileName: req.file.originalname,
+    });
+  } catch (error) {
+    console.error("[GEMINI HTML WORKSHEET] Error:", error.message);
+    return res.status(500).json({
+      success: false,
+      message:
+        error.message || "Failed to generate worksheet. Please try again.",
+    });
+  }
+}
+
 module.exports = {
   generateWorksheet,
   uploadAndGenerate,
@@ -2232,4 +2315,5 @@ module.exports = {
   getSubmissions,
   getWorksheetReport,
   assignWorksheet,
+  generateHtmlWorksheet,
 };
