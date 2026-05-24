@@ -1,42 +1,42 @@
-const fs   = require('fs');
-const path = require('path');
-const PDFDocument = require('pdfkit');
-const { getActivityType } = require('../config/activityTypes.config');
+const fs = require("fs");
+const path = require("path");
+const PDFDocument = require("pdfkit");
+const { getActivityType } = require("../config/activityTypes.config");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STYLE TOKENS  (matches existing ProjectRozna palette)
 // ─────────────────────────────────────────────────────────────────────────────
 const STYLE = {
   colors: {
-    primary:     '#008081',
-    primaryDark: '#136C6D',
-    success:     '#166534',
-    successBg:   '#dcfce7',
-    successBd:   '#22c55e',
-    error:       '#dc2626',
-    errorBg:     '#fee2e2',
-    errorBd:     '#ef4444',
-    correctHint: '#f0fdf4',
-    correctHintBd: '#86efac',
-    warning:     '#f57c00',
-    warningBg:   '#fef3c7',
-    warningBd:   '#fbbf24',
-    info:        '#203864',
-    infoBg:      '#dbeafe',
-    infoBd:      '#3b82f6',
-    neutral:     '#374151',
-    muted:       '#6B7280',
-    border:      '#E7E7E7',
-    headerFt:    '#9CA3AF',
-    bg:          '#F9FAFB',
-    tableHdr:    '#F3F3F3',
-    altRow:      '#FAFAFA',
-    white:       '#FFFFFF',
+    primary: "#008081",
+    primaryDark: "#136C6D",
+    success: "#166534",
+    successBg: "#dcfce7",
+    successBd: "#22c55e",
+    error: "#dc2626",
+    errorBg: "#fee2e2",
+    errorBd: "#ef4444",
+    correctHint: "#f0fdf4",
+    correctHintBd: "#86efac",
+    warning: "#f57c00",
+    warningBg: "#fef3c7",
+    warningBd: "#fbbf24",
+    info: "#203864",
+    infoBg: "#dbeafe",
+    infoBd: "#3b82f6",
+    neutral: "#374151",
+    muted: "#6B7280",
+    border: "#E7E7E7",
+    headerFt: "#9CA3AF",
+    bg: "#F9FAFB",
+    tableHdr: "#F3F3F3",
+    altRow: "#FAFAFA",
+    white: "#FFFFFF",
   },
   fonts: {
-    main:       'Helvetica',
-    bold:       'Helvetica-Bold',
-    italic:     'Helvetica-Oblique',
+    main: "Helvetica",
+    bold: "Helvetica-Bold",
+    italic: "Helvetica-Oblique",
   },
   sizes: {
     xl: 20,
@@ -63,13 +63,13 @@ const STYLE = {
   },
 };
 
-const OPTION_LETTERS = ['A', 'B', 'C', 'D'];
+const OPTION_LETTERS = ["A", "B", "C", "D"];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SMALL UTILITIES
 // ─────────────────────────────────────────────────────────────────────────────
 function safeText(v) {
-  return (typeof v === 'string' ? v : v == null ? '' : String(v)).trim();
+  return (typeof v === "string" ? v : v == null ? "" : String(v)).trim();
 }
 function safeNumber(v, fallback = 0) {
   const n = Number(v);
@@ -81,7 +81,8 @@ function pageW(doc) {
 
 function ensureSpace(doc, h, forceNewPage = false) {
   const footerSpace = 60;
-  const available = doc.page.height - doc.page.margins.bottom - footerSpace - doc.y;
+  const available =
+    doc.page.height - doc.page.margins.bottom - footerSpace - doc.y;
   if (forceNewPage || available < h) {
     doc.addPage();
   }
@@ -89,7 +90,7 @@ function ensureSpace(doc, h, forceNewPage = false) {
 
 function formatTime(seconds) {
   const s = safeNumber(seconds, 0);
-  if (s <= 0) return '0s';
+  if (s <= 0) return "0s";
   const m = Math.floor(s / 60);
   const sec = s % 60;
   if (m >= 60) {
@@ -101,28 +102,32 @@ function formatTime(seconds) {
 }
 
 function formatDate(dateStr) {
-  if (!dateStr) return 'N/A';
+  if (!dateStr) return "N/A";
   try {
     const d = new Date(dateStr);
-    return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    return d.toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
   } catch {
-    return 'N/A';
+    return "N/A";
   }
 }
 
 function formatDateTime(dateStr) {
-  if (!dateStr) return 'N/A';
+  if (!dateStr) return "N/A";
   try {
     const d = new Date(dateStr);
-    return d.toLocaleString('en-US', { 
-      year: 'numeric', 
-      month: 'short', 
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
+    return d.toLocaleString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
     });
   } catch {
-    return 'N/A';
+    return "N/A";
   }
 }
 
@@ -135,16 +140,17 @@ function getScoreColor(score) {
 
 function getScoreBadge(score) {
   const pct = safeNumber(score, 0);
-  if (pct >= 90) return { label: 'Excellent', color: STYLE.colors.success };
-  if (pct >= 70) return { label: 'Good', color: STYLE.colors.success };
-  if (pct >= 50) return { label: 'Satisfactory', color: STYLE.colors.warning };
-  if (pct >= 30) return { label: 'Needs Improvement', color: STYLE.colors.error };
-  return { label: 'Critical', color: STYLE.colors.error };
+  if (pct >= 90) return { label: "Excellent", color: STYLE.colors.success };
+  if (pct >= 70) return { label: "Good", color: STYLE.colors.success };
+  if (pct >= 50) return { label: "Satisfactory", color: STYLE.colors.warning };
+  if (pct >= 30)
+    return { label: "Needs Improvement", color: STYLE.colors.error };
+  return { label: "Critical", color: STYLE.colors.error };
 }
 
 function na(v) {
   const t = safeText(v);
-  return t ? t : 'N/A';
+  return t ? t : "N/A";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,11 +166,11 @@ function renderBadge(doc, x, y, text, bgColor, textColor = STYLE.colors.white) {
   const textW = doc.widthOfString(text);
   const badgeW = textW + padding.x * 2;
   const badgeH = 22;
-  
+
   doc.save();
   doc.roundedRect(x, y, badgeW, badgeH, STYLE.radius.sm).fill(bgColor);
   doc.restore();
-  
+
   doc.fillColor(textColor).text(text, x + padding.x, y + padding.y - 1);
   return badgeW;
 }
@@ -174,15 +180,20 @@ function renderBadge(doc, x, y, text, bgColor, textColor = STYLE.colors.white) {
  */
 function renderProgressBar(doc, x, y, w, h, pct, color, showLabel = true) {
   doc.save();
-  doc.roundedRect(x, y, w, h, h / 2).fillAndStroke(STYLE.colors.tableHdr, STYLE.colors.border);
-  const fillW = Math.max(0, Math.min(w, Math.round(w * pct / 100)));
+  doc
+    .roundedRect(x, y, w, h, h / 2)
+    .fillAndStroke(STYLE.colors.tableHdr, STYLE.colors.border);
+  const fillW = Math.max(0, Math.min(w, Math.round((w * pct) / 100)));
   if (fillW > 0) {
     doc.roundedRect(x, y, fillW, h, h / 2).fill(color || STYLE.colors.primary);
   }
   doc.restore();
-  
+
   if (showLabel) {
-    doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.xs).fillColor(STYLE.colors.neutral);
+    doc
+      .font(STYLE.fonts.bold)
+      .fontSize(STYLE.sizes.xs)
+      .fillColor(STYLE.colors.neutral);
     const label = `${Math.round(pct)}%`;
     const labelW = doc.widthOfString(label);
     doc.text(label, x + w - labelW, y + 2, { width: labelW });
@@ -195,35 +206,60 @@ function renderProgressBar(doc, x, y, w, h, pct, color, showLabel = true) {
 function renderStatCard(doc, x, y, w, h, { label, value, icon, trend, color }) {
   const padding = STYLE.spacing.md;
   const iconSize = 24;
-  
+
   doc.save();
-  doc.roundedRect(x, y, w, h, STYLE.radius.lg).fillAndStroke(STYLE.colors.white, STYLE.colors.border);
+  doc
+    .roundedRect(x, y, w, h, STYLE.radius.lg)
+    .fillAndStroke(STYLE.colors.white, STYLE.colors.border);
   doc.restore();
-  
+
   // Icon (if provided)
   if (icon) {
-    doc.font(STYLE.fonts.main).fontSize(16).fillColor(color || STYLE.colors.primary);
-    doc.text(icon, x + padding, y + padding, { width: iconSize, height: iconSize });
+    doc
+      .font(STYLE.fonts.main)
+      .fontSize(16)
+      .fillColor(color || STYLE.colors.primary);
+    doc.text(icon, x + padding, y + padding, {
+      width: iconSize,
+      height: iconSize,
+    });
   }
-  
-  const contentX = icon ? x + padding + iconSize + STYLE.spacing.sm : x + padding;
-  
+
+  const contentX = icon
+    ? x + padding + iconSize + STYLE.spacing.sm
+    : x + padding;
+
   // Label
-  doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xxs).fillColor(STYLE.colors.muted)
-    .text(safeText(label).toUpperCase(), contentX, y + padding + 2, { width: w - padding * 2 });
-  
+  doc
+    .font(STYLE.fonts.main)
+    .fontSize(STYLE.sizes.xxs)
+    .fillColor(STYLE.colors.muted)
+    .text(safeText(label).toUpperCase(), contentX, y + padding + 2, {
+      width: w - padding * 2,
+    });
+
   // Value
-  doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.lg).fillColor(STYLE.colors.neutral)
-    .text(safeText(value), contentX, y + padding + 16, { width: w - padding * 2 });
-  
+  doc
+    .font(STYLE.fonts.bold)
+    .fontSize(STYLE.sizes.lg)
+    .fillColor(STYLE.colors.neutral)
+    .text(safeText(value), contentX, y + padding + 16, {
+      width: w - padding * 2,
+    });
+
   // Trend (if provided)
   if (trend) {
     const trendColor = trend >= 0 ? STYLE.colors.success : STYLE.colors.error;
-    const trendIcon = trend >= 0 ? '↑' : '↓';
-    doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xs).fillColor(trendColor)
-      .text(`${trendIcon} ${Math.abs(trend)}%`, contentX, y + padding + 38, { width: w - padding * 2 });
+    const trendIcon = trend >= 0 ? "↑" : "↓";
+    doc
+      .font(STYLE.fonts.main)
+      .fontSize(STYLE.sizes.xs)
+      .fillColor(trendColor)
+      .text(`${trendIcon} ${Math.abs(trend)}%`, contentX, y + padding + 38, {
+        width: w - padding * 2,
+      });
   }
-  
+
   return h + STYLE.spacing.md;
 }
 
@@ -235,26 +271,33 @@ function renderSectionCard(doc, title, renderContent, options = {}) {
   const L = doc.page.margins.left;
   const W = pageW(doc);
   const padding = STYLE.spacing.lg;
-  
+
   ensureSpace(doc, 80);
   const startY = doc.y;
-  
+
   // Card background
   doc.save();
-  doc.roundedRect(L, startY, W, 40, STYLE.radius.md).fillAndStroke(STYLE.colors.bg, STYLE.colors.border);
+  doc
+    .roundedRect(L, startY, W, 40, STYLE.radius.md)
+    .fillAndStroke(STYLE.colors.bg, STYLE.colors.border);
   doc.restore();
-  
+
   // Title
-  doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.base).fillColor(STYLE.colors.neutral)
-    .text(safeText(title), L + padding, startY + 12, { width: W - padding * 2 });
-  
+  doc
+    .font(STYLE.fonts.bold)
+    .fontSize(STYLE.sizes.base)
+    .fillColor(STYLE.colors.neutral)
+    .text(safeText(title), L + padding, startY + 12, {
+      width: W - padding * 2,
+    });
+
   doc.y = startY + 40 + STYLE.spacing.sm;
-  
+
   // Render content
   if (renderContent) {
     renderContent(doc, L + padding, W - padding * 2);
   }
-  
+
   doc.y += STYLE.spacing.lg;
 }
 
@@ -266,78 +309,96 @@ function renderMiniTable(doc, headers, rows, options = {}) {
   const L = doc.page.margins.left;
   const W = pageW(doc);
   const colW = columnWidths || headers.map(() => W / headers.length);
-  
+
   const rowH = 28;
   const headerH = 32;
-  
+
   // Header row
   ensureSpace(doc, headerH + 10);
   const headerY = doc.y;
-  
+
   doc.save();
   doc.rect(L, headerY, W, headerH).fill(STYLE.colors.tableHdr);
   if (showBorders) {
-    doc.rect(L, headerY, W, headerH).strokeColor(STYLE.colors.border).lineWidth(0.5).stroke();
+    doc
+      .rect(L, headerY, W, headerH)
+      .strokeColor(STYLE.colors.border)
+      .lineWidth(0.5)
+      .stroke();
   }
   doc.restore();
-  
-  doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.sm).fillColor(STYLE.colors.neutral);
+
+  doc
+    .font(STYLE.fonts.bold)
+    .fontSize(STYLE.sizes.sm)
+    .fillColor(STYLE.colors.neutral);
   let cx = L + STYLE.spacing.sm;
   headers.forEach((header, i) => {
-    doc.text(safeText(header), cx, headerY + 10, { width: colW[i] - STYLE.spacing.sm * 2 });
+    doc.text(safeText(header), cx, headerY + 10, {
+      width: colW[i] - STYLE.spacing.sm * 2,
+    });
     cx += colW[i];
   });
-  
+
   doc.y = headerY + headerH;
-  
+
   // Data rows
   rows.forEach((row, rowIndex) => {
     ensureSpace(doc, rowH + 4);
     const rowY = doc.y;
-    
+
     if (alternateRows && rowIndex % 2 === 1) {
       doc.save();
       doc.rect(L, rowY, W, rowH).fill(STYLE.colors.altRow);
       doc.restore();
     }
-    
+
     if (showBorders) {
       doc.save();
-      doc.rect(L, rowY, W, rowH).strokeColor(STYLE.colors.border).lineWidth(0.5).stroke();
+      doc
+        .rect(L, rowY, W, rowH)
+        .strokeColor(STYLE.colors.border)
+        .lineWidth(0.5)
+        .stroke();
       doc.restore();
     }
-    
-    doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.sm).fillColor(STYLE.colors.neutral);
+
+    doc
+      .font(STYLE.fonts.main)
+      .fontSize(STYLE.sizes.sm)
+      .fillColor(STYLE.colors.neutral);
     cx = L + STYLE.spacing.sm;
     row.forEach((cell, i) => {
-      doc.text(safeText(cell), cx, rowY + 8, { width: colW[i] - STYLE.spacing.sm * 2 });
+      doc.text(safeText(cell), cx, rowY + 8, {
+        width: colW[i] - STYLE.spacing.sm * 2,
+      });
       cx += colW[i];
     });
-    
+
     doc.y = rowY + rowH;
   });
-  
+
   doc.y += STYLE.spacing.md;
 }
 
 function titleizeId(v) {
   const s = safeText(v);
-  if (!s) return '';
+  if (!s) return "";
   return s
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
     .trim()
-    .split(' ')
-    .map(w => (w ? w[0].toUpperCase() + w.slice(1) : ''))
-    .join(' ');
+    .split(" ")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : ""))
+    .join(" ");
 }
 
 function formatDifficulty(v) {
   const t = safeText(v);
-  if (!t) return '';
-  if (t === 'easy') return 'Easy';
-  if (t === 'medium') return 'Medium';
-  if (t === 'hard') return 'Hard';
+  if (!t) return "";
+  if (t === "easy") return "Easy";
+  if (t === "medium") return "Medium";
+  if (t === "hard") return "Hard";
   return t;
 }
 
@@ -352,70 +413,129 @@ function getWorksheetTypeLabel(ws) {
 
   if (types.size === 0) {
     const legacy = [
-      { key: 'activity1', label: 'Drag & Drop', exists: !!(ws && ws.activity1 && Array.isArray(ws.activity1.items) && ws.activity1.items.length) },
-      { key: 'activity2', label: 'Classification', exists: !!(ws && ws.activity2 && Array.isArray(ws.activity2.items) && ws.activity2.items.length) },
-      { key: 'activity3', label: 'Multiple Choice', exists: !!(ws && ws.activity3 && Array.isArray(ws.activity3.questions) && ws.activity3.questions.length) },
-      { key: 'activity4', label: 'Fill in the Blanks', exists: !!(ws && ws.activity4 && Array.isArray(ws.activity4.sentences) && ws.activity4.sentences.length) },
-      { key: 'activity5', label: 'Matching Pairs', exists: !!(ws && ws.activity5 && Array.isArray(ws.activity5.pairs) && ws.activity5.pairs.length) },
-      { key: 'activity6', label: 'True / False', exists: !!(ws && ws.activity6 && Array.isArray(ws.activity6.questions) && ws.activity6.questions.length) },
-    ].filter(x => x.exists);
+      {
+        key: "activity1",
+        label: "Drag & Drop",
+        exists: !!(
+          ws &&
+          ws.activity1 &&
+          Array.isArray(ws.activity1.items) &&
+          ws.activity1.items.length
+        ),
+      },
+      {
+        key: "activity2",
+        label: "Classification",
+        exists: !!(
+          ws &&
+          ws.activity2 &&
+          Array.isArray(ws.activity2.items) &&
+          ws.activity2.items.length
+        ),
+      },
+      {
+        key: "activity3",
+        label: "Multiple Choice",
+        exists: !!(
+          ws &&
+          ws.activity3 &&
+          Array.isArray(ws.activity3.questions) &&
+          ws.activity3.questions.length
+        ),
+      },
+      {
+        key: "activity4",
+        label: "Fill in the Blanks",
+        exists: !!(
+          ws &&
+          ws.activity4 &&
+          Array.isArray(ws.activity4.sentences) &&
+          ws.activity4.sentences.length
+        ),
+      },
+      {
+        key: "activity5",
+        label: "Matching Pairs",
+        exists: !!(
+          ws &&
+          ws.activity5 &&
+          Array.isArray(ws.activity5.pairs) &&
+          ws.activity5.pairs.length
+        ),
+      },
+      {
+        key: "activity6",
+        label: "True / False",
+        exists: !!(
+          ws &&
+          ws.activity6 &&
+          Array.isArray(ws.activity6.questions) &&
+          ws.activity6.questions.length
+        ),
+      },
+    ].filter((x) => x.exists);
 
-    if (legacy.length === 0) return 'N/A';
-    if (legacy.length > 1) return 'Mixed';
+    if (legacy.length === 0) return "N/A";
+    if (legacy.length > 1) return "Mixed";
     return legacy[0].label;
   }
 
-  if (types.size > 1) return 'Mixed';
+  if (types.size > 1) return "Mixed";
 
   const onlyType = Array.from(types)[0];
   const cfg = getActivityType(onlyType);
-  return safeText(cfg && cfg.label) || titleizeId(onlyType) || 'N/A';
+  return safeText(cfg && cfg.label) || titleizeId(onlyType) || "N/A";
 }
 
 function countFillBlankBlanks(activityData) {
-  const sentences = Array.isArray(activityData && activityData.sentences) ? activityData.sentences : [];
+  const sentences = Array.isArray(activityData && activityData.sentences)
+    ? activityData.sentences
+    : [];
   let blanks = 0;
   for (const s of sentences) {
     const parts = Array.isArray(s && s.parts) ? s.parts : [];
     for (const p of parts) {
-      if (safeText(p && p.type) === 'blank') blanks++;
+      if (safeText(p && p.type) === "blank") blanks++;
     }
   }
   return blanks;
 }
 
 function countQuestionsByActivityType(typeId, activityData) {
-  const data = (activityData && typeof activityData === 'object') ? activityData : {};
+  const data =
+    activityData && typeof activityData === "object" ? activityData : {};
   switch (safeText(typeId)) {
-    case 'ordering':
-    case 'classification':
-    case 'dragDrop':
-    case 'sorting':
+    case "ordering":
+    case "classification":
+    case "dragDrop":
+    case "sorting":
       return Array.isArray(data.items) ? data.items.length : 0;
-    case 'multipleChoice':
-    case 'trueFalse':
-    case 'shortAnswer':
+    case "multipleChoice":
+    case "trueFalse":
+    case "shortAnswer":
       return Array.isArray(data.questions) ? data.questions.length : 0;
-    case 'fillBlanks': {
+    case "fillBlanks": {
       const blankCount = countFillBlankBlanks(data);
       if (blankCount > 0) return blankCount;
       return Array.isArray(data.sentences) ? data.sentences.length : 0;
     }
-    case 'matching':
+    case "matching":
       return Array.isArray(data.pairs) ? data.pairs.length : 0;
-    case 'labeling':
+    case "labeling":
       return Array.isArray(data.labels) ? data.labels.length : 0;
-    case 'wordSearch':
+    case "wordSearch":
       return Array.isArray(data.words) ? data.words.length : 0;
-    case 'crossword':
+    case "crossword":
       return Array.isArray(data.words) ? data.words.length : 0;
     default:
-      return (Array.isArray(data.questions) ? data.questions.length : 0)
-        + (Array.isArray(data.items) ? data.items.length : 0)
-        + (Array.isArray(data.pairs) ? data.pairs.length : 0)
-        + (Array.isArray(data.words) ? data.words.length : 0)
-        + (Array.isArray(data.labels) ? data.labels.length : 0)
-        + (Array.isArray(data.sentences) ? data.sentences.length : 0);
+      return (
+        (Array.isArray(data.questions) ? data.questions.length : 0) +
+        (Array.isArray(data.items) ? data.items.length : 0) +
+        (Array.isArray(data.pairs) ? data.pairs.length : 0) +
+        (Array.isArray(data.words) ? data.words.length : 0) +
+        (Array.isArray(data.labels) ? data.labels.length : 0) +
+        (Array.isArray(data.sentences) ? data.sentences.length : 0)
+      );
   }
 }
 
@@ -432,25 +552,58 @@ function getWorksheetTotalQuestions(ws) {
   let total = 0;
   let any = false;
 
-  if (ws && ws.activity1 && Array.isArray(ws.activity1.items)) { any = true; total += ws.activity1.items.length; }
-  if (ws && ws.activity2 && Array.isArray(ws.activity2.items)) { any = true; total += ws.activity2.items.length; }
-  if (ws && ws.activity3 && Array.isArray(ws.activity3.questions)) { any = true; total += ws.activity3.questions.length; }
+  if (ws && ws.activity1 && Array.isArray(ws.activity1.items)) {
+    any = true;
+    total += ws.activity1.items.length;
+  }
+  if (ws && ws.activity2 && Array.isArray(ws.activity2.items)) {
+    any = true;
+    total += ws.activity2.items.length;
+  }
+  if (ws && ws.activity3 && Array.isArray(ws.activity3.questions)) {
+    any = true;
+    total += ws.activity3.questions.length;
+  }
   if (ws && ws.activity4) {
     const a4 = ws.activity4;
     const blankCount = countFillBlankBlanks(a4);
-    const sentencesCount = Array.isArray(a4.sentences) ? a4.sentences.length : 0;
+    const sentencesCount = Array.isArray(a4.sentences)
+      ? a4.sentences.length
+      : 0;
     if (blankCount > 0 || sentencesCount > 0) {
       any = true;
       total += blankCount > 0 ? blankCount : sentencesCount;
     }
   }
-  if (ws && ws.activity5 && Array.isArray(ws.activity5.pairs)) { any = true; total += ws.activity5.pairs.length; }
-  if (ws && ws.activity6 && Array.isArray(ws.activity6.questions)) { any = true; total += ws.activity6.questions.length; }
+  if (ws && ws.activity5 && Array.isArray(ws.activity5.pairs)) {
+    any = true;
+    total += ws.activity5.pairs.length;
+  }
+  if (ws && ws.activity6 && Array.isArray(ws.activity6.questions)) {
+    any = true;
+    total += ws.activity6.questions.length;
+  }
 
   return any ? total : null;
 }
 
-function renderWorksheetDetailsCard(doc, { title, subject, cefrLevel, gradeCategory, gradeLevel, difficulty, worksheetType, totalQuestions, assignmentDate, dueDate, teacherName, language }) {
+function renderWorksheetDetailsCard(
+  doc,
+  {
+    title,
+    subject,
+    cefrLevel,
+    gradeCategory,
+    gradeLevel,
+    difficulty,
+    worksheetType,
+    totalQuestions,
+    assignmentDate,
+    dueDate,
+    teacherName,
+    language,
+  },
+) {
   const L = doc.page.margins.left;
   const W = pageW(doc);
 
@@ -461,26 +614,26 @@ function renderWorksheetDetailsCard(doc, { title, subject, cefrLevel, gradeCateg
   const colW = Math.floor((innerW - colGap) / 2);
 
   const leftItems = [
-    { label: 'Worksheet Title', value: na(title) },
-    { label: 'Subject', value: na(subject) },
-    { label: 'CEFR Level', value: na(cefrLevel) },
-    { label: 'Grade Category', value: na(gradeCategory) },
-    { label: 'Assignment Date', value: formatDate(assignmentDate) },
+    { label: "Worksheet Title", value: na(title) },
+    { label: "Subject", value: na(subject) },
+    { label: "CEFR Level", value: na(cefrLevel) },
+    { label: "Grade Category", value: na(gradeCategory) },
+    { label: "Assignment Date", value: formatDate(assignmentDate) },
   ];
   const rightItems = [
-    { label: 'Worksheet Type', value: na(worksheetType) },
-    { label: 'Grade Level', value: na(gradeLevel) },
-    { label: 'Difficulty', value: formatDifficulty(difficulty) },
-    { label: 'Language', value: na(language) },
-    { label: 'Due Date', value: formatDate(dueDate) },
+    { label: "Worksheet Type", value: na(worksheetType) },
+    { label: "Grade Level", value: na(gradeLevel) },
+    { label: "Difficulty", value: formatDifficulty(difficulty) },
+    { label: "Language", value: na(language) },
+    { label: "Due Date", value: formatDate(dueDate) },
   ];
-  
+
   if (teacherName) {
-    rightItems.push({ label: 'Teacher', value: na(teacherName) });
+    rightItems.push({ label: "Teacher", value: na(teacherName) });
   }
 
   doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.base);
-  const headerH = doc.heightOfString('Worksheet Details', { width: innerW });
+  const headerH = doc.heightOfString("Worksheet Details", { width: innerW });
 
   const labelSize = STYLE.sizes.xxs;
   const valueSize = STYLE.sizes.sm;
@@ -497,32 +650,52 @@ function renderWorksheetDetailsCard(doc, { title, subject, cefrLevel, gradeCateg
 
   let leftContentH = 0;
   let rightContentH = 0;
-  leftItems.forEach((it) => { leftContentH += measureItemH(it); });
-  rightItems.forEach((it) => { rightContentH += measureItemH(it); });
+  leftItems.forEach((it) => {
+    leftContentH += measureItemH(it);
+  });
+  rightItems.forEach((it) => {
+    rightContentH += measureItemH(it);
+  });
   const colContentH = Math.max(leftContentH, rightContentH);
-  const cardH = padding + headerH + STYLE.spacing.sm + colContentH + padding - itemGap;
+  const cardH =
+    padding + headerH + STYLE.spacing.sm + colContentH + padding - itemGap;
 
   ensureSpace(doc, cardH + STYLE.spacing.md);
 
   const startY = doc.y;
 
   doc.save();
-  doc.roundedRect(L, startY, W, cardH, STYLE.radius.md).fillAndStroke(STYLE.colors.bg, STYLE.colors.border);
+  doc
+    .roundedRect(L, startY, W, cardH, STYLE.radius.md)
+    .fillAndStroke(STYLE.colors.bg, STYLE.colors.border);
   doc.restore();
 
-  doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.base).fillColor(STYLE.colors.neutral)
-    .text('Worksheet Details', innerX, startY + padding, { width: innerW });
+  doc
+    .font(STYLE.fonts.bold)
+    .fontSize(STYLE.sizes.base)
+    .fillColor(STYLE.colors.neutral)
+    .text("Worksheet Details", innerX, startY + padding, { width: innerW });
 
   const dividerY = startY + padding + headerH + STYLE.spacing.sm;
-  doc.moveTo(innerX, dividerY).lineTo(innerX + innerW, dividerY)
-    .lineWidth(0.5).strokeColor(STYLE.colors.border).stroke();
+  doc
+    .moveTo(innerX, dividerY)
+    .lineTo(innerX + innerW, dividerY)
+    .lineWidth(0.5)
+    .strokeColor(STYLE.colors.border)
+    .stroke();
 
   const drawItem = (x, y, item) => {
-    doc.font(STYLE.fonts.main).fontSize(labelSize).fillColor(STYLE.colors.muted)
+    doc
+      .font(STYLE.fonts.main)
+      .fontSize(labelSize)
+      .fillColor(STYLE.colors.muted)
       .text(safeText(item.label), x, y, { width: colW });
     const labelH = doc.heightOfString(safeText(item.label), { width: colW });
     const vy = y + labelH + labelGap;
-    doc.font(STYLE.fonts.bold).fontSize(valueSize).fillColor(STYLE.colors.neutral)
+    doc
+      .font(STYLE.fonts.bold)
+      .fontSize(valueSize)
+      .fillColor(STYLE.colors.neutral)
       .text(safeText(item.value), x, vy, { width: colW });
     const valueH = doc.heightOfString(safeText(item.value), { width: colW });
     return vy + valueH + itemGap;
@@ -532,7 +705,8 @@ function renderWorksheetDetailsCard(doc, { title, subject, cefrLevel, gradeCateg
   let curRightY = curLeftY;
 
   for (const it of leftItems) curLeftY = drawItem(innerX, curLeftY, it);
-  for (const it of rightItems) curRightY = drawItem(innerX + colW + colGap, curRightY, it);
+  for (const it of rightItems)
+    curRightY = drawItem(innerX + colW + colGap, curRightY, it);
 
   doc.y = startY + cardH + STYLE.spacing.lg;
 }
@@ -540,62 +714,118 @@ function renderWorksheetDetailsCard(doc, { title, subject, cefrLevel, gradeCateg
 // ─────────────────────────────────────────────────────────────────────────────
 // ENHANCED PAGE HEADER + FOOTER
 // ─────────────────────────────────────────────────────────────────────────────
-function drawPageHeaderFooter(doc, { title, subtitle, pageNumber, totalPages, showBranding = true }) {
+function drawPageHeaderFooter(
+  doc,
+  { title, subtitle, pageNumber, totalPages, showBranding = true },
+) {
   const L = doc.page.margins.left;
   const W = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   doc.save();
 
   // Header background
   doc.rect(L, 0, W, 50).fill(STYLE.colors.white);
-  doc.moveTo(L, 50).lineTo(L + W, 50).lineWidth(1).strokeColor(STYLE.colors.border).stroke();
+  doc
+    .moveTo(L, 50)
+    .lineTo(L + W, 50)
+    .lineWidth(1)
+    .strokeColor(STYLE.colors.border)
+    .stroke();
 
   // Branding/logo placeholder (left)
   if (showBranding) {
-    doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.base).fillColor(STYLE.colors.primary);
-    doc.text('Rozna', L, 18);
-    doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xs).fillColor(STYLE.colors.muted);
-    doc.text('Education Platform', L, 32);
+    doc
+      .font(STYLE.fonts.bold)
+      .fontSize(STYLE.sizes.base)
+      .fillColor(STYLE.colors.primary);
+    doc.text("Rozna", L, 18);
+    doc
+      .font(STYLE.fonts.main)
+      .fontSize(STYLE.sizes.xs)
+      .fillColor(STYLE.colors.muted);
+    doc.text("Education Platform", L, 32);
   }
 
   // Title and subtitle (center)
-  doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.base).fillColor(STYLE.colors.neutral);
-  doc.text(safeText(title), L, 18, { width: W, align: 'center' });
-  
+  doc
+    .font(STYLE.fonts.bold)
+    .fontSize(STYLE.sizes.base)
+    .fillColor(STYLE.colors.neutral);
+  doc.text(safeText(title), L, 18, { width: W, align: "center" });
+
   if (subtitle) {
-    doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xs).fillColor(STYLE.colors.muted);
-    doc.text(safeText(subtitle), L, 34, { width: W, align: 'center' });
+    doc
+      .font(STYLE.fonts.main)
+      .fontSize(STYLE.sizes.xs)
+      .fillColor(STYLE.colors.muted);
+    doc.text(safeText(subtitle), L, 34, { width: W, align: "center" });
   }
 
   // Page number (right)
-  const pageLabel = totalPages ? `${pageNumber}/${totalPages}` : String(pageNumber);
-  doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.sm).fillColor(STYLE.colors.headerFt);
-  doc.text(pageLabel, L, 24, { width: W, align: 'right' });
+  const pageLabel = totalPages
+    ? `${pageNumber}/${totalPages}`
+    : String(pageNumber);
+  doc
+    .font(STYLE.fonts.bold)
+    .fontSize(STYLE.sizes.sm)
+    .fillColor(STYLE.colors.headerFt);
+  doc.text(pageLabel, L, 24, { width: W, align: "right" });
 
   doc.restore();
 
   // Footer
   const footerY = doc.page.height - doc.page.margins.bottom - 30;
   doc.save();
-  doc.moveTo(L, footerY).lineTo(L + W, footerY).lineWidth(0.5).strokeColor(STYLE.colors.border).stroke();
-  doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xs).fillColor(STYLE.colors.headerFt);
+  doc
+    .moveTo(L, footerY)
+    .lineTo(L + W, footerY)
+    .lineWidth(0.5)
+    .strokeColor(STYLE.colors.border)
+    .stroke();
+  doc
+    .font(STYLE.fonts.main)
+    .fontSize(STYLE.sizes.xs)
+    .fillColor(STYLE.colors.headerFt);
   const generatedDate = formatDate(new Date());
-  doc.text(`Generated on ${generatedDate} • Rozna Education Platform`, L, footerY + 10, { width: W, align: 'center' });
+  doc.text(
+    `Generated on ${generatedDate} • Rozna Education Platform`,
+    L,
+    footerY + 10,
+    { width: W, align: "center" },
+  );
   doc.restore();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UNIFIED DOCUMENT TITLE HEADER (used by both teacher and student PDFs)
 // ─────────────────────────────────────────────────────────────────────────────
-function renderDocHeader(doc, { worksheetTitle, subtitle, studentName, submittedAt, score, percentage, worksheetMeta, showScore = true }) {
+function renderDocHeader(
+  doc,
+  {
+    worksheetTitle,
+    subtitle,
+    studentName,
+    submittedAt,
+    score,
+    percentage,
+    worksheetMeta,
+    showScore = true,
+  },
+) {
   const L = doc.page.margins.left;
   const W = pageW(doc);
 
-  doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.xl).fillColor(STYLE.colors.neutral)
+  doc
+    .font(STYLE.fonts.bold)
+    .fontSize(STYLE.sizes.xl)
+    .fillColor(STYLE.colors.neutral)
     .text(safeText(worksheetTitle), L, doc.y, { width: W });
   doc.moveDown(0.25);
 
   if (subtitle) {
-    doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.sm).fillColor(STYLE.colors.muted)
+    doc
+      .font(STYLE.fonts.main)
+      .fontSize(STYLE.sizes.sm)
+      .fillColor(STYLE.colors.muted)
       .text(safeText(subtitle), L, doc.y, { width: W });
     doc.moveDown(0.25);
   }
@@ -608,7 +838,9 @@ function renderDocHeader(doc, { worksheetTitle, subtitle, studentName, submitted
 
     // Green metadata box background
     doc.save();
-    doc.roundedRect(L, metaY, W, metaH, STYLE.radius.md).fill(STYLE.colors.primary);
+    doc
+      .roundedRect(L, metaY, W, metaH, STYLE.radius.md)
+      .fill(STYLE.colors.primary);
     doc.restore();
 
     // Metadata row with 4 columns
@@ -618,10 +850,26 @@ function renderDocHeader(doc, { worksheetTitle, subtitle, studentName, submitted
     const startY = metaY + STYLE.spacing.sm;
 
     const metaItems = [
-      { icon: '📚', label: 'Subject', value: safeText(worksheetMeta.subject) || '—' },
-      { icon: '🎯', label: 'CEFR', value: safeText(worksheetMeta.cefrLevel) || '—' },
-      { icon: '🏫', label: 'Grade', value: safeText(worksheetMeta.gradeLevel) || '—' },
-      { icon: '⚡', label: 'Difficulty', value: formatDifficulty(worksheetMeta.difficulty) || '—' },
+      {
+        icon: "📚",
+        label: "Subject",
+        value: safeText(worksheetMeta.subject) || "—",
+      },
+      {
+        icon: "🎯",
+        label: "CEFR",
+        value: safeText(worksheetMeta.cefrLevel) || "—",
+      },
+      {
+        icon: "🏫",
+        label: "Grade",
+        value: safeText(worksheetMeta.gradeLevel) || "—",
+      },
+      {
+        icon: "⚡",
+        label: "Difficulty",
+        value: formatDifficulty(worksheetMeta.difficulty) || "—",
+      },
     ];
 
     doc.font(STYLE.fonts.main);
@@ -632,7 +880,7 @@ function renderDocHeader(doc, { worksheetTitle, subtitle, studentName, submitted
       doc.text(item.icon, colX, startY, { width: colW });
 
       // Label (uppercase, small, opacity)
-      doc.fontSize(9).fillColor('rgba(255,255,255,0.75)');
+      doc.fontSize(9).fillColor("rgba(255,255,255,0.75)");
       doc.text(item.label.toUpperCase(), colX, startY + 18, { width: colW });
 
       // Value (larger, bold, white)
@@ -658,16 +906,24 @@ function renderDocHeader(doc, { worksheetTitle, subtitle, studentName, submitted
     }
 
     // Divider line
-    doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(1).strokeColor('rgba(255,255,255,0.2)').stroke();
+    doc
+      .moveTo(L, doc.y)
+      .lineTo(L + W, doc.y)
+      .lineWidth(1)
+      .strokeColor("rgba(255,255,255,0.2)")
+      .stroke();
     doc.y += STYLE.spacing.lg;
   }
 
   const metaParts = [];
   if (studentName) metaParts.push(`Student: ${safeText(studentName)}`);
-  if (submittedAt)  metaParts.push(`Submitted: ${formatDateTime(submittedAt)}`);
+  if (submittedAt) metaParts.push(`Submitted: ${formatDateTime(submittedAt)}`);
   if (metaParts.length) {
-    doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xs).fillColor(STYLE.colors.muted)
-      .text(metaParts.join('   |   '), L, doc.y, { width: W });
+    doc
+      .font(STYLE.fonts.main)
+      .fontSize(STYLE.sizes.xs)
+      .fillColor(STYLE.colors.muted)
+      .text(metaParts.join("   |   "), L, doc.y, { width: W });
     doc.moveDown(0.35);
   }
 
@@ -675,22 +931,38 @@ function renderDocHeader(doc, { worksheetTitle, subtitle, studentName, submitted
     const pct = safeNumber(percentage, 0);
     const accent = getScoreColor(pct);
     const badge = getScoreBadge(pct);
-    const scoreStr = score ? `${score} pts (${Math.round(pct)}%)` : `${Math.round(pct)}%`;
-    
+    const scoreStr = score
+      ? `${score} pts (${Math.round(pct)}%)`
+      : `${Math.round(pct)}%`;
+
     // Score with badge
     const scoreY = doc.y;
-    doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.md).fillColor(accent)
+    doc
+      .font(STYLE.fonts.bold)
+      .fontSize(STYLE.sizes.md)
+      .fillColor(accent)
       .text(`Score: ${scoreStr}`, L, scoreY, { width: W - 100 });
-    
+
     // Performance badge
     if (badge) {
-      renderBadge(doc, L + W - badge.label.length * 25, scoreY - 2, badge.label, badge.color);
+      renderBadge(
+        doc,
+        L + W - badge.label.length * 25,
+        scoreY - 2,
+        badge.label,
+        badge.color,
+      );
     }
-    
+
     doc.moveDown(0.5);
   }
 
-  doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(0.5).strokeColor(STYLE.colors.border).stroke();
+  doc
+    .moveTo(L, doc.y)
+    .lineTo(L + W, doc.y)
+    .lineWidth(0.5)
+    .strokeColor(STYLE.colors.border)
+    .stroke();
   doc.y += STYLE.spacing.lg;
 }
 
@@ -705,16 +977,29 @@ function renderSectionTitle(doc, title, badge = null) {
   const h = 36;
 
   doc.save();
-  doc.roundedRect(L, y, W, h, STYLE.radius.md).fillAndStroke(STYLE.colors.tableHdr, STYLE.colors.border);
+  doc
+    .roundedRect(L, y, W, h, STYLE.radius.md)
+    .fillAndStroke(STYLE.colors.tableHdr, STYLE.colors.border);
   doc.restore();
 
-  doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.base).fillColor(STYLE.colors.neutral)
-    .text(safeText(title), L + STYLE.spacing.lg, y + 10, { width: W - STYLE.spacing.lg * 2 });
-  
+  doc
+    .font(STYLE.fonts.bold)
+    .fontSize(STYLE.sizes.base)
+    .fillColor(STYLE.colors.neutral)
+    .text(safeText(title), L + STYLE.spacing.lg, y + 10, {
+      width: W - STYLE.spacing.lg * 2,
+    });
+
   if (badge) {
-    const badgeW = renderBadge(doc, L + W - badge.text.length * 20 - STYLE.spacing.lg, y + 7, badge.text, badge.color);
+    const badgeW = renderBadge(
+      doc,
+      L + W - badge.text.length * 20 - STYLE.spacing.lg,
+      y + 7,
+      badge.text,
+      badge.color,
+    );
   }
-  
+
   doc.y = y + h + STYLE.spacing.md;
 }
 
@@ -726,34 +1011,45 @@ function renderMcqQuestions(doc, questions, answerMap) {
   const W = pageW(doc);
 
   for (let qi = 0; qi < questions.length; qi++) {
-    const q           = questions[qi];
-    const studentAns  = safeText(answerMap && answerMap[q.id]);
-    const correctAns  = safeText(q.correctAnswer);
-    const isCorrect   = studentAns.length > 0 && studentAns === correctAns;
+    const q = questions[qi];
+    const studentAns = safeText(answerMap && answerMap[q.id]);
+    const correctAns = safeText(q.correctAnswer);
+    const isCorrect = studentAns.length > 0 && studentAns === correctAns;
     const notAnswered = !studentAns;
 
     ensureSpace(doc, 88);
 
-    doc.font('Helvetica-Bold').fontSize(10.5).fillColor(STYLE.colors.neutral)
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(10.5)
+      .fillColor(STYLE.colors.neutral)
       .text(`${qi + 1}. ${safeText(q.text)}`, L, doc.y, { width: W });
     doc.moveDown(0.3);
 
     const options = Array.isArray(q.options) ? q.options : [];
     for (let oi = 0; oi < options.length; oi++) {
-      const opt    = safeText(options[oi]);
+      const opt = safeText(options[oi]);
       const letter = OPTION_LETTERS[oi] || String(oi + 1);
-      const isSelected    = opt === studentAns;
-      const isCorrectOpt  = opt === correctAns;
+      const isSelected = opt === studentAns;
+      const isCorrectOpt = opt === correctAns;
 
       let bg, fg, bd;
       if (isSelected && isCorrect) {
-        bg = STYLE.colors.successBg; fg = STYLE.colors.success; bd = STYLE.colors.successBd;
+        bg = STYLE.colors.successBg;
+        fg = STYLE.colors.success;
+        bd = STYLE.colors.successBd;
       } else if (isSelected && !isCorrect) {
-        bg = STYLE.colors.errorBg;   fg = STYLE.colors.error;   bd = STYLE.colors.errorBd;
+        bg = STYLE.colors.errorBg;
+        fg = STYLE.colors.error;
+        bd = STYLE.colors.errorBd;
       } else if (isCorrectOpt && !notAnswered) {
-        bg = STYLE.colors.correctHint; fg = STYLE.colors.success; bd = STYLE.colors.correctHintBd;
+        bg = STYLE.colors.correctHint;
+        fg = STYLE.colors.success;
+        bd = STYLE.colors.correctHintBd;
       } else {
-        bg = STYLE.colors.white; fg = STYLE.colors.neutral; bd = STYLE.colors.border;
+        bg = STYLE.colors.white;
+        fg = STYLE.colors.neutral;
+        bd = STYLE.colors.border;
       }
 
       ensureSpace(doc, 26);
@@ -763,19 +1059,34 @@ function renderMcqQuestions(doc, questions, answerMap) {
       doc.roundedRect(L + 18, optY, W - 18, optH, 4).fillAndStroke(bg, bd);
       doc.restore();
 
-      const marker = isSelected ? (isCorrect ? '✓ ' : '✗ ') : '  ';
-      doc.font(isSelected ? 'Helvetica-Bold' : 'Helvetica').fontSize(10).fillColor(fg)
-        .text(`${marker}${letter}. ${opt}`, L + 26, optY + 6, { width: W - 34 });
+      const marker = isSelected ? (isCorrect ? "✓ " : "✗ ") : "  ";
+      doc
+        .font(isSelected ? "Helvetica-Bold" : "Helvetica")
+        .fontSize(10)
+        .fillColor(fg)
+        .text(`${marker}${letter}. ${opt}`, L + 26, optY + 6, {
+          width: W - 34,
+        });
       doc.y = optY + optH + 4;
     }
 
     if (notAnswered) {
-      doc.font('Helvetica-Oblique').fontSize(9).fillColor(STYLE.colors.warning)
-        .text(`Not answered. Correct: ${correctAns}`, L + 18, doc.y, { width: W - 18 });
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(9)
+        .fillColor(STYLE.colors.warning)
+        .text(`Not answered. Correct: ${correctAns}`, L + 18, doc.y, {
+          width: W - 18,
+        });
       doc.moveDown(0.3);
     } else if (!isCorrect) {
-      doc.font('Helvetica-Oblique').fontSize(9).fillColor(STYLE.colors.primary)
-        .text(`Correct answer: ${correctAns}`, L + 18, doc.y, { width: W - 18 });
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(9)
+        .fillColor(STYLE.colors.primary)
+        .text(`Correct answer: ${correctAns}`, L + 18, doc.y, {
+          width: W - 18,
+        });
       doc.moveDown(0.3);
     }
 
@@ -794,10 +1105,16 @@ function renderDragDrop(doc, activity, answerMap) {
   if (items.length === 0) return;
 
   ensureSpace(doc, 44);
-  renderSectionTitle(doc, safeText(activity.title) || 'Activity 1: Drag and Drop');
+  renderSectionTitle(
+    doc,
+    safeText(activity.title) || "Activity 1: Drag and Drop",
+  );
 
   if (activity.instructions) {
-    doc.font('Helvetica-Oblique').fontSize(9.5).fillColor(STYLE.colors.muted)
+    doc
+      .font("Helvetica-Oblique")
+      .fontSize(9.5)
+      .fillColor(STYLE.colors.muted)
       .text(safeText(activity.instructions), L, doc.y, { width: W });
     doc.moveDown(0.5);
   }
@@ -812,26 +1129,51 @@ function renderDragDrop(doc, activity, answerMap) {
 
     ensureSpace(doc, 30);
 
-    doc.font('Helvetica-Bold').fontSize(10.5).fillColor(STYLE.colors.neutral)
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(10.5)
+      .fillColor(STYLE.colors.neutral)
       .text(`${i + 1}. Item ${itemId}`, L, doc.y, { width: W });
     doc.moveDown(0.2);
 
-    const bg = isCorrect ? STYLE.colors.successBg : (studentAns ? STYLE.colors.errorBg : STYLE.colors.tableHdr);
-    const fg = isCorrect ? STYLE.colors.success : (studentAns ? STYLE.colors.error : STYLE.colors.muted);
-    const bd = isCorrect ? STYLE.colors.successBd : (studentAns ? STYLE.colors.errorBd : STYLE.colors.border);
+    const bg = isCorrect
+      ? STYLE.colors.successBg
+      : studentAns
+        ? STYLE.colors.errorBg
+        : STYLE.colors.tableHdr;
+    const fg = isCorrect
+      ? STYLE.colors.success
+      : studentAns
+        ? STYLE.colors.error
+        : STYLE.colors.muted;
+    const bd = isCorrect
+      ? STYLE.colors.successBd
+      : studentAns
+        ? STYLE.colors.errorBd
+        : STYLE.colors.border;
 
     doc.save();
     doc.roundedRect(L + 18, doc.y, W - 18, 20, 4).fillAndStroke(bg, bd);
     doc.restore();
 
-    const displayText = studentAns ? `Student placed at position: ${studentAns}` : 'Not answered';
-    doc.font('Helvetica').fontSize(10).fillColor(fg)
+    const displayText = studentAns
+      ? `Student placed at position: ${studentAns}`
+      : "Not answered";
+    doc
+      .font("Helvetica")
+      .fontSize(10)
+      .fillColor(fg)
       .text(displayText, L + 26, doc.y + 6, { width: W - 34 });
     doc.y += 24;
 
     if (!isCorrect && studentAns) {
-      doc.font('Helvetica-Oblique').fontSize(9).fillColor(STYLE.colors.primary)
-        .text(`Correct position: ${correctOrder}`, L + 18, doc.y, { width: W - 18 });
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(9)
+        .fillColor(STYLE.colors.primary)
+        .text(`Correct position: ${correctOrder}`, L + 18, doc.y, {
+          width: W - 18,
+        });
       doc.moveDown(0.3);
     }
 
@@ -850,10 +1192,16 @@ function renderClassification(doc, activity, answerMap) {
   if (items.length === 0) return;
 
   ensureSpace(doc, 44);
-  renderSectionTitle(doc, safeText(activity.title) || 'Activity 2: Classification');
+  renderSectionTitle(
+    doc,
+    safeText(activity.title) || "Activity 2: Classification",
+  );
 
   if (activity.instructions) {
-    doc.font('Helvetica-Oblique').fontSize(9.5).fillColor(STYLE.colors.muted)
+    doc
+      .font("Helvetica-Oblique")
+      .fontSize(9.5)
+      .fillColor(STYLE.colors.muted)
       .text(safeText(activity.instructions), L, doc.y, { width: W });
     doc.moveDown(0.5);
   }
@@ -864,30 +1212,57 @@ function renderClassification(doc, activity, answerMap) {
     const itemId = safeText(item.id);
     const studentAns = safeText(answerMap && answerMap[itemId]);
     const correctCat = safeText(item.correctCategory);
-    const isCorrect = studentAns.length > 0 && studentAns.toLowerCase() === correctCat.toLowerCase();
+    const isCorrect =
+      studentAns.length > 0 &&
+      studentAns.toLowerCase() === correctCat.toLowerCase();
 
     ensureSpace(doc, 30);
 
-    doc.font('Helvetica-Bold').fontSize(10.5).fillColor(STYLE.colors.neutral)
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(10.5)
+      .fillColor(STYLE.colors.neutral)
       .text(`${i + 1}. Item ${itemId}`, L, doc.y, { width: W });
     doc.moveDown(0.2);
 
-    const bg = isCorrect ? STYLE.colors.successBg : (studentAns ? STYLE.colors.errorBg : STYLE.colors.tableHdr);
-    const fg = isCorrect ? STYLE.colors.success : (studentAns ? STYLE.colors.error : STYLE.colors.muted);
-    const bd = isCorrect ? STYLE.colors.successBd : (studentAns ? STYLE.colors.errorBd : STYLE.colors.border);
+    const bg = isCorrect
+      ? STYLE.colors.successBg
+      : studentAns
+        ? STYLE.colors.errorBg
+        : STYLE.colors.tableHdr;
+    const fg = isCorrect
+      ? STYLE.colors.success
+      : studentAns
+        ? STYLE.colors.error
+        : STYLE.colors.muted;
+    const bd = isCorrect
+      ? STYLE.colors.successBd
+      : studentAns
+        ? STYLE.colors.errorBd
+        : STYLE.colors.border;
 
     doc.save();
     doc.roundedRect(L + 18, doc.y, W - 18, 20, 4).fillAndStroke(bg, bd);
     doc.restore();
 
-    const displayText = studentAns ? `Student classified as: ${studentAns}` : 'Not answered';
-    doc.font('Helvetica').fontSize(10).fillColor(fg)
+    const displayText = studentAns
+      ? `Student classified as: ${studentAns}`
+      : "Not answered";
+    doc
+      .font("Helvetica")
+      .fontSize(10)
+      .fillColor(fg)
       .text(displayText, L + 26, doc.y + 6, { width: W - 34 });
     doc.y += 24;
 
     if (!isCorrect && studentAns) {
-      doc.font('Helvetica-Oblique').fontSize(9).fillColor(STYLE.colors.primary)
-        .text(`Correct category: ${correctCat}`, L + 18, doc.y, { width: W - 18 });
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(9)
+        .fillColor(STYLE.colors.primary)
+        .text(`Correct category: ${correctCat}`, L + 18, doc.y, {
+          width: W - 18,
+        });
       doc.moveDown(0.3);
     }
 
@@ -904,7 +1279,7 @@ function renderFillInBlanks(doc, sentences, answerMap) {
 
   for (let si = 0; si < sentences.length; si++) {
     const sentence = sentences[si];
-    const parts    = Array.isArray(sentence.parts) ? sentence.parts : [];
+    const parts = Array.isArray(sentence.parts) ? sentence.parts : [];
 
     ensureSpace(doc, 40);
     const startY = doc.y;
@@ -913,48 +1288,60 @@ function renderFillInBlanks(doc, sentences, answerMap) {
     let lineY = startY;
     const maxX = L + W;
 
-    doc.font('Helvetica-Bold').fontSize(10).fillColor(STYLE.colors.neutral)
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(10)
+      .fillColor(STYLE.colors.neutral)
       .text(`${si + 1}.`, L, lineY, { width: 18 });
 
-    doc.font('Helvetica').fontSize(10);
+    doc.font("Helvetica").fontSize(10);
 
     for (const part of parts) {
-      if (part.type === 'text') {
-        const t  = safeText(part.value);
+      if (part.type === "text") {
+        const t = safeText(part.value);
         if (!t) continue;
         const tw = doc.widthOfString(t);
         if (lineX + tw > maxX + 2) {
           lineY += 18;
-          lineX  = L + 22;
-          doc.y  = lineY;
+          lineX = L + 22;
+          doc.y = lineY;
         }
-        doc.font('Helvetica').fontSize(10).fillColor(STYLE.colors.neutral)
+        doc
+          .font("Helvetica")
+          .fontSize(10)
+          .fillColor(STYLE.colors.neutral)
           .text(t, lineX, lineY, { lineBreak: false });
         lineX += tw + 2;
-
-      } else if (part.type === 'blank') {
+      } else if (part.type === "blank") {
         const studentAns = safeText(answerMap && answerMap[part.blankId]);
         const correctAns = safeText(part.correctAnswer);
-        const answered   = studentAns.length > 0;
-        const isCorrect  = answered && studentAns.toLowerCase() === correctAns.toLowerCase();
+        const answered = studentAns.length > 0;
+        const isCorrect =
+          answered && studentAns.toLowerCase() === correctAns.toLowerCase();
 
-        const display = answered ? studentAns : '______';
-        doc.font('Helvetica-Bold').fontSize(10);
+        const display = answered ? studentAns : "______";
+        doc.font("Helvetica-Bold").fontSize(10);
         const bw = Math.max(64, doc.widthOfString(display) + 14);
 
         if (lineX + bw > maxX + 2) {
           lineY += 18;
-          lineX  = L + 22;
-          doc.y  = lineY;
+          lineX = L + 22;
+          doc.y = lineY;
         }
 
         let bg, fg, bd;
         if (!answered) {
-          bg = STYLE.colors.tableHdr; fg = STYLE.colors.muted; bd = STYLE.colors.border;
+          bg = STYLE.colors.tableHdr;
+          fg = STYLE.colors.muted;
+          bd = STYLE.colors.border;
         } else if (isCorrect) {
-          bg = STYLE.colors.successBg; fg = STYLE.colors.success; bd = STYLE.colors.successBd;
+          bg = STYLE.colors.successBg;
+          fg = STYLE.colors.success;
+          bd = STYLE.colors.successBd;
         } else {
-          bg = STYLE.colors.errorBg; fg = STYLE.colors.error; bd = STYLE.colors.errorBd;
+          bg = STYLE.colors.errorBg;
+          fg = STYLE.colors.error;
+          bd = STYLE.colors.errorBd;
         }
 
         const boxY = lineY - 2;
@@ -962,22 +1349,31 @@ function renderFillInBlanks(doc, sentences, answerMap) {
         doc.roundedRect(lineX, boxY, bw, 17, 3).fillAndStroke(bg, bd);
         doc.restore();
 
-        doc.font('Helvetica-Bold').fontSize(9.5).fillColor(fg)
-          .text(display, lineX + 5, lineY, { width: bw - 10, lineBreak: false });
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(9.5)
+          .fillColor(fg)
+          .text(display, lineX + 5, lineY, {
+            width: bw - 10,
+            lineBreak: false,
+          });
         lineX += bw + 3;
 
         if (answered && !isCorrect) {
           const hint = `(${correctAns})`;
-          doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(STYLE.colors.primary);
+          doc
+            .font("Helvetica-Oblique")
+            .fontSize(8.5)
+            .fillColor(STYLE.colors.primary);
           const hw = doc.widthOfString(hint);
           if (lineX + hw > maxX + 2) {
             lineY += 18;
-            lineX  = L + 22;
+            lineX = L + 22;
           }
           doc.text(hint, lineX, lineY, { lineBreak: false });
           lineX += hw + 4;
         }
-        doc.font('Helvetica').fontSize(10);
+        doc.font("Helvetica").fontSize(10);
       }
     }
 
@@ -997,10 +1393,16 @@ function renderMatchingPairs(doc, activity, answerMap) {
   if (pairs.length === 0) return;
 
   ensureSpace(doc, 44);
-  renderSectionTitle(doc, safeText(activity.title) || 'Activity 5: Matching Pairs');
+  renderSectionTitle(
+    doc,
+    safeText(activity.title) || "Activity 5: Matching Pairs",
+  );
 
   if (activity.instructions) {
-    doc.font('Helvetica-Oblique').fontSize(9.5).fillColor(STYLE.colors.muted)
+    doc
+      .font("Helvetica-Oblique")
+      .fontSize(9.5)
+      .fillColor(STYLE.colors.muted)
       .text(safeText(activity.instructions), L, doc.y, { width: W });
     doc.moveDown(0.5);
   }
@@ -1011,13 +1413,16 @@ function renderMatchingPairs(doc, activity, answerMap) {
     const studentAns = safeText(answerMap && answerMap[pairId]);
     const leftItem = safeText(pair.leftItem?.text || pair.leftItem);
     const rightItem = safeText(pair.rightItem?.text || pair.rightItem);
-    
+
     const answered = studentAns.length > 0;
     const isCorrect = answered && studentAns === rightItem;
 
     ensureSpace(doc, 36);
 
-    doc.font('Helvetica-Bold').fontSize(10.5).fillColor(STYLE.colors.neutral)
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(10.5)
+      .fillColor(STYLE.colors.neutral)
       .text(`${i + 1}. Match:`, L, doc.y, { width: W });
     doc.moveDown(0.2);
 
@@ -1026,42 +1431,82 @@ function renderMatchingPairs(doc, activity, answerMap) {
 
     // Left item
     doc.save();
-    doc.roundedRect(L, itemY, itemW, 24, STYLE.radius.sm).fillAndStroke(STYLE.colors.tableHdr, STYLE.colors.border);
+    doc
+      .roundedRect(L, itemY, itemW, 24, STYLE.radius.sm)
+      .fillAndStroke(STYLE.colors.tableHdr, STYLE.colors.border);
     doc.restore();
-    doc.font('Helvetica').fontSize(9.5).fillColor(STYLE.colors.neutral)
-      .text(leftItem, L + STYLE.spacing.sm, itemY + 8, { width: itemW - STYLE.spacing.sm * 2 });
+    doc
+      .font("Helvetica")
+      .fontSize(9.5)
+      .fillColor(STYLE.colors.neutral)
+      .text(leftItem, L + STYLE.spacing.sm, itemY + 8, {
+        width: itemW - STYLE.spacing.sm * 2,
+      });
 
     // Arrow
-    doc.font('Helvetica').fontSize(14).fillColor(STYLE.colors.muted)
-      .text('→', L + itemW + STYLE.spacing.sm / 2, itemY + 6, { width: STYLE.spacing.md });
+    doc
+      .font("Helvetica")
+      .fontSize(14)
+      .fillColor(STYLE.colors.muted)
+      .text("→", L + itemW + STYLE.spacing.sm / 2, itemY + 6, {
+        width: STYLE.spacing.md,
+      });
 
     // Right item (student's answer or placeholder)
     const rightY = itemY;
     let bg, fg, bd;
     if (!answered) {
-      bg = STYLE.colors.tableHdr; fg = STYLE.colors.muted; bd = STYLE.colors.border;
+      bg = STYLE.colors.tableHdr;
+      fg = STYLE.colors.muted;
+      bd = STYLE.colors.border;
     } else if (isCorrect) {
-      bg = STYLE.colors.successBg; fg = STYLE.colors.success; bd = STYLE.colors.successBd;
+      bg = STYLE.colors.successBg;
+      fg = STYLE.colors.success;
+      bd = STYLE.colors.successBd;
     } else {
-      bg = STYLE.colors.errorBg; fg = STYLE.colors.error; bd = STYLE.colors.errorBd;
+      bg = STYLE.colors.errorBg;
+      fg = STYLE.colors.error;
+      bd = STYLE.colors.errorBd;
     }
 
-    const display = answered ? studentAns : 'Your answer';
+    const display = answered ? studentAns : "Your answer";
     doc.save();
-    doc.roundedRect(L + itemW + STYLE.spacing.md, rightY, itemW, 24, STYLE.radius.sm).fillAndStroke(bg, bd);
+    doc
+      .roundedRect(
+        L + itemW + STYLE.spacing.md,
+        rightY,
+        itemW,
+        24,
+        STYLE.radius.sm,
+      )
+      .fillAndStroke(bg, bd);
     doc.restore();
-    doc.font(answered ? 'Helvetica-Bold' : 'Helvetica').fontSize(9.5).fillColor(fg)
-      .text(display, L + itemW + STYLE.spacing.md + STYLE.spacing.sm, rightY + 8, { width: itemW - STYLE.spacing.sm * 2 });
+    doc
+      .font(answered ? "Helvetica-Bold" : "Helvetica")
+      .fontSize(9.5)
+      .fillColor(fg)
+      .text(
+        display,
+        L + itemW + STYLE.spacing.md + STYLE.spacing.sm,
+        rightY + 8,
+        { width: itemW - STYLE.spacing.sm * 2 },
+      );
 
     doc.y = rightY + 28;
 
     if (!isCorrect && answered) {
-      doc.font('Helvetica-Oblique').fontSize(9).fillColor(STYLE.colors.primary)
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(9)
+        .fillColor(STYLE.colors.primary)
         .text(`Correct match: ${rightItem}`, L + 18, doc.y, { width: W - 18 });
       doc.moveDown(0.3);
     } else if (!answered) {
-      doc.font('Helvetica-Oblique').fontSize(9).fillColor(STYLE.colors.warning)
-        .text('Not answered', L + 18, doc.y, { width: W - 18 });
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(9)
+        .fillColor(STYLE.colors.warning)
+        .text("Not answered", L + 18, doc.y, { width: W - 18 });
       doc.moveDown(0.3);
     }
 
@@ -1076,14 +1521,22 @@ function renderTrueFalse(doc, activity, answerMap) {
   const L = doc.page.margins.left;
   const W = pageW(doc);
 
-  const questions = Array.isArray(activity && activity.questions) ? activity.questions : [];
+  const questions = Array.isArray(activity && activity.questions)
+    ? activity.questions
+    : [];
   if (questions.length === 0) return;
 
   ensureSpace(doc, 44);
-  renderSectionTitle(doc, safeText(activity.title) || 'Activity 6: True / False');
+  renderSectionTitle(
+    doc,
+    safeText(activity.title) || "Activity 6: True / False",
+  );
 
   if (activity.instructions) {
-    doc.font('Helvetica-Oblique').fontSize(9.5).fillColor(STYLE.colors.muted)
+    doc
+      .font("Helvetica-Oblique")
+      .fontSize(9.5)
+      .fillColor(STYLE.colors.muted)
       .text(safeText(activity.instructions), L, doc.y, { width: W });
     doc.moveDown(0.5);
   }
@@ -1093,14 +1546,20 @@ function renderTrueFalse(doc, activity, answerMap) {
     const qId = safeText(q.id);
     const studentAns = answerMap && answerMap[qId];
     const correctAns = q.correctAnswer; // boolean
-    
-    const answered = studentAns !== undefined && studentAns !== null && studentAns !== '';
-    const studentBool = answered ? (String(studentAns).toLowerCase() === 'true') : null;
-    const isCorrect = answered && (studentBool === correctAns);
+
+    const answered =
+      studentAns !== undefined && studentAns !== null && studentAns !== "";
+    const studentBool = answered
+      ? String(studentAns).toLowerCase() === "true"
+      : null;
+    const isCorrect = answered && studentBool === correctAns;
 
     ensureSpace(doc, 50);
 
-    doc.font('Helvetica-Bold').fontSize(10.5).fillColor(STYLE.colors.neutral)
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(10.5)
+      .fillColor(STYLE.colors.neutral)
       .text(`${i + 1}. ${safeText(q.text)}`, L, doc.y, { width: W });
     doc.moveDown(0.3);
 
@@ -1114,60 +1573,110 @@ function renderTrueFalse(doc, activity, answerMap) {
     const trueCorrect = correctAns === true;
     let trueBg, trueFg, trueBd;
     if (!answered) {
-      trueBg = STYLE.colors.white; trueFg = STYLE.colors.neutral; trueBd = STYLE.colors.border;
+      trueBg = STYLE.colors.white;
+      trueFg = STYLE.colors.neutral;
+      trueBd = STYLE.colors.border;
     } else if (trueSelected && trueCorrect) {
-      trueBg = STYLE.colors.successBg; trueFg = STYLE.colors.success; trueBd = STYLE.colors.successBd;
+      trueBg = STYLE.colors.successBg;
+      trueFg = STYLE.colors.success;
+      trueBd = STYLE.colors.successBd;
     } else if (trueSelected && !trueCorrect) {
-      trueBg = STYLE.colors.errorBg; trueFg = STYLE.colors.error; trueBd = STYLE.colors.errorBd;
+      trueBg = STYLE.colors.errorBg;
+      trueFg = STYLE.colors.error;
+      trueBd = STYLE.colors.errorBd;
     } else if (!trueSelected && trueCorrect) {
-      trueBg = STYLE.colors.correctHint; trueFg = STYLE.colors.success; trueBd = STYLE.colors.correctHintBd;
+      trueBg = STYLE.colors.correctHint;
+      trueFg = STYLE.colors.success;
+      trueBd = STYLE.colors.correctHintBd;
     } else {
-      trueBg = STYLE.colors.white; trueFg = STYLE.colors.neutral; trueBd = STYLE.colors.border;
+      trueBg = STYLE.colors.white;
+      trueFg = STYLE.colors.neutral;
+      trueBd = STYLE.colors.border;
     }
 
     doc.save();
-    doc.roundedRect(L, btnY, btnW, btnH, STYLE.radius.sm).fillAndStroke(trueBg, trueBd);
+    doc
+      .roundedRect(L, btnY, btnW, btnH, STYLE.radius.sm)
+      .fillAndStroke(trueBg, trueBd);
     doc.restore();
-    doc.font(trueSelected ? 'Helvetica-Bold' : 'Helvetica').fontSize(10).fillColor(trueFg)
-      .text('True', L + STYLE.spacing.sm, btnY + 8, { width: btnW - STYLE.spacing.sm * 2 });
+    doc
+      .font(trueSelected ? "Helvetica-Bold" : "Helvetica")
+      .fontSize(10)
+      .fillColor(trueFg)
+      .text("True", L + STYLE.spacing.sm, btnY + 8, {
+        width: btnW - STYLE.spacing.sm * 2,
+      });
 
     // False button
     const falseSelected = studentBool === false;
     const falseCorrect = correctAns === false;
     let falseBg, falseFg, falseBd;
     if (!answered) {
-      falseBg = STYLE.colors.white; falseFg = STYLE.colors.neutral; falseBd = STYLE.colors.border;
+      falseBg = STYLE.colors.white;
+      falseFg = STYLE.colors.neutral;
+      falseBd = STYLE.colors.border;
     } else if (falseSelected && falseCorrect) {
-      falseBg = STYLE.colors.successBg; falseFg = STYLE.colors.success; falseBd = STYLE.colors.successBd;
+      falseBg = STYLE.colors.successBg;
+      falseFg = STYLE.colors.success;
+      falseBd = STYLE.colors.successBd;
     } else if (falseSelected && !falseCorrect) {
-      falseBg = STYLE.colors.errorBg; falseFg = STYLE.colors.error; falseBd = STYLE.colors.errorBd;
+      falseBg = STYLE.colors.errorBg;
+      falseFg = STYLE.colors.error;
+      falseBd = STYLE.colors.errorBd;
     } else if (!falseSelected && falseCorrect) {
-      falseBg = STYLE.colors.correctHint; falseFg = STYLE.colors.success; falseBd = STYLE.colors.correctHintBd;
+      falseBg = STYLE.colors.correctHint;
+      falseFg = STYLE.colors.success;
+      falseBd = STYLE.colors.correctHintBd;
     } else {
-      falseBg = STYLE.colors.white; falseFg = STYLE.colors.neutral; falseBd = STYLE.colors.border;
+      falseBg = STYLE.colors.white;
+      falseFg = STYLE.colors.neutral;
+      falseBd = STYLE.colors.border;
     }
 
     doc.save();
-    doc.roundedRect(L + btnW + gap, btnY, btnW, btnH, STYLE.radius.sm).fillAndStroke(falseBg, falseBd);
+    doc
+      .roundedRect(L + btnW + gap, btnY, btnW, btnH, STYLE.radius.sm)
+      .fillAndStroke(falseBg, falseBd);
     doc.restore();
-    doc.font(falseSelected ? 'Helvetica-Bold' : 'Helvetica').fontSize(10).fillColor(falseFg)
-      .text('False', L + btnW + gap + STYLE.spacing.sm, btnY + 8, { width: btnW - STYLE.spacing.sm * 2 });
+    doc
+      .font(falseSelected ? "Helvetica-Bold" : "Helvetica")
+      .fontSize(10)
+      .fillColor(falseFg)
+      .text("False", L + btnW + gap + STYLE.spacing.sm, btnY + 8, {
+        width: btnW - STYLE.spacing.sm * 2,
+      });
 
     doc.y = btnY + btnH + 8;
 
     if (!answered) {
-      doc.font('Helvetica-Oblique').fontSize(9).fillColor(STYLE.colors.warning)
-        .text('Not answered', L + 18, doc.y, { width: W - 18 });
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(9)
+        .fillColor(STYLE.colors.warning)
+        .text("Not answered", L + 18, doc.y, { width: W - 18 });
       doc.moveDown(0.3);
     } else if (!isCorrect) {
-      doc.font('Helvetica-Oblique').fontSize(9).fillColor(STYLE.colors.primary)
-        .text(`Correct answer: ${correctAns ? 'True' : 'False'}`, L + 18, doc.y, { width: W - 18 });
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(9)
+        .fillColor(STYLE.colors.primary)
+        .text(
+          `Correct answer: ${correctAns ? "True" : "False"}`,
+          L + 18,
+          doc.y,
+          { width: W - 18 },
+        );
       doc.moveDown(0.3);
     }
 
     if (q.explanation) {
-      doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(STYLE.colors.muted)
-        .text(`Explanation: ${safeText(q.explanation)}`, L + 18, doc.y, { width: W - 18 });
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(8.5)
+        .fillColor(STYLE.colors.muted)
+        .text(`Explanation: ${safeText(q.explanation)}`, L + 18, doc.y, {
+          width: W - 18,
+        });
       doc.moveDown(0.4);
     }
 
@@ -1179,10 +1688,10 @@ function renderTrueFalse(doc, activity, answerMap) {
 // STATS CARDS ROW
 // ─────────────────────────────────────────────────────────────────────────────
 function renderStatsRow(doc, stats) {
-  const L     = doc.page.margins.left;
-  const W     = pageW(doc);
-  const n     = stats.length;
-  const gap   = STYLE.spacing.md;
+  const L = doc.page.margins.left;
+  const W = pageW(doc);
+  const n = stats.length;
+  const gap = STYLE.spacing.md;
   const cardW = Math.floor((W - gap * (n - 1)) / n);
   const cardH = 85;
 
@@ -1193,7 +1702,13 @@ function renderStatsRow(doc, stats) {
     const sx = L + i * (cardW + gap);
     const { label, value, icon, color, trend } = stats[i];
 
-    renderStatCard(doc, sx, y, cardW, cardH, { label, value, icon, color, trend });
+    renderStatCard(doc, sx, y, cardW, cardH, {
+      label,
+      value,
+      icon,
+      color,
+      trend,
+    });
   }
 
   doc.y = y + cardH + STYLE.spacing.lg;
@@ -1203,13 +1718,13 @@ function renderStatsRow(doc, stats) {
 // PARTICIPANT TABLE
 // ─────────────────────────────────────────────────────────────────────────────
 function renderParticipantTable(doc, headers, rows, columnWidths) {
-  const L  = doc.page.margins.left;
-  const W  = pageW(doc);
+  const L = doc.page.margins.left;
+  const W = pageW(doc);
   const cw = columnWidths || headers.map(() => Math.floor(W / headers.length));
 
   const total = cw.reduce((a, b) => a + b, 0);
   const scale = total > W ? W / total : 1;
-  const scaledCw = cw.map(w => Math.floor(w * scale));
+  const scaledCw = cw.map((w) => Math.floor(w * scale));
 
   const padX = 8;
   const padY = 5;
@@ -1220,13 +1735,19 @@ function renderParticipantTable(doc, headers, rows, columnWidths) {
 
   doc.save();
   doc.rect(L, hy, W, hdrH).fill(STYLE.colors.tableHdr);
-  doc.rect(L, hy, W, hdrH).strokeColor(STYLE.colors.border).lineWidth(0.5).stroke();
+  doc
+    .rect(L, hy, W, hdrH)
+    .strokeColor(STYLE.colors.border)
+    .lineWidth(0.5)
+    .stroke();
   doc.restore();
 
-  doc.font('Helvetica-Bold').fontSize(9.5).fillColor(STYLE.colors.neutral);
+  doc.font("Helvetica-Bold").fontSize(9.5).fillColor(STYLE.colors.neutral);
   let cx = L;
   for (let i = 0; i < headers.length; i++) {
-    doc.text(headers[i], cx + padX, hy + padY, { width: scaledCw[i] - padX * 2 });
+    doc.text(headers[i], cx + padX, hy + padY, {
+      width: scaledCw[i] - padX * 2,
+    });
     cx += scaledCw[i];
   }
   doc.y = hy + hdrH;
@@ -1234,29 +1755,46 @@ function renderParticipantTable(doc, headers, rows, columnWidths) {
   for (let r = 0; r < rows.length; r++) {
     const cells = Array.isArray(rows[r]) ? rows[r] : [];
     const cellH = cells.map((cell, i) =>
-      doc.font('Helvetica').fontSize(9.5)
-        .heightOfString(safeText(cell), { width: scaledCw[i] - padX * 2 })
+      doc
+        .font("Helvetica")
+        .fontSize(9.5)
+        .heightOfString(safeText(cell), { width: scaledCw[i] - padX * 2 }),
     );
-    const rowH = Math.max(24, Math.max(...cellH.filter(Number.isFinite), 0) + padY * 2);
+    const rowH = Math.max(
+      24,
+      Math.max(...cellH.filter(Number.isFinite), 0) + padY * 2,
+    );
 
     ensureSpace(doc, rowH + 4);
     const ry = doc.y;
 
     doc.save();
-    doc.rect(L, ry, W, rowH).fill(r % 2 === 0 ? STYLE.colors.white : STYLE.colors.altRow);
-    doc.rect(L, ry, W, rowH).strokeColor(STYLE.colors.border).lineWidth(0.5).stroke();
+    doc
+      .rect(L, ry, W, rowH)
+      .fill(r % 2 === 0 ? STYLE.colors.white : STYLE.colors.altRow);
+    doc
+      .rect(L, ry, W, rowH)
+      .strokeColor(STYLE.colors.border)
+      .lineWidth(0.5)
+      .stroke();
     let lx = L;
     for (let i = 1; i < headers.length; i++) {
       lx += scaledCw[i - 1];
-      doc.moveTo(lx, ry).lineTo(lx, ry + rowH)
-        .strokeColor(STYLE.colors.border).lineWidth(0.5).stroke();
+      doc
+        .moveTo(lx, ry)
+        .lineTo(lx, ry + rowH)
+        .strokeColor(STYLE.colors.border)
+        .lineWidth(0.5)
+        .stroke();
     }
     doc.restore();
 
     let tx = L;
-    doc.font('Helvetica').fontSize(9.5).fillColor(STYLE.colors.neutral);
+    doc.font("Helvetica").fontSize(9.5).fillColor(STYLE.colors.neutral);
     for (let i = 0; i < cells.length; i++) {
-      doc.text(safeText(cells[i]), tx + padX, ry + padY, { width: scaledCw[i] - padX * 2 });
+      doc.text(safeText(cells[i]), tx + padX, ry + padY, {
+        width: scaledCw[i] - padX * 2,
+      });
       tx += scaledCw[i];
     }
     doc.y = ry + rowH;
@@ -1268,7 +1806,11 @@ function renderParticipantTable(doc, headers, rows, columnWidths) {
 // SHARED: build + pipe PDFDocument
 // ─────────────────────────────────────────────────────────────────────────────
 function buildDoc(outputPath) {
-  const doc    = new PDFDocument({ size: 'A4', bufferPages: true, margins: { top: 50, bottom: 50, left: 40, right: 40 } });
+  const doc = new PDFDocument({
+    size: "A4",
+    bufferPages: true,
+    margins: { top: 50, bottom: 50, left: 40, right: 40 },
+  });
   const stream = fs.createWriteStream(outputPath);
   doc.pipe(stream);
   return { doc, stream };
@@ -1279,11 +1821,15 @@ function finalizeDoc(doc, stream, headerTitle, outputPath) {
     const range = doc.bufferedPageRange();
     for (let i = 0; i < range.count; i++) {
       doc.switchToPage(range.start + i);
-      drawPageHeaderFooter(doc, { title: headerTitle, pageNumber: i + 1, totalPages: range.count });
+      drawPageHeaderFooter(doc, {
+        title: headerTitle,
+        pageNumber: i + 1,
+        totalPages: range.count,
+      });
     }
     doc.end();
-    stream.on('finish', () => resolve(outputPath));
-    stream.on('error',  reject);
+    stream.on("finish", () => resolve(outputPath));
+    stream.on("error", reject);
   });
 }
 
@@ -1291,18 +1837,56 @@ function finalizeDoc(doc, stream, headerTitle, outputPath) {
 // EXPORT 1: Individual student worksheet submission PDF
 // ─────────────────────────────────────────────────────────────────────────────
 async function generateWorksheetSubmissionPdf(data, outputPath) {
-  const ws         = (data.worksheet  && typeof data.worksheet  === 'object') ? data.worksheet  : {};
-  const submission = (data.submission && typeof data.submission === 'object') ? data.submission : {};
-  const assignment = (data.assignment && typeof data.assignment === 'object') ? data.assignment : {};
+  const ws =
+    data.worksheet && typeof data.worksheet === "object" ? data.worksheet : {};
+  const submission =
+    data.submission && typeof data.submission === "object"
+      ? data.submission
+      : {};
+  const assignment =
+    data.assignment && typeof data.assignment === "object"
+      ? data.assignment
+      : {};
 
-  const studentName  = safeText(data.studentName);
-  const submittedAt  = safeText(data.submittedAt);
-  const wsTitle      = safeText(ws.title) || 'Worksheet';
-  const percentage   = safeNumber(submission.percentage,        0);
-  const totalEarned  = safeNumber(submission.totalPointsEarned, 0);
-  const totalPossible= safeNumber(submission.totalPointsPossible, 0);
-  const scoreStr     = totalPossible > 0 ? `${totalEarned}/${totalPossible}` : undefined;
-  const timeTaken    = safeNumber(submission.timeTaken, 0);
+  const studentName = safeText(data.studentName);
+  const submittedAt = safeText(data.submittedAt);
+  const wsTitle = safeText(ws.title) || "Worksheet";
+  const percentage = safeNumber(submission.percentage, 0);
+  const totalEarned = safeNumber(submission.totalPointsEarned, 0);
+  const totalPossible = safeNumber(submission.totalPointsPossible, 0);
+  const scoreStr =
+    totalPossible > 0 ? `${totalEarned}/${totalPossible}` : undefined;
+  const timeTaken = safeNumber(submission.timeTaken, 0);
+
+  const studentEmail = safeText(data.studentEmail);
+  const className = safeText(data.className);
+  const isPassed = submission.isPassed === true;
+  const isLate = submission.isLate === true;
+
+  // Calculate aggregate correct / wrong / skipped from sections[] or answers[]
+  let totalCorrect = 0;
+  let totalWrong = 0;
+  let totalSkipped = 0;
+  if (Array.isArray(submission.sections) && submission.sections.length > 0) {
+    submission.sections.forEach((sec) => {
+      totalCorrect += safeNumber(sec.correctCount, 0);
+      totalWrong += safeNumber(sec.incorrectCount, 0);
+      totalSkipped += safeNumber(sec.skippedCount, 0);
+    });
+  } else {
+    (Array.isArray(submission.answers) ? submission.answers : []).forEach(
+      (ans) => {
+        if (!ans.studentAnswer || !String(ans.studentAnswer).trim()) {
+          totalSkipped++;
+        } else if (ans.isCorrect) {
+          totalCorrect++;
+        } else {
+          totalWrong++;
+        }
+      },
+    );
+  }
+  const totalAnswered = totalCorrect + totalWrong + totalSkipped;
 
   // Build answer maps keyed by questionId
   const a1Map = {};
@@ -1311,16 +1895,18 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
   const a4Map = {};
   const a5Map = {};
   const a6Map = {};
-  for (const ans of (Array.isArray(submission.answers) ? submission.answers : [])) {
+  for (const ans of Array.isArray(submission.answers)
+    ? submission.answers
+    : []) {
     const sectionId = safeText(ans.sectionId);
     const questionId = safeText(ans.questionId);
     const studentAnswer = safeText(ans.studentAnswer);
-    if (sectionId === 'activity1') a1Map[questionId] = studentAnswer;
-    if (sectionId === 'activity2') a2Map[questionId] = studentAnswer;
-    if (sectionId === 'activity3') a3Map[questionId] = studentAnswer;
-    if (sectionId === 'activity4') a4Map[questionId] = studentAnswer;
-    if (sectionId === 'activity5') a5Map[questionId] = studentAnswer;
-    if (sectionId === 'activity6') a6Map[questionId] = studentAnswer;
+    if (sectionId === "activity1") a1Map[questionId] = studentAnswer;
+    if (sectionId === "activity2") a2Map[questionId] = studentAnswer;
+    if (sectionId === "activity3") a3Map[questionId] = studentAnswer;
+    if (sectionId === "activity4") a4Map[questionId] = studentAnswer;
+    if (sectionId === "activity5") a5Map[questionId] = studentAnswer;
+    if (sectionId === "activity6") a6Map[questionId] = studentAnswer;
   }
 
   await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
@@ -1330,10 +1916,10 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
   try {
     renderDocHeader(doc, {
       worksheetTitle: wsTitle,
-      subtitle:       safeText(ws.description) || undefined,
+      subtitle: safeText(ws.description) || undefined,
       studentName,
       submittedAt,
-      score:          scoreStr,
+      score: scoreStr,
       percentage,
       worksheetMeta: {
         subject: ws.subject,
@@ -1343,72 +1929,258 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
         difficulty: ws.difficulty,
       },
     });
-    
-    // Performance summary card for student
+
+    // Page layout constants used throughout this function
     const L = doc.page.margins.left;
     const W = pageW(doc);
-    
+
+    // ── Student & Worksheet Info Card ─────────────────────────────────────────
+    {
+      const cardPad = STYLE.spacing.lg;
+      const infoItems = [];
+      if (studentName) infoItems.push({ label: "Student", value: studentName });
+      if (studentEmail) infoItems.push({ label: "Email", value: studentEmail });
+      if (className) infoItems.push({ label: "Class", value: className });
+      infoItems.push({ label: "Worksheet", value: wsTitle });
+      infoItems.push({ label: "Submitted", value: submittedAt || "—" });
+
+      const colGap = STYLE.spacing.md;
+      const numCols = 2;
+      const colW = (W - cardPad * 2 - colGap * (numCols - 1)) / numCols;
+      const labelSz = STYLE.sizes.xxs;
+      const valueSz = STYLE.sizes.sm;
+      const itemGap = STYLE.spacing.sm;
+
+      doc.font(STYLE.fonts.main).fontSize(labelSz);
+      let totalH =
+        cardPad * 2 +
+        doc.heightOfString("Student Info", { width: W - cardPad * 2 }) +
+        STYLE.spacing.sm;
+      const leftItems = infoItems.filter((_, i) => i % 2 === 0);
+      const rightItems = infoItems.filter((_, i) => i % 2 === 1);
+      let leftH = 0;
+      let rightH = 0;
+      const measureH = (lbl, val) => {
+        doc.font(STYLE.fonts.main).fontSize(labelSz);
+        const lh = doc.heightOfString(lbl, { width: colW });
+        doc.font(STYLE.fonts.bold).fontSize(valueSz);
+        const vh = doc.heightOfString(val, { width: colW });
+        return lh + 2 + vh + itemGap;
+      };
+      leftItems.forEach((it) => {
+        leftH += measureH(it.label, it.value);
+      });
+      rightItems.forEach((it) => {
+        rightH += measureH(it.label, it.value);
+      });
+      totalH += Math.max(leftH, rightH);
+
+      ensureSpace(doc, totalH + STYLE.spacing.lg);
+      const cardY = doc.y;
+      doc.save();
+      doc
+        .roundedRect(L, cardY, W, totalH, STYLE.radius.md)
+        .fillAndStroke(STYLE.colors.bg, STYLE.colors.border);
+      doc.restore();
+      doc
+        .font(STYLE.fonts.bold)
+        .fontSize(STYLE.sizes.sm)
+        .fillColor(STYLE.colors.neutral)
+        .text("Student Information", L + cardPad, cardY + cardPad, {
+          width: W - cardPad * 2,
+        });
+      doc
+        .moveTo(
+          L + cardPad,
+          cardY +
+            cardPad +
+            doc.heightOfString("Student Information", {
+              width: W - cardPad * 2,
+            }) +
+            2,
+        )
+        .lineTo(
+          L + W - cardPad,
+          cardY +
+            cardPad +
+            doc.heightOfString("Student Information", {
+              width: W - cardPad * 2,
+            }) +
+            2,
+        )
+        .lineWidth(0.5)
+        .strokeColor(STYLE.colors.border)
+        .stroke();
+
+      const contentStartY =
+        cardY +
+        cardPad +
+        doc.heightOfString("Student Information", { width: W - cardPad * 2 }) +
+        STYLE.spacing.sm;
+      const drawInfoItem = (x, y, lbl, val) => {
+        doc
+          .font(STYLE.fonts.main)
+          .fontSize(labelSz)
+          .fillColor(STYLE.colors.muted)
+          .text(lbl, x, y, { width: colW });
+        const lh = doc.heightOfString(lbl, { width: colW });
+        doc
+          .font(STYLE.fonts.bold)
+          .fontSize(valueSz)
+          .fillColor(STYLE.colors.neutral)
+          .text(val, x, y + lh + 2, { width: colW });
+        const vh = doc.heightOfString(val, { width: colW });
+        return y + lh + 2 + vh + itemGap;
+      };
+
+      let lx = L + cardPad;
+      let rx = L + cardPad + colW + colGap;
+      let ly = contentStartY;
+      let ry = contentStartY;
+      leftItems.forEach((it) => {
+        ly = drawInfoItem(lx, ly, it.label, it.value);
+      });
+      rightItems.forEach((it) => {
+        ry = drawInfoItem(rx, ry, it.label, it.value);
+      });
+
+      doc.y = cardY + totalH + STYLE.spacing.lg;
+    }
+
+    // ── Worksheet Details Card ────────────────────────────────────────────────
+    renderWorksheetDetailsCard(doc, {
+      title: wsTitle,
+      subject: ws.subject,
+      cefrLevel: ws.cefrLevel,
+      gradeCategory: ws.gradeCategory,
+      gradeLevel: ws.gradeLevel,
+      difficulty: formatDifficulty(ws.difficulty),
+      worksheetType: getWorksheetTypeLabel(ws),
+      totalQuestions: getWorksheetTotalQuestions(ws),
+      assignmentDate:
+        assignment && (assignment.createdAt || assignment.publishedAt),
+      dueDate:
+        (assignment && (assignment.deadline || assignment.dueDate)) ||
+        ws.assignmentDeadline,
+      language: ws.language,
+    });
+
+    // Performance summary card for student
     ensureSpace(doc, 100);
     const summaryY = doc.y;
-    
+
     // Summary card background
     doc.save();
-    doc.roundedRect(L, summaryY, W, 80, STYLE.radius.lg).fillAndStroke(STYLE.colors.bg, STYLE.colors.border);
+    doc
+      .roundedRect(L, summaryY, W, 88, STYLE.radius.lg)
+      .fillAndStroke(STYLE.colors.bg, STYLE.colors.border);
     doc.restore();
-    
-    doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.base).fillColor(STYLE.colors.neutral);
-    doc.text('Performance Summary', L + STYLE.spacing.lg, summaryY + STYLE.spacing.md, { width: W - STYLE.spacing.lg * 2 });
-    
+
+    doc
+      .font(STYLE.fonts.bold)
+      .fontSize(STYLE.sizes.base)
+      .fillColor(STYLE.colors.neutral);
+    doc.text(
+      "Performance Summary",
+      L + STYLE.spacing.lg,
+      summaryY + STYLE.spacing.md,
+      { width: W - STYLE.spacing.lg * 2 },
+    );
+
     // Summary stats
     const summaryStats = [
-      { label: 'Score', value: `${Math.round(percentage)}%`, color: getScoreColor(percentage) },
-      { label: 'Points', value: `${totalEarned}/${totalPossible}`, color: STYLE.colors.neutral },
-      { label: 'Time', value: formatTime(timeTaken), color: STYLE.colors.info },
-      { label: 'Status', value: submission.isLate ? 'Late' : 'On Time', color: submission.isLate ? STYLE.colors.error : STYLE.colors.success },
+      {
+        label: "Score",
+        value: `${Math.round(percentage)}%`,
+        color: getScoreColor(percentage),
+      },
+      {
+        label: "Points",
+        value: `${totalEarned}/${totalPossible}`,
+        color: STYLE.colors.neutral,
+      },
+      {
+        label: "Correct",
+        value: String(totalCorrect),
+        color: STYLE.colors.success,
+      },
+      { label: "Wrong", value: String(totalWrong), color: STYLE.colors.error },
+      {
+        label: "Skipped",
+        value: String(totalSkipped),
+        color: STYLE.colors.warning,
+      },
+      { label: "Time", value: formatTime(timeTaken), color: STYLE.colors.info },
+      {
+        label: "Result",
+        value: isPassed ? "Passed ✓" : "Not Passed",
+        color: isPassed ? STYLE.colors.success : STYLE.colors.error,
+      },
+      {
+        label: "Submission",
+        value: isLate ? "Late" : "On Time",
+        color: isLate ? STYLE.colors.error : STYLE.colors.success,
+      },
     ];
-    
-    const statW = (W - STYLE.spacing.lg * 2 - STYLE.spacing.md * 3) / 4;
+
+    const numStats = summaryStats.length;
+    const statW =
+      (W - STYLE.spacing.lg * 2 - STYLE.spacing.md * (numStats - 1)) / numStats;
     let sx = L + STYLE.spacing.lg;
-    summaryStats.forEach(stat => {
+    summaryStats.forEach((stat) => {
       doc.save();
-      doc.roundedRect(sx, summaryY + 36, statW, 32, STYLE.radius.sm).fillAndStroke(STYLE.colors.white, STYLE.colors.border);
+      doc
+        .roundedRect(sx, summaryY + 36, statW, 32, STYLE.radius.sm)
+        .fillAndStroke(STYLE.colors.white, STYLE.colors.border);
       doc.restore();
-      
-      doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xxs).fillColor(STYLE.colors.muted);
-      doc.text(stat.label, sx + STYLE.spacing.sm, summaryY + 42, { width: statW - STYLE.spacing.sm * 2 });
-      
-      doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.base).fillColor(stat.color);
-      doc.text(stat.value, sx + STYLE.spacing.sm, summaryY + 54, { width: statW - STYLE.spacing.sm * 2 });
-      
+
+      doc
+        .font(STYLE.fonts.main)
+        .fontSize(STYLE.sizes.xxs)
+        .fillColor(STYLE.colors.muted);
+      doc.text(stat.label, sx + STYLE.spacing.sm, summaryY + 42, {
+        width: statW - STYLE.spacing.sm * 2,
+      });
+
+      doc
+        .font(STYLE.fonts.bold)
+        .fontSize(STYLE.sizes.base)
+        .fillColor(stat.color);
+      doc.text(stat.value, sx + STYLE.spacing.sm, summaryY + 54, {
+        width: statW - STYLE.spacing.sm * 2,
+      });
+
       sx += statW + STYLE.spacing.md;
     });
-    
-    doc.y = summaryY + 80 + STYLE.spacing.lg;
+
+    doc.y = summaryY + 88 + STYLE.spacing.lg;
 
     // ── Section-wise Performance Summary ─────────────────────────────────────
     const sectionSummary = [];
     const ACTIVITY_LABELS = {
-      activity1: 'Drag & Drop',
-      activity2: 'Classification',
-      activity3: 'Multiple Choice',
-      activity4: 'Fill in the Blanks',
-      activity5: 'Matching Pairs',
-      activity6: 'True / False',
+      activity1: "Drag & Drop",
+      activity2: "Classification",
+      activity3: "Multiple Choice",
+      activity4: "Fill in the Blanks",
+      activity5: "Matching Pairs",
+      activity6: "True / False",
     };
 
     // Calculate per-section performance
     const sectionStats = {};
-    (Array.isArray(submission.answers) ? submission.answers : []).forEach(ans => {
-      const sid = safeText(ans.sectionId);
-      if (!sectionStats[sid]) {
-        sectionStats[sid] = { correct: 0, total: 0, attempted: 0 };
-      }
-      sectionStats[sid].total++;
-      if (ans.isCorrect) sectionStats[sid].correct++;
-      if (ans.studentAnswer && ans.studentAnswer.trim()) {
-        sectionStats[sid].attempted++;
-      }
-    });
+    (Array.isArray(submission.answers) ? submission.answers : []).forEach(
+      (ans) => {
+        const sid = safeText(ans.sectionId);
+        if (!sectionStats[sid]) {
+          sectionStats[sid] = { correct: 0, total: 0, attempted: 0 };
+        }
+        sectionStats[sid].total++;
+        if (ans.isCorrect) sectionStats[sid].correct++;
+        if (ans.studentAnswer && ans.studentAnswer.trim()) {
+          sectionStats[sid].attempted++;
+        }
+      },
+    );
 
     Object.entries(sectionStats).forEach(([sid, stats]) => {
       if (stats.total > 0) {
@@ -1430,45 +2202,92 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
 
       // Section summary card
       doc.save();
-      doc.roundedRect(L, sectionY, W, 100, STYLE.radius.lg).fillAndStroke(STYLE.colors.bg, STYLE.colors.border);
+      doc
+        .roundedRect(L, sectionY, W, 100, STYLE.radius.lg)
+        .fillAndStroke(STYLE.colors.bg, STYLE.colors.border);
       doc.restore();
 
-      doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.base).fillColor(STYLE.colors.neutral);
-      doc.text('Section Performance', L + STYLE.spacing.lg, sectionY + STYLE.spacing.md, { width: W - STYLE.spacing.lg * 2 });
+      doc
+        .font(STYLE.fonts.bold)
+        .fontSize(STYLE.sizes.base)
+        .fillColor(STYLE.colors.neutral);
+      doc.text(
+        "Section Performance",
+        L + STYLE.spacing.lg,
+        sectionY + STYLE.spacing.md,
+        { width: W - STYLE.spacing.lg * 2 },
+      );
 
       const numSections = sectionSummary.length;
-      const sectionCardW = (W - STYLE.spacing.lg * 2 - STYLE.spacing.md * (numSections - 1)) / numSections;
+      const sectionCardW =
+        (W - STYLE.spacing.lg * 2 - STYLE.spacing.md * (numSections - 1)) /
+        numSections;
       let sx = L + STYLE.spacing.lg;
 
-      sectionSummary.forEach(section => {
+      sectionSummary.forEach((section) => {
         const cardY = sectionY + 36;
         doc.save();
-        doc.roundedRect(sx, cardY, sectionCardW, 56, STYLE.radius.md).fillAndStroke(STYLE.colors.white, STYLE.colors.border);
+        doc
+          .roundedRect(sx, cardY, sectionCardW, 56, STYLE.radius.md)
+          .fillAndStroke(STYLE.colors.white, STYLE.colors.border);
         doc.restore();
 
-        doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xxs).fillColor(STYLE.colors.muted);
-        doc.text(section.label, sx + STYLE.spacing.sm, cardY + 8, { width: sectionCardW - STYLE.spacing.sm * 2 });
+        doc
+          .font(STYLE.fonts.main)
+          .fontSize(STYLE.sizes.xxs)
+          .fillColor(STYLE.colors.muted);
+        doc.text(section.label, sx + STYLE.spacing.sm, cardY + 8, {
+          width: sectionCardW - STYLE.spacing.sm * 2,
+        });
 
-        doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.lg).fillColor(getScoreColor(section.accuracy));
-        doc.text(`${section.accuracy}%`, sx + STYLE.spacing.sm, cardY + 20, { width: sectionCardW - STYLE.spacing.sm * 2 });
+        doc
+          .font(STYLE.fonts.bold)
+          .fontSize(STYLE.sizes.lg)
+          .fillColor(getScoreColor(section.accuracy));
+        doc.text(`${section.accuracy}%`, sx + STYLE.spacing.sm, cardY + 20, {
+          width: sectionCardW - STYLE.spacing.sm * 2,
+        });
 
-        doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xxs).fillColor(STYLE.colors.muted);
-        doc.text(`${section.correct}/${section.total} correct`, sx + STYLE.spacing.sm, cardY + 36, { width: sectionCardW - STYLE.spacing.sm * 2 });
+        doc
+          .font(STYLE.fonts.main)
+          .fontSize(STYLE.sizes.xxs)
+          .fillColor(STYLE.colors.muted);
+        doc.text(
+          `${section.correct}/${section.total} correct`,
+          sx + STYLE.spacing.sm,
+          cardY + 36,
+          { width: sectionCardW - STYLE.spacing.sm * 2 },
+        );
 
         // Completion bar
         const barW = sectionCardW - STYLE.spacing.sm * 2;
         const barH = 6;
         const barY = cardY + 46;
         doc.save();
-        doc.roundedRect(sx + STYLE.spacing.sm, barY, barW, barH, 3).fillAndStroke(STYLE.colors.tableHdr, STYLE.colors.border);
-        const fillW = Math.max(0, Math.min(barW, Math.round(barW * section.completion / 100)));
+        doc
+          .roundedRect(sx + STYLE.spacing.sm, barY, barW, barH, 3)
+          .fillAndStroke(STYLE.colors.tableHdr, STYLE.colors.border);
+        const fillW = Math.max(
+          0,
+          Math.min(barW, Math.round((barW * section.completion) / 100)),
+        );
         if (fillW > 0) {
-          doc.roundedRect(sx + STYLE.spacing.sm, barY, fillW, barH, 3).fill(STYLE.colors.primary);
+          doc
+            .roundedRect(sx + STYLE.spacing.sm, barY, fillW, barH, 3)
+            .fill(STYLE.colors.primary);
         }
         doc.restore();
 
-        doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xxs).fillColor(STYLE.colors.muted);
-        doc.text(`${section.completion}% completed`, sx + STYLE.spacing.sm, barY + 10, { width: sectionCardW - STYLE.spacing.sm * 2 });
+        doc
+          .font(STYLE.fonts.main)
+          .fontSize(STYLE.sizes.xxs)
+          .fillColor(STYLE.colors.muted);
+        doc.text(
+          `${section.completion}% completed`,
+          sx + STYLE.spacing.sm,
+          barY + 10,
+          { width: sectionCardW - STYLE.spacing.sm * 2 },
+        );
 
         sx += sectionCardW + STYLE.spacing.md;
       });
@@ -1478,25 +2297,35 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
 
     // ── Question-by-Question Review Table ─────────────────────────────────────
     const reviewRows = [];
-    (Array.isArray(submission.answers) ? submission.answers : []).forEach(ans => {
-      const sid = safeText(ans.sectionId);
-      const sectionLabel = ACTIVITY_LABELS[sid] || titleizeId(sid);
-      const studentAns = safeText(ans.studentAnswer);
-      const isCorrect = ans.isCorrect;
-      
-      reviewRows.push([
-        sectionLabel,
-        safeText(ans.questionId || `Q${reviewRows.length + 1}`),
-        studentAns || 'Not answered',
-        isCorrect ? '✓ Correct' : '✗ Wrong',
-      ]);
-    });
+    (Array.isArray(submission.answers) ? submission.answers : []).forEach(
+      (ans) => {
+        const sid = safeText(ans.sectionId);
+        const sectionLabel = ACTIVITY_LABELS[sid] || titleizeId(sid);
+        const studentAns = safeText(ans.studentAnswer);
+        const isCorrect = ans.isCorrect;
+
+        reviewRows.push([
+          sectionLabel,
+          safeText(ans.questionId || `Q${reviewRows.length + 1}`),
+          studentAns || "Not answered",
+          isCorrect ? "✓ Correct" : "✗ Wrong",
+        ]);
+      },
+    );
 
     if (reviewRows.length > 0) {
-      renderSectionTitle(doc, 'Question Review', { text: `${reviewRows.length} Questions`, color: STYLE.colors.info });
-      
+      renderSectionTitle(doc, "Question Review", {
+        text: `${reviewRows.length} Questions`,
+        color: STYLE.colors.info,
+      });
+
       const reviewColW = [100, 80, W - 260, 80];
-      renderMiniTable(doc, ['Section', 'Question', 'Your Answer', 'Result'], reviewRows, { columnWidths: reviewColW });
+      renderMiniTable(
+        doc,
+        ["Section", "Question", "Your Answer", "Result"],
+        reviewRows,
+        { columnWidths: reviewColW },
+      );
       doc.y += STYLE.spacing.lg;
     }
 
@@ -1516,10 +2345,15 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
     const a3 = ws.activity3;
     const a3Questions = Array.isArray(a3 && a3.questions) ? a3.questions : [];
     if (a3Questions.length > 0) {
-      renderSectionTitle(doc, safeText(a3.title) || 'Activity 3: Quick Quiz');
+      renderSectionTitle(doc, safeText(a3.title) || "Activity 3: Quick Quiz");
       if (a3.instructions) {
-        doc.font('Helvetica-Oblique').fontSize(9.5).fillColor(STYLE.colors.muted)
-          .text(safeText(a3.instructions), doc.page.margins.left, doc.y, { width: pageW(doc) });
+        doc
+          .font("Helvetica-Oblique")
+          .fontSize(9.5)
+          .fillColor(STYLE.colors.muted)
+          .text(safeText(a3.instructions), doc.page.margins.left, doc.y, {
+            width: pageW(doc),
+          });
         doc.moveDown(0.5);
       }
       renderMcqQuestions(doc, a3Questions, a3Map);
@@ -1529,21 +2363,35 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
     const a4 = ws.activity4;
     const a4Sentences = Array.isArray(a4 && a4.sentences) ? a4.sentences : [];
     if (a4Sentences.length > 0) {
-      renderSectionTitle(doc, safeText(a4.title) || 'Activity 4: Fill in the Blanks');
+      renderSectionTitle(
+        doc,
+        safeText(a4.title) || "Activity 4: Fill in the Blanks",
+      );
       const wordBank = Array.isArray(a4.wordBank) ? a4.wordBank : [];
       if (wordBank.length) {
         const L = doc.page.margins.left;
         const W = pageW(doc);
-        doc.font('Helvetica-Bold').fontSize(10).fillColor(STYLE.colors.neutral)
-          .text('Word Bank:', L, doc.y, { width: W });
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(10)
+          .fillColor(STYLE.colors.neutral)
+          .text("Word Bank:", L, doc.y, { width: W });
         doc.moveDown(0.2);
-        doc.font('Helvetica').fontSize(10).fillColor(STYLE.colors.muted)
-          .text(wordBank.join('   •   '), L, doc.y, { width: W });
+        doc
+          .font("Helvetica")
+          .fontSize(10)
+          .fillColor(STYLE.colors.muted)
+          .text(wordBank.join("   •   "), L, doc.y, { width: W });
         doc.moveDown(0.7);
       }
       if (a4.instructions) {
-        doc.font('Helvetica-Oblique').fontSize(9.5).fillColor(STYLE.colors.muted)
-          .text(safeText(a4.instructions), doc.page.margins.left, doc.y, { width: pageW(doc) });
+        doc
+          .font("Helvetica-Oblique")
+          .fontSize(9.5)
+          .fillColor(STYLE.colors.muted)
+          .text(safeText(a4.instructions), doc.page.margins.left, doc.y, {
+            width: pageW(doc),
+          });
         doc.moveDown(0.5);
       }
       renderFillInBlanks(doc, a4Sentences, a4Map);
@@ -1563,13 +2411,31 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
     }
 
     // If no activities were included
-    const hasActivities = (a1 && a1.items?.length > 0) || (a2 && a2.items?.length > 0) || a3Questions.length > 0 || a4Sentences.length > 0 || (a5 && a5.pairs?.length > 0) || a6Questions.length > 0;
+    const hasActivities =
+      (a1 && a1.items?.length > 0) ||
+      (a2 && a2.items?.length > 0) ||
+      a3Questions.length > 0 ||
+      a4Sentences.length > 0 ||
+      (a5 && a5.pairs?.length > 0) ||
+      a6Questions.length > 0;
     if (!hasActivities) {
-      doc.font('Helvetica-Oblique').fontSize(10).fillColor(STYLE.colors.muted)
-        .text('No gradable activities recorded for this submission.', doc.page.margins.left, doc.y, { width: pageW(doc) });
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(10)
+        .fillColor(STYLE.colors.muted)
+        .text(
+          "No gradable activities recorded for this submission.",
+          doc.page.margins.left,
+          doc.y,
+          { width: pageW(doc) },
+        );
     }
   } catch (err) {
-    try { doc.end(); } catch { /* ignore */ }
+    try {
+      doc.end();
+    } catch {
+      /* ignore */
+    }
     throw err;
   }
 
@@ -1582,8 +2448,10 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
 
 function renderProgressBar(doc, x, y, w, h, pct, color) {
   doc.save();
-  doc.roundedRect(x, y, w, h, h / 2).fillAndStroke(STYLE.colors.tableHdr, STYLE.colors.border);
-  const fillW = Math.max(0, Math.min(w, Math.round(w * pct / 100)));
+  doc
+    .roundedRect(x, y, w, h, h / 2)
+    .fillAndStroke(STYLE.colors.tableHdr, STYLE.colors.border);
+  const fillW = Math.max(0, Math.min(w, Math.round((w * pct) / 100)));
   if (fillW > 0) {
     doc.roundedRect(x, y, fillW, h, h / 2).fill(color || STYLE.colors.primary);
   }
@@ -1591,32 +2459,46 @@ function renderProgressBar(doc, x, y, w, h, pct, color) {
 }
 
 async function generateWorksheetReportPdf(data, outputPath) {
-  const ws          = (data.worksheet && typeof data.worksheet === 'object') ? data.worksheet : {};
+  const ws =
+    data.worksheet && typeof data.worksheet === "object" ? data.worksheet : {};
   const submissions = Array.isArray(data.submissions) ? data.submissions : [];
-  const assignment   = (data.assignment && typeof data.assignment === 'object') ? data.assignment : {};
-  const teacher      = (data.teacher && typeof data.teacher === 'object') ? data.teacher : null;
+  const assignment =
+    data.assignment && typeof data.assignment === "object"
+      ? data.assignment
+      : {};
+  const teacher =
+    data.teacher && typeof data.teacher === "object" ? data.teacher : null;
 
-  const wsTitle   = safeText(ws.title) || 'Worksheet';
-  const total     = submissions.length;
+  const wsTitle = safeText(ws.title) || "Worksheet";
+  const total = submissions.length;
   const totalAssigned = safeNumber(data.totalAssigned, total);
-  const completionRate = totalAssigned > 0 ? Math.round((total / totalAssigned) * 100) : 0;
+  const completionRate =
+    totalAssigned > 0 ? Math.round((total / totalAssigned) * 100) : 0;
 
   // ── Aggregate stats ────────────────────────────────────────────────────────
-  const scores    = submissions.map(s => safeNumber(s.percentage, 0));
-  const avgScore  = total > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / total) : 0;
+  const scores = submissions.map((s) => safeNumber(s.percentage, 0));
+  const avgScore =
+    total > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / total) : 0;
   const highScore = total > 0 ? Math.round(Math.max(...scores)) : 0;
-  const lowScore  = total > 0 ? Math.round(Math.min(...scores)) : 0;
-  const passCount = scores.filter(s => s >= 70).length;
-  const passRate  = total > 0 ? Math.round((passCount / total) * 100) : 0;
-  const lateCount = submissions.filter(s => s.isLate).length;
-  const avgTimeSec = total > 0
-    ? Math.round(submissions.reduce((s, sub) => s + safeNumber(sub.timeTaken, 0), 0) / total)
-    : 0;
-  
+  const lowScore = total > 0 ? Math.round(Math.min(...scores)) : 0;
+  const passCount = scores.filter((s) => s >= 70).length;
+  const passRate = total > 0 ? Math.round((passCount / total) * 100) : 0;
+  const lateCount = submissions.filter((s) => s.isLate).length;
+  const avgTimeSec =
+    total > 0
+      ? Math.round(
+          submissions.reduce((s, sub) => s + safeNumber(sub.timeTaken, 0), 0) /
+            total,
+        )
+      : 0;
+
   // Calculate median score
-  const medianScore = scores.length > 0
-    ? Math.round([...scores].sort((a, b) => a - b)[Math.floor(scores.length / 2)])
-    : 0;
+  const medianScore =
+    scores.length > 0
+      ? Math.round(
+          [...scores].sort((a, b) => a - b)[Math.floor(scores.length / 2)],
+        )
+      : 0;
 
   // Additional statistics
   const pendingStudents = Math.max(0, totalAssigned - total);
@@ -1625,9 +2507,9 @@ async function generateWorksheetReportPdf(data, outputPath) {
 
   // ── Enhanced per-activity stats with completion metrics ──────────────────
   const activityStats = {};
-  submissions.forEach(sub => {
-    (sub.answers || []).forEach(ans => {
-      const sid = safeText(ans.sectionId) || 'unknown';
+  submissions.forEach((sub) => {
+    (sub.answers || []).forEach((ans) => {
+      const sid = safeText(ans.sectionId) || "unknown";
       if (!activityStats[sid]) {
         activityStats[sid] = { correct: 0, total: 0, skipped: 0, attempted: 0 };
       }
@@ -1642,36 +2524,48 @@ async function generateWorksheetReportPdf(data, outputPath) {
   });
 
   const ACTIVITY_LABELS = {
-    activity1: 'Drag & Drop',
-    activity2: 'Classification',
-    activity3: 'Multiple Choice',
-    activity4: 'Fill in the Blanks',
-    activity5: 'Matching Pairs',
-    activity6: 'True / False',
+    activity1: "Drag & Drop",
+    activity2: "Classification",
+    activity3: "Multiple Choice",
+    activity4: "Fill in the Blanks",
+    activity5: "Matching Pairs",
+    activity6: "True / False",
   };
 
   const activityBreakdown = Object.entries(activityStats)
     .filter(([, s]) => s.total > 0)
     .map(([sid, s]) => {
-      const correctRate = s.total > 0 ? Math.round((s.correct / s.total) * 100) : 0;
-      const wrongRate = s.total > 0 ? Math.round(((s.total - s.correct - s.skipped) / s.total) * 100) : 0;
-      const completionRate = s.total > 0 ? Math.round((s.attempted / s.total) * 100) : 0;
-      const avgScore = s.total > 0 ? Math.round((s.correct / s.attempted) * 100) : 0;
-      
+      const correctRate =
+        s.total > 0 ? Math.round((s.correct / s.total) * 100) : 0;
+      const wrongRate =
+        s.total > 0
+          ? Math.round(((s.total - s.correct - s.skipped) / s.total) * 100)
+          : 0;
+      const completionRate =
+        s.total > 0 ? Math.round((s.attempted / s.total) * 100) : 0;
+      const avgScore =
+        s.total > 0 ? Math.round((s.correct / s.attempted) * 100) : 0;
+
       // Determine difficulty based on correct rate
-      let difficulty = 'Easy';
-      if (correctRate < 50) difficulty = 'Hard';
-      else if (correctRate < 70) difficulty = 'Medium';
-      
+      let difficulty = "Easy";
+      if (correctRate < 50) difficulty = "Hard";
+      else if (correctRate < 70) difficulty = "Medium";
+
       // Get total questions for this section from worksheet
       let totalQuestions = 0;
-      if (sid === 'activity1' && ws.activity1?.items) totalQuestions = ws.activity1.items.length;
-      else if (sid === 'activity2' && ws.activity2?.items) totalQuestions = ws.activity2.items.length;
-      else if (sid === 'activity3' && ws.activity3?.questions) totalQuestions = ws.activity3.questions.length;
-      else if (sid === 'activity4' && ws.activity4?.sentences) totalQuestions = ws.activity4.sentences.length;
-      else if (sid === 'activity5' && ws.activity5?.pairs) totalQuestions = ws.activity5.pairs.length;
-      else if (sid === 'activity6' && ws.activity6?.questions) totalQuestions = ws.activity6.questions.length;
-      
+      if (sid === "activity1" && ws.activity1?.items)
+        totalQuestions = ws.activity1.items.length;
+      else if (sid === "activity2" && ws.activity2?.items)
+        totalQuestions = ws.activity2.items.length;
+      else if (sid === "activity3" && ws.activity3?.questions)
+        totalQuestions = ws.activity3.questions.length;
+      else if (sid === "activity4" && ws.activity4?.sentences)
+        totalQuestions = ws.activity4.sentences.length;
+      else if (sid === "activity5" && ws.activity5?.pairs)
+        totalQuestions = ws.activity5.pairs.length;
+      else if (sid === "activity6" && ws.activity6?.questions)
+        totalQuestions = ws.activity6.questions.length;
+
       return {
         sectionId: sid,
         label: ACTIVITY_LABELS[sid] || titleizeId(sid),
@@ -1691,81 +2585,99 @@ async function generateWorksheetReportPdf(data, outputPath) {
 
   // ── Find most missed questions per section ────────────────────────────────
   const sectionQuestionStats = {};
-  submissions.forEach(sub => {
-    (sub.answers || []).forEach(ans => {
+  submissions.forEach((sub) => {
+    (sub.answers || []).forEach((ans) => {
       const sid = safeText(ans.sectionId);
       const qid = safeText(ans.questionId);
       const key = `${sid}_${qid}`;
       if (!sectionQuestionStats[key]) {
-        sectionQuestionStats[key] = { sectionId: sid, questionId: qid, correct: 0, total: 0, skipped: 0 };
+        sectionQuestionStats[key] = {
+          sectionId: sid,
+          questionId: qid,
+          correct: 0,
+          total: 0,
+          skipped: 0,
+        };
       }
       sectionQuestionStats[key].total++;
       if (ans.isCorrect) sectionQuestionStats[key].correct++;
-      if (!ans.studentAnswer || !ans.studentAnswer.trim()) sectionQuestionStats[key].skipped++;
+      if (!ans.studentAnswer || !ans.studentAnswer.trim())
+        sectionQuestionStats[key].skipped++;
     });
   });
-  
+
   // Group by section and find most missed
   const mostMissedBySection = {};
-  Object.values(sectionQuestionStats).forEach(stat => {
-    const missedRate = stat.total > 0 ? (stat.total - stat.correct) / stat.total : 0;
-    if (!mostMissedBySection[stat.sectionId] || missedRate > mostMissedBySection[stat.sectionId].missedRate) {
+  Object.values(sectionQuestionStats).forEach((stat) => {
+    const missedRate =
+      stat.total > 0 ? (stat.total - stat.correct) / stat.total : 0;
+    if (
+      !mostMissedBySection[stat.sectionId] ||
+      missedRate > mostMissedBySection[stat.sectionId].missedRate
+    ) {
       mostMissedBySection[stat.sectionId] = { ...stat, missedRate };
     }
   });
 
   // ── Per-student activity breakdown ────────────────────────────────────────
-  const studentRows = submissions.map(sub => {
-    const raw  = sub.studentId;
-    const name = (raw && typeof raw === 'object')
-      ? safeText(raw.displayName || raw.email) : safeText(raw);
+  const studentRows = submissions.map((sub) => {
+    const raw = sub.studentId;
+    const name =
+      raw && typeof raw === "object"
+        ? safeText(raw.displayName || raw.email)
+        : safeText(raw);
     const overall = `${Math.round(safeNumber(sub.percentage, 0))}%`;
-    const perAct  = {};
-    (sub.answers || []).forEach(ans => {
+    const perAct = {};
+    (sub.answers || []).forEach((ans) => {
       const sid = safeText(ans.sectionId);
       if (!perAct[sid]) perAct[sid] = { correct: 0, total: 0, attempted: 0 };
       perAct[sid].total++;
       if (ans.isCorrect) perAct[sid].correct++;
-      if (ans.studentAnswer && ans.studentAnswer.trim()) perAct[sid].attempted++;
+      if (ans.studentAnswer && ans.studentAnswer.trim())
+        perAct[sid].attempted++;
     });
-    return { 
-      name, 
-      overall, 
-      perAct, 
+    return {
+      name,
+      overall,
+      perAct,
       time: formatTime(safeNumber(sub.timeTaken, 0)),
-      date: sub.submittedAt ? formatDate(sub.submittedAt) : '',
-      status: sub.isLate ? 'Late' : 'On Time',
-      attempts: sub.attempts || 1
+      date: sub.submittedAt ? formatDate(sub.submittedAt) : "",
+      status: sub.isLate ? "Late" : "On Time",
+      attempts: sub.attempts || 1,
     };
   });
 
   // ── MCQ question difficulty (activity3) ──────────────────────────────────
   const mcqQuestions = Array.isArray(ws.activity3 && ws.activity3.questions)
-    ? ws.activity3.questions : [];
+    ? ws.activity3.questions
+    : [];
   const mcqStats = {};
-  submissions.forEach(sub => {
-    (sub.answers || []).forEach(ans => {
-      if (safeText(ans.sectionId) !== 'activity3') return;
+  submissions.forEach((sub) => {
+    (sub.answers || []).forEach((ans) => {
+      if (safeText(ans.sectionId) !== "activity3") return;
       const qid = safeText(ans.questionId);
       if (!mcqStats[qid]) mcqStats[qid] = { correct: 0, total: 0, skipped: 0 };
       mcqStats[qid].total++;
       if (ans.isCorrect) mcqStats[qid].correct++;
-      if (!ans.studentAnswer || !ans.studentAnswer.trim()) mcqStats[qid].skipped++;
+      if (!ans.studentAnswer || !ans.studentAnswer.trim())
+        mcqStats[qid].skipped++;
     });
   });
 
   // ── T/F question difficulty (activity6) ──────────────────────────────────
   const tfQuestions = Array.isArray(ws.activity6 && ws.activity6.questions)
-    ? ws.activity6.questions : [];
+    ? ws.activity6.questions
+    : [];
   const tfStats = {};
-  submissions.forEach(sub => {
-    (sub.answers || []).forEach(ans => {
-      if (safeText(ans.sectionId) !== 'activity6') return;
+  submissions.forEach((sub) => {
+    (sub.answers || []).forEach((ans) => {
+      if (safeText(ans.sectionId) !== "activity6") return;
       const qid = safeText(ans.questionId);
       if (!tfStats[qid]) tfStats[qid] = { correct: 0, total: 0, skipped: 0 };
       tfStats[qid].total++;
       if (ans.isCorrect) tfStats[qid].correct++;
-      if (!ans.studentAnswer || !ans.studentAnswer.trim()) tfStats[qid].skipped++;
+      if (!ans.studentAnswer || !ans.studentAnswer.trim())
+        tfStats[qid].skipped++;
     });
   });
 
@@ -1778,11 +2690,17 @@ async function generateWorksheetReportPdf(data, outputPath) {
     const W = pageW(doc);
 
     // ── COVER: title + metadata ───────────────────────────────────────────
-    doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.xl).fillColor(STYLE.colors.neutral)
+    doc
+      .font(STYLE.fonts.bold)
+      .fontSize(STYLE.sizes.xl)
+      .fillColor(STYLE.colors.neutral)
       .text(wsTitle, L, doc.y, { width: W });
     doc.moveDown(0.25);
-    doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.sm).fillColor(STYLE.colors.muted)
-      .text('Class Submission Report', L, doc.y, { width: W });
+    doc
+      .font(STYLE.fonts.main)
+      .fontSize(STYLE.sizes.sm)
+      .fillColor(STYLE.colors.muted)
+      .text("Class Submission Report", L, doc.y, { width: W });
     doc.moveDown(0.25);
 
     const metaTags = [];
@@ -1791,12 +2709,20 @@ async function generateWorksheetReportPdf(data, outputPath) {
     if (ws.gradeLevel) metaTags.push(`Grade: ${safeText(ws.gradeLevel)}`);
     if (ws.difficulty) metaTags.push(formatDifficulty(ws.difficulty));
     if (metaTags.length > 0) {
-      doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xs).fillColor(STYLE.colors.primary)
-        .text(metaTags.join('  •  '), L, doc.y, { width: W });
+      doc
+        .font(STYLE.fonts.main)
+        .fontSize(STYLE.sizes.xs)
+        .fillColor(STYLE.colors.primary)
+        .text(metaTags.join("  •  "), L, doc.y, { width: W });
       doc.moveDown(0.4);
     }
 
-    doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(0.5).strokeColor(STYLE.colors.border).stroke();
+    doc
+      .moveTo(L, doc.y)
+      .lineTo(L + W, doc.y)
+      .lineWidth(0.5)
+      .strokeColor(STYLE.colors.border)
+      .stroke();
     doc.y += STYLE.spacing.lg;
 
     // ── Enhanced worksheet details card ──────────────────────────────────────
@@ -1811,108 +2737,254 @@ async function generateWorksheetReportPdf(data, outputPath) {
       totalQuestions: getWorksheetTotalQuestions(ws),
       assignmentDate: assignment.createdAt || ws.createdAt,
       dueDate: assignment.deadline || ws.assignmentDeadline,
-      teacherName: teacher ? (teacher.displayName || teacher.email) : null,
+      teacherName: teacher ? teacher.displayName || teacher.email : null,
       language: ws.language,
     });
 
     // ── Enhanced summary stats row (12 cards with icons) ──────────────────────
     const badge = getScoreBadge(avgScore);
     renderStatsRow(doc, [
-      { label: 'Total Students', value: String(totalAssigned), icon: '👥', color: STYLE.colors.info },
-      { label: 'Completed', value: String(completedStudents), icon: '✓', color: STYLE.colors.success },
-      { label: 'Pending', value: String(pendingStudents), icon: '⏳', color: pendingStudents > 0 ? STYLE.colors.warning : STYLE.colors.success },
-      { label: 'Completion', value: `${completionRate}%`, icon: '📊', color: STYLE.colors.success },
-      { label: 'Average', value: `${avgScore}%`, icon: '🎯', color: getScoreColor(avgScore) },
-      { label: 'Accuracy', value: `${avgAccuracy}%`, icon: '🎯', color: getScoreColor(avgAccuracy) },
-      { label: 'Median', value: `${medianScore}%`, icon: '📈', color: getScoreColor(medianScore) },
-      { label: 'Highest', value: `${highScore}%`, icon: '🏆', color: STYLE.colors.success },
-      { label: 'Lowest', value: `${lowScore}%`, icon: '⚠️', color: STYLE.colors.warning },
-      { label: 'Pass Rate', value: `${passRate}%`, icon: '✅', color: getScoreColor(passRate) },
-      { label: 'Avg Time', value: formatTime(avgTimeSec), icon: '⏱️', color: STYLE.colors.info },
-      { label: 'Late', value: String(lateCount), icon: '⏰', color: lateCount > 0 ? STYLE.colors.error : STYLE.colors.success },
+      {
+        label: "Total Students",
+        value: String(totalAssigned),
+        icon: "👥",
+        color: STYLE.colors.info,
+      },
+      {
+        label: "Completed",
+        value: String(completedStudents),
+        icon: "✓",
+        color: STYLE.colors.success,
+      },
+      {
+        label: "Pending",
+        value: String(pendingStudents),
+        icon: "⏳",
+        color:
+          pendingStudents > 0 ? STYLE.colors.warning : STYLE.colors.success,
+      },
+      {
+        label: "Completion",
+        value: `${completionRate}%`,
+        icon: "📊",
+        color: STYLE.colors.success,
+      },
+      {
+        label: "Average",
+        value: `${avgScore}%`,
+        icon: "🎯",
+        color: getScoreColor(avgScore),
+      },
+      {
+        label: "Accuracy",
+        value: `${avgAccuracy}%`,
+        icon: "🎯",
+        color: getScoreColor(avgAccuracy),
+      },
+      {
+        label: "Median",
+        value: `${medianScore}%`,
+        icon: "📈",
+        color: getScoreColor(medianScore),
+      },
+      {
+        label: "Highest",
+        value: `${highScore}%`,
+        icon: "🏆",
+        color: STYLE.colors.success,
+      },
+      {
+        label: "Lowest",
+        value: `${lowScore}%`,
+        icon: "⚠️",
+        color: STYLE.colors.warning,
+      },
+      {
+        label: "Pass Rate",
+        value: `${passRate}%`,
+        icon: "✅",
+        color: getScoreColor(passRate),
+      },
+      {
+        label: "Avg Time",
+        value: formatTime(avgTimeSec),
+        icon: "⏱️",
+        color: STYLE.colors.info,
+      },
+      {
+        label: "Late",
+        value: String(lateCount),
+        icon: "⏰",
+        color: lateCount > 0 ? STYLE.colors.error : STYLE.colors.success,
+      },
     ]);
 
     // ── Enhanced Activity Breakdown with detailed metrics ──────────────────
     if (activityBreakdown.length > 0) {
-      renderSectionTitle(doc, 'Section Performance Analysis', { text: `${activityBreakdown.length} Sections`, color: STYLE.colors.primary });
-      
+      renderSectionTitle(doc, "Section Performance Analysis", {
+        text: `${activityBreakdown.length} Sections`,
+        color: STYLE.colors.primary,
+      });
+
       const labelColW = 120;
       const numCols = 6;
       const metricsColW = (W - labelColW) / numCols;
-      
+
       // Header row
       ensureSpace(doc, 26);
       const hdrY = doc.y;
       doc.save();
       doc.rect(L, hdrY, W, 24).fill(STYLE.colors.tableHdr);
-      doc.rect(L, hdrY, W, 24).strokeColor(STYLE.colors.border).lineWidth(0.5).stroke();
+      doc
+        .rect(L, hdrY, W, 24)
+        .strokeColor(STYLE.colors.border)
+        .lineWidth(0.5)
+        .stroke();
       doc.restore();
-      
-      doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.xs).fillColor(STYLE.colors.muted);
+
+      doc
+        .font(STYLE.fonts.bold)
+        .fontSize(STYLE.sizes.xs)
+        .fillColor(STYLE.colors.muted);
       let hx = L + STYLE.spacing.sm;
-      doc.text('Section', hx, hdrY + 8, { width: labelColW });
+      doc.text("Section", hx, hdrY + 8, { width: labelColW });
       hx += labelColW;
-      doc.text('Questions', hx, hdrY + 8, { width: metricsColW, align: 'center' });
+      doc.text("Questions", hx, hdrY + 8, {
+        width: metricsColW,
+        align: "center",
+      });
       hx += metricsColW;
-      doc.text('Correct %', hx, hdrY + 8, { width: metricsColW, align: 'center' });
+      doc.text("Correct %", hx, hdrY + 8, {
+        width: metricsColW,
+        align: "center",
+      });
       hx += metricsColW;
-      doc.text('Wrong %', hx, hdrY + 8, { width: metricsColW, align: 'center' });
+      doc.text("Wrong %", hx, hdrY + 8, {
+        width: metricsColW,
+        align: "center",
+      });
       hx += metricsColW;
-      doc.text('Completion', hx, hdrY + 8, { width: metricsColW, align: 'center' });
+      doc.text("Completion", hx, hdrY + 8, {
+        width: metricsColW,
+        align: "center",
+      });
       hx += metricsColW;
-      doc.text('Difficulty', hx, hdrY + 8, { width: metricsColW, align: 'center' });
+      doc.text("Difficulty", hx, hdrY + 8, {
+        width: metricsColW,
+        align: "center",
+      });
       hx += metricsColW;
-      doc.text('Most Missed', hx, hdrY + 8, { width: metricsColW, align: 'center' });
+      doc.text("Most Missed", hx, hdrY + 8, {
+        width: metricsColW,
+        align: "center",
+      });
       doc.y = hdrY + 24;
-      
+
       for (const act of activityBreakdown) {
         ensureSpace(doc, 32);
         const rowY = doc.y;
-        
+
         doc.save();
-        doc.rect(L, rowY, W, 28).fill(rowY % 56 < 28 ? STYLE.colors.white : STYLE.colors.altRow);
-        doc.rect(L, rowY, W, 28).strokeColor(STYLE.colors.border).lineWidth(0.5).stroke();
+        doc
+          .rect(L, rowY, W, 28)
+          .fill(rowY % 56 < 28 ? STYLE.colors.white : STYLE.colors.altRow);
+        doc
+          .rect(L, rowY, W, 28)
+          .strokeColor(STYLE.colors.border)
+          .lineWidth(0.5)
+          .stroke();
         doc.restore();
-        
-        doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.sm).fillColor(STYLE.colors.neutral);
+
+        doc
+          .font(STYLE.fonts.main)
+          .fontSize(STYLE.sizes.sm)
+          .fillColor(STYLE.colors.neutral);
         let cx = L + STYLE.spacing.sm;
         doc.text(act.label, cx, rowY + 8, { width: labelColW });
         cx += labelColW;
-        
-        doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.sm).fillColor(STYLE.colors.neutral);
-        doc.text(String(act.totalQuestions || act.total), cx, rowY + 8, { width: metricsColW, align: 'center' });
+
+        doc
+          .font(STYLE.fonts.main)
+          .fontSize(STYLE.sizes.sm)
+          .fillColor(STYLE.colors.neutral);
+        doc.text(String(act.totalQuestions || act.total), cx, rowY + 8, {
+          width: metricsColW,
+          align: "center",
+        });
         cx += metricsColW;
-        
+
         const correctColor = getScoreColor(act.correctRate);
-        doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.sm).fillColor(correctColor);
-        doc.text(`${act.correctRate}%`, cx, rowY + 8, { width: metricsColW, align: 'center' });
+        doc
+          .font(STYLE.fonts.bold)
+          .fontSize(STYLE.sizes.sm)
+          .fillColor(correctColor);
+        doc.text(`${act.correctRate}%`, cx, rowY + 8, {
+          width: metricsColW,
+          align: "center",
+        });
         cx += metricsColW;
-        
-        const wrongColor = act.wrongRate > 30 ? STYLE.colors.error : STYLE.colors.warning;
-        doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.sm).fillColor(wrongColor);
-        doc.text(`${act.wrongRate}%`, cx, rowY + 8, { width: metricsColW, align: 'center' });
+
+        const wrongColor =
+          act.wrongRate > 30 ? STYLE.colors.error : STYLE.colors.warning;
+        doc
+          .font(STYLE.fonts.bold)
+          .fontSize(STYLE.sizes.sm)
+          .fillColor(wrongColor);
+        doc.text(`${act.wrongRate}%`, cx, rowY + 8, {
+          width: metricsColW,
+          align: "center",
+        });
         cx += metricsColW;
-        
-        doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.sm).fillColor(STYLE.colors.neutral);
-        doc.text(`${act.completionRate}%`, cx, rowY + 8, { width: metricsColW, align: 'center' });
+
+        doc
+          .font(STYLE.fonts.main)
+          .fontSize(STYLE.sizes.sm)
+          .fillColor(STYLE.colors.neutral);
+        doc.text(`${act.completionRate}%`, cx, rowY + 8, {
+          width: metricsColW,
+          align: "center",
+        });
         cx += metricsColW;
-        
+
         // Difficulty badge
-        const diffColor = act.difficulty === 'Hard' ? STYLE.colors.error : act.difficulty === 'Medium' ? STYLE.colors.warning : STYLE.colors.success;
-        doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.sm).fillColor(diffColor);
-        doc.text(act.difficulty, cx, rowY + 8, { width: metricsColW, align: 'center' });
+        const diffColor =
+          act.difficulty === "Hard"
+            ? STYLE.colors.error
+            : act.difficulty === "Medium"
+              ? STYLE.colors.warning
+              : STYLE.colors.success;
+        doc
+          .font(STYLE.fonts.bold)
+          .fontSize(STYLE.sizes.sm)
+          .fillColor(diffColor);
+        doc.text(act.difficulty, cx, rowY + 8, {
+          width: metricsColW,
+          align: "center",
+        });
         cx += metricsColW;
-        
+
         // Most missed indicator
         const mostMissed = mostMissedBySection[act.sectionId];
         if (mostMissed && mostMissed.missedRate > 0.3) {
-          doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xs).fillColor(STYLE.colors.error);
-          doc.text('High', cx, rowY + 9, { width: metricsColW, align: 'center' });
+          doc
+            .font(STYLE.fonts.main)
+            .fontSize(STYLE.sizes.xs)
+            .fillColor(STYLE.colors.error);
+          doc.text("High", cx, rowY + 9, {
+            width: metricsColW,
+            align: "center",
+          });
         } else {
-          doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.xs).fillColor(STYLE.colors.success);
-          doc.text('Low', cx, rowY + 9, { width: metricsColW, align: 'center' });
+          doc
+            .font(STYLE.fonts.main)
+            .fontSize(STYLE.sizes.xs)
+            .fillColor(STYLE.colors.success);
+          doc.text("Low", cx, rowY + 9, {
+            width: metricsColW,
+            align: "center",
+          });
         }
-        
+
         doc.y = rowY + 28;
       }
       doc.y += STYLE.spacing.lg;
@@ -1920,128 +2992,229 @@ async function generateWorksheetReportPdf(data, outputPath) {
 
     // ── Enhanced Participant Results with status and attempts ────────────────
     if (submissions.length > 0) {
-      renderSectionTitle(doc, 'Participant Results', { text: `${studentRows.length} Students`, color: STYLE.colors.primary });
+      renderSectionTitle(doc, "Participant Results", {
+        text: `${studentRows.length} Students`,
+        color: STYLE.colors.primary,
+      });
 
       const activeSections = Object.keys(activityStats)
-        .filter(sid => activityStats[sid].total > 0)
+        .filter((sid) => activityStats[sid].total > 0)
         .sort();
 
       const actCols = activeSections.length > 0 ? activeSections : [];
-      const fixedW  = [180, 60, 60, 70, 50];  // name, score, time, date, status
-      const actColW = actCols.length > 0
-        ? Math.floor((W - fixedW.reduce((a, b) => a + b, 0)) / actCols.length)
-        : 0;
-      const headers = ['Student', 'Score', 'Time', 'Date', 'Status',
-        ...actCols.map(sid => ACTIVITY_LABELS[sid] ? ACTIVITY_LABELS[sid].split('—')[0].trim() : sid)];
+      const fixedW = [180, 60, 60, 70, 50]; // name, score, time, date, status
+      const actColW =
+        actCols.length > 0
+          ? Math.floor((W - fixedW.reduce((a, b) => a + b, 0)) / actCols.length)
+          : 0;
+      const headers = [
+        "Student",
+        "Score",
+        "Time",
+        "Date",
+        "Status",
+        ...actCols.map((sid) =>
+          ACTIVITY_LABELS[sid]
+            ? ACTIVITY_LABELS[sid].split("—")[0].trim()
+            : sid,
+        ),
+      ];
       const colWidths = [...fixedW, ...actCols.map(() => actColW)];
 
-      const rows = studentRows.map(sr => {
-        const actCells = actCols.map(sid => {
+      const rows = studentRows.map((sr) => {
+        const actCells = actCols.map((sid) => {
           const s = sr.perAct[sid];
-          return s && s.total > 0 ? `${Math.round((s.correct / s.total) * 100)}%` : '—';
+          return s && s.total > 0
+            ? `${Math.round((s.correct / s.total) * 100)}%`
+            : "—";
         });
         return [sr.name, sr.overall, sr.time, sr.date, sr.status, ...actCells];
       });
 
       renderParticipantTable(doc, headers, rows, colWidths);
     } else {
-      doc.font(STYLE.fonts.italic).fontSize(STYLE.sizes.sm).fillColor(STYLE.colors.muted)
-        .text('No submissions yet.', L, doc.y, { width: W });
+      doc
+        .font(STYLE.fonts.italic)
+        .fontSize(STYLE.sizes.sm)
+        .fillColor(STYLE.colors.muted)
+        .text("No submissions yet.", L, doc.y, { width: W });
     }
 
     // ── Enhanced Question Difficulty Analysis with skip rate ─────────────────
     const hardMcq = mcqQuestions
-      .filter(q => mcqStats[q.id] && mcqStats[q.id].total > 0)
-      .map(q => {
+      .filter((q) => mcqStats[q.id] && mcqStats[q.id].total > 0)
+      .map((q) => {
         const s = mcqStats[q.id];
-        return { text: safeText(q.text), pct: Math.round((s.correct / s.total) * 100), total: s.total, skipped: s.skipped };
+        return {
+          text: safeText(q.text),
+          pct: Math.round((s.correct / s.total) * 100),
+          total: s.total,
+          skipped: s.skipped,
+        };
       })
       .sort((a, b) => a.pct - b.pct);
 
     const hardTf = tfQuestions
-      .filter(q => tfStats[q.id] && tfStats[q.id].total > 0)
-      .map(q => {
+      .filter((q) => tfStats[q.id] && tfStats[q.id].total > 0)
+      .map((q) => {
         const s = tfStats[q.id];
-        return { text: safeText(q.text), pct: Math.round((s.correct / s.total) * 100), total: s.total, skipped: s.skipped };
+        return {
+          text: safeText(q.text),
+          pct: Math.round((s.correct / s.total) * 100),
+          total: s.total,
+          skipped: s.skipped,
+        };
       })
       .sort((a, b) => a.pct - b.pct);
 
     if (hardMcq.length > 0 || hardTf.length > 0) {
-      renderSectionTitle(doc, 'Question Difficulty Analysis', { text: 'Most Challenging', color: STYLE.colors.warning });
+      renderSectionTitle(doc, "Question Difficulty Analysis", {
+        text: "Most Challenging",
+        color: STYLE.colors.warning,
+      });
 
-      doc.font(STYLE.fonts.italic).fontSize(STYLE.sizes.xs).fillColor(STYLE.colors.muted)
-        .text('Questions below 60% success rate are flagged as difficult. High skip rates indicate confusion.', L, doc.y, { width: W });
+      doc
+        .font(STYLE.fonts.italic)
+        .fontSize(STYLE.sizes.xs)
+        .fillColor(STYLE.colors.muted)
+        .text(
+          "Questions below 60% success rate are flagged as difficult. High skip rates indicate confusion.",
+          L,
+          doc.y,
+          { width: W },
+        );
       doc.moveDown(0.6);
 
       const renderQTable = (label, questions) => {
         if (questions.length === 0) return;
         ensureSpace(doc, 32);
-        doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.base).fillColor(STYLE.colors.neutral)
+        doc
+          .font(STYLE.fonts.bold)
+          .fontSize(STYLE.sizes.base)
+          .fillColor(STYLE.colors.neutral)
           .text(label, L, doc.y, { width: W });
         doc.moveDown(0.3);
 
         const qLabelW = W - 140;
-        const qPctW   = 50;
-        const qSkipW  = 50;
-        const qBarW   = 40;
+        const qPctW = 50;
+        const qSkipW = 50;
+        const qBarW = 40;
 
         // column headers
         ensureSpace(doc, 24);
         const chY = doc.y;
         doc.save();
         doc.rect(L, chY, W, 22).fill(STYLE.colors.tableHdr);
-        doc.rect(L, chY, W, 22).strokeColor(STYLE.colors.border).lineWidth(0.5).stroke();
+        doc
+          .rect(L, chY, W, 22)
+          .strokeColor(STYLE.colors.border)
+          .lineWidth(0.5)
+          .stroke();
         doc.restore();
-        
-        doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.xxs).fillColor(STYLE.colors.muted);
-        doc.text('Question', L + STYLE.spacing.sm, chY + 6, { width: qLabelW });
-        doc.text('Skip %', L + qLabelW + STYLE.spacing.sm, chY + 6, { width: qSkipW });
-        doc.text('Score', L + qLabelW + qSkipW + qBarW + STYLE.spacing.sm, chY + 6, { width: qPctW, align: 'right' });
+
+        doc
+          .font(STYLE.fonts.bold)
+          .fontSize(STYLE.sizes.xxs)
+          .fillColor(STYLE.colors.muted);
+        doc.text("Question", L + STYLE.spacing.sm, chY + 6, { width: qLabelW });
+        doc.text("Skip %", L + qLabelW + STYLE.spacing.sm, chY + 6, {
+          width: qSkipW,
+        });
+        doc.text(
+          "Score",
+          L + qLabelW + qSkipW + qBarW + STYLE.spacing.sm,
+          chY + 6,
+          { width: qPctW, align: "right" },
+        );
         doc.y = chY + 22;
 
         questions.forEach((q, idx) => {
           const isHard = q.pct < 60;
-          const skipRate = q.total > 0 ? Math.round((q.skipped / q.total) * 100) : 0;
-          const barColor = q.pct >= 70 ? STYLE.colors.success : q.pct >= 50 ? STYLE.colors.warning : STYLE.colors.error;
-          const rowH = Math.max(26, doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.sm)
-            .heightOfString(q.text, { width: qLabelW - 8 }) + 12);
+          const skipRate =
+            q.total > 0 ? Math.round((q.skipped / q.total) * 100) : 0;
+          const barColor =
+            q.pct >= 70
+              ? STYLE.colors.success
+              : q.pct >= 50
+                ? STYLE.colors.warning
+                : STYLE.colors.error;
+          const rowH = Math.max(
+            26,
+            doc
+              .font(STYLE.fonts.main)
+              .fontSize(STYLE.sizes.sm)
+              .heightOfString(q.text, { width: qLabelW - 8 }) + 12,
+          );
           ensureSpace(doc, rowH);
           const ry = doc.y;
 
           doc.save();
-          doc.rect(L, ry, W, rowH).fill(idx % 2 === 0 ? STYLE.colors.white : STYLE.colors.altRow);
+          doc
+            .rect(L, ry, W, rowH)
+            .fill(idx % 2 === 0 ? STYLE.colors.white : STYLE.colors.altRow);
           if (isHard) {
             doc.rect(L, ry, 4, rowH).fill(STYLE.colors.error);
           }
-          doc.rect(L, ry, W, rowH).strokeColor(STYLE.colors.border).lineWidth(0.5).stroke();
+          doc
+            .rect(L, ry, W, rowH)
+            .strokeColor(STYLE.colors.border)
+            .lineWidth(0.5)
+            .stroke();
           doc.restore();
 
-          doc.font(isHard ? STYLE.fonts.bold : STYLE.fonts.main).fontSize(STYLE.sizes.sm)
+          doc
+            .font(isHard ? STYLE.fonts.bold : STYLE.fonts.main)
+            .fontSize(STYLE.sizes.sm)
             .fillColor(isHard ? STYLE.colors.error : STYLE.colors.neutral)
             .text(q.text, L + 8, ry + 6, { width: qLabelW - 12 });
 
           // Skip rate
-          doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.sm).fillColor(skipRate > 30 ? STYLE.colors.warning : STYLE.colors.muted);
-          doc.text(`${skipRate}%`, L + qLabelW + STYLE.spacing.sm, ry + 6, { width: qSkipW });
+          doc
+            .font(STYLE.fonts.main)
+            .fontSize(STYLE.sizes.sm)
+            .fillColor(
+              skipRate > 30 ? STYLE.colors.warning : STYLE.colors.muted,
+            );
+          doc.text(`${skipRate}%`, L + qLabelW + STYLE.spacing.sm, ry + 6, {
+            width: qSkipW,
+          });
 
           // Progress bar
-          renderProgressBar(doc, L + qLabelW + qSkipW, ry + (rowH - 10) / 2, qBarW - 4, 10, q.pct, barColor, false);
+          renderProgressBar(
+            doc,
+            L + qLabelW + qSkipW,
+            ry + (rowH - 10) / 2,
+            qBarW - 4,
+            10,
+            q.pct,
+            barColor,
+            false,
+          );
 
           // Score
-          doc.font(STYLE.fonts.bold).fontSize(STYLE.sizes.sm).fillColor(barColor)
-            .text(`${q.pct}%`, L + qLabelW + qSkipW + qBarW, ry + 6, { width: qPctW - 4, align: 'right' });
+          doc
+            .font(STYLE.fonts.bold)
+            .fontSize(STYLE.sizes.sm)
+            .fillColor(barColor)
+            .text(`${q.pct}%`, L + qLabelW + qSkipW + qBarW, ry + 6, {
+              width: qPctW - 4,
+              align: "right",
+            });
 
           doc.y = ry + rowH;
         });
         doc.moveDown(0.7);
       };
 
-      renderQTable('Multiple Choice Questions', hardMcq.slice(0, 10));
-      renderQTable('True / False Questions', hardTf.slice(0, 10));
+      renderQTable("Multiple Choice Questions", hardMcq.slice(0, 10));
+      renderQTable("True / False Questions", hardTf.slice(0, 10));
     }
-
   } catch (err) {
-    try { doc.end(); } catch { /* ignore */ }
+    try {
+      doc.end();
+    } catch {
+      /* ignore */
+    }
     throw err;
   }
 
@@ -2052,12 +3225,14 @@ async function generateWorksheetReportPdf(data, outputPath) {
 // EXPORT 3: Flashcard set submission report PDF
 // ─────────────────────────────────────────────────────────────────────────────
 async function generateFlashcardReportPdf(data, outputPath) {
-  const title           = safeText(data.title) || 'Flashcard Report';
+  const title = safeText(data.title) || "Flashcard Report";
   const totalSubmissions = safeNumber(data.totalSubmissions, 0);
-  const averageScore    = safeNumber(data.averageScore, 0);
-  const medianTimeSec   = safeNumber(data.medianTimeTaken, 0);
-  const participants    = Array.isArray(data.participants) ? data.participants : [];
-  const cards           = Array.isArray(data.cards)        ? data.cards        : [];
+  const averageScore = safeNumber(data.averageScore, 0);
+  const medianTimeSec = safeNumber(data.medianTimeTaken, 0);
+  const participants = Array.isArray(data.participants)
+    ? data.participants
+    : [];
+  const cards = Array.isArray(data.cards) ? data.cards : [];
 
   await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
 
@@ -2067,47 +3242,87 @@ async function generateFlashcardReportPdf(data, outputPath) {
     const L = doc.page.margins.left;
     const W = pageW(doc);
 
-    doc.font('Helvetica-Bold').fontSize(20).fillColor(STYLE.colors.neutral)
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(20)
+      .fillColor(STYLE.colors.neutral)
       .text(title, L, doc.y, { width: W });
     doc.moveDown(0.25);
-    doc.font('Helvetica').fontSize(10).fillColor(STYLE.colors.muted)
-      .text('Flashcard Submission Report', L, doc.y, { width: W });
+    doc
+      .font("Helvetica")
+      .fontSize(10)
+      .fillColor(STYLE.colors.muted)
+      .text("Flashcard Submission Report", L, doc.y, { width: W });
     doc.moveDown(0.5);
-    doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(0.5).strokeColor(STYLE.colors.border).stroke();
+    doc
+      .moveTo(L, doc.y)
+      .lineTo(L + W, doc.y)
+      .lineWidth(0.5)
+      .strokeColor(STYLE.colors.border)
+      .stroke();
     doc.y += 14;
 
     renderStatsRow(doc, [
-      { icon: '👥', label: 'Total Submissions', value: String(totalSubmissions) },
-      { icon: '📊', label: 'Average Score',     value: `${averageScore}%`       },
-      { icon: '⏱',  label: 'Median Time',       value: formatTime(medianTimeSec) },
+      {
+        icon: "👥",
+        label: "Total Submissions",
+        value: String(totalSubmissions),
+      },
+      { icon: "📊", label: "Average Score", value: `${averageScore}%` },
+      { icon: "⏱", label: "Median Time", value: formatTime(medianTimeSec) },
     ]);
 
     if (participants.length > 0) {
-      renderSectionTitle(doc, 'Participant Results');
+      renderSectionTitle(doc, "Participant Results");
       const rows = participants.map((p) => [
         safeText(p.userName),
         `${Math.round(safeNumber(p.score, 0))}%`,
         formatTime(safeNumber(p.timeTaken, 0)),
-        p.submittedAt ? new Date(p.submittedAt).toLocaleDateString() : '',
-        safeText(p.status) || 'completed',
+        p.submittedAt ? new Date(p.submittedAt).toLocaleDateString() : "",
+        safeText(p.status) || "completed",
       ]);
-      renderParticipantTable(doc, ['Participant', 'Score', 'Time', 'Date', 'Status'], rows, [188, 68, 68, 90, 101]);
+      renderParticipantTable(
+        doc,
+        ["Participant", "Score", "Time", "Date", "Status"],
+        rows,
+        [188, 68, 68, 90, 101],
+      );
     } else {
-      doc.font('Helvetica-Oblique').fontSize(10).fillColor(STYLE.colors.muted)
-        .text('No submissions yet.', L, doc.y, { width: W });
+      doc
+        .font("Helvetica-Oblique")
+        .fontSize(10)
+        .fillColor(STYLE.colors.muted)
+        .text("No submissions yet.", L, doc.y, { width: W });
     }
 
     if (cards.length > 0) {
-      renderSectionTitle(doc, 'Card Performance');
-      const cardRows = cards.map((c, i) => [String(i + 1), safeText(c.front), `${safeNumber(c.correctPercentage, 0)}%`]);
-      renderParticipantTable(doc, ['#', 'Card (Front)', 'Success Rate'], cardRows, [30, 388, 97]);
+      renderSectionTitle(doc, "Card Performance");
+      const cardRows = cards.map((c, i) => [
+        String(i + 1),
+        safeText(c.front),
+        `${safeNumber(c.correctPercentage, 0)}%`,
+      ]);
+      renderParticipantTable(
+        doc,
+        ["#", "Card (Front)", "Success Rate"],
+        cardRows,
+        [30, 388, 97],
+      );
     }
   } catch (err) {
-    try { doc.end(); } catch { /* ignore */ }
+    try {
+      doc.end();
+    } catch {
+      /* ignore */
+    }
     throw err;
   }
 
   return finalizeDoc(doc, stream, `${title} — Flashcard Report`, outputPath);
 }
 
-module.exports = { generateWorksheetSubmissionPdf, generateWorksheetReportPdf, generateFlashcardReportPdf };
+module.exports = {
+  generateWorksheetSubmissionPdf,
+  generateWorksheetReportPdf,
+  generateFlashcardReportPdf,
+};
