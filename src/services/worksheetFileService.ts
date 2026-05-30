@@ -110,15 +110,17 @@ async function normalizeToJpeg(
       return await pdfFirstPageToJpeg(buffer);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.startsWith("CANVAS_MODULE_MISSING")) {
-        throw new Error(
-          "PDF_TO_IMAGE_DEPENDENCY_MISSING: PDF-to-image conversion requires the 'canvas' native module. Please install it by running: npm rebuild canvas. If the issue persists, ensure Node.js v22 compatibility and that all build tools (Python, C++ compiler) are installed.",
-        );
-      }
-      throw err;
+
+      console.error("[PDF ERROR]", msg);
+
+      // ⚠️ IMPORTANT: fallback instead of crashing full pipeline
+      throw new Error(
+        "PDF_TO_IMAGE_FAILED: Unable to process PDF. Please upload a JPG/PNG image instead.",
+      );
     }
   }
-  // For images: resize to max 1600px wide (keeps aspect ratio), convert to JPEG
+
+  // Image path
   return sharp(buffer)
     .resize({ width: 1600, withoutEnlargement: true })
     .jpeg({ quality: 90 })

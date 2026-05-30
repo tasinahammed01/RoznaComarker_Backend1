@@ -9,10 +9,12 @@ import { WorksheetDocumentModel } from "../models/WorksheetDocument";
 
 const router = Router();
 
-// Multer: memory storage, 10 MB max, strict MIME type allow-list
+// ─────────────────────────────────────────────
+// MULTER CONFIG
+// ─────────────────────────────────────────────
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
   fileFilter: (_req, file, cb) => {
     const allowed = [
       "image/jpeg",
@@ -20,6 +22,7 @@ const upload = multer({
       "image/webp",
       "application/pdf",
     ];
+
     if (allowed.includes(file.mimetype)) {
       cb(null, true);
     } else {
@@ -28,106 +31,128 @@ const upload = multer({
   },
 });
 
-/**
- * POST /api/worksheets/generate/file
- * Content-Type: multipart/form-data
- *
- * Fields:
- *   file        File    required — PDF, JPG, PNG, or WEBP; max 10 MB
- *   teacherId   string  required
- *   gradeLevel  string  required
- *   topic       string  optional — AI detects from file when omitted
- *   subject     string  optional — AI detects from file when omitted
- */
-router.post("/", upload.single("file"), async (req: Request, res: Response) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
-        error: "NO_FILE",
-        message: "Please upload a PDF or image file (JPG, PNG, WEBP).",
+// ─────────────────────────────────────────────
+// ROUTE
+// ─────────────────────────────────────────────
+router.post(
+  "/",
+  upload.single("file"),
+  async (req: Request, res: Response) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          error: "NO_FILE",
+          message: "Please upload a PDF or image file (JPG, PNG, WEBP).",
+        });
+      }
+
+      const { teacherId, gradeLevel, topic, subject } = req.body as Record<
+        string,
+        unknown
+      >;
+
+      if (!teacherId || typeof teacherId !== "string") {
+        return res.status(400).json({
+          error: "MISSING_FIELD",
+          message: "teacherId is required.",
+        });
+      }
+
+      if (!gradeLevel || typeof gradeLevel !== "string") {
+        return res.status(400).json({
+          error: "MISSING_FIELD",
+          message: "gradeLevel is required.",
+        });
+      }
+
+      // ─────────────────────────────────────────────
+      // MAIN WORKFLOW
+      // ─────────────────────────────────────────────
+      const worksheet = await generateWorksheetFromFile({
+        fileBuffer: req.file.buffer,
+        mimeType: req.file.mimetype,
+        topic:
+          typeof topic === "string" && topic.trim()
+            ? topic.trim()
+            : undefined,
+        subject:
+          typeof subject === "string" && subject.trim()
+            ? subject.trim()
+            : undefined,
+        gradeLevel: gradeLevel.trim(),
+        teacherId: teacherId.trim(),
       });
-    }
 
-    const { teacherId, gradeLevel, topic, subject } = req.body as Record<
-      string,
-      unknown
-    >;
-
-    if (!teacherId || typeof teacherId !== "string") {
-      return res.status(400).json({
-        error: "MISSING_FIELD",
-        message: "teacherId is required.",
+      // DB SAVE (non-blocking)
+      WorksheetDocumentModel.create(worksheet).catch((dbErr: unknown) => {
+        console.error("[worksheetFileRoute] DB save failed:", dbErr);
       });
-    }
 
-    if (!gradeLevel || typeof gradeLevel !== "string") {
-      return res.status(400).json({
-        error: "MISSING_FIELD",
-        message: "gradeLevel is required.",
-      });
-    }
+      return res.status(201).json(worksheet);
+    } catch (err: unknown) {
+      console.error("[worksheetFileRoute] Error:", err);
 
-    const worksheet = await generateWorksheetFromFile({
-      fileBuffer: req.file.buffer,
-      mimeType: req.file.mimetype,
-      topic:
-        typeof topic === "string" && topic.trim() ? topic.trim() : undefined,
-      subject:
-        typeof subject === "string" && subject.trim()
-          ? subject.trim()
-          : undefined,
-      gradeLevel: gradeLevel.trim(),
-      teacherId: teacherId.trim(),
-    });
+      const error = err as Error & { status?: number };
+      const message = error?.message || "";
 
-    // Persist to DB (non-blocking — generation result is returned even if save fails)
-    WorksheetDocumentModel.create(worksheet).catch((dbErr: unknown) => {
-      console.error("[worksheetFileRoute] DB save failed:", dbErr);
-    });
+      // ─────────────────────────────────────────────
+      // FILE TYPE ERROR
+      // ─────────────────────────────────────────────
+      if (message === "UNSUPPORTED_FILE_TYPE") {
+        return res.status(415).json({
+          error: "UNSUPPORTED_FILE_TYPE",
+          message:
+            "Only PDF, JPG, PNG, and WEBP files are supported.",
+        });
+      }
 
-    return res.status(201).json(worksheet);
-  } catch (err: unknown) {
-    console.error("[worksheetFileRoute] Error:", err);
+      // ─────────────────────────────────────────────
+      // PDF / CANVAS DEPENDENCY ERROR
+      // ─────────────────────────────────────────────
+      if (
+        message.includes("CANVAS_UNAVAILABLE") ||
+        message.includes("CANVAS_MODULE_MISSING") ||
+        message.includes("PDF_TO_IMAGE_FAILED")
+      ) {
+        return res.status(503).json({
+          error: "PDF_RENDER_SERVICE_UNAVAILABLE",
+          message:
+            "PDF processing is unavailable on the server. Please upload an image (JPG/PNG/WEBP) instead.",
+        });
+      }
 
-    const error = err as Record<string, unknown>;
-    const message =
-      typeof error?.message === "string" ? (error.message as string) : "";
+      // ─────────────────────────────────────────────
+      // PDF PARSING ERROR
+      // ─────────────────────────────────────────────
+      if (message.includes("PDF_RENDER_FAILED")) {
+        return res.status(422).json({
+          error: "PDF_RENDER_FAILED",
+          message:
+            "This PDF could not be processed. Please convert it to an image and try again.",
+        });
+      }
 
-    if (message.startsWith("PDF_TO_IMAGE_DEPENDENCY_MISSING")) {
-      return res.status(503).json({
-        error: "PDF_TO_IMAGE_DEPENDENCY_MISSING",
+      // ─────────────────────────────────────────────
+      // RATE LIMIT ERROR
+      // ─────────────────────────────────────────────
+      if (error?.status === 429) {
+        return res.status(429).json({
+          error: "RATE_LIMIT",
+          message:
+            "Too many requests. Please wait a moment and try again.",
+        });
+      }
+
+      // ─────────────────────────────────────────────
+      // GENERIC ERROR
+      // ─────────────────────────────────────────────
+      return res.status(500).json({
+        error: "GENERATION_FAILED",
         message:
-          "PDF-to-image conversion is currently unavailable due to missing dependencies. Please upload an image (JPG, PNG, WEBP) instead of a PDF, or contact support to resolve the server configuration.",
+          message || "Worksheet generation failed. Please try again.",
       });
     }
-
-    if (message.startsWith("PDF_RENDER_FAILED")) {
-      return res.status(422).json({
-        error: "PDF_RENDER_FAILED",
-        message:
-          "Could not read this PDF. Please try uploading an image instead.",
-      });
-    }
-
-    if (message === "UNSUPPORTED_FILE_TYPE") {
-      return res.status(415).json({
-        error: "UNSUPPORTED_FILE_TYPE",
-        message: "Only PDF, JPG, PNG, and WEBP files are supported.",
-      });
-    }
-
-    if (error?.status === 429) {
-      return res.status(429).json({
-        error: "RATE_LIMIT",
-        message: "Too many requests. Please wait 30 seconds and try again.",
-      });
-    }
-
-    return res.status(500).json({
-      error: "GENERATION_FAILED",
-      message: message || "Worksheet generation failed. Please try again.",
-    });
   }
-});
+);
 
 export default router;
