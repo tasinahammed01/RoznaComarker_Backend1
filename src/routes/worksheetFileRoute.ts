@@ -93,6 +93,14 @@ router.post("/", upload.single("file"), async (req: Request, res: Response) => {
     const message =
       typeof error?.message === "string" ? (error.message as string) : "";
 
+    if (message.startsWith("PDF_TO_IMAGE_DEPENDENCY_MISSING")) {
+      return res.status(503).json({
+        error: "PDF_TO_IMAGE_DEPENDENCY_MISSING",
+        message:
+          "PDF-to-image conversion is currently unavailable due to missing dependencies. Please upload an image (JPG, PNG, WEBP) instead of a PDF, or contact support to resolve the server configuration.",
+      });
+    }
+
     if (message.startsWith("PDF_RENDER_FAILED")) {
       return res.status(422).json({
         error: "PDF_RENDER_FAILED",
