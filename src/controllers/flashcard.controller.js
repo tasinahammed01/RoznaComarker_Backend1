@@ -280,28 +280,45 @@ async function searchUnsplashImages(query, perPage = 1) {
       return [];
     }
 
-    const response = await fetch(
-      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=${perPage}`,
-      {
-        headers: {
-          Authorization: `Client-ID ${unsplashAccessKey}`,
-        },
-      },
-    );
+    // Add 10-second timeout to prevent hanging on slow networks
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-    if (!response.ok) {
-      console.warn(
-        "[UNSPLASH] Search failed:",
-        response.status,
-        response.statusText,
+    try {
+      const response = await fetch(
+        `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=${perPage}`,
+        {
+          headers: {
+            Authorization: `Client-ID ${unsplashAccessKey}`,
+          },
+          signal: controller.signal,
+        },
       );
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        console.warn(
+          "[UNSPLASH] Search failed:",
+          response.status,
+          response.statusText,
+        );
+        return [];
+      }
+
+      const data = await response.json();
+      return data.results?.map((result) => result.urls?.regular) || [];
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      if (fetchError.name === "AbortError") {
+        console.warn("[UNSPLASH] Search timeout after 10 seconds for query:", query);
+      } else {
+        console.error("[UNSPLASH] Search error:", fetchError.message);
+      }
       return [];
     }
-
-    const data = await response.json();
-    return data.results?.map((result) => result.urls?.regular) || [];
   } catch (error) {
-    console.error("[UNSPLASH] Search error:", error.message);
+    console.error("[UNSPLASH] Outer search error:", error.message);
     return [];
   }
 }

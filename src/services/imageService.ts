@@ -16,37 +16,61 @@ export async function fetchTopicImage(query: string): Promise<string> {
 
   // --- Attempt 1: Unsplash ---
   try {
+    // Add 10-second timeout to prevent hanging on slow networks
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     const res = await fetch(
       `https://api.unsplash.com/search/photos?query=${encodedQuery}&per_page=1&orientation=portrait`,
       {
         headers: {
           Authorization: `Client-ID ${process.env.UNSPLASH_ACCESS_KEY}`,
         },
+        signal: controller.signal,
       }
     );
+
+    clearTimeout(timeoutId);
 
     if (res.ok) {
       const data = (await res.json()) as UnsplashSearchResponse;
       const url = data?.results?.[0]?.urls?.regular;
       if (url) return url;
     }
-  } catch (err) {
-    console.warn("[imageService] Unsplash failed:", err);
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      console.warn("[imageService] Unsplash timeout after 10 seconds");
+    } else {
+      console.warn("[imageService] Unsplash failed:", err);
+    }
   }
 
   // --- Attempt 2: Pixabay ---
   try {
+    // Add 10-second timeout for Pixabay as well
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     const res = await fetch(
-      `https://pixabay.com/api/?key=${process.env.PIXABAY_API_KEY}&q=${encodedQuery}&image_type=illustration&per_page=3&safesearch=true`
+      `https://pixabay.com/api/?key=${process.env.PIXABAY_API_KEY}&q=${encodedQuery}&image_type=illustration&per_page=3&safesearch=true`,
+      {
+        signal: controller.signal,
+      }
     );
+
+    clearTimeout(timeoutId);
 
     if (res.ok) {
       const data = (await res.json()) as PixabaySearchResponse;
       const url = data?.hits?.[0]?.webformatURL;
       if (url) return url;
     }
-  } catch (err) {
-    console.warn("[imageService] Pixabay failed:", err);
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      console.warn("[imageService] Pixabay timeout after 10 seconds");
+    } else {
+      console.warn("[imageService] Pixabay failed:", err);
+    }
   }
 
   // --- Fallback: placeholder ---

@@ -10,7 +10,6 @@ const logger = require("../utils/logger");
 async function searchUnsplashImages(req, res) {
   const t0 = Date.now();
 
-  try {
     const { q, per_page } = req.query;
 
     if (!q || !String(q).trim()) {
@@ -36,17 +35,25 @@ async function searchUnsplashImages(req, res) {
       `[UNSPLASH] Search start — query="${query}" per_page=${perPage}`,
     );
 
-    const response = await fetch(
-      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=${perPage}&orientation=landscape`,
-      {
-        headers: {
-          Authorization: `Client-ID ${unsplashAccessKey}`,
-          Accept: "application/json",
-        },
-      },
-    );
+    // Add 10-second timeout to prevent hanging on slow networks
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-    const tApi = Date.now();
+    try {
+      const response = await fetch(
+        `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=${perPage}&orientation=landscape`,
+        {
+          headers: {
+            Authorization: `Client-ID ${unsplashAccessKey}`,
+            Accept: "application/json",
+          },
+          signal: controller.signal,
+        },
+      );
+
+      clearTimeout(timeoutId);
+
+      const tApi = Date.now();
     logger.info(
       `[UNSPLASH] Unsplash API responded in ${tApi - t0} ms — status ${response.status}`,
     );
@@ -87,12 +94,22 @@ async function searchUnsplashImages(req, res) {
       query,
       count: results.length,
     });
-  } catch (error) {
-    logger.error("[UNSPLASH] Search error:", error);
-    return res
-      .status(500)
-      .json({ success: false, message: "Internal server error" });
-  }
+    } catch (error) {
+      clearTimeout(timeoutId);
+      
+      if (error.name === "AbortError") {
+        logger.error("[UNSPLASH] Request timeout after 10 seconds");
+        return res.status(408).json({
+          success: false,
+          message: "Unsplash API request timed out. Please try again.",
+        });
+      }
+      
+      logger.error("[UNSPLASH] Search error:", error);
+      return res
+        .status(500)
+        .json({ success: false, message: "Internal server error" });
+    }
 }
 
 module.exports = { searchUnsplashImages };
