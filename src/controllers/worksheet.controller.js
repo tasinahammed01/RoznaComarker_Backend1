@@ -25,6 +25,7 @@ const {
   publishNotification,
 } = require("../services/notificationRealtime.service");
 const logger = require("../utils/logger");
+const { callVisionModelWithFallback, parseVisionJSON } = require("../utils/visionAI.utils");
 const {
   generateWorksheetTheme,
   getDefaultTheme,
@@ -39,10 +40,16 @@ const {
 } = require("../services/fileContentExtractor.service");
 const { generateChatCompletion } = require("../services/aiGeneration.service");
 const multer = require("multer");
-const { jsonrepair } = require("jsonrepair");
+const jsonrepair = require("jsonrepair");
 const {
   generateHtmlWorksheetFromFile,
 } = require("../services/geminiWorksheet.service");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+const vision = require('@google-cloud/vision');
+const fs = require("fs");
+const path = require("path");
+const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
+const { createCanvas } = require("canvas");
 
 // Configure multer for in-memory file storage (temp)
 const upload = multer({
@@ -51,6 +58,98 @@ const upload = multer({
     fileSize: 10 * 1024 * 1024, // 10MB limit
   },
 });
+
+// Helper: Convert PDF buffer to base64 image using pdfjs-dist + canvas
+async function convertPdfToBase64Image(fileBuffer) {
+  // Load PDF from buffer
+  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(fileBuffer) });
+  const pdf = await loadingTask.promise;
+  
+  // Get first page
+  const page = await pdf.getPage(1);
+  
+  // Set scale for good quality
+  const scale = 1.5;
+  const viewport = page.getViewport({ scale });
+  
+  // Create canvas
+  const canvas = createCanvas(viewport.width, viewport.height);
+  const context = canvas.getContext('2d');
+  
+  // Render PDF page to canvas
+  await page.render({
+    canvasContext: context,
+    viewport: viewport
+  }).promise;
+  
+  // Export as base64 JPEG
+  const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+  return base64;
+}
+
+/**
+ * Helper: Fetch a single Unsplash image for labeling activities
+ * @param {string} topic - The worksheet topic to search for relevant images
+ * @returns {Promise<string>} Image URL or fallback URL
+ */
+async function fetchUnsplashImageForLabeling(topic) {
+  const unsplashAccessKey = process.env.UNSPLASH_ACCESS_KEY;
+  const fallbackUrl = 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=800';
+
+  if (!unsplashAccessKey) {
+    logger.warn("[LABELING] UNSPLASH_ACCESS_KEY not configured, using fallback image");
+    return fallbackUrl;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch(
+      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(topic)}&per_page=1&orientation=landscape`,
+      {
+        headers: {
+          Authorization: `Client-ID ${unsplashAccessKey}`,
+          Accept: "application/json",
+        },
+        signal: controller.signal,
+      },
+    );
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      logger.warn(`[LABELING] Unsplash API failed: ${response.status}, using fallback`);
+      return fallbackUrl;
+    }
+
+    const data = await response.json();
+    const results = data.results || [];
+
+    if (results.length === 0) {
+      logger.warn("[LABELING] No Unsplash results found, using fallback");
+      return fallbackUrl;
+    }
+
+    // Use regular URL (not small) for better quality in labeling activity
+    const imageUrl = results[0].urls?.regular || results[0].urls?.full || results[0].urls?.small;
+    
+    if (!imageUrl) {
+      logger.warn("[LABELING] Unsplash result has no URL, using fallback");
+      return fallbackUrl;
+    }
+
+    logger.info(`[LABELING] Fetched Unsplash image for topic: ${topic}`);
+    return imageUrl;
+  } catch (error) {
+    if (error.name === "AbortError") {
+      logger.warn("[LABELING] Unsplash request timeout, using fallback");
+    } else {
+      logger.error("[LABELING] Unsplash fetch error:", error);
+    }
+    return fallbackUrl;
+  }
+}
 
 function sendSuccess(res, data, statusCode = 200) {
   return res.status(statusCode).json({ success: true, data });
@@ -264,15 +363,16 @@ function sanitizeActivity4BlankIds(activity4) {
 }
 
 /**
- * Builds the AI prompt for worksheet generation.
- * Compact prompt to minimise input tokens, leaving maximum room for output.
+ * Builds the AI prompt for worksheet generation with template structure.
+ * Includes design guidance from analyzed template.
  */
-function buildWorksheetPrompt(topic, language, difficulty, resolvedTypes) {
+function buildWorksheetPromptWithTemplate(topic, language, difficulty, resolvedTypes, templateStructure) {
   const DEFAULT_TYPES = [
     "ordering",
     "classification",
     "multipleChoice",
     "fillBlanks",
+    "labeling",
   ];
   const types =
     Array.isArray(resolvedTypes) && resolvedTypes.length > 0
@@ -292,6 +392,90 @@ function buildWorksheetPrompt(topic, language, difficulty, resolvedTypes) {
       "questions[] each {id,text,correctAnswer(bool),explanation}. 5-6 questions.",
     shortAnswer:
       "questions[] each {id,text,modelAnswer,maxWords:50}. 3-4 questions.",
+    labeling: `imageUrl(string - a real Unsplash image URL relevant to the topic, e.g. https://images.unsplash.com/photo-... use a real working URL), labels[] each {id(string),text(string - the label name e.g. "Roots","Trunk","Leaves"),x(number 10-90 - percentage position from left),y(number 10-90 - percentage position from top),targetId(string same as id)}. 5-8 labels. IMPORTANT: x and y coordinates must be spread across the image, not all clustered together. Think about where that part actually appears on the image and place the label there.`,
+  };
+
+  const activityList = types
+    .map(
+      (t, i) =>
+        `Activity ${i + 1}: type="${t}" — data must contain: ${typeInstructions[t] || "appropriate fields"}`,
+    )
+    .join("\n");
+
+  // Build template design guidance
+  const templateGuidance = templateStructure ? `
+IMPORTANT: Generate the worksheet following this EXACT visual design structure that the teacher provided as a template:
+
+Layout: ${templateStructure.pageLayout || 'single_column'}
+Visual Style: ${templateStructure.visualStyle || 'structured'}
+Has student info header: ${templateStructure.hasStudentInfoSection || false}
+Design notes: ${templateStructure.designNotes || 'N/A'}
+
+Sections to generate (in this exact order):
+${templateStructure.sections?.map((s, i) => `- Section ${i + 1}: ${s.type} (${s.questionCount} questions) - ${s.layoutHint || 'standard layout'}`).join('\n') || 'No sections specified'}
+
+The teacher wants the final worksheet to look and feel like their template but with new content about: ${topic}
+` : '';
+
+  return `Generate an educational worksheet as valid JSON only.
+No markdown. No explanation. Raw JSON object only. Start with { end with }.
+
+Topic: ${topic}
+Difficulty: ${difficulty || "medium"}
+Language: ${language || "English"}
+
+${templateGuidance}
+
+Return this exact structure:
+{
+  "title": "...",
+  "description": "...",
+  "subject": "...",
+  "tags": ["..."],
+  "estimatedMinutes": ${types.length * 5},
+  "conceptExplanation": {"title":"...","body":"2-3 paragraphs","keyPoints":["...","...","..."]},
+  "activities": [ ...${types.length} objects... ]
+}
+
+Generate EXACTLY ${types.length} activities:
+${activityList}
+
+Each activity object: {"type":"...","title":"...","instructions":"...","data":{...},"order":N}
+All IDs unique strings. Replace ALL placeholder text with real content about: ${topic}
+CRITICAL: Return complete valid JSON. Do not truncate.`;
+}
+
+/**
+ * Builds the AI prompt for worksheet generation.
+ * Compact prompt to minimise input tokens, leaving maximum room for output.
+ */
+function buildWorksheetPrompt(topic, language, difficulty, resolvedTypes) {
+  const DEFAULT_TYPES = [
+    "ordering",
+    "classification",
+    "multipleChoice",
+    "fillBlanks",
+    "labeling",
+  ];
+  const types =
+    Array.isArray(resolvedTypes) && resolvedTypes.length > 0
+      ? resolvedTypes
+      : DEFAULT_TYPES;
+
+  const typeInstructions = {
+    ordering: "items[] each {id,emoji,name,role,correctOrder(int)}. 4-6 items.",
+    classification:
+      "categories[](2-3 strings), items[] each {id,emoji,name,description,correctCategory}. 6-8 items.",
+    multipleChoice:
+      "questions[] each {id,text,options[4 strings],correctAnswer(string)}. 5 questions.",
+    fillBlanks:
+      'wordBank[5 strings], sentences[] each {id,parts[{type:"text",value}|{type:"blank",blankId,correctAnswer}]}. 5 sentences.',
+    matching: "pairs[] each {id,leftItem:{text},rightItem:{text}}. 5-6 pairs.",
+    trueFalse:
+      "questions[] each {id,text,correctAnswer(bool),explanation}. 5-6 questions.",
+    shortAnswer:
+      "questions[] each {id,text,modelAnswer,maxWords:50}. 3-4 questions.",
+    labeling: `imageUrl(string - a real Unsplash image URL relevant to the topic, e.g. https://images.unsplash.com/photo-... use a real working URL), labels[] each {id(string),text(string - the label name e.g. "Roots","Trunk","Leaves"),x(number 10-90 - percentage position from left),y(number 10-90 - percentage position from top),targetId(string same as id)}. 5-8 labels. IMPORTANT: x and y coordinates must be spread across the image, not all clustered together. Think about where that part actually appears on the image and place the label there.`,
   };
 
   const activityList = types
@@ -331,7 +515,7 @@ CRITICAL: Return complete valid JSON. Do not truncate.`;
  * POST /api/worksheets/generate
  * Auth: teacher only
  * Generates a worksheet draft via AI (does NOT save to DB).
- * Accepts: { inputType:'topic', content, questionCount, language, difficulty, questionTypes }
+ * Accepts: { inputType:'topic', content, questionCount, language, difficulty, questionTypes, templateStructure }
  */
 async function generateWorksheet(req, res) {
   console.log("[GENERATE WORKSHEET] req.body:", JSON.stringify(req.body));
@@ -342,6 +526,7 @@ async function generateWorksheet(req, res) {
       language = "English",
       difficulty = "medium",
       activityTypes = null,
+      templateStructure = null,
     } = req.body;
 
     if (inputType === "image") {
@@ -367,6 +552,7 @@ async function generateWorksheet(req, res) {
       "classification",
       "multipleChoice",
       "fillBlanks",
+      "labeling",
     ];
     let resolvedTypes =
       Array.isArray(activityTypes) && activityTypes.length > 0
@@ -376,12 +562,25 @@ async function generateWorksheet(req, res) {
     console.log("[GENERATE] Resolved activity types:", resolvedTypes);
     console.log("[GENERATE] Topic:", sourceText.slice(0, 100));
 
-    const prompt = buildWorksheetPrompt(
-      sourceText,
-      language,
-      difficulty,
-      resolvedTypes,
-    );
+    // If templateStructure is provided, modify the prompt to include design structure
+    let prompt;
+    if (templateStructure && typeof templateStructure === "object") {
+      console.log("[GENERATE] Using template structure for design guidance");
+      prompt = buildWorksheetPromptWithTemplate(
+        sourceText,
+        language,
+        difficulty,
+        resolvedTypes,
+        templateStructure
+      );
+    } else {
+      prompt = buildWorksheetPrompt(
+        sourceText,
+        language,
+        difficulty,
+        resolvedTypes,
+      );
+    }
 
     // Use structured output for reliable JSON
     const rawText = await generateChatCompletion(
@@ -421,6 +620,16 @@ async function generateWorksheet(req, res) {
       "| types:",
       parsed.activities.map((a) => a.type).join(", "),
     );
+
+    // Fetch Unsplash images for labeling activities
+    for (const activity of parsed.activities) {
+      if (activity.type === 'labeling' && activity.data) {
+        console.log("[GENERATE] Fetching Unsplash image for labeling activity");
+        const imageUrl = await fetchUnsplashImageForLabeling(sourceText);
+        activity.data.imageUrl = imageUrl;
+        console.log("[GENERATE] Injected imageUrl for labeling activity:", imageUrl);
+      }
+    }
 
     return res.json({
       success: true,
@@ -514,6 +723,7 @@ async function uploadAndGenerate(req, res) {
       "classification",
       "multipleChoice",
       "fillBlanks",
+      "labeling",
     ];
     let resolvedTypes =
       Array.isArray(rawActivityTypes) && rawActivityTypes.length > 0
@@ -572,6 +782,16 @@ async function uploadAndGenerate(req, res) {
       parsed.activities.map((a) => a.type).join(", "),
     );
 
+    // Fetch Unsplash images for labeling activities
+    for (const activity of parsed.activities) {
+      if (activity.type === 'labeling' && activity.data) {
+        console.log("[UPLOAD AND GENERATE] Fetching Unsplash image for labeling activity");
+        const imageUrl = await fetchUnsplashImageForLabeling(extractedText);
+        activity.data.imageUrl = imageUrl;
+        console.log("[UPLOAD AND GENERATE] Injected imageUrl for labeling activity:", imageUrl);
+      }
+    }
+
     return res.json({
       success: true,
       worksheet: parsed,
@@ -605,6 +825,262 @@ async function uploadAndGenerate(req, res) {
       error: error.message,
     });
   }
+}
+
+/**
+ * POST /api/worksheets/generate-from-file
+ * Auth: teacher only
+ * Uploads a file (PDF/DOCX/TXT/PNG/JPG), analyzes it with Gemini Vision,
+ * and generates a new worksheet matching the same format and activity types.
+ * Accepts: multipart/form-data with file, topic, subject, gradeLevel, difficulty, language
+ */
+async function generateFromFile(req, res) {
+  console.log("[GENERATE FROM FILE] Starting Gemini file analysis");
+
+  if (!req.file) {
+    return sendError(res, 400, "No file uploaded");
+  }
+
+  // Check if GEMINI_API_KEY is configured
+  if (!process.env.GEMINI_API_KEY) {
+    console.error("[GENERATE FROM FILE] GEMINI_API_KEY not configured");
+    return sendError(
+      res,
+      500,
+      "AI service not configured. Please contact admin."
+    );
+  }
+
+  try {
+    // Validate file
+    const validation = validateFile(req.file);
+    if (!validation.valid) {
+      return sendError(res, 400, validation.error);
+    }
+
+    console.log(
+      "[GENERATE FROM FILE] File validated:",
+      req.file.originalname,
+      req.file.mimetype
+    );
+
+    // Extract content from file
+    let extractedText;
+    try {
+      extractedText = await extractContent(
+        req.file.buffer,
+        req.file.mimetype,
+        req.file.originalname
+      );
+    } catch (extractionError) {
+      console.error(
+        "[GENERATE FROM FILE] Extraction failed:",
+        extractionError.message
+      );
+      return sendError(res, 400, extractionError.message);
+    }
+
+    console.log(
+      "[GENERATE FROM FILE] Content extracted, length:",
+      extractedText.length
+    );
+
+    // Get generation options from form data
+    const topic = req.body.topic || "";
+    const subject = req.body.subject || "General";
+    const gradeLevel = req.body.gradeLevel || "Not specified";
+    const difficulty = req.body.difficulty || "medium";
+    const language = req.body.language || "English";
+
+    if (!topic || topic.trim().length === 0) {
+      return sendError(res, 400, "Topic is required");
+    }
+
+    // Initialize Gemini
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+    // Build content array for Gemini
+    let contentParts = [];
+
+    // For images and PDFs, send as base64
+    if (
+      req.file.mimetype.startsWith("image/") ||
+      req.file.mimetype === "application/pdf"
+    ) {
+      const base64Data = req.file.buffer.toString("base64");
+      contentParts.push({
+        inlineData: {
+          mimeType: req.file.mimetype,
+          data: base64Data,
+        },
+      });
+    }
+
+    // Add text content
+    contentParts.push({
+      text: buildGeminiPrompt(
+        topic,
+        subject,
+        gradeLevel,
+        difficulty,
+        language,
+        extractedText
+      ),
+    });
+
+    console.log(
+      "[GENERATE FROM FILE] Sending to Gemini with",
+      contentParts.length,
+      "parts"
+    );
+
+    // Call Gemini
+    const result = await model.generateContent(contentParts);
+    const responseText = result.response.text();
+
+    console.log("[GENERATE FROM FILE] Gemini response length:", responseText.length);
+
+    // Clean and parse JSON response
+    const cleaned = responseText.replace(/```json|```/g, "").trim();
+    let parsed;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (parseError) {
+      console.error("[GENERATE FROM FILE] JSON parse error:", parseError.message);
+      // Try jsonrepair
+      try {
+        const repaired = require("jsonrepair")(cleaned);
+        parsed = JSON.parse(repaired);
+      } catch (repairError) {
+        console.error("[GENERATE FROM FILE] JSON repair failed:", repairError.message);
+        return res.status(500).json({
+          success: false,
+          message: "Invalid response format from AI",
+          error: "Could not parse generated worksheet structure",
+        });
+      }
+    }
+
+    // Validate parsed result
+    if (!parsed || typeof parsed !== "object") {
+      return res.status(500).json({
+        success: false,
+        message: "Invalid worksheet structure",
+        error: "Generated result is not a valid object",
+      });
+    }
+
+    // Ensure title exists
+    if (!parsed.title || typeof parsed.title !== "string") {
+      parsed.title = `${topic.slice(0, 50)} Worksheet`;
+    }
+
+    // Ensure activities array exists
+    if (!Array.isArray(parsed.activities) || parsed.activities.length === 0) {
+      return res.status(500).json({
+        success: false,
+        message: "Invalid worksheet structure",
+        error: "No activities in generated worksheet",
+      });
+    }
+
+    console.log(
+      "[GENERATE FROM FILE] Success — activities:",
+      parsed.activities.length,
+      "| types:",
+      parsed.activities.map((a) => a.type).join(", ")
+    );
+
+    return res.json({
+      success: true,
+      worksheet: parsed,
+      sourceContent: extractedText.slice(0, 500),
+      fileName: req.file.originalname,
+    });
+  } catch (error) {
+    console.error("[GENERATE FROM FILE] Error:", error.message);
+
+    // Handle Gemini-specific errors
+    if (error.message && error.message.includes("API key")) {
+      return sendError(
+        res,
+        500,
+        "AI service authentication failed. Please check API configuration."
+      );
+    }
+
+    if (error.message && error.message.includes("429")) {
+      return res.status(429).json({
+        success: false,
+        message: "AI quota exceeded. Please try again later.",
+      });
+    }
+
+    if (error.message && error.message.includes("400")) {
+      return sendError(res, 400, "Invalid request to AI service.");
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Worksheet generation failed",
+      error: error.message,
+    });
+  }
+}
+
+/**
+ * Build the prompt for Gemini to generate a worksheet based on uploaded file.
+ */
+function buildGeminiPrompt(topic, subject, gradeLevel, difficulty, language, extractedContent) {
+  return `You are an expert educational worksheet creator.
+
+Analyze the uploaded worksheet content carefully and identify:
+1. The activity types used (e.g., multiple_choice, fill_in_blanks, matching, ordering, true_false, short_answer)
+2. The number of questions per activity
+3. The difficulty level and structure
+4. The formatting and style
+
+Now generate a BRAND NEW worksheet with these specifications:
+- Topic: ${topic}
+- Subject: ${subject}
+- Grade Level: ${gradeLevel}
+- Difficulty: ${difficulty}
+- Language: ${language}
+
+USE THE EXACT SAME activity types, structure, and number of questions as identified from the example.
+
+Return ONLY a valid JSON object. No markdown, no explanation, no extra text.
+Format exactly as shown:
+{
+  "title": "worksheet title related to ${topic}",
+  "topic": "${topic}",
+  "subject": "${subject}",
+  "difficulty": "${difficulty}",
+  "language": "${language}",
+  "gradeLevel": "${gradeLevel}",
+  "description": "Brief description of the worksheet",
+  "activities": [
+    {
+      "type": "multiple_choice | fill_in_blanks | matching | ordering | true_false | short_answer",
+      "title": "Activity title",
+      "instruction": "Clear instruction for students",
+      "questions": [
+        {
+          "id": 1,
+          "question": "question text",
+          "options": ["A", "B", "C", "D"],
+          "answer": "correct answer"
+        }
+      ]
+    }
+  ]
+}
+
+Example structure from the uploaded file:
+${extractedContent.slice(0, 1000)}
+
+Generate new content with the SAME activity types and question count as the example. Make all content original and related to: ${topic}`;
 }
 
 /**
@@ -1996,7 +2472,7 @@ async function shareWorksheet(req, res) {
       }
     }
 
-    const shareUrl = `${process.env.FRONTEND_URL || "http://82.112.234.151:4200"}/shared/worksheets/${worksheet.shareToken}`;
+    const shareUrl = `${process.env.FRONTEND_URL || "http://localhost:4200"}/shared/worksheets/${worksheet.shareToken}`;
 
     return res.json({
       success: true,
@@ -2267,16 +2743,25 @@ async function generateHtmlWorksheet(req, res) {
 
     console.log("[GEMINI HTML WORKSHEET] Options:", JSON.stringify(options));
 
-    const { html, title } = await generateHtmlWorksheetFromFile(
+    // Call generation service which may use Gemini or Groq fallback.
+    const worksheetResult = await generateHtmlWorksheetFromFile(
       req.file.buffer,
       req.file.mimetype,
       req.file.originalname,
       options,
     );
 
+    const usedProvider = worksheetResult?.provider || 'gemini';
+    const html = worksheetResult.html;
+    const title = worksheetResult.title;
+
     console.log(
-      `[GEMINI HTML WORKSHEET] Success — title: "${title}", html length: ${html.length}`,
+      `[GEMINI HTML WORKSHEET] Success — title: "${title}", html length: ${html?.length || 0}`,
     );
+
+    console.log('[WORKSHEET] Final response being sent. Provider:', usedProvider,
+      '| Data type:', typeof worksheetResult,
+      '| Keys:', worksheetResult ? Object.keys(worksheetResult) : 'null');
 
     return res.json({
       success: true,
@@ -2294,9 +2779,1476 @@ async function generateHtmlWorksheet(req, res) {
   }
 }
 
+/**
+ * POST /api/worksheets/analyze-template
+ * Auth: teacher only
+ * Analyzes a worksheet DESIGN TEMPLATE (visual layout, not text content).
+ * Converts all file types to image first, then uses vision AI to understand design structure.
+ * Accepts: multipart/form-data with file field "templateFile"
+ */
+async function analyzeTemplate(req, res) {
+  console.log("[ANALYZE TEMPLATE] Starting visual design analysis");
+
+  if (!req.file) {
+    return sendError(res, 400, "No file uploaded");
+  }
+
+  try {
+    // Validate file
+    const validation = validateFile(req.file);
+    if (!validation.valid) {
+      return sendError(res, 400, validation.error);
+    }
+
+    console.log(
+      "[ANALYZE TEMPLATE] File validated:",
+      req.file.originalname,
+      req.file.mimetype,
+    );
+
+    const mimeType = req.file.mimetype;
+    const fileName = req.file.originalname.toLowerCase();
+    let imageBase64;
+    let imageMimeType = "image/png";
+
+    // Convert file to image
+    if (mimeType.startsWith("image/") || fileName.match(/\.(png|jpg|jpeg|gif|webp)$/)) {
+      // IMAGE files: use directly
+      console.log("[ANALYZE TEMPLATE] Processing as image");
+      imageBase64 = req.file.buffer.toString("base64");
+      imageMimeType = mimeType;
+    } else if (mimeType === "application/pdf" || fileName.endsWith(".pdf")) {
+      // PDF files: convert page 1 to image using pdfjs-dist + canvas
+      console.log("[ANALYZE TEMPLATE] Converting PDF to image");
+      try {
+        const base64Image = await convertPdfToBase64Image(req.file.buffer);
+        imageBase64 = base64Image;
+        imageMimeType = "image/jpeg";
+        console.log("[ANALYZE TEMPLATE] PDF converted to image successfully");
+      } catch (pdfError) {
+        console.error("[ANALYZE TEMPLATE] PDF render error:", pdfError.message);
+        return res.status(422).json({
+          error: 'PDF_CONVERSION_FAILED',
+          message: 'Could not render this PDF. Please upload a PNG or JPG screenshot of your worksheet instead.'
+        });
+      }
+    } else if (
+      mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      fileName.endsWith(".docx")
+    ) {
+      // DOCX files: tell user to upload as image (libreoffice not available)
+      return sendError(
+        res,
+        400,
+        "DOCX files are not supported for visual template analysis. Please save your document as a PDF or image (PNG/JPG) and upload again."
+      );
+    } else {
+      return sendError(
+        res,
+        400,
+        "Unsupported file type for visual template analysis. Supported formats: PNG, JPG, PDF"
+      );
+    }
+
+    console.log("[ANALYZE TEMPLATE] Image ready, sending to vision AI");
+
+    // Call vision model with fallback chain
+    let contentText;
+    try {
+      contentText = await callVisionModelWithFallback(imageBase64, getVisualAnalysisPrompt());
+    } catch (fallbackError) {
+      console.error("[ANALYZE TEMPLATE] All vision models failed:", fallbackError.message);
+      // Return graceful 200 response to allow frontend to skip template analysis
+      return res.status(200).json({
+        skipped: true,
+        reason: 'Vision AI temporarily unavailable. Generating from topic only.',
+        structure: null
+      });
+    }
+
+    console.log("[ANALYZE TEMPLATE] AI response length:", contentText.length);
+
+    // Parse JSON response using shared utility
+    let structure;
+    try {
+      structure = parseVisionJSON(contentText);
+    } catch (parseError) {
+      console.error("[ANALYZE TEMPLATE] JSON parse error:", parseError.message);
+      // Try jsonrepair as fallback
+      try {
+        const repaired = jsonrepair(contentText);
+        structure = JSON.parse(repaired);
+      } catch (repairError) {
+        console.error("[ANALYZE TEMPLATE] JSON repair failed:", repairError.message);
+        return sendError(
+          res,
+          500,
+          "Failed to parse AI response. Please try again."
+        );
+      }
+    }
+
+    // Validate structure
+    if (!structure || typeof structure !== "object") {
+      return sendError(res, 500, "Invalid structure from AI");
+    }
+
+    if (!structure.sections || !Array.isArray(structure.sections)) {
+      return sendError(res, 500, "Invalid structure: missing sections array");
+    }
+
+    console.log(
+      "[ANALYZE TEMPLATE] Success — sections:",
+      structure.sections.length,
+      "totalQuestions:",
+      structure.totalQuestions,
+      "pageLayout:",
+      structure.pageLayout
+    );
+
+    return res.json({
+      success: true,
+      structure,
+    });
+  } catch (error) {
+    console.error("[ANALYZE TEMPLATE] Error:", error.message);
+    if (error.name === "AbortError" || error.code === "ETIMEDOUT") {
+      return sendError(res, 500, "Request timed out. Please try again.");
+    }
+    return sendError(
+      res,
+      500,
+      error.message || "Template analysis failed"
+    );
+  }
+}
+
+/**
+ * Robust JSON extraction and repair for vision AI responses
+ * Handles truncated JSON, markdown code blocks, and malformed responses
+ */
+function extractAndParseJSON(rawContent) {
+  if (!rawContent) throw new Error('Empty AI response');
+  
+  let cleaned = rawContent.trim();
+  
+  // Remove markdown code blocks
+  cleaned = cleaned.replace(/```json\s*/gi, '');
+  cleaned = cleaned.replace(/```\s*/gi, '');
+  cleaned = cleaned.trim();
+  
+  // Try 1: Direct parse
+  try {
+    return JSON.parse(cleaned);
+  } catch(e1) {
+    console.log('[DETECT FIELDS] Direct parse failed, trying extraction');
+  }
+  
+  // Try 2: Extract JSON object with regex
+  try {
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+  } catch(e2) {
+    console.log('[DETECT FIELDS] Regex extraction failed');
+  }
+  
+  // Try 3: Find and fix truncated JSON
+  // If JSON is cut off mid-array, close it properly
+  try {
+    let partial = cleaned;
+    
+    // Find the last complete field object
+    const lastCompleteField = partial.lastIndexOf('},');
+    const lastField = partial.lastIndexOf('{');
+    
+    if (lastCompleteField > 0) {
+      // Truncate after last complete field and close the JSON
+      partial = partial.substring(0, lastCompleteField + 1);
+      
+      // Find the fields array opening
+      const fieldsStart = partial.indexOf('"fields"');
+      if (fieldsStart > 0) {
+        // Close the array and object properly
+        partial = partial + '\n  ]\n}';
+        return JSON.parse(partial);
+      }
+    }
+  } catch(e3) {
+    console.log('[DETECT FIELDS] Truncation fix failed');
+  }
+  
+  // Try 4: Use jsonrepair if available
+  try {
+    const repaired = jsonrepair(cleaned);
+    return JSON.parse(repaired);
+  } catch(e4) {
+    console.log('[DETECT FIELDS] jsonrepair failed:', e4.message);
+  }
+  
+  // Try 5: Manual field extraction using regex
+  // Even if JSON is broken, extract individual field objects
+  try {
+    console.log('[DETECT FIELDS] Trying manual field extraction');
+    
+    const titleMatch = cleaned.match(/"worksheetTitle"\s*:\s*"([^"]+)"/);
+    const subjectMatch = cleaned.match(/"subject"\s*:\s*"([^"]+)"/);
+    const statusMatch = cleaned.match(/"worksheetStatus"\s*:\s*"([^"]+)"/);
+    const typeMatch = cleaned.match(/"worksheetType"\s*:\s*"([^"]+)"/);
+    
+    // Extract individual field objects using regex
+    const fieldMatches = cleaned.matchAll(
+      /\{\s*"id"\s*:\s*"([^"]+)"[^}]*"label"\s*:\s*"([^"]+)"[^}]*"x"\s*:\s*([\d.]+)[^}]*"y"\s*:\s*([\d.]+)[^}]*"width"\s*:\s*([\d.]+)[^}]*"height"\s*:\s*([\d.]+)[^}]*\}/g
+    );
+    
+    const fields = [];
+    let fieldIndex = 1;
+    for (const match of fieldMatches) {
+      fields.push({
+        id: match[1] || `field_${fieldIndex}`,
+        label: match[2] || `Field ${fieldIndex}`,
+        order: fieldIndex,
+        x: parseFloat(match[3]) || 50,
+        y: parseFloat(match[4]) || (10 + fieldIndex * 12),
+        width: parseFloat(match[5]) || 30,
+        height: parseFloat(match[6]) || 7,
+        type: 'textarea',
+        isFilled: false,
+        expectedAnswer: '',
+        hint: `Write about ${match[2] || 'this field'}` 
+      });
+      fieldIndex++;
+    }
+    
+    if (fields.length > 0) {
+      return {
+        worksheetTitle: titleMatch?.[1] || '',
+        subject: subjectMatch?.[1] || '',
+        worksheetStatus: statusMatch?.[1] || 'blank',
+        worksheetType: typeMatch?.[1] || 'questions',
+        fields: fields,
+        totalFields: fields.length
+      };
+    }
+  } catch(e6) {
+    console.log('[DETECT FIELDS] Manual extraction failed:', e6.message);
+  }
+  
+  throw new Error('Could not parse AI response after all attempts');
+}
+
+/**
+ * Google Vision OCR: Detect text blocks with coordinates from worksheet image
+ */
+async function detectFieldsWithGoogleVision(imagePath, imageWidth, imageHeight) {
+  // Verify key file exists
+  const keyPath = path.resolve(__dirname, '../../key/vision_key.json');
+  if (!fs.existsSync(keyPath)) {
+    console.error('[GOOGLE VISION] Key file not found:', keyPath);
+    throw new Error('Google Vision key not found');
+  }
+
+  // Initialize vision client
+  const visionClient = new vision.ImageAnnotatorClient({
+    keyFilename: keyPath
+  });
+
+  console.log('[GOOGLE VISION] Running document text detection on:', imagePath);
+
+  // Run FULL text detection to get all text with coordinates
+  const [result] = await visionClient.documentTextDetection(imagePath);
+  const fullText = result.fullTextAnnotation;
+
+  if (!fullText) {
+    throw new Error('Google Vision returned no text');
+  }
+
+  console.log('[GOOGLE VISION] Full text detected, pages:', 
+    fullText.pages?.length);
+
+  // Extract all text blocks with their bounding boxes
+  const textBlocks = [];
+
+  for (const page of fullText.pages || []) {
+    for (const block of page.blocks || []) {
+      // Get block text
+      let blockText = '';
+      for (const para of block.paragraphs || []) {
+        for (const word of para.words || []) {
+          const wordText = word.symbols
+            .map(s => s.text).join('');
+          blockText += wordText + ' ';
+        }
+        blockText = blockText.trim();
+      }
+
+      // Get bounding box
+      const vertices = block.boundingBox?.vertices || [];
+      if (vertices.length === 4 && blockText.trim()) {
+        const x1 = Math.min(...vertices.map(v => v.x || 0));
+        const y1 = Math.min(...vertices.map(v => v.y || 0));
+        const x2 = Math.max(...vertices.map(v => v.x || 0));
+        const y2 = Math.max(...vertices.map(v => v.y || 0));
+
+        textBlocks.push({
+          text: blockText.trim(),
+          x1, y1, x2, y2,
+          // Convert to percentages
+          xPct: (x1 / imageWidth) * 100,
+          yPct: (y1 / imageHeight) * 100,
+          widthPct: ((x2 - x1) / imageWidth) * 100,
+          heightPct: ((y2 - y1) / imageHeight) * 100
+        });
+      }
+    }
+  }
+
+  console.log('[GOOGLE VISION] Text blocks found:', textBlocks.length);
+  console.log('[GOOGLE VISION] Blocks:', 
+    textBlocks.map(b => ({ text: b.text, x: b.xPct, y: b.yPct }))
+  );
+
+  return textBlocks;
+}
+
+/**
+ * Find input fields from text blocks using spatial analysis
+ * Checks 4 directions (right, below, left, above) for empty space near labels
+ */
+function findInputFields(textBlocks, imageWidth, imageHeight) {
+  const fields = [];
+  
+  // Strategy: Find text labels first, then find the nearest
+  // empty area (no overlapping text blocks)
+  
+  // Filter to get only SHORT label-like text blocks
+  // (not paragraphs, not titles)
+  const labelBlocks = textBlocks.filter(block => {
+    const text = block.text.trim();
+    const wordCount = text.split(/\s+/).length;
+    // Labels are 1-4 words, not too long
+    return wordCount >= 1 && wordCount <= 4 && 
+           text.length >= 2 && text.length <= 30 &&
+           // Exclude common non-label text
+           !text.toLowerCase().includes('worksheet') &&
+           !text.toLowerCase().includes('copyright') &&
+           !text.toLowerCase().includes('www.') &&
+           !text.toLowerCase().includes('.com');
+  });
+  
+  console.log('[GOOGLE VISION] Label candidates:', 
+    labelBlocks.map(b => b.text));
+  
+  // For each label, search for nearby empty rectangular areas
+  // Empty area = a region with NO text blocks overlapping it
+  
+  labelBlocks.forEach((label, index) => {
+    // Check 4 directions for empty space:
+    // RIGHT, BELOW, LEFT, ABOVE
+    
+    const directions = [
+      // RIGHT of label
+      {
+        x: label.xPct + label.widthPct + 0.5,
+        y: label.yPct - 1,
+        width: Math.min(35, 98 - label.xPct - label.widthPct),
+        height: Math.max(label.heightPct * 2, 6),
+        direction: 'right'
+      },
+      // BELOW label
+      {
+        x: label.xPct - 2,
+        y: label.yPct + label.heightPct + 0.5,
+        width: label.widthPct + 4,
+        height: 8,
+        direction: 'below'
+      },
+      // LEFT of label
+      {
+        x: Math.max(0, label.xPct - 36),
+        y: label.yPct - 1,
+        width: Math.min(35, label.xPct - 0.5),
+        height: Math.max(label.heightPct * 2, 6),
+        direction: 'left'
+      }
+    ];
+    
+    // Find which direction has the most empty space
+    // (fewest overlapping text blocks)
+    let bestDirection = null;
+    let minOverlap = Infinity;
+    
+    for (const dir of directions) {
+      if (dir.width < 5 || dir.height < 3) continue;
+      
+      // Count text blocks that overlap with this area
+      const overlapping = textBlocks.filter(b => {
+        if (b === label) return false;
+        // Check overlap
+        const noOverlapX = b.xPct + b.widthPct < dir.x || 
+                           b.xPct > dir.x + dir.width;
+        const noOverlapY = b.yPct + b.heightPct < dir.y || 
+                           b.yPct > dir.y + dir.height;
+        return !noOverlapX && !noOverlapY;
+      });
+      
+      if (overlapping.length < minOverlap) {
+        minOverlap = overlapping.length;
+        bestDirection = dir;
+      }
+    }
+    
+    // Only add field if we found a reasonably empty area
+    if (bestDirection && minOverlap <= 1) {
+      // Clamp to image bounds
+      const x = Math.max(0, Math.min(bestDirection.x, 90));
+      const y = Math.max(0, Math.min(bestDirection.y, 92));
+      const w = Math.min(bestDirection.width, 99 - x);
+      const h = Math.min(bestDirection.height, 99 - y);
+      
+      if (w >= 5 && h >= 3) {
+        fields.push({
+          id: `field_${index + 1}`,
+          label: label.text.toUpperCase(),
+          order: index + 1,
+          x: Math.round(x * 10) / 10,
+          y: Math.round(y * 10) / 10,
+          width: Math.round(w * 10) / 10,
+          height: Math.round(h * 10) / 10,
+          type: 'text',
+          isFilled: false,
+          expectedAnswer: '',
+          hint: `Write: ${label.text}` 
+        });
+        
+        console.log(`[GOOGLE VISION] Field for "${label.text}":`,
+          `x=${x.toFixed(1)}% y=${y.toFixed(1)}%`,
+          `dir=${bestDirection.direction}`,
+          `overlap=${minOverlap}` 
+        );
+      }
+    }
+  });
+  
+  // Remove duplicate fields that are too close together
+  const uniqueFields = fields.filter((field, index) => {
+    return !fields.some((other, otherIndex) => {
+      if (otherIndex >= index) return false;
+      const tooCloseX = Math.abs(other.x - field.x) < 5;
+      const tooCloseY = Math.abs(other.y - field.y) < 5;
+      return tooCloseX && tooCloseY;
+    });
+  });
+  
+  console.log('[GOOGLE VISION] Final fields:', uniqueFields.length);
+  return uniqueFields;
+}
+
+/**
+ * Detect worksheet status (blank/partial/filled) from text blocks
+ * Smarter detection that separates header/label text from potential answers
+ */
+function detectWorksheetStatus(textBlocks) {
+  // Separate header/label text from potential answers
+  const headerText = textBlocks.filter(b => b.yPct < 20);
+  const bodyText = textBlocks.filter(b => b.yPct >= 20);
+  
+  // Look for text that appears to be answers
+  // (appears near empty box locations, longer than labels)
+  const potentialAnswers = bodyText.filter(b => {
+    const wordCount = b.text.split(/\s+/).length;
+    return wordCount >= 2 || b.text.length > 8;
+  });
+  
+  const totalBodyBlocks = bodyText.length;
+  if (totalBodyBlocks === 0) return 'blank';
+  
+  const answerRatio = potentialAnswers.length / totalBodyBlocks;
+  
+  if (answerRatio > 0.5) return 'filled';
+  if (answerRatio > 0.2) return 'partial';
+  return 'blank';
+}
+
+/**
+ * Detect if worksheet is a diagram-style worksheet
+ * (like tree diagram with boxes around an image)
+ */
+function isDiagramWorksheet(textBlocks, imageWidth, imageHeight) {
+  // Diagrams have text spread around the image in all directions
+  // not just top-to-bottom
+  
+  const leftText = textBlocks.filter(b => b.xPct < 30);
+  const rightText = textBlocks.filter(b => b.xPct > 70);
+  const centerText = textBlocks.filter(
+    b => b.xPct >= 30 && b.xPct <= 70
+  );
+  
+  // If text exists on both left and right sides → likely diagram
+  return leftText.length > 0 && rightText.length > 0;
+}
+
+/**
+ * POST /api/worksheets/detect-fields
+ * Auth: teacher only
+ * Accepts an uploaded PDF or image file, converts it to a high-quality image,
+ * stores it temporarily, and uses vision AI to detect input fields/boxes.
+ * Returns the image URL + detected field positions.
+ */
+async function detectFields(req, res) {
+  console.log("[DETECT FIELDS] Starting field detection");
+
+  if (!req.file) {
+    return sendError(res, 400, "No file uploaded");
+  }
+
+  try {
+    // Validate file
+    const validation = validateFile(req.file);
+    if (!validation.valid) {
+      return sendError(res, 400, validation.error);
+    }
+
+    console.log(
+      "[DETECT FIELDS] File validated:",
+      req.file.originalname,
+      req.file.mimetype
+    );
+
+    // Step 2: Convert to base64 image
+    let base64Image;
+    if (req.file.mimetype === "application/pdf") {
+      console.log("[DETECT FIELDS] Converting PDF to image");
+      base64Image = await convertPdfToBase64Image(req.file.buffer);
+    } else if (
+      req.file.mimetype.startsWith("image/") ||
+      req.file.mimetype === "image/jpeg" ||
+      req.file.mimetype === "image/jpg" ||
+      req.file.mimetype === "image/png"
+    ) {
+      console.log("[DETECT FIELDS] Converting image to base64");
+      base64Image = req.file.buffer.toString("base64");
+    } else {
+      return sendError(res, 400, "Unsupported file type. Please upload PDF, PNG, or JPG.");
+    }
+
+    // Step 3: Store the image temporarily and return a URL
+    const { v4: uuidv4 } = require("uuid");
+    const filename = `template_${uuidv4()}.jpg`;
+    const uploadBasePath =
+      (process.env.UPLOAD_BASE_PATH || "uploads").trim() || "uploads";
+    const uploadsRoot = path.join(__dirname, "..", "..", uploadBasePath);
+    const templatesDir = path.join(uploadsRoot, "templates");
+    const filePath = path.join(templatesDir, filename);
+
+    // Convert base64 to buffer and save
+    const imageBuffer = Buffer.from(base64Image, "base64");
+    fs.writeFileSync(filePath, imageBuffer);
+
+    console.log("[DETECT FIELDS] Image saved to:", filePath);
+
+    // Generate public URL
+    const protocol = req.protocol;
+    const host = req.get("host");
+    const imageUrl = `${protocol}://${host}/uploads/templates/${filename}`;
+
+    console.log("[DETECT FIELDS] Image URL:", imageUrl);
+
+    // Get image dimensions using image-size, falling back to canvas/defaults if needed
+    let imgWidth = 720;
+    let imgHeight = 960;
+    try {
+      const sizeOf = require('image-size');
+      const dimensions = sizeOf(imageBuffer);
+      imgWidth = dimensions.width || 720;
+      imgHeight = dimensions.height || 960;
+      console.log(`[DETECT FIELDS] Read image dimensions: ${imgWidth}x${imgHeight}`);
+    } catch (e) {
+      try {
+        imgWidth = canvas.width || 720;
+        imgHeight = canvas.height || 960;
+      } catch (err) {
+        imgWidth = 720;
+        imgHeight = 960;
+      }
+    }
+
+    const detectionPrompt = `You are analyzing an educational 
+worksheet image.
+
+FIRST: Determine if this worksheet is BLANK or FILLED.
+- BLANK: writing areas are empty (no handwriting or typed text)
+- FILLED: writing areas contain answers (handwritten or typed)
+- PARTIAL: some areas filled, some empty
+
+SECOND: Find ALL writing areas regardless of filled status.
+
+For EACH writing area:
+1. Find its label (text in colored header/tab near the box,
+   or question number/text before the blank space)
+2. Measure its position as PERCENTAGES (0-100):
+   - x = left edge of writing box as % of image width
+   - y = top edge of writing box as % of image height
+   - width = box width as % of image width  
+   - height = box height as % of image height
+   IMPORTANT: Return PERCENTAGES not pixels.
+   x=0 is left edge, x=100 is right edge.
+   y=0 is top edge, y=100 is bottom edge.
+3. Read the answer IF the box is filled:
+   - Read handwritten or typed text carefully
+   - If box is empty → expectedAnswer = ""
+4. Determine field type:
+   - "text" = single line
+   - "textarea" = multiple lines
+
+Return ONLY this JSON:
+{
+  "worksheetTitle": "title from worksheet header",
+  "subject": "subject if visible",
+  "worksheetStatus": "blank" | "filled" | "partial",
+  "worksheetType": "diagram" | "questions" | "table" | "mixed",
+  "fields": [
+    {
+      "id": "field_1",
+      "label": "LABEL TEXT",
+      "order": 1,
+      "x": 45.5,
+      "y": 22.3,
+      "width": 30.0,
+      "height": 7.5,
+      "type": "textarea",
+      "isFilled": true,
+      "expectedAnswer": "the answer text if filled, empty string if blank",
+      "hint": "brief hint what to write here"
+    }
+  ],
+  "totalFields": 6
+}
+Return ONLY JSON. No markdown. No explanation.`;
+
+    console.log("[DETECT FIELDS] Attempting Google Vision OCR first");
+
+    // Try Google Vision OCR first
+    let detectedFields;
+    let detectionMethod = 'google-vision';
+    
+    try {
+      console.log('[DETECT FIELDS] Using Google Vision OCR');
+      
+      const textBlocks = await detectFieldsWithGoogleVision(
+        filePath,  // local file path
+        imgWidth,
+        imgHeight
+      );
+      
+      // Detect if this is a diagram worksheet
+      const isDiagram = isDiagramWorksheet(textBlocks, imgWidth, imgHeight);
+      console.log('[GOOGLE VISION] Is diagram worksheet:', isDiagram);
+      
+      const fields = findInputFields(textBlocks, imgWidth, imgHeight);
+      const worksheetStatus = detectWorksheetStatus(textBlocks);
+      
+      // Get worksheet title from first large text block
+      const titleBlock = textBlocks
+        .sort((a, b) => (b.x2 - b.x1) - (a.x2 - a.x1))[0];
+      
+      // Adjust field sizing based on worksheet type
+      // Diagram fields are smaller (just covering label boxes)
+      // Question fields are wider (full line width)
+      let adjustedFields = fields;
+      if (isDiagram) {
+        adjustedFields = fields.map(f => ({
+          ...f,
+          width: Math.min(f.width, 20),  // Smaller width for diagram boxes
+          height: Math.min(f.height, 5),  // Smaller height for diagram boxes
+          type: 'text'  // Diagram boxes are usually single-line
+        }));
+        console.log('[GOOGLE VISION] Adjusted fields for diagram worksheet');
+      }
+      
+      const validatedFields = validateFieldCoordinates(
+        adjustedFields, imgWidth, imgHeight
+      );
+      
+      // Add detailed debugging logs
+      console.log('[GOOGLE VISION] === FIELD DETECTION SUMMARY ===');
+      console.log('Total text blocks:', textBlocks.length);
+      console.log('Label candidates:', fields.length);
+      console.log('Fields found:', validatedFields.length);
+      console.log('Worksheet type:', isDiagram ? 'diagram' : 'questions');
+      console.log('Worksheet status:', worksheetStatus);
+      validatedFields.forEach(f => {
+        console.log(`  ${f.label}: x=${f.x}% y=${f.y}% w=${f.width}% h=${f.height}%`);
+      });
+      console.log('========================================');
+      
+      console.log('[GOOGLE VISION] Fields detected:', validatedFields.length);
+      console.log('[DETECT FIELDS] Detection method: ✅ Google Vision OCR');
+      
+      detectedFields = {
+        worksheetTitle: titleBlock?.text || '',
+        subject: '',
+        worksheetStatus: worksheetStatus,
+        worksheetType: isDiagram ? 'diagram' : 'questions',
+        fields: validatedFields,
+        totalFields: validatedFields.length
+      };
+      
+    } catch (visionError) {
+      console.error('[GOOGLE VISION] Error:', visionError.message);
+      // Fall back to OpenRouter if Vision fails
+      console.log('[DETECT FIELDS] Falling back to OpenRouter...');
+      detectionMethod = 'openrouter';
+      
+      try {
+        aiResponseText = await callVisionModelWithFallback(base64Image, detectionPrompt);
+        
+        console.log('[DETECT FIELDS] Detection method: ⚠️ OpenRouter fallback');
+        
+        // Parse JSON response using robust extraction and repair
+        try {
+          detectedFields = extractAndParseJSON(aiResponseText);
+        } catch (parseError) {
+          console.error('[DETECT FIELDS] OpenRouter JSON parse failed:', parseError.message);
+          throw parseError;
+        }
+        
+      } catch (fallbackError) {
+        console.error("[DETECT FIELDS] All vision models failed:", fallbackError.message);
+        // Return graceful 200 response with image saved but no fields detected
+        return res.status(200).json({
+          success: true,
+          imageUrl: imageUrl,
+          imageWidth: imgWidth,
+          imageHeight: imgHeight,
+          worksheetTitle: '',
+          subject: '',
+          worksheetStatus: 'blank',
+          worksheetType: 'questions',
+          fields: [],
+          totalFields: 0,
+          hasAnswerKey: false,
+          aiError: true,
+          detectionMethod: 'none',
+          message: 'Could not detect fields automatically. The worksheet image was saved successfully.'
+        });
+      }
+    }
+
+    console.log(
+      "[DETECT FIELDS] Detected fields:",
+      detectedFields.totalFields || 0
+    );
+
+    // Smart validator: trust AI coordinates but fix bad/missing values
+    function validateFieldCoordinates(fields, imageWidth, imageHeight) {
+      if (!fields || fields.length === 0) return [];
+
+      // Auto-detect if values are pixels or percentages
+      // If any x > 100 or any y > 100 → values are pixels
+      const maxX = Math.max(...fields.map(f => parseFloat(f.x) || 0));
+      const maxY = Math.max(...fields.map(f => parseFloat(f.y) || 0));
+      const maxW = Math.max(...fields.map(f => parseFloat(f.width || f.w) || 0));
+      const maxH = Math.max(...fields.map(f => parseFloat(f.height || f.h) || 0));
+
+      // Determine if pixel or percentage values
+      const isPixelValues = maxX > 100 || maxY > 100;
+
+      // Use actual image dimensions or sensible defaults
+      const imgW = imageWidth || 720;
+      const imgH = imageHeight || 960;
+
+      console.log(`[DETECT FIELDS] Coordinate type: ${isPixelValues ? 'PIXELS' : 'PERCENTAGES'}`);
+      console.log(`[DETECT FIELDS] Image size: ${imgW}x${imgH}`);
+      console.log(`[DETECT FIELDS] Max values: x=${maxX} y=${maxY} w=${maxW} h=${maxH}`);
+
+      // Check if all y values are the same (fallback needed)
+      const yValues = fields.map(f => parseFloat(f.y) || 0);
+      const allSameY = yValues.every(y => Math.abs(y - yValues[0]) < 2);
+      const hasNoCoords = fields.every(
+        f => !f.x && !f.y && !f.width && !f.height && !f.w && !f.h
+      );
+
+      if (hasNoCoords || (allSameY && fields.length > 1)) {
+        console.log('[DETECT FIELDS] AI gave no real coords, using fallback layout');
+        return generateFallbackPositions(fields);
+      }
+
+      // AI gave real coordinates → validate and fix each field
+      return fields.map((field, index) => {
+        let x = parseFloat(field.x) || 0;
+        let y = parseFloat(field.y) || 0;
+        let width = parseFloat(field.width || field.w) || 35;
+        let height = parseFloat(field.height || field.h) || 7;
+
+        // If pixel values, convert to percentages
+        if (isPixelValues) {
+          x = (x / imgW) * 100;
+          y = (y / imgH) * 100;
+          width = (width / imgW) * 100;
+          height = (height / imgH) * 100;
+        }
+
+        // Clamp to valid range
+        x = Math.max(0, Math.min(x, 95));
+        y = Math.max(0, Math.min(y, 95));
+        width = Math.max(10, Math.min(width, 90));
+        height = Math.max(4, Math.min(height, 30));
+
+        // Prevent overflow
+        if (x + width > 99) width = 99 - x;
+        if (y + height > 99) height = 99 - y;
+
+        return {
+          id: field.id || `field_${index + 1}`,
+          label: (field.label || `Field ${index + 1}`).toUpperCase(),
+          order: field.order || index + 1,
+          x: Math.round(x * 10) / 10,
+          y: Math.round(y * 10) / 10,
+          width: Math.round(width * 10) / 10,
+          height: Math.round(height * 10) / 10,
+          type: field.type || 'textarea',
+          isFilled: field.isFilled || false,
+          expectedAnswer: field.expectedAnswer || '',
+          hint: field.hint || `Write about ${field.label || 'this'}`
+        };
+      });
+    }
+
+    // Fallback when AI gives no coordinates:
+    function generateFallbackPositions(fields) {
+      const total = fields.length;
+      const startY = 15;
+      const endY = 88;
+      const spacing = (endY - startY) / Math.max(total - 1, 1);
+
+      return fields.map((field, index) => ({
+        id: field.id || `field_${index + 1}`,
+        label: (field.label || `Field ${index + 1}`).toUpperCase(),
+        order: field.order || index + 1,
+        x: 48,
+        y: Math.round((startY + index * spacing) * 10) / 10,
+        width: 48,
+        height: 8,
+        type: field.type || 'textarea',
+        isFilled: field.isFilled || false,
+        expectedAnswer: field.expectedAnswer || '',
+        hint: field.hint || `Write about ${field.label || 'this'}`
+      }));
+    }
+
+    // Add logging for raw AI fields
+    console.log('[DETECT FIELDS] Raw AI fields:', 
+      detectedFields.fields?.map(f => ({
+        label: f.label, x: f.x, y: f.y,
+        w: f.width || f.w, h: f.height || f.h
+      }))
+    );
+
+    // Get fields from AI response and sort by order
+    // If Google Vision was used, fields are already validated
+    let positionedFields;
+    if (detectionMethod === 'google-vision') {
+      positionedFields = detectedFields.fields || [];
+      console.log('[DETECT FIELDS] Using Google Vision validated fields directly');
+    } else {
+      // OpenRouter fallback: validate the fields
+      const rawFields = detectedFields.fields || [];
+      const sortedFields = rawFields.sort((a, b) => (a.order || 0) - (b.order || 0));
+      positionedFields = validateFieldCoordinates(sortedFields, imgWidth, imgHeight);
+      
+      console.log('[DETECT FIELDS] After validation:', 
+        positionedFields.map(f => ({
+          label: f.label, x: f.x, y: f.y,
+          w: f.width, h: f.height
+        }))
+      );
+    }
+
+    // Step 5: Return response with algorithmically positioned fields
+    return res.json({
+      success: true,
+      imageUrl: imageUrl,
+      imageWidth: imgWidth,
+      imageHeight: imgHeight,
+      worksheetTitle: detectedFields.worksheetTitle || '',
+      subject: detectedFields.subject || '',
+      worksheetStatus: detectedFields.worksheetStatus || 'blank',
+      worksheetType: detectedFields.worksheetType || 'questions',
+      fields: positionedFields,
+      totalFields: positionedFields.length,
+      hasAnswerKey: positionedFields.some(f => f.expectedAnswer && 
+                    f.expectedAnswer.trim() !== ''),
+      detectionMethod: detectionMethod
+    });
+  } catch (error) {
+    console.error("[DETECT FIELDS] Error:", error.message);
+    return sendError(
+      res,
+      500,
+      error.message || "Field detection failed"
+    );
+  }
+}
+
+/**
+ * POST /api/worksheets/save-overlay
+ * Auth: teacher only
+ * Saves a PDF overlay worksheet with detected fields as a complete worksheet.
+ * Accepts: { worksheetId?, title, subject, backgroundImageUrl, originalFileUrl, fields, gradeLevel?, language? }
+ * Returns: the saved worksheet object with _id
+ */
+async function saveOverlayWorksheet(req, res) {
+  console.log("[SAVE OVERLAY] Starting overlay worksheet save");
+
+  try {
+    const {
+      worksheetId,
+      title,
+      subject,
+      cefrLevel,
+      gradeCategory,
+      gradeLevel,
+      difficulty,
+      assignmentDeadline,
+      backgroundImageUrl,
+      originalFileUrl,
+      fields,
+    } = req.body;
+
+    // Validate required fields
+    if (!title || typeof title !== 'string' || !title.trim()) {
+      return sendError(res, 400, 'Title is required');
+    }
+    if (!subject || typeof subject !== 'string') {
+      return sendError(res, 400, 'Subject is required');
+    }
+    if (!backgroundImageUrl || typeof backgroundImageUrl !== 'string') {
+      return sendError(res, 400, 'Background image URL is required');
+    }
+    if (!originalFileUrl || typeof originalFileUrl !== 'string') {
+      return sendError(res, 400, 'Original file URL is required');
+    }
+    // Allow empty fields - image is still useful
+    const fieldsArray = Array.isArray(fields) ? fields : [];
+    console.log(`[SAVE OVERLAY] Saving with ${fieldsArray.length} fields`);
+
+    const teacherId = req.user?.id;
+    if (!teacherId) {
+      return sendError(res, 401, 'User not authenticated');
+    }
+
+    // Build activity9 object
+    const activity9 = {
+      title: req.body.title || 'Fill in the Fields',
+      instructions: req.body.instructions || '',
+      backgroundImageUrl,
+      originalFileUrl,
+      fields: fieldsArray.map((field, index) => ({
+        id: field.id || `field_${index + 1}`,
+        label: field.label || `Field ${index + 1}`,
+        x: Number(field.x) || 0,
+        y: Number(field.y) || 0,
+        width: Number(field.width) || 10,
+        height: Number(field.height) || 5,
+        type: field.type === 'textarea' ? 'textarea' : 'text',
+        isFilled: field.isFilled || false,
+        expectedAnswer: field.expectedAnswer || '',
+        hint: field.hint || '',
+      })),
+      totalFields: req.body.totalFields || fieldsArray.length,
+      worksheetStatus: req.body.worksheetStatus || 'blank',
+      hasAnswerKey: req.body.hasAnswerKey || false
+    };
+
+    // Calculate total points based on field count
+    const totalPoints = fieldsArray.length;
+
+    // Parse assignment deadline if provided, otherwise set default (7 days from now)
+    let parsedDeadline;
+    if (assignmentDeadline) {
+      parsedDeadline = new Date(assignmentDeadline);
+      if (isNaN(parsedDeadline.getTime())) {
+        parsedDeadline = new Date();
+        parsedDeadline.setDate(parsedDeadline.getDate() + 7);
+      }
+    } else {
+      parsedDeadline = new Date();
+      parsedDeadline.setDate(parsedDeadline.getDate() + 7);
+    }
+
+    // No theme for overlay worksheets (not applicable)
+    const themeObj = null;
+
+    let worksheet;
+
+    if (worksheetId && mongoose.Types.ObjectId.isValid(worksheetId)) {
+      // Update existing worksheet
+      worksheet = await Worksheet.findOneAndUpdate(
+        { _id: worksheetId, createdBy: teacherId },
+        {
+          title,
+          subject,
+          'meta.cefrLevel': cefrLevel || '',
+          'meta.gradeCategory': gradeCategory || '',
+          'meta.gradeLevel': gradeLevel || '',
+          'meta.difficulty': difficulty || 'Medium',
+          gradeLevel: gradeLevel || null,
+          assignmentDeadline: parsedDeadline,
+          theme: themeObj,
+          activity9,
+          totalPoints,
+          updatedAt: new Date(),
+        },
+        { new: true, runValidators: true }
+      );
+
+      if (!worksheet) {
+        return sendError(res, 404, 'Worksheet not found or you do not have permission to update it');
+      }
+
+      console.log('[SAVE OVERLAY] Updated existing worksheet:', worksheetId);
+    } else {
+      // Create new worksheet
+      worksheet = await Worksheet.create({
+        title,
+        description: `PDF overlay worksheet with ${fieldsArray.length} input fields.`,
+        subject,
+        'meta.cefrLevel': cefrLevel || '',
+        'meta.gradeCategory': gradeCategory || '',
+        'meta.gradeLevel': gradeLevel || '',
+        'meta.difficulty': difficulty || 'Medium',
+        gradeLevel: gradeLevel || null,
+        assignmentDeadline: parsedDeadline,
+        theme: themeObj,
+        activity9,
+        totalPoints,
+        createdBy: teacherId,
+        isPublished: true,
+        generationSource: 'manual',
+        activities: [
+          {
+            type: 'overlay',
+            title: activity9.title,
+            instructions: activity9.instructions,
+            data: {
+              backgroundImageUrl: activity9.backgroundImageUrl,
+              originalFileUrl: activity9.originalFileUrl,
+              fields: activity9.fields,
+              totalFields: activity9.totalFields,
+              worksheetStatus: activity9.worksheetStatus,
+              hasAnswerKey: activity9.hasAnswerKey,
+            },
+            order: 0,
+          },
+        ],
+      });
+
+      console.log('[SAVE OVERLAY] Created new worksheet:', worksheet._id);
+    }
+
+    return sendSuccess(res, { worksheet: worksheet.toObject() });
+  } catch (error) {
+    console.error('[SAVE OVERLAY] Error:', error.message);
+    return sendError(res, 500, error.message || 'Failed to save overlay worksheet');
+  }
+}
+
+/**
+ * POST /api/worksheets/:id/download-overlay
+ * Downloads a PDF of the overlay worksheet with student answers printed on it.
+ * Accepts: { answers, results, studentName, score, total }
+ * Returns: PDF file as download
+ */
+async function downloadOverlayPdf(req, res) {
+  console.log('[DOWNLOAD PDF] Starting overlay PDF download for worksheet:', req.params.id);
+
+  try {
+    const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
+    const sharp = require('sharp');
+    const fs = require('fs');
+    const path = require('path');
+
+    // 1. Get worksheet from DB
+    const worksheet = await Worksheet.findById(req.params.id);
+    if (!worksheet || !worksheet.activity9) {
+      return res.status(404).json({ 
+        error: 'Worksheet not found' 
+      });
+    }
+    
+    const activity9 = worksheet.activity9;
+    const answers = req.body.answers || {};
+    const results = req.body.results || {};
+    const studentName = req.body.studentName || 'Student';
+    const score = parseInt(req.body.score) || 0;
+    const total = parseInt(req.body.total) || 0;
+    
+    console.log('[DOWNLOAD PDF] Worksheet:', worksheet.title);
+    console.log('[DOWNLOAD PDF] Fields:', activity9.fields?.length);
+    console.log('[DOWNLOAD PDF] Answers:', Object.keys(answers).length);
+    console.log('[DOWNLOAD PDF] Background URL:', activity9.backgroundImageUrl);
+    console.log('[DOWNLOAD PDF] CWD:', process.cwd());
+    console.log('[DOWNLOAD PDF] __dirname:', __dirname);
+    
+    // 2. Load the background image from LOCAL FILE
+    let imageBuffer;
+    const imageUrl = activity9.backgroundImageUrl || '';
+    
+    // Strategy 1: Extract filename and read from disk
+    const urlParts = imageUrl.split('/');
+    const filename = urlParts[urlParts.length - 1];
+    
+    // Common paths where template images are stored
+    const possiblePaths = [
+      path.join(__dirname, '../../uploads/templates', filename),
+      path.join(__dirname, '../uploads/templates', filename),
+      path.join(process.cwd(), 'uploads/templates', filename),
+      path.join(process.cwd(), 'backend/uploads/templates', filename)
+    ];
+    
+    let imagePath = null;
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        imagePath = p;
+        console.log('[DOWNLOAD PDF] Found image at:', p);
+        break;
+      }
+    }
+    
+    if (!imagePath) {
+      console.error('[DOWNLOAD PDF] Image not found at any path');
+      console.error('[DOWNLOAD PDF] Tried:', possiblePaths);
+      return res.status(404).json({ 
+        error: 'Worksheet image file not found on server' 
+      });
+    }
+    
+    // Read image file
+    imageBuffer = fs.readFileSync(imagePath);
+    console.log('[DOWNLOAD PDF] Image size:', imageBuffer.length, 'bytes');
+    
+    // 3. Convert to JPEG using sharp
+    // This ensures compatibility with pdf-lib
+    const jpegBuffer = await sharp(imageBuffer)
+      .jpeg({ quality: 92 })
+      .toBuffer();
+    
+    const metadata = await sharp(imageBuffer).metadata();
+    const imgWidth = metadata.width || 800;
+    const imgHeight = metadata.height || 1000;
+    
+    console.log('[DOWNLOAD PDF] Image dimensions:', imgWidth, 'x', imgHeight);
+    
+    // 4. Create PDF document
+    const pdfDoc = await PDFDocument.create();
+    
+    // 5. Embed the JPEG image
+    let embeddedImage;
+    try {
+      embeddedImage = await pdfDoc.embedJpg(jpegBuffer);
+      console.log('[DOWNLOAD PDF] Image embedded successfully');
+    } catch (embedErr) {
+      console.error('[DOWNLOAD PDF] Embed error:', embedErr.message);
+      // Try PNG if JPEG fails
+      const pngBuffer = await sharp(imageBuffer)
+        .png()
+        .toBuffer();
+      embeddedImage = await pdfDoc.embedPng(pngBuffer);
+    }
+    
+    // 6. Create page - A4 size (595 x 842 points)
+    // Scale image to fit A4 width
+    const pageWidth = 595;
+    const pageHeight = Math.round((imgHeight / imgWidth) * pageWidth);
+    
+    const page = pdfDoc.addPage([pageWidth, pageHeight]);
+    
+    console.log('[DOWNLOAD PDF] Page size:', pageWidth, 'x', pageHeight);
+    
+    // 7. Draw background image FIRST (full page)
+    page.drawImage(embeddedImage, {
+      x: 0,
+      y: 0,
+      width: pageWidth,
+      height: pageHeight
+    });
+    
+    console.log('[DOWNLOAD PDF] Background image drawn');
+    
+    // 8. Load fonts
+    const regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    
+    // 9. Draw each field answer on the PDF
+    const fields = activity9.fields || [];
+    console.log('[DOWNLOAD PDF] Drawing', fields.length, 'fields');
+    
+    for (const field of fields) {
+      const studentAnswer = answers[field.id] || '';
+      // results can be true, false, or null
+      const isCorrect = results[field.id];
+      
+      if (!studentAnswer && isCorrect === null) continue;
+      
+      // Convert percentage to PDF points
+      // PDF coordinate: Y=0 is BOTTOM, Y=pageHeight is TOP
+      const fieldX = (field.x / 100) * pageWidth;
+      const fieldW = (field.width / 100) * pageWidth;
+      const fieldH = (field.height / 100) * pageHeight;
+      // Flip Y axis: image Y=0 is top, PDF Y=0 is bottom
+      const fieldY = pageHeight - ((field.y / 100) * pageHeight) - fieldH;
+      
+      console.log(`[DOWNLOAD PDF] Field "${field.label}":`,
+        `x=${fieldX.toFixed(0)} y=${fieldY.toFixed(0)}`,
+        `w=${fieldW.toFixed(0)} h=${fieldH.toFixed(0)}`,
+        `answer="${studentAnswer}"` 
+      );
+      
+      if (studentAnswer) {
+        // Draw white background for answer area
+        page.drawRectangle({
+          x: fieldX,
+          y: fieldY,
+          width: fieldW,
+          height: fieldH,
+          color: rgb(1, 1, 1),
+          opacity: 0.88
+        });
+        
+        // Draw colored border based on result
+        if (isCorrect === true) {
+          page.drawRectangle({
+            x: fieldX,
+            y: fieldY,
+            width: fieldW,
+            height: fieldH,
+            borderColor: rgb(0.086, 0.58, 0.26),
+            borderWidth: 2,
+            color: rgb(0.94, 0.99, 0.96),
+            opacity: 0.5
+          });
+        } else if (isCorrect === false) {
+          page.drawRectangle({
+            x: fieldX,
+            y: fieldY,
+            width: fieldW,
+            height: fieldH,
+            borderColor: rgb(0.86, 0.15, 0.15),
+            borderWidth: 2,
+            color: rgb(0.99, 0.94, 0.94),
+            opacity: 0.5
+          });
+        } else {
+          // No result yet - neutral border
+          page.drawRectangle({
+            x: fieldX,
+            y: fieldY,
+            width: fieldW,
+            height: fieldH,
+            borderColor: rgb(0.05, 0.58, 0.53),
+            borderWidth: 1.5,
+            opacity: 0
+          });
+        }
+        
+        // Draw student answer text
+        const fontSize = Math.min(Math.max(fieldH * 0.35, 7), 11);
+        const textColor = isCorrect === false ?
+          rgb(0.75, 0.1, 0.1) :
+          isCorrect === true ?
+          rgb(0.05, 0.4, 0.1) :
+          rgb(0.1, 0.1, 0.5);
+        
+        // Truncate if too long
+        const maxChars = Math.floor(fieldW / (fontSize * 0.52));
+        const displayAnswer = studentAnswer.length > maxChars ?
+          studentAnswer.substring(0, maxChars - 2) + '..' :
+          studentAnswer;
+        
+        page.drawText(displayAnswer, {
+          x: fieldX + 3,
+          y: fieldY + fieldH * 0.3,
+          size: fontSize,
+          font: regularFont,
+          color: textColor
+        });
+      }
+      
+      // Draw result icon (✓ or ✗)
+      if (isCorrect === true) {
+        // Green check badge
+        page.drawCircle({
+          x: fieldX + fieldW - 8,
+          y: fieldY + fieldH - 8,
+          size: 7,
+          color: rgb(0.086, 0.58, 0.26)
+        });
+        page.drawText('v', {
+          x: fieldX + fieldW - 12,
+          y: fieldY + fieldH - 13,
+          size: 8,
+          font: boldFont,
+          color: rgb(1, 1, 1)
+        });
+      } else if (isCorrect === false) {
+        // Red X badge
+        page.drawCircle({
+          x: fieldX + fieldW - 8,
+          y: fieldY + fieldH - 8,
+          size: 7,
+          color: rgb(0.86, 0.15, 0.15)
+        });
+        page.drawText('x', {
+          x: fieldX + fieldW - 12,
+          y: fieldY + fieldH - 13,
+          size: 8,
+          font: boldFont,
+          color: rgb(1, 1, 1)
+        });
+        
+        // Show correct answer below the field if available
+        if (field.expectedAnswer && fieldY > 15) {
+          page.drawText(
+            `Ans: ${field.expectedAnswer}`,
+            {
+              x: fieldX,
+              y: fieldY - 10,
+              size: 7,
+              font: regularFont,
+              color: rgb(0.086, 0.58, 0.26)
+            }
+          );
+        }
+      }
+    }
+    
+    // 10. Draw score banner at bottom of page
+    const bannerHeight = 28;
+    const scorePct = total > 0 ? Math.round((score / total) * 100) : 0;
+    
+    // Banner background
+    page.drawRectangle({
+      x: 0,
+      y: 0,
+      width: pageWidth,
+      height: bannerHeight,
+      color: rgb(0.05, 0.58, 0.53),
+      opacity: 0.92
+    });
+    
+    // Student name
+    page.drawText(studentName, {
+      x: 10,
+      y: 9,
+      size: 9,
+      font: boldFont,
+      color: rgb(1, 1, 1)
+    });
+    
+    // Score
+    const scoreText = `Score: ${score}/${total} (${scorePct}%)`;
+    page.drawText(scoreText, {
+      x: pageWidth / 2 - 40,
+      y: 9,
+      size: 9,
+      font: boldFont,
+      color: rgb(1, 1, 1)
+    });
+    
+    // Date
+    const dateStr = new Date().toLocaleDateString();
+    page.drawText(dateStr, {
+      x: pageWidth - 70,
+      y: 9,
+      size: 8,
+      font: regularFont,
+      color: rgb(0.9, 0.9, 0.9)
+    });
+    
+    // 11. Generate and send PDF
+    const pdfBytes = await pdfDoc.save();
+    console.log('[DOWNLOAD PDF] PDF generated:', pdfBytes.length, 'bytes');
+    
+    const safeTitle = (worksheet.title || 'worksheet')
+      .replace(/[^a-z0-9]/gi, '_')
+      .substring(0, 50);
+    
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${safeTitle}_results.pdf"` 
+    );
+    res.setHeader('Content-Length', pdfBytes.length);
+    res.send(Buffer.from(pdfBytes));
+    
+    console.log('[DOWNLOAD PDF] Sent successfully');
+    
+  } catch (error) {
+    console.error('[DOWNLOAD PDF] Fatal error:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate PDF',
+      message: error.message 
+    });
+  }
+}
+
+/**
+ * Returns the visual analysis prompt for the AI
+ * @returns The prompt string for visual design analysis
+ */
+function getVisualAnalysisPrompt() {
+  return `You are analyzing a worksheet DESIGN TEMPLATE image.
+This is a blank or sample worksheet layout. Your job is to understand its visual structure and design — NOT to extract its text content.
+
+Look at the image carefully and identify:
+- How many sections/boxes are there?
+- What type of activity does each section seem designed for?
+  (multiple_choice, fill_blank, ordering, classification, matching,
+   short_answer, drawing, table)
+- How is the page laid out? (single column, two column, grid, mixed)
+- Are there numbered lines for writing answers?
+- Are there boxes/circles for multiple choice options?
+- Are there tables or grids?
+- What is the general visual style? (formal, colorful, minimalist, structured, creative)
+- Roughly how many questions per section based on the space provided?
+
+IMPORTANT: If the worksheet shows a diagram, illustration, labeled picture, or any image with parts being identified 
+(like a tree with labeled parts, body diagram, map, etc.), set the worksheetStyle to 'diagram' and set the recommended 
+activityType to 'labeling'. Count how many labeled parts/boxes you see and set labelCount to that number.
+
+Return ONLY this JSON object, nothing else:
+{
+  sections: [
+    {
+      title: string,
+      type: 'multiple_choice' | 'fill_blank' | 'ordering' |
+            'classification' | 'short_answer' | 'matching' |
+            'drawing' | 'table',
+      questionCount: number,
+      layoutHint: string,
+      instructions: string
+    }
+  ],
+  totalQuestions: number,
+  pageLayout: 'single_column' | 'two_column' | 'grid' | 'mixed',
+  visualStyle: string,
+  hasHeader: boolean,
+  hasStudentInfoSection: boolean,
+  difficultyHint: 'easy' | 'medium' | 'hard',
+  subjectHint: string,
+  designNotes: string,
+  worksheetStyle: 'diagram' | 'questions' | 'mixed',
+  recommendedActivityType: string,
+  labelCount: number
+}`;
+}
+
 module.exports = {
   generateWorksheet,
   uploadAndGenerate,
+  generateFromFile,
   createWorksheet,
   getMyWorksheets,
   getWorksheetById,
@@ -2316,4 +4268,8 @@ module.exports = {
   getWorksheetReport,
   assignWorksheet,
   generateHtmlWorksheet,
+  analyzeTemplate,
+  detectFields,
+  saveOverlayWorksheet,
+  downloadOverlayPdf,
 };

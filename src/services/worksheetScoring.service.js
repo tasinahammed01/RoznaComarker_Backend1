@@ -15,6 +15,7 @@ function buildAnswerKeyMaps(worksheet) {
   let a4Sents = worksheet?.activity4?.sentences ?? [];
   let a5Pairs = worksheet?.activity5?.pairs ?? [];
   let a6Qs = worksheet?.activity6?.questions ?? [];
+  let a9Fields = worksheet?.activity9?.fields ?? [];
 
   // Map to track which sectionId each activity type maps to (for new format)
   const sectionIdMap = new Map();
@@ -44,6 +45,9 @@ function buildAnswerKeyMaps(worksheet) {
       } else if (type === 'trueFalse') {
         a6Qs = data?.questions ?? [];
         sectionIdMap.set('activity6', sectionId);
+      } else if (type === 'overlay') {
+        a9Fields = data?.fields ?? [];
+        sectionIdMap.set('activity9', sectionId);
       }
     });
   }
@@ -96,6 +100,14 @@ function buildAnswerKeyMaps(worksheet) {
     }
   }
 
+  // Activity 9: Overlay - map fieldId to expected answer
+  const a9ByFieldId = new Map();
+  for (const field of a9Fields) {
+    if (field && field.id != null) {
+      a9ByFieldId.set(String(field.id), field);
+    }
+  }
+
   // Support new activities array format
   const activitiesByIndex = new Map();
   for (let i = 0; i < activitiesArray.length; i++) {
@@ -109,6 +121,7 @@ function buildAnswerKeyMaps(worksheet) {
     a4Sents,
     a5Pairs,
     a6Qs,
+    a9Fields,
     a1BySlot,
     a2ById,
     a3ByQid,
@@ -116,6 +129,7 @@ function buildAnswerKeyMaps(worksheet) {
     a4BlankCount,
     a5ByPairId,
     a6ByQid,
+    a9ByFieldId,
     activitiesArray,
     activitiesByIndex,
     sectionIdMap,
@@ -130,6 +144,7 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
     a3Qs,
     a5Pairs,
     a6Qs,
+    a9Fields,
     a1BySlot,
     a2ById,
     a3ByQid,
@@ -137,13 +152,14 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
     a4BlankCount,
     a5ByPairId,
     a6ByQid,
+    a9ByFieldId,
     sectionIdMap,
   } = buildAnswerKeyMaps(worksheet);
 
   // Helper to normalize sectionId - map activity_N to activity type
   const normalizeSectionId = (sectionId) => {
-    // If it's already activity1-6, return as-is
-    if (/^activity[1-6]$/.test(sectionId)) return sectionId;
+    // If it's already activity1-6 or activity9, return as-is
+    if (/^activity[1-6]$/.test(sectionId) || sectionId === 'activity9') return sectionId;
     // If it's activity_0, activity_1, etc., map to activity type based on sectionIdMap
     if (sectionIdMap && sectionIdMap.has(sectionId)) {
       // Reverse lookup: find which activity type this sectionId maps to
@@ -196,6 +212,13 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
       const givenAnswer = lowerTrim(studentAnswer);
       isCorrect = Boolean(q && correctAnswer && givenAnswer && givenAnswer === lowerTrim(correctAnswer));
       feedback = isCorrect ? 'Correct!' : `Incorrect. Correct: ${correctAnswer || '?'}`;
+    } else if (sectionId === 'activity9') {
+      // Activity 9: Overlay - compare student answer vs expectedAnswer
+      const field = a9ByFieldId.get(questionId);
+      const expectedAnswer = lowerTrim(field?.expectedAnswer || '');
+      const givenAnswer = lowerTrim(studentAnswer);
+      isCorrect = Boolean(field && expectedAnswer && givenAnswer && givenAnswer === expectedAnswer);
+      feedback = isCorrect ? 'Correct!' : `Incorrect. Expected: ${field?.expectedAnswer || '?'}`;
     } else {
       // Fallback for activities array format or other types
       isCorrect = Boolean(a?.isCorrect);
@@ -220,7 +243,8 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
     (Array.isArray(a3Qs) ? a3Qs.length : 0) +
     (Number(a4BlankCount) || 0) +
     (Array.isArray(a5Pairs) ? a5Pairs.length : 0) +
-    (Array.isArray(a6Qs) ? a6Qs.length : 0);
+    (Array.isArray(a6Qs) ? a6Qs.length : 0) +
+    (Array.isArray(a9Fields) ? a9Fields.length : 0);
 
   const percentage = totalPointsPossible > 0
     ? Math.round((totalPointsEarned / totalPointsPossible) * 100)
@@ -233,6 +257,7 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
     activity4: { earned: 0, possible: Number(a4BlankCount) || 0 },
     activity5: { earned: 0, possible: Array.isArray(a5Pairs) ? a5Pairs.length : 0 },
     activity6: { earned: 0, possible: Array.isArray(a6Qs) ? a6Qs.length : 0 },
+    activity9: { earned: 0, possible: Array.isArray(a9Fields) ? a9Fields.length : 0 },
   };
 
   for (const a of graded) {
@@ -245,6 +270,7 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
     else if (normalizedSectionId === 'activity4') breakdown.activity4.earned += 1;
     else if (normalizedSectionId === 'activity5') breakdown.activity5.earned += 1;
     else if (normalizedSectionId === 'activity6') breakdown.activity6.earned += 1;
+    else if (normalizedSectionId === 'activity9') breakdown.activity9.earned += 1;
   }
 
   // Build sections array with per-section analytics
@@ -256,6 +282,7 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
     activity4: 'fill-blanks',
     activity5: 'matching',
     activity6: 'true-false',
+    activity9: 'overlay',
   };
 
   const activityNameMap = {
@@ -265,10 +292,11 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
     activity4: 'Fill in the Blanks',
     activity5: 'Matching Pairs',
     activity6: 'True/False',
+    activity9: 'PDF Overlay',
   };
 
   // Process each activity section
-  const sectionIds = ['activity1', 'activity2', 'activity3', 'activity4', 'activity5', 'activity6'];
+  const sectionIds = ['activity1', 'activity2', 'activity3', 'activity4', 'activity5', 'activity6', 'activity9'];
   
   for (const sectionId of sectionIds) {
     const sectionAnswers = graded.filter(a => a.sectionId === sectionId);
@@ -374,6 +402,15 @@ function buildCanonicalAnswerSheet({ worksheet, answersBySection }) {
       if (!questionId || !sectionId) continue;
       out.push({ questionId, sectionId, studentAnswer: normalizeString(a.studentAnswer) });
     }
+  }
+
+  // Activity 9: Overlay fields
+  const a9Fields = ws.activity9?.fields ?? [];
+  for (const field of a9Fields) {
+    const id = field && field.id != null ? String(field.id) : '';
+    if (!id) continue;
+    const studentAnswer = normalizeString(bySection?.activity9?.[id] ?? '');
+    out.push({ questionId: id, sectionId: 'activity9', studentAnswer });
   }
 
   return out;

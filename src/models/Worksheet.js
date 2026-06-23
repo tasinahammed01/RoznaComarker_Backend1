@@ -96,6 +96,11 @@ const WorksheetSchema = new mongoose.Schema({
   activity2:          { type: mongoose.Schema.Types.Mixed, default: null },
   activity3:          { type: mongoose.Schema.Types.Mixed, default: null },
   activity4:          { type: mongoose.Schema.Types.Mixed, default: null },
+  activity5:          { type: mongoose.Schema.Types.Mixed, default: null },
+  activity6:          { type: mongoose.Schema.Types.Mixed, default: null },
+  activity7:          { type: mongoose.Schema.Types.Mixed, default: null },
+  activity8:          { type: mongoose.Schema.Types.Mixed, default: null },
+  activity9:          { type: mongoose.Schema.Types.Mixed, default: null },
 
   totalPoints: { type: Number, default: 16 },
   theme:       { type: WorksheetThemeSchema, default: () => ({}) },

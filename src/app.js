@@ -95,6 +95,7 @@ fs.mkdirSync(path.join(uploadsRoot, "transcripts"), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, "avatars"), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, "class-banners"), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, "flashcards"), { recursive: true });
+fs.mkdirSync(path.join(uploadsRoot, "templates"), { recursive: true });
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -169,6 +170,11 @@ app.use(
   "/uploads/flashcards",
   createCorsMiddleware(),
   express.static(path.join(uploadsRoot, "flashcards")),
+);
+app.use(
+  "/uploads/templates",
+  createCorsMiddleware(),
+  express.static(path.join(uploadsRoot, "templates")),
 );
 
 app.use("/api", healthRoutes);

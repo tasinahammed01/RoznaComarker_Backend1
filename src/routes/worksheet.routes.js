@@ -40,6 +40,48 @@ router.post(
   worksheetController.generateHtmlWorksheet,
 );
 
+/* ── Generate from Example File (teacher only, Gemini API) ────── */
+router.post(
+  "/generate-from-file",
+  verifyJwtToken,
+  requireRole("teacher"),
+  upload.single("worksheetFile"),
+  worksheetController.generateFromFile,
+);
+
+/* ── Analyze Template (teacher only, OpenRouter) ───────────────── */
+router.post(
+  "/analyze-template",
+  verifyJwtToken,
+  requireRole("teacher"),
+  upload.single("templateFile"),
+  worksheetController.analyzeTemplate,
+);
+
+/* ── Detect Fields (teacher only, Vision AI) ─────────────────────── */
+router.post(
+  "/detect-fields",
+  verifyJwtToken,
+  requireRole("teacher"),
+  upload.single("file"),
+  worksheetController.detectFields,
+);
+
+/* ── Save Overlay Worksheet (teacher only) ─────────────────────── */
+router.post(
+  "/save-overlay",
+  verifyJwtToken,
+  requireRole("teacher"),
+  worksheetController.saveOverlayWorksheet,
+);
+
+/* ── Download Overlay PDF (student/teacher) ─────────────────────── */
+router.post(
+  "/:id/download-overlay",
+  verifyJwtToken,
+  worksheetController.downloadOverlayPdf,
+);
+
 /* ── CRUD (teacher) ─────────────────────────────────────────── */
 router.get(
   "/",

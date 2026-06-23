@@ -12,11 +12,19 @@
 const mammoth = require("mammoth");
 const path = require("path");
 const logger = require("../utils/logger");
+const Groq = require("groq-sdk");
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GEMINI_ENDPOINT =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+
+const groq = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
 const GEMINI_TIMEOUT_MS = 120_000; // 2 minutes
+
+// ─── Groq API Key Verification ──────────────────────────────────────────────
+console.log('[GROQ] API key present:', !!GROQ_API_KEY);
+console.log('[GROQ] API key prefix:', GROQ_API_KEY?.substring(0, 8));
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -111,6 +119,107 @@ OUTPUT RULES — READ CAREFULLY:
 - The entire response must be valid, self-contained HTML`;
 }
 
+// ─── Groq Fallback Function ──────────────────────────────────────────────
+
+/**
+ * Generate HTML worksheet using Groq API (text-only fallback).
+ * Used when Gemini hits rate limits.
+ */
+async function generateGroqFallback(extractedText, fileMetadata = {}) {
+  if (!groq) {
+    throw new Error("Groq API is not configured. Set GROQ_API_KEY in .env.");
+  }
+
+  logger.info(
+    `[GROQ FALLBACK] Generating worksheet | file: ${fileMetadata.fileName || "unknown"}`,
+  );
+
+  const groqPrompt = `You are an expert educational worksheet designer.
+
+You will receive educational content. Generate a complete, visually polished, print-ready HTML worksheet based on that content.
+
+TEACHER'S SETTINGS:
+- Subject: ${fileMetadata.options?.subject || "General"}
+- Grade Level: ${fileMetadata.options?.gradeLevel || "Not specified"}
+- Difficulty: ${fileMetadata.options?.difficulty || "medium"}
+- Language: ${fileMetadata.options?.language || "English"}
+- Activity Types: ${
+    Array.isArray(fileMetadata.options?.activityTypes)
+      ? fileMetadata.options.activityTypes.join(", ")
+      : "ordering, classification, multipleChoice, fillBlanks"
+  }
+
+EDUCATIONAL CONTENT TO BUILD FROM:
+${extractedText.slice(0, 10000)}
+
+DESIGN REQUIREMENTS:
+1. Create a structured, complete worksheet
+2. Include a colored header with title and metadata
+3. Add student info row: "Name: ____________  Date: ____________  Class: ____________"
+4. Add concept explanation box
+5. Create separate activity sections
+6. Use ONLY inline CSS in a <style> block inside <head>
+7. No external CSS or Google Fonts imports
+8. A4 width (794px) and print-ready
+9. Root: <html> with <body> containing <div class="worksheet-container">
+10. Color scheme: modern teal/cyan palette
+
+OUTPUT RULES:
+- Return ONLY raw HTML starting with <!DOCTYPE html>
+- Do NOT include markdown code fences or backticks
+- Do NOT include any explanation outside the HTML
+- The entire response must be valid, self-contained HTML`;
+
+  // ── Try Groq models sequentially until one works ──────────────────────────
+  const groqModels = [
+    'llama-3.3-70b-versatile',   // Current active model
+    'llama3-70b-8192',           // Stable fallback
+    'mixtral-8x7b-32768'         // Last resort
+  ];
+
+  let rawHtml = '';
+  let lastGroqError = null;
+
+  for (const groqModel of groqModels) {
+    try {
+      console.log(`[GROQ FALLBACK] Trying model: ${groqModel}`);
+      const completion = await groq.chat.completions.create({
+        model: groqModel,
+        messages: [{ role: "user", content: groqPrompt }],
+        temperature: 0.4,
+        max_tokens: 8192,
+      });
+      rawHtml = completion.choices[0]?.message?.content || '';
+      console.log(`[GROQ FALLBACK] Success with model: ${groqModel}`);
+      break;
+    } catch (err) {
+      console.error(`[GROQ FALLBACK] Failed with ${groqModel}:`, err?.message);
+      lastGroqError = err;
+    }
+  }
+
+  if (!rawHtml) {
+    console.error('[GROQ FALLBACK] Full error:', JSON.stringify(lastGroqError, null, 2));
+    console.error('[GROQ FALLBACK] Status:', lastGroqError?.status);
+    console.error('[GROQ FALLBACK] Message:', lastGroqError?.message);
+    console.error('[GROQ FALLBACK] Error body:', lastGroqError?.error);
+    throw lastGroqError || new Error('All Groq models failed to generate worksheet.');
+  }
+
+  if (rawHtml.trim().length < 100) {
+    throw new Error(
+      "Groq returned an empty worksheet. Please try again in a moment.",
+    );
+  }
+
+  logger.info(`[GROQ FALLBACK] HTML generated, length: ${rawHtml.length}`);
+
+  const html = cleanHtmlResponse(rawHtml);
+  const title = extractTitle(html);
+
+  return { html, title };
+}
+
 // ─── Main Export ────────────────────────────────────────────────────────────
 
 /**
@@ -202,9 +311,10 @@ async function generateHtmlWorksheetFromFile(
     );
   }
 
-  // ── Call Gemini API ───────────────────────────────────────────────────────
+  // ── Call Gemini API with Retry & Fallback ───────────────────────────────
+
   logger.info(
-    `[GEMINI WORKSHEET] Calling Gemini 2.0 Flash | file: ${fileName} | type: ${mimeType}`,
+    `[GEMINI WORKSHEET] Calling Gemini 1.5 Flash | file: ${fileName} | type: ${mimeType}`,
   );
 
   const requestBody = {
@@ -215,64 +325,159 @@ async function generateHtmlWorksheetFromFile(
     },
   };
 
-  let response;
-  try {
-    response = await fetch(`${GEMINI_ENDPOINT}?key=${GEMINI_API_KEY}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
-    });
-  } catch (fetchErr) {
-    if (fetchErr.name === "TimeoutError" || fetchErr.name === "AbortError") {
+  // Extract text for Groq fallback (Groq is text-only)
+  let extractedTextForGroq = "";
+  if (isDocx || isTxt) {
+    // Already have text from the parts
+    const textPart = parts.find((p) => p.text);
+    extractedTextForGroq = textPart?.text || "";
+  } else if (isPdf || isImage) {
+    // Can't extract text from binary formats — use filename hint
+    extractedTextForGroq = `Generate worksheet based on file: ${fileName}. Subject: ${options.subject || "General"}. Grade: ${options.gradeLevel || "Not specified"}.`;
+  }
+
+  // Retry Gemini up to 2 times before falling back to Groq
+  let geminiResult = null;
+  let lastGeminiError = null;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const response = await fetch(`${GEMINI_ENDPOINT}?key=${GEMINI_API_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "(no body)");
+        logger.error(
+          `[GEMINI WORKSHEET] HTTP ${response.status}:`,
+          errText.slice(0, 400),
+        );
+
+        const isRateLimit =
+          response.status === 429 || response.status === 403;
+
+        if (response.status === 400) {
+          throw new Error(
+            "Gemini rejected the file. Try a different format or smaller file.",
+          );
+        }
+        if (response.status === 401) {
+          throw new Error(
+            "GEMINI_API_KEY is invalid or lacks permission. Check your .env file.",
+          );
+        }
+        if (isRateLimit) {
+          if (attempt < 2) {
+            logger.warn(
+              `[GEMINI WORKSHEET] Rate limited on attempt ${attempt}. Retrying in 5s...`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+            lastGeminiError = new Error(
+              `Gemini rate limit (attempt ${attempt}/2)`,
+            );
+            lastGeminiError.status = response.status;
+            continue;
+          } else {
+            const err = new Error(
+              "Gemini API rate limit reached. Falling back to Groq...",
+            );
+            err.status = 429;
+            throw err;
+          }
+        }
+        if (response.status >= 500) {
+          throw new Error(
+            "Gemini API is temporarily unavailable. Please try again in a few seconds.",
+          );
+        }
+        throw new Error(`Gemini API error (${response.status}). Please try again.`);
+      }
+
+      const data = await response.json();
+      const rawHtml = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+      if (!rawHtml || rawHtml.trim().length < 100) {
+        throw new Error(
+          "Gemini returned an empty worksheet. The file may not contain enough content.",
+        );
+      }
+
+      logger.info(
+        `[GEMINI WORKSHEET] Gemini succeeded on attempt ${attempt}`,
+      );
+      const html = cleanHtmlResponse(rawHtml);
+      const title = extractTitle(html);
+      geminiResult = { html, title };
+      break;
+    } catch (err) {
+      if (
+        err.name === "TimeoutError" ||
+        err.name === "AbortError"
+      ) {
+        throw new Error(
+          "Gemini API timed out. The file may be too complex — try a smaller file.",
+        );
+      }
+
+      if (attempt < 2) {
+        lastGeminiError = err;
+        if (err.status === 429) {
+          logger.warn(
+            `[GEMINI WORKSHEET] Rate limited on attempt ${attempt}. Retrying...`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          continue;
+        }
+      }
+
+      lastGeminiError = err;
+      throw err;
+    }
+  }
+
+  if (geminiResult) {
+    return { ...geminiResult, provider: 'gemini' };
+  }
+
+  // ── Groq Fallback (if Gemini failed with rate limit) ─────────────────────
+  if (
+    lastGeminiError &&
+    (lastGeminiError.status === 429 || lastGeminiError.status === 403) &&
+    groq
+  ) {
+    try {
+      const groqResult = await generateGroqFallback(extractedTextForGroq, {
+        fileName,
+        options,
+      });
+      logger.info("[GEMINI WORKSHEET] Groq fallback succeeded.");
+      return { ...groqResult, provider: 'groq' };
+    } catch (groqErr) {
+      console.error('[GROQ FALLBACK] Full error:', JSON.stringify(groqErr, null, 2));
+      console.error('[GROQ FALLBACK] Status:', groqErr?.status);
+      console.error('[GROQ FALLBACK] Message:', groqErr?.message);
+      console.error('[GROQ FALLBACK] Error body:', groqErr?.error);
+      logger.error(
+        "[GEMINI WORKSHEET] Groq fallback failed:",
+        groqErr.message,
+      );
       throw new Error(
-        "Gemini API timed out. The file may be too complex — try a smaller file.",
+        `Both Gemini and Groq failed. ${lastGeminiError.message} | Groq: ${groqErr.message}`,
       );
     }
-    throw new Error(`Network error contacting Gemini API: ${fetchErr.message}`);
   }
 
-  if (!response.ok) {
-    const errText = await response.text().catch(() => "(no body)");
-    logger.error(
-      `[GEMINI WORKSHEET] HTTP ${response.status}:`,
-      errText.slice(0, 400),
-    );
-
-    if (response.status === 400)
-      throw new Error(
-        "Gemini rejected the file. Try a different format or smaller file.",
-      );
-    if (response.status === 401 || response.status === 403)
-      throw new Error(
-        "GEMINI_API_KEY is invalid or lacks permission. Check your .env file.",
-      );
-    if (response.status === 429)
-      throw new Error(
-        "Gemini API rate limit reached. Please wait a moment and try again.",
-      );
-    if (response.status >= 500)
-      throw new Error(
-        "Gemini API is temporarily unavailable. Please try again in a few seconds.",
-      );
-    throw new Error(`Gemini API error (${response.status}). Please try again.`);
+  // If we got here and there's a Gemini error, throw it
+  if (lastGeminiError) {
+    throw lastGeminiError;
   }
 
-  const data = await response.json();
-  const rawHtml = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
-  if (!rawHtml || rawHtml.trim().length < 100) {
-    throw new Error(
-      "Gemini returned an empty worksheet. The file may not contain enough content.",
-    );
-  }
-
-  logger.info(`[GEMINI WORKSHEET] HTML generated, length: ${rawHtml.length}`);
-
-  const html = cleanHtmlResponse(rawHtml);
-  const title = extractTitle(html);
-
-  return { html, title };
+  throw new Error(
+    "Worksheet generation failed. Please check your API keys and try again.",
+  );
 }
 
 module.exports = { generateHtmlWorksheetFromFile };

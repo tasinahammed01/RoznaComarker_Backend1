@@ -58,6 +58,24 @@ async function start() {
     logger.warn("Unsplash configured: false (UNSPLASH_ACCESS_KEY not set)");
   }
 
+  // ─── AI API Key Health Check ────────────────────────────────────────
+  // Warn on startup if Gemini or Groq keys are missing
+  if (!process.env.GEMINI_API_KEY) {
+    logger.warn(
+      "⚠️  WARNING: GEMINI_API_KEY is not set. Worksheet AI generation will fail.",
+    );
+  } else {
+    logger.info("Gemini API key configured: true");
+  }
+
+  if (!process.env.GROQ_API_KEY) {
+    logger.warn(
+      "⚠️  WARNING: GROQ_API_KEY is not set. Groq fallback will not work when Gemini is rate limited.",
+    );
+  } else {
+    logger.info("Groq API key configured: true");
+  }
+
   if (process.env.SEED_DEFAULT_PLANS === "true") {
     try {
       await Plan.seedDefaults();
