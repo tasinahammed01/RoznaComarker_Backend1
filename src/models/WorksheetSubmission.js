@@ -59,6 +59,10 @@ const WorksheetSubmissionSchema = new Schema({
     enum: ['auto-graded', 'pending-review'],
     default: 'auto-graded'
   },
+  // Activity 9 overlay worksheet data
+  activity9Answers: { type: Map, of: String, default: {} },
+  activity9Results: { type: Map, of: Boolean, default: {} },
+  activity9Feedbacks: { type: Map, of: String, default: {} },
 }, { timestamps: true });
 
 WorksheetSubmissionSchema.index({ assignmentId: 1, studentId: 1 }, { unique: true });

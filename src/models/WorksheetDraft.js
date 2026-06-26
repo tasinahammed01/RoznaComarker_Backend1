@@ -57,6 +57,25 @@ const worksheetDraftSchema = new Schema(
       of: String,
       default: new Map(),
     },
+    // Activity 9 overlay worksheet data
+    activity9Answers: {
+      type: Map,
+      of: String,
+      default: new Map(),
+    },
+    activity9Results: {
+      type: Map,
+      of: Boolean,
+      default: new Map(),
+    },
+    activity9Score: {
+      type: Number,
+      default: 0,
+    },
+    activity9Total: {
+      type: Number,
+      default: 0,
+    },
     progressPercentage: {
       type: Number,
       default: 0,

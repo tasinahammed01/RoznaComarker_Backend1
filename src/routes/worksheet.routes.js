@@ -82,6 +82,13 @@ router.post(
   worksheetController.downloadOverlayPdf,
 );
 
+/* ── Evaluate Answers with AI (student/teacher) ───────────────────── */
+router.post(
+  "/:id/evaluate-answers",
+  verifyJwtToken,
+  worksheetController.evaluateAnswers,
+);
+
 /* ── CRUD (teacher) ─────────────────────────────────────────── */
 router.get(
   "/",

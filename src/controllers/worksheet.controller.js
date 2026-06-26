@@ -1601,6 +1601,9 @@ async function submitWorksheet(req, res) {
       totalPointsEarned = 0,
       totalPointsPossible = 0,
       percentage = 0,
+      activity9Answers,
+      activity9Results,
+      activity9Feedbacks,
     } = req.body;
 
     const studentId = req.user && req.user._id;
@@ -1678,6 +1681,13 @@ async function submitWorksheet(req, res) {
       existing.submittedAt = now;
       existing.lastAttemptAt = now;
       existing.attempts = (Number(existing.attempts) || 1) + 1;
+      // Activity 9 overlay worksheet data
+      if (activity9Answers) existing.activity9Answers = activity9Answers;
+      if (activity9Results) existing.activity9Results = activity9Results;
+      if (activity9Feedbacks) existing.activity9Feedbacks = activity9Feedbacks;
+      // Save activity9 specific score fields
+      existing.activity9Score = totalPointsEarned;
+      existing.activity9Total = totalPointsPossible;
 
       await existing.save();
       console.log(
@@ -1762,6 +1772,12 @@ async function submitWorksheet(req, res) {
       submittedAt: now,
       lastAttemptAt: now,
       attempts: 1,
+      // Activity 9 overlay worksheet data
+      activity9Answers: activity9Answers || {},
+      activity9Results: activity9Results || {},
+      activity9Feedbacks: activity9Feedbacks || {},
+      activity9Score: totalPointsEarned,
+      activity9Total: totalPointsPossible,
     });
 
     await created.save();
@@ -1880,6 +1896,17 @@ async function getMySubmission(req, res) {
 
     if (!submission) return sendError(res, 404, "No submission found");
 
+    // Convert Mongoose Map types to plain objects for proper serialization
+    if (submission.activity9Answers && typeof submission.activity9Answers.toObject === 'function') {
+      submission.activity9Answers = submission.activity9Answers.toObject();
+    }
+    if (submission.activity9Results && typeof submission.activity9Results.toObject === 'function') {
+      submission.activity9Results = submission.activity9Results.toObject();
+    }
+    if (submission.activity9Feedbacks && typeof submission.activity9Feedbacks.toObject === 'function') {
+      submission.activity9Feedbacks = submission.activity9Feedbacks.toObject();
+    }
+
     const worksheet = await Worksheet.findById(req.params.id)
       .select("sections title totalPoints")
       .lean();
@@ -1916,9 +1943,25 @@ async function getMySubmissionByAssignment(req, res) {
 
     if (!submission) return sendError(res, 404, "No submission found");
 
+    // Convert Mongoose Map types to plain objects for proper serialization
+    if (submission.activity9Answers && typeof submission.activity9Answers.toObject === 'function') {
+      submission.activity9Answers = submission.activity9Answers.toObject();
+    }
+    if (submission.activity9Results && typeof submission.activity9Results.toObject === 'function') {
+      submission.activity9Results = submission.activity9Results.toObject();
+    }
+    if (submission.activity9Feedbacks && typeof submission.activity9Feedbacks.toObject === 'function') {
+      submission.activity9Feedbacks = submission.activity9Feedbacks.toObject();
+    }
+
     const worksheet = await Worksheet.findById(submission.worksheetId)
       .select("sections title totalPoints")
       .lean();
+
+    console.log('[GET SUBMISSION] Returning activity9Data:', {
+      hasData: !!submission.activity9Answers,
+      answerCount: Object.keys(submission.activity9Answers || {}).length
+    });
 
     return sendSuccess(res, {
       ...submission,
@@ -1956,6 +1999,19 @@ async function getSubmissions(req, res) {
       .populate("studentId", "displayName email photoURL")
       .sort({ submittedAt: -1 })
       .lean();
+
+    // Convert Mongoose Map types to plain objects for proper serialization
+    submissions.forEach(sub => {
+      if (sub.activity9Answers && typeof sub.activity9Answers.toObject === 'function') {
+        sub.activity9Answers = sub.activity9Answers.toObject();
+      }
+      if (sub.activity9Results && typeof sub.activity9Results.toObject === 'function') {
+        sub.activity9Results = sub.activity9Results.toObject();
+      }
+      if (sub.activity9Feedbacks && typeof sub.activity9Feedbacks.toObject === 'function') {
+        sub.activity9Feedbacks = sub.activity9Feedbacks.toObject();
+      }
+    });
 
     return sendSuccess(res, {
       worksheet,
@@ -2029,6 +2085,7 @@ async function getWorksheetReport(req, res) {
       WorksheetSubmission.find(filter)
         .populate("studentId", "displayName email photoURL")
         .populate("assignmentId", "title deadline class")
+        .select("studentId assignmentId worksheetId score percentage isPassed isLate answers timeTaken submittedAt totalPointsEarned totalPointsPossible activity9Answers activity9Results activity9Score activity9Total")
         .sort({ submittedAt: -1 })
         .skip(skip)
         .limit(limitNum)
@@ -2038,6 +2095,37 @@ async function getWorksheetReport(req, res) {
         .select("score percentage isPassed isLate answers attempts")
         .lean(),
     ]);
+
+    // Convert Mongoose Map types to plain objects for proper serialization
+    // This fixes the Teacher PDF bug where activity9Answers are not rendered
+    console.log('[GET WORKSHEET REPORT] === BEFORE MAP CONVERSION ===');
+    if (submissions.length > 0) {
+      const firstSub = submissions[0];
+      console.log('[GET WORKSHEET REPORT] typeof activity9Answers:', typeof firstSub.activity9Answers);
+      console.log('[GET WORKSHEET REPORT] activity9Answers instanceof Map:', firstSub.activity9Answers instanceof Map);
+      console.log('[GET WORKSHEET REPORT] has toObject method:', typeof firstSub.activity9Answers?.toObject === 'function');
+    }
+
+    submissions.forEach(sub => {
+      if (sub.activity9Answers && typeof sub.activity9Answers.toObject === 'function') {
+        sub.activity9Answers = sub.activity9Answers.toObject();
+      }
+      if (sub.activity9Results && typeof sub.activity9Results.toObject === 'function') {
+        sub.activity9Results = sub.activity9Results.toObject();
+      }
+      if (sub.activity9Feedbacks && typeof sub.activity9Feedbacks.toObject === 'function') {
+        sub.activity9Feedbacks = sub.activity9Feedbacks.toObject();
+      }
+    });
+
+    console.log('[GET WORKSHEET REPORT] === AFTER MAP CONVERSION ===');
+    if (submissions.length > 0) {
+      const firstSub = submissions[0];
+      console.log('[GET WORKSHEET REPORT] typeof activity9Answers:', typeof firstSub.activity9Answers);
+      console.log('[GET WORKSHEET REPORT] activity9Answers instanceof Map:', firstSub.activity9Answers instanceof Map);
+      console.log('[GET WORKSHEET REPORT] Object.keys(activity9Answers):', Object.keys(firstSub.activity9Answers || {}));
+      console.log('[GET WORKSHEET REPORT] full activity9Answers:', JSON.stringify(firstSub.activity9Answers, null, 2));
+    }
 
     // Get all assignments for this worksheet to calculate total assigned
     const assignments = await Assignment.find({
@@ -2549,6 +2637,14 @@ async function getWorksheetDraft(req, res) {
     }).lean();
     if (!draft) return sendError(res, 404, "No draft found");
 
+    // Convert Mongoose Map types to plain objects for proper serialization
+    if (draft.activity9Answers && typeof draft.activity9Answers.toObject === 'function') {
+      draft.activity9Answers = draft.activity9Answers.toObject();
+    }
+    if (draft.activity9Results && typeof draft.activity9Results.toObject === 'function') {
+      draft.activity9Results = draft.activity9Results.toObject();
+    }
+
     return sendSuccess(res, draft);
   } catch (error) {
     console.error("[GET WORKSHEET DRAFT] Error:", error.message);
@@ -2572,6 +2668,10 @@ async function saveWorksheetDraft(req, res) {
       activity2Revealed = {},
       activity3Answers = {},
       activity4Blanks = {},
+      activity9Answers,
+      activity9Results,
+      activity9Score,
+      activity9Total,
       progressPercentage = 0,
       timeSpent = 0,
     } = req.body;
@@ -2605,6 +2705,11 @@ async function saveWorksheetDraft(req, res) {
       draft.activity2Revealed = activity2Revealed;
       draft.activity3Answers = activity3Answers;
       draft.activity4Blanks = activity4Blanks;
+      // Activity 9 overlay worksheet data
+      if (activity9Answers !== undefined) draft.activity9Answers = activity9Answers;
+      if (activity9Results !== undefined) draft.activity9Results = activity9Results;
+      if (activity9Score !== undefined) draft.activity9Score = activity9Score;
+      if (activity9Total !== undefined) draft.activity9Total = activity9Total;
       draft.progressPercentage = Math.min(
         100,
         Math.max(0, Number(progressPercentage) || 0),
@@ -2624,6 +2729,11 @@ async function saveWorksheetDraft(req, res) {
         activity2Revealed,
         activity3Answers,
         activity4Blanks,
+        // Activity 9 overlay worksheet data
+        activity9Answers: activity9Answers || {},
+        activity9Results: activity9Results || {},
+        activity9Score: activity9Score || 0,
+        activity9Total: activity9Total || 0,
         progressPercentage: Math.min(
           100,
           Math.max(0, Number(progressPercentage) || 0),
@@ -3858,11 +3968,16 @@ async function saveOverlayWorksheet(req, res) {
 /**
  * POST /api/worksheets/:id/download-overlay
  * Downloads a PDF of the overlay worksheet with student answers printed on it.
- * Accepts: { answers, results, studentName, score, total }
+ * Accepts: { answers, results, studentName, score, total, className, assignmentTitle, subject, grade, dueDate }
  * Returns: PDF file as download
  */
 async function downloadOverlayPdf(req, res) {
-  console.log('[DOWNLOAD PDF] Starting overlay PDF download for worksheet:', req.params.id);
+  console.log('[PDF BACKEND] === ANSWERS OBJECT INSPECTION ===');
+  console.log('[PDF BACKEND] typeof req.body.answers:', typeof req.body.answers);
+  console.log('[PDF BACKEND] req.body.answers instanceof Map:', req.body.answers instanceof Map);
+  console.log('[PDF BACKEND] Object.keys(req.body.answers):', Object.keys(req.body.answers || {}));
+  console.log('[PDF BACKEND] full answers object:', JSON.stringify(req.body.answers, null, 2));
+  console.log('[PDF BACKEND] Generating overlay PDF for worksheet:', req.params.id);
 
   try {
     const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
@@ -3870,326 +3985,535 @@ async function downloadOverlayPdf(req, res) {
     const fs = require('fs');
     const path = require('path');
 
-    // 1. Get worksheet from DB
     const worksheet = await Worksheet.findById(req.params.id);
-    if (!worksheet || !worksheet.activity9) {
-      return res.status(404).json({ 
-        error: 'Worksheet not found' 
-      });
+    if (!worksheet?.activity9) {
+      return res.status(404).json({ error: 'Not found' });
     }
-    
+
     const activity9 = worksheet.activity9;
     const answers = req.body.answers || {};
     const results = req.body.results || {};
     const studentName = req.body.studentName || 'Student';
     const score = parseInt(req.body.score) || 0;
-    const total = parseInt(req.body.total) || 0;
-    
-    console.log('[DOWNLOAD PDF] Worksheet:', worksheet.title);
-    console.log('[DOWNLOAD PDF] Fields:', activity9.fields?.length);
-    console.log('[DOWNLOAD PDF] Answers:', Object.keys(answers).length);
-    console.log('[DOWNLOAD PDF] Background URL:', activity9.backgroundImageUrl);
-    console.log('[DOWNLOAD PDF] CWD:', process.cwd());
-    console.log('[DOWNLOAD PDF] __dirname:', __dirname);
-    
-    // 2. Load the background image from LOCAL FILE
-    let imageBuffer;
+    const total = parseInt(req.body.total) || activity9.fields?.length || 0;
+    const subject = req.body.subject || worksheet.meta?.subject || '';
+    const grade = req.body.grade || worksheet.meta?.gradeLevel || '';
+    const scorePct = total > 0 ? Math.round((score/total)*100) : 0;
+
+    console.log('[PDF BACKEND] Generating for:', studentName);
+    console.log('[PDF BACKEND] Answers received:', Object.keys(answers).length);
+    console.log('[PDF BACKEND] Score:', score, '/', total);
+
+    // Log field-level answer lookup
+    const fields = activity9.fields || [];
+    console.log('[PDF BACKEND] === FIELD-LEVEL ANSWER LOOKUP ===');
+    console.log('[PDF BACKEND] total fields:', fields.length);
+    fields.forEach(field => {
+      console.log('[PDF BACKEND] field lookup:', {
+        fieldId: field.id,
+        answer: answers?.[field.id],
+        hasAnswer: field.id in answers,
+        answerType: typeof answers?.[field.id]
+      });
+    });
+
+    // Load image from disk
     const imageUrl = activity9.backgroundImageUrl || '';
-    
-    // Strategy 1: Extract filename and read from disk
-    const urlParts = imageUrl.split('/');
-    const filename = urlParts[urlParts.length - 1];
-    
-    // Common paths where template images are stored
+    const filename = imageUrl.split('/').pop();
     const possiblePaths = [
       path.join(__dirname, '../../uploads/templates', filename),
       path.join(__dirname, '../uploads/templates', filename),
       path.join(process.cwd(), 'uploads/templates', filename),
-      path.join(process.cwd(), 'backend/uploads/templates', filename)
     ];
-    
+
     let imagePath = null;
     for (const p of possiblePaths) {
-      if (fs.existsSync(p)) {
-        imagePath = p;
-        console.log('[DOWNLOAD PDF] Found image at:', p);
-        break;
-      }
+      if (fs.existsSync(p)) { imagePath = p; break; }
     }
-    
+
     if (!imagePath) {
-      console.error('[DOWNLOAD PDF] Image not found at any path');
-      console.error('[DOWNLOAD PDF] Tried:', possiblePaths);
-      return res.status(404).json({ 
-        error: 'Worksheet image file not found on server' 
-      });
+      return res.status(404).json({ error: 'Worksheet image not found' });
     }
-    
-    // Read image file
-    imageBuffer = fs.readFileSync(imagePath);
-    console.log('[DOWNLOAD PDF] Image size:', imageBuffer.length, 'bytes');
-    
-    // 3. Convert to JPEG using sharp
-    // This ensures compatibility with pdf-lib
-    const jpegBuffer = await sharp(imageBuffer)
-      .jpeg({ quality: 92 })
-      .toBuffer();
-    
+
+    const imageBuffer = fs.readFileSync(imagePath);
+    const jpegBuffer = await sharp(imageBuffer).jpeg({ quality: 92 }).toBuffer();
     const metadata = await sharp(imageBuffer).metadata();
-    const imgWidth = metadata.width || 800;
-    const imgHeight = metadata.height || 1000;
-    
-    console.log('[DOWNLOAD PDF] Image dimensions:', imgWidth, 'x', imgHeight);
-    
-    // 4. Create PDF document
+    const imgW = metadata.width || 800;
+    const imgH = metadata.height || 1000;
+
+    // Create PDF
     const pdfDoc = await PDFDocument.create();
-    
-    // 5. Embed the JPEG image
-    let embeddedImage;
-    try {
-      embeddedImage = await pdfDoc.embedJpg(jpegBuffer);
-      console.log('[DOWNLOAD PDF] Image embedded successfully');
-    } catch (embedErr) {
-      console.error('[DOWNLOAD PDF] Embed error:', embedErr.message);
-      // Try PNG if JPEG fails
-      const pngBuffer = await sharp(imageBuffer)
-        .png()
-        .toBuffer();
-      embeddedImage = await pdfDoc.embedPng(pngBuffer);
-    }
-    
-    // 6. Create page - A4 size (595 x 842 points)
-    // Scale image to fit A4 width
-    const pageWidth = 595;
-    const pageHeight = Math.round((imgHeight / imgWidth) * pageWidth);
-    
-    const page = pdfDoc.addPage([pageWidth, pageHeight]);
-    
-    console.log('[DOWNLOAD PDF] Page size:', pageWidth, 'x', pageHeight);
-    
-    // 7. Draw background image FIRST (full page)
-    page.drawImage(embeddedImage, {
-      x: 0,
-      y: 0,
-      width: pageWidth,
-      height: pageHeight
-    });
-    
-    console.log('[DOWNLOAD PDF] Background image drawn');
-    
-    // 8. Load fonts
     const regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+    // Page dimensions - A4 width
+    const pageWidth = 595;
     
-    // 9. Draw each field answer on the PDF
-    const fields = activity9.fields || [];
-    console.log('[DOWNLOAD PDF] Drawing', fields.length, 'fields');
+    // SECTION A: Header (like viewer header)
+    const headerHeight = 120;
     
+    // SECTION B: Score section  
+    const scoreHeight = 60;
+    
+    // SECTION C: Worksheet image
+    const imgDisplayW = pageWidth - 40; // 20px margin each side
+    const imgDisplayH = Math.round((imgH / imgW) * imgDisplayW);
+    
+    // SECTION D: Footer
+    const footerHeight = 35;
+    
+    // Total page height
+    const pageHeight = headerHeight + scoreHeight + imgDisplayH + footerHeight + 40;
+
+    const page = pdfDoc.addPage([pageWidth, pageHeight]);
+
+    // DRAW SECTION A: Header
+    page.drawRectangle({
+      x: 0,
+      y: pageHeight - headerHeight,
+      width: pageWidth,
+      height: headerHeight,
+      color: rgb(0.08, 0.35, 0.38)
+    });
+
+    page.drawText(worksheet.title || 'Worksheet', {
+      x: 20,
+      y: pageHeight - 35,
+      size: 18,
+      font: boldFont,
+      color: rgb(1, 1, 1)
+    });
+
+    page.drawText(`PDF overlay worksheet with ${total} input fields.`, {
+      x: 20,
+      y: pageHeight - 52,
+      size: 8,
+      font: regularFont,
+      color: rgb(0.8, 0.9, 0.9)
+    });
+
+    const metaText = [
+      subject ? `SUBJECT ${subject}` : '',
+      grade ? `GRADE ${grade}` : ''
+    ].filter(Boolean).join('   ');
+
+    if (metaText) {
+      page.drawText(metaText, {
+        x: 20,
+        y: pageHeight - 70,
+        size: 8,
+        font: regularFont,
+        color: rgb(0.8, 0.9, 0.9)
+      });
+    }
+
+    page.drawRectangle({
+      x: pageWidth - 160,
+      y: pageHeight - headerHeight + 10,
+      width: 145,
+      height: headerHeight - 20,
+      color: rgb(0.1, 0.42, 0.45),
+      borderColor: rgb(0.15, 0.5, 0.53),
+      borderWidth: 1
+    });
+
+    page.drawText('Student name', {
+      x: pageWidth - 150,
+      y: pageHeight - 40,
+      size: 7,
+      font: regularFont,
+      color: rgb(0.7, 0.85, 0.85)
+    });
+
+    page.drawText(studentName, {
+      x: pageWidth - 150,
+      y: pageHeight - 55,
+      size: 10,
+      font: boldFont,
+      color: rgb(1, 1, 1)
+    });
+
+    page.drawText('Date', {
+      x: pageWidth - 150,
+      y: pageHeight - 78,
+      size: 7,
+      font: regularFont,
+      color: rgb(0.7, 0.85, 0.85)
+    });
+
+    page.drawText(new Date().toLocaleDateString('en-US', {
+      month: '2-digit',
+      day: '2-digit', 
+      year: 'numeric'
+    }), {
+      x: pageWidth - 150,
+      y: pageHeight - 93,
+      size: 10,
+      font: boldFont,
+      color: rgb(1, 1, 1)
+    });
+
+    // DRAW SECTION B: Score
+    const scoreSectionY = pageHeight - headerHeight - scoreHeight;
+    
+    page.drawRectangle({
+      x: 15,
+      y: scoreSectionY,
+      width: pageWidth - 30,
+      height: scoreHeight - 5,
+      color: scorePct === 0 ? rgb(1, 0.97, 0.97) :
+             scorePct >= 70 ? rgb(0.97, 1, 0.97) :
+             rgb(1, 0.99, 0.95),
+      borderColor: scorePct === 0 ? rgb(0.9, 0.7, 0.7) :
+                   scorePct >= 70 ? rgb(0.7, 0.9, 0.7) :
+                   rgb(0.9, 0.85, 0.6),
+      borderWidth: 1
+    });
+
+    page.drawText('SCORE', {
+      x: 25,
+      y: scoreSectionY + scoreHeight - 18,
+      size: 7,
+      font: boldFont,
+      color: rgb(0.4, 0.4, 0.4)
+    });
+
+    const scoreColor = scorePct === 0 ? rgb(0.8, 0.1, 0.1) :
+                       scorePct >= 70 ? rgb(0.05, 0.55, 0.1) :
+                       rgb(0.7, 0.4, 0.0);
+
+    page.drawText(`${score} / ${total}`, {
+      x: 25,
+      y: scoreSectionY + 22,
+      size: 18,
+      font: boldFont,
+      color: scoreColor
+    });
+
+    page.drawText(`(${scorePct}%)`, {
+      x: 95,
+      y: scoreSectionY + 22,
+      size: 12,
+      font: boldFont,
+      color: scoreColor
+    });
+
+    const scoreMsg = scorePct === 0 ? 'Review and try again.' :
+                     scorePct >= 70 ? 'Great work!' :
+                     'Keep practicing!';
+    page.drawText(scoreMsg, {
+      x: 25,
+      y: scoreSectionY + 8,
+      size: 8,
+      font: regularFont,
+      color: rgb(0.5, 0.5, 0.5)
+    });
+
+    // DRAW SECTION C: Worksheet Image
+    const embeddedImage = await pdfDoc.embedJpg(jpegBuffer);
+    const imgY = scoreSectionY - imgDisplayH - 15;
+
+    page.drawRectangle({
+      x: 18,
+      y: imgY - 3,
+      width: imgDisplayW + 4,
+      height: imgDisplayH + 4,
+      color: rgb(0.85, 0.85, 0.85)
+    });
+
+    page.drawImage(embeddedImage, {
+      x: 20,
+      y: imgY,
+      width: imgDisplayW,
+      height: imgDisplayH
+    });
+
+    // OVERLAY ANSWERS ON IMAGE
+    console.log('[PDF] Drawing', fields.length, 'fields');
+
     for (const field of fields) {
       const studentAnswer = answers[field.id] || '';
-      // results can be true, false, or null
       const isCorrect = results[field.id];
-      
-      if (!studentAnswer && isCorrect === null) continue;
-      
-      // Convert percentage to PDF points
-      // PDF coordinate: Y=0 is BOTTOM, Y=pageHeight is TOP
-      const fieldX = (field.x / 100) * pageWidth;
-      const fieldW = (field.width / 100) * pageWidth;
-      const fieldH = (field.height / 100) * pageHeight;
-      // Flip Y axis: image Y=0 is top, PDF Y=0 is bottom
-      const fieldY = pageHeight - ((field.y / 100) * pageHeight) - fieldH;
-      
-      console.log(`[DOWNLOAD PDF] Field "${field.label}":`,
-        `x=${fieldX.toFixed(0)} y=${fieldY.toFixed(0)}`,
-        `w=${fieldW.toFixed(0)} h=${fieldH.toFixed(0)}`,
-        `answer="${studentAnswer}"` 
-      );
-      
-      if (studentAnswer) {
-        // Draw white background for answer area
-        page.drawRectangle({
-          x: fieldX,
-          y: fieldY,
-          width: fieldW,
-          height: fieldH,
-          color: rgb(1, 1, 1),
-          opacity: 0.88
-        });
-        
-        // Draw colored border based on result
-        if (isCorrect === true) {
-          page.drawRectangle({
-            x: fieldX,
-            y: fieldY,
-            width: fieldW,
-            height: fieldH,
-            borderColor: rgb(0.086, 0.58, 0.26),
-            borderWidth: 2,
-            color: rgb(0.94, 0.99, 0.96),
-            opacity: 0.5
-          });
-        } else if (isCorrect === false) {
-          page.drawRectangle({
-            x: fieldX,
-            y: fieldY,
-            width: fieldW,
-            height: fieldH,
-            borderColor: rgb(0.86, 0.15, 0.15),
-            borderWidth: 2,
-            color: rgb(0.99, 0.94, 0.94),
-            opacity: 0.5
-          });
-        } else {
-          // No result yet - neutral border
-          page.drawRectangle({
-            x: fieldX,
-            y: fieldY,
-            width: fieldW,
-            height: fieldH,
-            borderColor: rgb(0.05, 0.58, 0.53),
-            borderWidth: 1.5,
-            opacity: 0
-          });
-        }
-        
-        // Draw student answer text
-        const fontSize = Math.min(Math.max(fieldH * 0.35, 7), 11);
-        const textColor = isCorrect === false ?
-          rgb(0.75, 0.1, 0.1) :
-          isCorrect === true ?
-          rgb(0.05, 0.4, 0.1) :
-          rgb(0.1, 0.1, 0.5);
-        
-        // Truncate if too long
-        const maxChars = Math.floor(fieldW / (fontSize * 0.52));
-        const displayAnswer = studentAnswer.length > maxChars ?
-          studentAnswer.substring(0, maxChars - 2) + '..' :
-          studentAnswer;
-        
-        page.drawText(displayAnswer, {
-          x: fieldX + 3,
-          y: fieldY + fieldH * 0.3,
-          size: fontSize,
-          font: regularFont,
-          color: textColor
-        });
-      }
-      
-      // Draw result icon (✓ or ✗)
+
+      if (!studentAnswer) continue;
+
+      const fieldX = 20 + (field.x / 100) * imgDisplayW;
+      const fieldW = (field.width / 100) * imgDisplayW;
+      const fieldH = Math.max((field.height / 100) * imgDisplayH, 20);
+      const fieldY = imgY + imgDisplayH - (field.y / 100) * imgDisplayH - fieldH;
+
+      console.log(`[PDF] Field "${field.label}":`, `answer="${studentAnswer.substring(0,30)}..."`, `correct=${isCorrect}`);
+
+      page.drawRectangle({
+        x: fieldX,
+        y: fieldY,
+        width: fieldW,
+        height: fieldH,
+        color: rgb(1, 1, 1),
+        opacity: 0.9
+      });
+
+      const borderColor = isCorrect === true ? rgb(0.086, 0.58, 0.26) :
+                           isCorrect === false ? rgb(0.86, 0.15, 0.15) :
+                           rgb(0.4, 0.4, 0.4);
+
+      page.drawRectangle({
+        x: fieldX,
+        y: fieldY,
+        width: fieldW,
+        height: fieldH,
+        borderColor: borderColor,
+        borderWidth: isCorrect !== null ? 2 : 1,
+        opacity: 0
+      });
+
+      const textColor = isCorrect === true ? rgb(0.04, 0.45, 0.12) :
+                         isCorrect === false ? rgb(0.75, 0.08, 0.08) :
+                         rgb(0.1, 0.1, 0.5);
+
+      const fontSize = Math.max(Math.min(fieldH * 0.38, 11), 9);
+      const maxChars = Math.floor(fieldW / (fontSize * 0.54));
+      const displayText = studentAnswer.length > maxChars ?
+        studentAnswer.substring(0, maxChars - 2) + '..' : studentAnswer;
+
+      page.drawText(displayText, {
+        x: fieldX + 4,
+        y: fieldY + fieldH * 0.28,
+        size: fontSize,
+        font: regularFont,
+        color: textColor
+      });
+
       if (isCorrect === true) {
-        // Green check badge
         page.drawCircle({
-          x: fieldX + fieldW - 8,
-          y: fieldY + fieldH - 8,
-          size: 7,
+          x: fieldX + fieldW - 9,
+          y: fieldY + fieldH - 9,
+          size: 8,
           color: rgb(0.086, 0.58, 0.26)
         });
         page.drawText('v', {
-          x: fieldX + fieldW - 12,
-          y: fieldY + fieldH - 13,
-          size: 8,
-          font: boldFont,
+          x: fieldX + fieldW - 13,
+          y: fieldY + fieldH - 15,
+          size: 9, font: boldFont,
           color: rgb(1, 1, 1)
         });
       } else if (isCorrect === false) {
-        // Red X badge
         page.drawCircle({
-          x: fieldX + fieldW - 8,
-          y: fieldY + fieldH - 8,
-          size: 7,
+          x: fieldX + fieldW - 9,
+          y: fieldY + fieldH - 9,
+          size: 8,
           color: rgb(0.86, 0.15, 0.15)
         });
         page.drawText('x', {
-          x: fieldX + fieldW - 12,
-          y: fieldY + fieldH - 13,
-          size: 8,
-          font: boldFont,
+          x: fieldX + fieldW - 13,
+          y: fieldY + fieldH - 15,
+          size: 9, font: boldFont,
           color: rgb(1, 1, 1)
         });
-        
-        // Show correct answer below the field if available
-        if (field.expectedAnswer && fieldY > 15) {
-          page.drawText(
-            `Ans: ${field.expectedAnswer}`,
-            {
-              x: fieldX,
-              y: fieldY - 10,
-              size: 7,
-              font: regularFont,
-              color: rgb(0.086, 0.58, 0.26)
-            }
-          );
-        }
       }
     }
-    
-    // 10. Draw score banner at bottom of page
-    const bannerHeight = 28;
-    const scorePct = total > 0 ? Math.round((score / total) * 100) : 0;
-    
-    // Banner background
+
+    // DRAW SECTION D: Footer
     page.drawRectangle({
-      x: 0,
-      y: 0,
+      x: 0, y: 0,
       width: pageWidth,
-      height: bannerHeight,
-      color: rgb(0.05, 0.58, 0.53),
-      opacity: 0.92
+      height: footerHeight,
+      color: rgb(0.08, 0.55, 0.50),
+      opacity: 0.95
     });
-    
-    // Student name
-    page.drawText(studentName, {
-      x: 10,
-      y: 9,
-      size: 9,
-      font: boldFont,
+
+    const footerLine1 = [studentName, subject ? `| ${subject}` : '', grade ? `Grade ${grade}` : ''].filter(Boolean).join(' ');
+    page.drawText(footerLine1, {
+      x: 10, y: 20,
+      size: 8, font: boldFont,
       color: rgb(1, 1, 1)
     });
-    
-    // Score
-    const scoreText = `Score: ${score}/${total} (${scorePct}%)`;
-    page.drawText(scoreText, {
-      x: pageWidth / 2 - 40,
-      y: 9,
-      size: 9,
-      font: boldFont,
-      color: rgb(1, 1, 1)
+
+    page.drawText(`Score: ${score}/${total} (${scorePct}%) | Date: ${new Date().toLocaleDateString()}`, {
+      x: 10, y: 7,
+      size: 8, font: regularFont,
+      color: rgb(0.85, 0.95, 0.95)
     });
-    
-    // Date
-    const dateStr = new Date().toLocaleDateString();
-    page.drawText(dateStr, {
-      x: pageWidth - 70,
-      y: 9,
-      size: 8,
-      font: regularFont,
-      color: rgb(0.9, 0.9, 0.9)
-    });
-    
-    // 11. Generate and send PDF
+
     const pdfBytes = await pdfDoc.save();
-    console.log('[DOWNLOAD PDF] PDF generated:', pdfBytes.length, 'bytes');
-    
-    const safeTitle = (worksheet.title || 'worksheet')
-      .replace(/[^a-z0-9]/gi, '_')
-      .substring(0, 50);
-    
+
+    const safeTitle = (worksheet.title || 'worksheet').replace(/[^a-z0-9]/gi, '-').toLowerCase().substring(0, 40);
+    const safeName = studentName.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${safeTitle}_results.pdf"` 
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}_${safeTitle}.pdf"`);
     res.setHeader('Content-Length', pdfBytes.length);
     res.send(Buffer.from(pdfBytes));
-    
-    console.log('[DOWNLOAD PDF] Sent successfully');
-    
+
+    console.log('[PDF] Generated successfully:', pdfBytes.length, 'bytes');
+
   } catch (error) {
-    console.error('[DOWNLOAD PDF] Fatal error:', error);
-    res.status(500).json({ 
-      error: 'Failed to generate PDF',
-      message: error.message 
+    console.error('[PDF] Error:', error);
+    res.status(500).json({ error: 'PDF generation failed', message: error.message });
+  }
+}
+
+/**
+ * Evaluates student answers using AI for activity9 overlay worksheets
+ * @param {string} worksheetTitle - Title of the worksheet
+ * @param {string} worksheetSubject - Subject of the worksheet
+ * @param {Array} fields - Array of field objects
+ * @param {Object} answers - Object mapping fieldId to student answer
+ * @returns {Object} Object with results and feedbacks maps
+ */
+async function evaluateAnswersWithAI(worksheetTitle, worksheetSubject, fields, answers) {
+  const fieldEvaluations = fields
+    .filter(f => answers[f.id] && answers[f.id].trim())
+    .map(f => ({
+      fieldId: f.id,
+      label: f.label,
+      studentAnswer: answers[f.id],
+      expectedAnswer: f.expectedAnswer || ''
+    }));
+
+  if (fieldEvaluations.length === 0) {
+    return {};
+  }
+
+  const prompt = `You are an expert teacher evaluating student worksheet answers.
+
+Worksheet: "${worksheetTitle}"
+Subject: "${worksheetSubject || 'General'}"
+
+Evaluate each student answer below.
+Consider an answer CORRECT if:
+- It shows understanding of the concept
+- It is factually accurate
+- It mentions key relevant points
+- Minor spelling mistakes are OK
+- Partial answers that show understanding = correct
+- Different wording that means the same thing = correct
+
+Consider an answer WRONG if:
+- It is completely unrelated to the label/question
+- It shows a fundamental misunderstanding
+- It is nonsense or random text
+
+${fieldEvaluations.map((f, i) => `
+Field ${i + 1}:
+Label: ${f.label}
+${f.expectedAnswer ? `Expected: ${f.expectedAnswer}` : ''}
+Student answered: "${f.studentAnswer}"
+`).join('\n')}
+
+Return ONLY this JSON array, no explanation:
+[
+  {
+    "fieldId": "field_1",
+    "correct": true,
+    "score": 1,
+    "feedback": "Good answer! You correctly identified..."
+  }
+]
+
+One object per field evaluated above.
+Return ONLY the JSON array.`;
+
+  // Use existing OpenRouter setup
+  const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_KEY;
+  const baseUrl = process.env.OPENROUTER_BASE_URL?.trim() || 'https://openrouter.ai/api/v1';
+  const model = process.env.LLAMA_MODEL?.trim() || 'meta-llama/llama-3-8b-instruct';
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://roznahub.com',
+      'X-Title': 'RoznaHub'
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1000,
+      temperature: 0.1
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`AI evaluation failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || '';
+
+  // Parse JSON response
+  let cleaned = content.trim()
+    .replace(/```json\s*/gi, '')
+    .replace(/```\s*/gi, '')
+    .trim();
+
+  const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) throw new Error('Invalid AI response');
+
+  const evaluations = JSON.parse(jsonMatch[0]);
+
+  // Convert to results map
+  const results = {};
+  const feedbacks = {};
+
+  for (const ev of evaluations) {
+    results[ev.fieldId] = ev.correct === true;
+    feedbacks[ev.fieldId] = ev.feedback || '';
+  }
+
+  return { results, feedbacks };
+}
+
+/**
+ * POST /api/worksheets/:id/evaluate-answers
+ * Evaluates student answers using AI for activity9 overlay worksheets
+ */
+async function evaluateAnswers(req, res) {
+  try {
+    const worksheet = await Worksheet.findById(req.params.id);
+
+    if (!worksheet || !worksheet.activity9) {
+      return res.status(404).json({
+        error: 'Worksheet not found'
+      });
+    }
+
+    const { answers } = req.body;
+    if (!answers || Object.keys(answers).length === 0) {
+      return res.status(400).json({
+        error: 'No answers provided'
+      });
+    }
+
+    const fields = worksheet.activity9.fields || [];
+    const title = worksheet.title || 'Worksheet';
+    const subject = worksheet.meta?.subject || 'General';
+
+    console.log('[EVALUATE] Evaluating', Object.keys(answers).length, 'answers');
+    console.log('[EVALUATE] Worksheet:', title);
+
+    const { results, feedbacks } = await evaluateAnswersWithAI(title, subject, fields, answers);
+
+    const score = Object.values(results).filter(v => v === true).length;
+    const total = Object.keys(results).length;
+
+    console.log('[EVALUATE] Score:', score, '/', total);
+
+    res.json({
+      success: true,
+      results,
+      feedbacks,
+      score,
+      total,
+      percentage: total > 0 ? Math.round((score / total) * 100) : 0
+    });
+
+  } catch (error) {
+    console.error('[EVALUATE] Error:', error.message);
+    res.status(500).json({
+      error: 'Evaluation failed',
+      message: error.message
     });
   }
 }
@@ -4272,4 +4596,5 @@ module.exports = {
   detectFields,
   saveOverlayWorksheet,
   downloadOverlayPdf,
+  evaluateAnswers,
 };
