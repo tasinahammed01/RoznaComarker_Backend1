@@ -51,6 +51,29 @@ const path = require("path");
 const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
 const { createCanvas } = require("canvas");
 
+// Custom CanvasFactory for Node.js compatibility with pdfjs-dist legacy build
+class NodeCanvasFactory {
+  constructor() {
+    this._canvas = createCanvas(0, 0);
+  }
+
+  create(width, height) {
+    const canvas = createCanvas(width, height);
+    const context = canvas.getContext('2d');
+    return { canvas, context };
+  }
+
+  reset(canvasAndContext, width, height) {
+    canvasAndContext.canvas.width = width;
+    canvasAndContext.canvas.height = height;
+  }
+
+  destroy(canvasAndContext) {
+    canvasAndContext.canvas.width = 0;
+    canvasAndContext.canvas.height = 0;
+  }
+}
+
 // Configure multer for in-memory file storage (temp)
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -61,8 +84,12 @@ const upload = multer({
 
 // Helper: Convert PDF buffer to base64 image using pdfjs-dist + canvas
 async function convertPdfToBase64Image(fileBuffer) {
-  // Load PDF from buffer
-  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(fileBuffer) });
+  // Load PDF from buffer with custom CanvasFactory
+  const canvasFactory = new NodeCanvasFactory();
+  const loadingTask = pdfjsLib.getDocument({ 
+    data: new Uint8Array(fileBuffer),
+    canvasFactory: canvasFactory
+  });
   const pdf = await loadingTask.promise;
   
   // Get first page
@@ -72,18 +99,21 @@ async function convertPdfToBase64Image(fileBuffer) {
   const scale = 1.5;
   const viewport = page.getViewport({ scale });
   
-  // Create canvas
-  const canvas = createCanvas(viewport.width, viewport.height);
-  const context = canvas.getContext('2d');
+  // Create canvas using the factory
+  const canvasAndContext = canvasFactory.create(viewport.width, viewport.height);
   
   // Render PDF page to canvas
   await page.render({
-    canvasContext: context,
+    canvasContext: canvasAndContext.context,
     viewport: viewport
   }).promise;
   
   // Export as base64 JPEG
-  const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+  const base64 = canvasAndContext.canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+  
+  // Clean up
+  canvasFactory.destroy(canvasAndContext);
+  
   return base64;
 }
 

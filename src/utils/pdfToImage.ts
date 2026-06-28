@@ -25,6 +25,40 @@ function getCanvasModule() {
   return canvasModule;
 }
 
+// Custom CanvasFactory for Node.js compatibility with pdfjs-dist legacy build
+class NodeCanvasFactory {
+  private _canvas: any;
+
+  constructor() {
+    const canvasLib = getCanvasModule();
+    if (!canvasLib) {
+      throw new Error("canvas module not available");
+    }
+    this._canvas = canvasLib.createCanvas(0, 0);
+  }
+
+  create(width: number, height: number) {
+    const canvasLib = getCanvasModule();
+    if (!canvasLib) {
+      throw new Error("canvas module not available");
+    }
+    const { createCanvas } = canvasLib;
+    const canvas = createCanvas(width, height);
+    const context = canvas.getContext("2d");
+    return { canvas, context };
+  }
+
+  reset(canvasAndContext: any, width: number, height: number) {
+    canvasAndContext.canvas.width = width;
+    canvasAndContext.canvas.height = height;
+  }
+
+  destroy(canvasAndContext: any) {
+    canvasAndContext.canvas.width = 0;
+    canvasAndContext.canvas.height = 0;
+  }
+}
+
 export async function pdfFirstPageToJpeg(pdfBuffer: Buffer): Promise<Buffer> {
   const canvasLib = getCanvasModule();
 
@@ -34,23 +68,28 @@ export async function pdfFirstPageToJpeg(pdfBuffer: Buffer): Promise<Buffer> {
     );
   }
 
-  const { createCanvas } = canvasLib;
-
   const data = new Uint8Array(pdfBuffer);
-  const pdfDocument = await pdfjsLib.getDocument({ data }).promise;
+  const canvasFactory = new NodeCanvasFactory();
+  const pdfDocument = await pdfjsLib.getDocument({ 
+    data,
+    canvasFactory: canvasFactory as any
+  }).promise;
 
   const page = await pdfDocument.getPage(1);
   const scale = 2.0;
   const viewport = page.getViewport({ scale });
 
-  const canvas = createCanvas(
+  const canvasAndContext = canvasFactory.create(
     Math.floor(viewport.width),
     Math.floor(viewport.height),
   );
 
-  const ctx = canvas.getContext("2d");
+  await page.render({ canvasContext: canvasAndContext.context, viewport }).promise;
 
-  await page.render({ canvasContext: ctx, viewport }).promise;
+  const buffer = canvasAndContext.canvas.toBuffer("image/jpeg", { quality: 0.92 });
+  
+  // Clean up
+  canvasFactory.destroy(canvasAndContext);
 
-  return canvas.toBuffer("image/jpeg", { quality: 0.92 });
+  return buffer;
 }
