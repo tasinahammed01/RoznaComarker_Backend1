@@ -71,7 +71,7 @@ const WorksheetSchema = new mongoose.Schema({
   assignmentDeadline: { type: Date, required: true },
   tags:             [String],
   estimatedMinutes: { type: Number, default: 20 },
-  generationSource: { type: String, enum: ['topic', 'image', 'manual'], default: 'topic' },
+  generationSource: { type: String, enum: ['topic', 'image', 'manual', 'uploaded_extracted'], default: 'topic' },
   sourceContent:    { type: String, default: '' },
   language:         { type: String, default: 'English' },
   thumbnailUrl:     { type: String, default: null },
@@ -81,6 +81,7 @@ const WorksheetSchema = new mongoose.Schema({
   isPublished:      { type: Boolean, default: false },
 
   conceptExplanation: { type: mongoose.Schema.Types.Mixed, default: null },
+  answerKey:        { type: mongoose.Schema.Types.Mixed, default: null }, // Structured answer key for auto-grading
   
   // New extensible activities array structure
   activities: [{
@@ -100,6 +101,8 @@ const WorksheetSchema = new mongoose.Schema({
   activity6:          { type: mongoose.Schema.Types.Mixed, default: null },
   activity7:          { type: mongoose.Schema.Types.Mixed, default: null },
   activity8:          { type: mongoose.Schema.Types.Mixed, default: null },
+  // DEPRECATED: legacy activity9 overlay format, kept for backward-compat
+  // grading of pre-migration worksheets. Do not use for new worksheets.
   activity9:          { type: mongoose.Schema.Types.Mixed, default: null },
 
   totalPoints: { type: Number, default: 16 },

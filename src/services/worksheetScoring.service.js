@@ -1,5 +1,7 @@
 const normalizeString = (v) => String(v ?? '').trim();
 
+const { generateChatCompletion } = require('./aiGeneration.service');
+
 function lowerTrim(v) {
   return normalizeString(v).toLowerCase();
 }
@@ -15,6 +17,8 @@ function buildAnswerKeyMaps(worksheet) {
   let a4Sents = worksheet?.activity4?.sentences ?? [];
   let a5Pairs = worksheet?.activity5?.pairs ?? [];
   let a6Qs = worksheet?.activity6?.questions ?? [];
+  // DEPRECATED: legacy activity9 overlay format, kept for backward-compat
+  // grading of pre-migration worksheets. Do not use for new worksheets.
   let a9Fields = worksheet?.activity9?.fields ?? [];
 
   // Map to track which sectionId each activity type maps to (for new format)
@@ -213,6 +217,8 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
       isCorrect = Boolean(q && correctAnswer && givenAnswer && givenAnswer === lowerTrim(correctAnswer));
       feedback = isCorrect ? 'Correct!' : `Incorrect. Correct: ${correctAnswer || '?'}`;
     } else if (sectionId === 'activity9') {
+      // DEPRECATED: legacy activity9 overlay format, kept for backward-compat
+      // grading of pre-migration worksheets. Do not use for new worksheets.
       // Activity 9: Overlay - compare student answer vs expectedAnswer
       const field = a9ByFieldId.get(questionId);
       const expectedAnswer = lowerTrim(field?.expectedAnswer || '');
@@ -353,7 +359,70 @@ function gradeWorksheetAnswers({ worksheet, answers }) {
     score,
     isPassed,
     sections,
+    // Topic breakdown (for extracted worksheets with answerKey)
+    topicBreakdown: buildTopicBreakdown(graded, worksheet),
   };
+}
+
+/**
+ * Builds topic-level breakdown from graded answers.
+ * Groups questions by topic and calculates per-topic performance.
+ * @param {Array} gradedAnswers - Graded answer objects
+ * @param {Object} worksheet - Worksheet document with answerKey
+ * @returns {Array} Topic breakdown array
+ */
+function buildTopicBreakdown(gradedAnswers, worksheet) {
+  const answerKey = worksheet?.answerKey;
+  if (!answerKey || !answerKey.sections) {
+    return [];
+  }
+
+  // Build a map of questionId -> topic from answerKey
+  const questionTopicMap = new Map();
+  for (const section of answerKey.sections) {
+    for (const q of section.questions || []) {
+      if (q.id && q.topic) {
+        questionTopicMap.set(String(q.id), q.topic);
+      }
+    }
+  }
+
+  // Group graded answers by topic
+  const topicStats = new Map();
+  for (const answer of gradedAnswers) {
+    const topic = questionTopicMap.get(String(answer.questionId)) || 'Unknown';
+    if (!topicStats.has(topic)) {
+      topicStats.set(topic, { correct: 0, total: 0, questions: [] });
+    }
+    const stats = topicStats.get(topic);
+    stats.total++;
+    if (answer.isCorrect) {
+      stats.correct++;
+    }
+    stats.questions.push({
+      questionId: answer.questionId,
+      isCorrect: answer.isCorrect,
+      studentAnswer: answer.studentAnswer,
+    });
+  }
+
+  // Convert to array with calculated percentages
+  const breakdown = [];
+  for (const [topic, stats] of topicStats.entries()) {
+    const percentage = stats.total > 0 ? Math.round((stats.correct / stats.total) * 100) : 0;
+    breakdown.push({
+      topic,
+      correctCount: stats.correct,
+      totalCount: stats.total,
+      percentage,
+      questions: stats.questions,
+    });
+  }
+
+  // Sort by percentage ascending (weakest topics first)
+  breakdown.sort((a, b) => a.percentage - b.percentage);
+
+  return breakdown;
 }
 
 function buildCanonicalAnswerSheet({ worksheet, answersBySection }) {
@@ -416,7 +485,95 @@ function buildCanonicalAnswerSheet({ worksheet, answersBySection }) {
   return out;
 }
 
+/**
+ * Grades subjective answers (short_answer, essay) using LLM.
+ * @param {Object} question - Question object with prompt and correct answer
+ * @param {string} studentAnswer - Student's answer
+ * @param {string} topic - Topic being tested
+ * @returns {Promise<Object>} Grading result with result, feedback, and score
+ */
+async function gradeSubjectiveAnswer(question, studentAnswer, topic) {
+  const modelAnswer = question?.modelAnswer || question?.correctAnswer || '';
+  const prompt = question?.text || question?.prompt || '';
+
+  if (!studentAnswer || studentAnswer.trim().length === 0) {
+    return {
+      result: 'incorrect',
+      feedback: 'No answer provided.',
+      score: 0,
+    };
+  }
+
+  try {
+    const gradingPrompt = `You are grading a student's answer to a worksheet question.
+
+Question: ${prompt}
+Topic being tested: ${topic}
+Reference/expected answer: ${modelAnswer}
+Student's answer: ${studentAnswer}
+
+Score the answer as:
+- "correct" if the answer is fully correct and matches the expected answer
+- "partial" if the answer is partially correct or shows understanding but has minor errors
+- "incorrect" if the answer is wrong or does not address the question
+
+Provide one short sentence of feedback explaining why. Be lenient on phrasing but strict on factual/topical correctness.
+
+Output strict JSON only (no markdown):
+{
+  "result": "correct|partial|incorrect",
+  "feedback": "string"
+}`;
+
+    const response = await generateChatCompletion(
+      [
+        { role: 'system', content: 'You are an educational assessment assistant. Return ONLY valid JSON. No markdown, no code fences.' },
+        { role: 'user', content: gradingPrompt },
+      ],
+      {
+        temperature: 0.2,
+        max_tokens: 500,
+        response_format: { type: 'json_object' },
+      },
+    );
+
+    // Parse JSON response
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON found in LLM response');
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    // Map result to score
+    const scoreMap = {
+      'correct': 1,
+      'partial': 0.5,
+      'incorrect': 0,
+    };
+
+    return {
+      result: parsed.result || 'incorrect',
+      feedback: parsed.feedback || 'Could not generate feedback.',
+      score: scoreMap[parsed.result] || 0,
+    };
+  } catch (error) {
+    console.error('[SUBJECTIVE GRADING] Error:', error.message);
+    // Fallback to basic string comparison if LLM fails
+    const normalizedStudent = lowerTrim(studentAnswer);
+    const normalizedModel = lowerTrim(modelAnswer);
+    const isMatch = normalizedStudent === normalizedModel || normalizedStudent.includes(normalizedModel);
+
+    return {
+      result: isMatch ? 'correct' : 'incorrect',
+      feedback: isMatch ? 'Correct!' : 'Incorrect.',
+      score: isMatch ? 1 : 0,
+    };
+  }
+}
+
 module.exports = {
   gradeWorksheetAnswers,
   buildCanonicalAnswerSheet,
+  gradeSubjectiveAnswer,
 };

@@ -44,6 +44,9 @@ const jsonrepair = require("jsonrepair");
 const {
   generateHtmlWorksheetFromFile,
 } = require("../services/geminiWorksheet.service");
+const {
+  extractWorksheetStructure,
+} = require("../services/worksheetExtractor.service");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const vision = require('@google-cloud/vision');
 const fs = require("fs");
@@ -380,6 +383,16 @@ function sanitizeActivity4BlankIds(activity4) {
     sentences: activity4.sentences.map((s, si) => ({
       ...s,
       parts: (s.parts ?? []).map((p, pi) => {
+        // Sanitize text parts to remove underscore artifacts from AI generation/extraction
+        // Handles cases like "shine._____," or "_____ !" where underscores are adjacent to punctuation
+        if (p.type === "text" && p.value) {
+          let cleanedValue = String(p.value).replace(/_+/g, '').trim();
+          // Clean up any double spaces created by underscore replacement
+          cleanedValue = cleanedValue.replace(/\s+/g, ' ');
+          // Remove spaces before punctuation
+          cleanedValue = cleanedValue.replace(/\s+([.,!?;:])/g, '$1');
+          return { ...p, value: cleanedValue };
+        }
         if (p.type !== "blank") return p;
         let id = p.blankId;
         if (!id || seen.has(id)) {
@@ -416,7 +429,7 @@ function buildWorksheetPromptWithTemplate(topic, language, difficulty, resolvedT
     multipleChoice:
       "questions[] each {id,text,options[4 strings],correctAnswer(string)}. 5 questions.",
     fillBlanks:
-      'wordBank[5 strings], sentences[] each {id,parts[{type:"text",value}|{type:"blank",blankId,correctAnswer}]}. 5 sentences.',
+      'wordBank[5-10 strings - each word as separate string], sentences[] each {id,parts[{type:"text",value}|{type:"blank",blankId,correctAnswer}]}. 5 sentences. CRITICAL: For each sentence, include blank markers (underscores like _____) in the text parts at the exact positions where blanks should be. Do NOT concatenate all words into one string.',
     matching: "pairs[] each {id,leftItem:{text},rightItem:{text}}. 5-6 pairs.",
     trueFalse:
       "questions[] each {id,text,correctAnswer(bool),explanation}. 5-6 questions.",
@@ -499,7 +512,7 @@ function buildWorksheetPrompt(topic, language, difficulty, resolvedTypes) {
     multipleChoice:
       "questions[] each {id,text,options[4 strings],correctAnswer(string)}. 5 questions.",
     fillBlanks:
-      'wordBank[5 strings], sentences[] each {id,parts[{type:"text",value}|{type:"blank",blankId,correctAnswer}]}. 5 sentences.',
+      'wordBank[5-10 strings - each word as separate string], sentences[] each {id,parts[{type:"text",value}|{type:"blank",blankId,correctAnswer}]}. 5 sentences. CRITICAL: For each sentence, include blank markers (underscores like _____) in the text parts at the exact positions where blanks should be. Do NOT concatenate all words into one string.',
     matching: "pairs[] each {id,leftItem:{text},rightItem:{text}}. 5-6 pairs.",
     trueFalse:
       "questions[] each {id,text,correctAnswer(bool),explanation}. 5-6 questions.",
@@ -852,6 +865,115 @@ async function uploadAndGenerate(req, res) {
     return res.status(500).json({
       success: false,
       message: "Worksheet generation failed",
+      error: error.message,
+    });
+  }
+}
+
+/**
+ * POST /api/worksheets/extract-structure
+ * Auth: teacher only
+ * Uploads a file, extracts content, and structures it into a worksheet schema.
+ * This is for the new "upload → extract → review → render" flow that replaces
+ * the old overlay approach. The extracted structure is converted to the native
+ * activities format for the worksheet viewer.
+ * Accepts: multipart/form-data with file, language, subject, gradeLevel
+ */
+async function extractWorksheetStructureController(req, res) {
+  console.log("[EXTRACT STRUCTURE] Starting worksheet structure extraction");
+
+  if (!req.file) {
+    return sendError(res, 400, "No file uploaded");
+  }
+
+  try {
+    // Validate file
+    const validation = validateFile(req.file);
+    if (!validation.valid) {
+      return sendError(res, 400, validation.error);
+    }
+
+    console.log(
+      "[EXTRACT STRUCTURE] File validated:",
+      req.file.originalname,
+      req.file.mimetype
+    );
+
+    // Extract content from file
+    let extractedText;
+    try {
+      extractedText = await extractContent(
+        req.file.buffer,
+        req.file.mimetype,
+        req.file.originalname
+      );
+    } catch (extractionError) {
+      console.error(
+        "[EXTRACT STRUCTURE] Extraction failed:",
+        extractionError.message
+      );
+      return sendError(res, 400, extractionError.message);
+    }
+
+    console.log(
+      "[EXTRACT STRUCTURE] Content extracted, length:",
+      extractedText.length
+    );
+
+    // Get extraction options from form data
+    const language = req.body.language || "English";
+    const subject = req.body.subject || "General";
+    const gradeLevel = req.body.gradeLevel || "Not specified";
+
+    // Call the extraction service
+    const result = await extractWorksheetStructure(extractedText, {
+      language,
+      subject,
+      gradeLevel,
+    });
+
+    console.log(
+      "[EXTRACT STRUCTURE] Success - activities:",
+      result.activities.length,
+      "sections:",
+      result.extractedStructure.sections.length
+    );
+
+    return res.json({
+      success: true,
+      worksheet: {
+        title: result.title,
+        description: result.description,
+        subject: result.subject,
+        activities: result.activities,
+      },
+      answerKey: result.answerKey,
+      extractedStructure: result.extractedStructure,
+      sourceContent: extractedText.slice(0, 500),
+      fileName: req.file.originalname,
+    });
+  } catch (error) {
+    console.error(
+      "[EXTRACT STRUCTURE] Error:",
+      error.response?.data || error.message
+    );
+    if (error.status === 402)
+      return sendError(
+        res,
+        500,
+        "AI service credits exhausted. Contact admin."
+      );
+    if (error.status === 429)
+      return sendError(
+        res,
+        500,
+        "AI service rate limited. Try again in a moment."
+      );
+    if (error.status === 401)
+      return sendError(res, 500, "AI service authentication failed.");
+    return res.status(500).json({
+      success: false,
+      message: "Worksheet extraction failed",
       error: error.message,
     });
   }
@@ -2590,7 +2712,7 @@ async function shareWorksheet(req, res) {
       }
     }
 
-    const shareUrl = `${process.env.FRONTEND_URL || "http://localhost:4200"}/shared/worksheets/${worksheet.shareToken}`;
+    const shareUrl = `${process.env.FRONTEND_URL || "http://82.112.234.151:4200"}/shared/worksheets/${worksheet.shareToken}`;
 
     return res.json({
       success: true,
@@ -3179,1376 +3301,6 @@ function extractAndParseJSON(rawContent) {
 }
 
 /**
- * Google Vision OCR: Detect text blocks with coordinates from worksheet image
- */
-async function detectFieldsWithGoogleVision(imagePath, imageWidth, imageHeight) {
-  // Verify key file exists
-  const keyPath = path.resolve(__dirname, '../../key/vision_key.json');
-  if (!fs.existsSync(keyPath)) {
-    console.error('[GOOGLE VISION] Key file not found:', keyPath);
-    throw new Error('Google Vision key not found');
-  }
-
-  // Initialize vision client
-  const visionClient = new vision.ImageAnnotatorClient({
-    keyFilename: keyPath
-  });
-
-  console.log('[GOOGLE VISION] Running document text detection on:', imagePath);
-
-  // Run FULL text detection to get all text with coordinates
-  const [result] = await visionClient.documentTextDetection(imagePath);
-  const fullText = result.fullTextAnnotation;
-
-  if (!fullText) {
-    throw new Error('Google Vision returned no text');
-  }
-
-  console.log('[GOOGLE VISION] Full text detected, pages:', 
-    fullText.pages?.length);
-
-  // Extract all text blocks with their bounding boxes
-  const textBlocks = [];
-
-  for (const page of fullText.pages || []) {
-    for (const block of page.blocks || []) {
-      // Get block text
-      let blockText = '';
-      for (const para of block.paragraphs || []) {
-        for (const word of para.words || []) {
-          const wordText = word.symbols
-            .map(s => s.text).join('');
-          blockText += wordText + ' ';
-        }
-        blockText = blockText.trim();
-      }
-
-      // Get bounding box
-      const vertices = block.boundingBox?.vertices || [];
-      if (vertices.length === 4 && blockText.trim()) {
-        const x1 = Math.min(...vertices.map(v => v.x || 0));
-        const y1 = Math.min(...vertices.map(v => v.y || 0));
-        const x2 = Math.max(...vertices.map(v => v.x || 0));
-        const y2 = Math.max(...vertices.map(v => v.y || 0));
-
-        textBlocks.push({
-          text: blockText.trim(),
-          x1, y1, x2, y2,
-          // Convert to percentages
-          xPct: (x1 / imageWidth) * 100,
-          yPct: (y1 / imageHeight) * 100,
-          widthPct: ((x2 - x1) / imageWidth) * 100,
-          heightPct: ((y2 - y1) / imageHeight) * 100
-        });
-      }
-    }
-  }
-
-  console.log('[GOOGLE VISION] Text blocks found:', textBlocks.length);
-  console.log('[GOOGLE VISION] Blocks:', 
-    textBlocks.map(b => ({ text: b.text, x: b.xPct, y: b.yPct }))
-  );
-
-  return textBlocks;
-}
-
-/**
- * Find input fields from text blocks using spatial analysis
- * Checks 4 directions (right, below, left, above) for empty space near labels
- */
-function findInputFields(textBlocks, imageWidth, imageHeight) {
-  const fields = [];
-  
-  // Strategy: Find text labels first, then find the nearest
-  // empty area (no overlapping text blocks)
-  
-  // Filter to get only SHORT label-like text blocks
-  // (not paragraphs, not titles)
-  const labelBlocks = textBlocks.filter(block => {
-    const text = block.text.trim();
-    const wordCount = text.split(/\s+/).length;
-    // Labels are 1-4 words, not too long
-    return wordCount >= 1 && wordCount <= 4 && 
-           text.length >= 2 && text.length <= 30 &&
-           // Exclude common non-label text
-           !text.toLowerCase().includes('worksheet') &&
-           !text.toLowerCase().includes('copyright') &&
-           !text.toLowerCase().includes('www.') &&
-           !text.toLowerCase().includes('.com');
-  });
-  
-  console.log('[GOOGLE VISION] Label candidates:', 
-    labelBlocks.map(b => b.text));
-  
-  // For each label, search for nearby empty rectangular areas
-  // Empty area = a region with NO text blocks overlapping it
-  
-  labelBlocks.forEach((label, index) => {
-    // Check 4 directions for empty space:
-    // RIGHT, BELOW, LEFT, ABOVE
-    
-    const directions = [
-      // RIGHT of label
-      {
-        x: label.xPct + label.widthPct + 0.5,
-        y: label.yPct - 1,
-        width: Math.min(35, 98 - label.xPct - label.widthPct),
-        height: Math.max(label.heightPct * 2, 6),
-        direction: 'right'
-      },
-      // BELOW label
-      {
-        x: label.xPct - 2,
-        y: label.yPct + label.heightPct + 0.5,
-        width: label.widthPct + 4,
-        height: 8,
-        direction: 'below'
-      },
-      // LEFT of label
-      {
-        x: Math.max(0, label.xPct - 36),
-        y: label.yPct - 1,
-        width: Math.min(35, label.xPct - 0.5),
-        height: Math.max(label.heightPct * 2, 6),
-        direction: 'left'
-      }
-    ];
-    
-    // Find which direction has the most empty space
-    // (fewest overlapping text blocks)
-    let bestDirection = null;
-    let minOverlap = Infinity;
-    
-    for (const dir of directions) {
-      if (dir.width < 5 || dir.height < 3) continue;
-      
-      // Count text blocks that overlap with this area
-      const overlapping = textBlocks.filter(b => {
-        if (b === label) return false;
-        // Check overlap
-        const noOverlapX = b.xPct + b.widthPct < dir.x || 
-                           b.xPct > dir.x + dir.width;
-        const noOverlapY = b.yPct + b.heightPct < dir.y || 
-                           b.yPct > dir.y + dir.height;
-        return !noOverlapX && !noOverlapY;
-      });
-      
-      if (overlapping.length < minOverlap) {
-        minOverlap = overlapping.length;
-        bestDirection = dir;
-      }
-    }
-    
-    // Only add field if we found a reasonably empty area
-    if (bestDirection && minOverlap <= 1) {
-      // Clamp to image bounds
-      const x = Math.max(0, Math.min(bestDirection.x, 90));
-      const y = Math.max(0, Math.min(bestDirection.y, 92));
-      const w = Math.min(bestDirection.width, 99 - x);
-      const h = Math.min(bestDirection.height, 99 - y);
-      
-      if (w >= 5 && h >= 3) {
-        fields.push({
-          id: `field_${index + 1}`,
-          label: label.text.toUpperCase(),
-          order: index + 1,
-          x: Math.round(x * 10) / 10,
-          y: Math.round(y * 10) / 10,
-          width: Math.round(w * 10) / 10,
-          height: Math.round(h * 10) / 10,
-          type: 'text',
-          isFilled: false,
-          expectedAnswer: '',
-          hint: `Write: ${label.text}` 
-        });
-        
-        console.log(`[GOOGLE VISION] Field for "${label.text}":`,
-          `x=${x.toFixed(1)}% y=${y.toFixed(1)}%`,
-          `dir=${bestDirection.direction}`,
-          `overlap=${minOverlap}` 
-        );
-      }
-    }
-  });
-  
-  // Remove duplicate fields that are too close together
-  const uniqueFields = fields.filter((field, index) => {
-    return !fields.some((other, otherIndex) => {
-      if (otherIndex >= index) return false;
-      const tooCloseX = Math.abs(other.x - field.x) < 5;
-      const tooCloseY = Math.abs(other.y - field.y) < 5;
-      return tooCloseX && tooCloseY;
-    });
-  });
-  
-  console.log('[GOOGLE VISION] Final fields:', uniqueFields.length);
-  return uniqueFields;
-}
-
-/**
- * Detect worksheet status (blank/partial/filled) from text blocks
- * Smarter detection that separates header/label text from potential answers
- */
-function detectWorksheetStatus(textBlocks) {
-  // Separate header/label text from potential answers
-  const headerText = textBlocks.filter(b => b.yPct < 20);
-  const bodyText = textBlocks.filter(b => b.yPct >= 20);
-  
-  // Look for text that appears to be answers
-  // (appears near empty box locations, longer than labels)
-  const potentialAnswers = bodyText.filter(b => {
-    const wordCount = b.text.split(/\s+/).length;
-    return wordCount >= 2 || b.text.length > 8;
-  });
-  
-  const totalBodyBlocks = bodyText.length;
-  if (totalBodyBlocks === 0) return 'blank';
-  
-  const answerRatio = potentialAnswers.length / totalBodyBlocks;
-  
-  if (answerRatio > 0.5) return 'filled';
-  if (answerRatio > 0.2) return 'partial';
-  return 'blank';
-}
-
-/**
- * Detect if worksheet is a diagram-style worksheet
- * (like tree diagram with boxes around an image)
- */
-function isDiagramWorksheet(textBlocks, imageWidth, imageHeight) {
-  // Diagrams have text spread around the image in all directions
-  // not just top-to-bottom
-  
-  const leftText = textBlocks.filter(b => b.xPct < 30);
-  const rightText = textBlocks.filter(b => b.xPct > 70);
-  const centerText = textBlocks.filter(
-    b => b.xPct >= 30 && b.xPct <= 70
-  );
-  
-  // If text exists on both left and right sides → likely diagram
-  return leftText.length > 0 && rightText.length > 0;
-}
-
-/**
- * POST /api/worksheets/detect-fields
- * Auth: teacher only
- * Accepts an uploaded PDF or image file, converts it to a high-quality image,
- * stores it temporarily, and uses vision AI to detect input fields/boxes.
- * Returns the image URL + detected field positions.
- */
-async function detectFields(req, res) {
-  console.log("[DETECT FIELDS] Starting field detection");
-
-  if (!req.file) {
-    return sendError(res, 400, "No file uploaded");
-  }
-
-  try {
-    // Validate file
-    const validation = validateFile(req.file);
-    if (!validation.valid) {
-      return sendError(res, 400, validation.error);
-    }
-
-    console.log(
-      "[DETECT FIELDS] File validated:",
-      req.file.originalname,
-      req.file.mimetype
-    );
-
-    // Step 2: Convert to base64 image
-    let base64Image;
-    if (req.file.mimetype === "application/pdf") {
-      console.log("[DETECT FIELDS] Converting PDF to image");
-      base64Image = await convertPdfToBase64Image(req.file.buffer);
-    } else if (
-      req.file.mimetype.startsWith("image/") ||
-      req.file.mimetype === "image/jpeg" ||
-      req.file.mimetype === "image/jpg" ||
-      req.file.mimetype === "image/png"
-    ) {
-      console.log("[DETECT FIELDS] Converting image to base64");
-      base64Image = req.file.buffer.toString("base64");
-    } else {
-      return sendError(res, 400, "Unsupported file type. Please upload PDF, PNG, or JPG.");
-    }
-
-    // Step 3: Store the image temporarily and return a URL
-    const { v4: uuidv4 } = require("uuid");
-    const filename = `template_${uuidv4()}.jpg`;
-    const uploadBasePath =
-      (process.env.UPLOAD_BASE_PATH || "uploads").trim() || "uploads";
-    const uploadsRoot = path.join(__dirname, "..", "..", uploadBasePath);
-    const templatesDir = path.join(uploadsRoot, "templates");
-    const filePath = path.join(templatesDir, filename);
-
-    // Convert base64 to buffer and save
-    const imageBuffer = Buffer.from(base64Image, "base64");
-    fs.writeFileSync(filePath, imageBuffer);
-
-    console.log("[DETECT FIELDS] Image saved to:", filePath);
-
-    // Generate public URL
-    const protocol = req.protocol;
-    const host = req.get("host");
-    const imageUrl = `${protocol}://${host}/uploads/templates/${filename}`;
-
-    console.log("[DETECT FIELDS] Image URL:", imageUrl);
-
-    // Get image dimensions using image-size, falling back to canvas/defaults if needed
-    let imgWidth = 720;
-    let imgHeight = 960;
-    try {
-      const sizeOf = require('image-size');
-      const dimensions = sizeOf(imageBuffer);
-      imgWidth = dimensions.width || 720;
-      imgHeight = dimensions.height || 960;
-      console.log(`[DETECT FIELDS] Read image dimensions: ${imgWidth}x${imgHeight}`);
-    } catch (e) {
-      try {
-        imgWidth = canvas.width || 720;
-        imgHeight = canvas.height || 960;
-      } catch (err) {
-        imgWidth = 720;
-        imgHeight = 960;
-      }
-    }
-
-    const detectionPrompt = `You are analyzing an educational 
-worksheet image.
-
-FIRST: Determine if this worksheet is BLANK or FILLED.
-- BLANK: writing areas are empty (no handwriting or typed text)
-- FILLED: writing areas contain answers (handwritten or typed)
-- PARTIAL: some areas filled, some empty
-
-SECOND: Find ALL writing areas regardless of filled status.
-
-For EACH writing area:
-1. Find its label (text in colored header/tab near the box,
-   or question number/text before the blank space)
-2. Measure its position as PERCENTAGES (0-100):
-   - x = left edge of writing box as % of image width
-   - y = top edge of writing box as % of image height
-   - width = box width as % of image width  
-   - height = box height as % of image height
-   IMPORTANT: Return PERCENTAGES not pixels.
-   x=0 is left edge, x=100 is right edge.
-   y=0 is top edge, y=100 is bottom edge.
-3. Read the answer IF the box is filled:
-   - Read handwritten or typed text carefully
-   - If box is empty → expectedAnswer = ""
-4. Determine field type:
-   - "text" = single line
-   - "textarea" = multiple lines
-
-Return ONLY this JSON:
-{
-  "worksheetTitle": "title from worksheet header",
-  "subject": "subject if visible",
-  "worksheetStatus": "blank" | "filled" | "partial",
-  "worksheetType": "diagram" | "questions" | "table" | "mixed",
-  "fields": [
-    {
-      "id": "field_1",
-      "label": "LABEL TEXT",
-      "order": 1,
-      "x": 45.5,
-      "y": 22.3,
-      "width": 30.0,
-      "height": 7.5,
-      "type": "textarea",
-      "isFilled": true,
-      "expectedAnswer": "the answer text if filled, empty string if blank",
-      "hint": "brief hint what to write here"
-    }
-  ],
-  "totalFields": 6
-}
-Return ONLY JSON. No markdown. No explanation.`;
-
-    console.log("[DETECT FIELDS] Attempting Google Vision OCR first");
-
-    // Try Google Vision OCR first
-    let detectedFields;
-    let detectionMethod = 'google-vision';
-    
-    try {
-      console.log('[DETECT FIELDS] Using Google Vision OCR');
-      
-      const textBlocks = await detectFieldsWithGoogleVision(
-        filePath,  // local file path
-        imgWidth,
-        imgHeight
-      );
-      
-      // Detect if this is a diagram worksheet
-      const isDiagram = isDiagramWorksheet(textBlocks, imgWidth, imgHeight);
-      console.log('[GOOGLE VISION] Is diagram worksheet:', isDiagram);
-      
-      const fields = findInputFields(textBlocks, imgWidth, imgHeight);
-      const worksheetStatus = detectWorksheetStatus(textBlocks);
-      
-      // Get worksheet title from first large text block
-      const titleBlock = textBlocks
-        .sort((a, b) => (b.x2 - b.x1) - (a.x2 - a.x1))[0];
-      
-      // Adjust field sizing based on worksheet type
-      // Diagram fields are smaller (just covering label boxes)
-      // Question fields are wider (full line width)
-      let adjustedFields = fields;
-      if (isDiagram) {
-        adjustedFields = fields.map(f => ({
-          ...f,
-          width: Math.min(f.width, 20),  // Smaller width for diagram boxes
-          height: Math.min(f.height, 5),  // Smaller height for diagram boxes
-          type: 'text'  // Diagram boxes are usually single-line
-        }));
-        console.log('[GOOGLE VISION] Adjusted fields for diagram worksheet');
-      }
-      
-      const validatedFields = validateFieldCoordinates(
-        adjustedFields, imgWidth, imgHeight
-      );
-      
-      // Add detailed debugging logs
-      console.log('[GOOGLE VISION] === FIELD DETECTION SUMMARY ===');
-      console.log('Total text blocks:', textBlocks.length);
-      console.log('Label candidates:', fields.length);
-      console.log('Fields found:', validatedFields.length);
-      console.log('Worksheet type:', isDiagram ? 'diagram' : 'questions');
-      console.log('Worksheet status:', worksheetStatus);
-      validatedFields.forEach(f => {
-        console.log(`  ${f.label}: x=${f.x}% y=${f.y}% w=${f.width}% h=${f.height}%`);
-      });
-      console.log('========================================');
-      
-      console.log('[GOOGLE VISION] Fields detected:', validatedFields.length);
-      console.log('[DETECT FIELDS] Detection method: ✅ Google Vision OCR');
-      
-      detectedFields = {
-        worksheetTitle: titleBlock?.text || '',
-        subject: '',
-        worksheetStatus: worksheetStatus,
-        worksheetType: isDiagram ? 'diagram' : 'questions',
-        fields: validatedFields,
-        totalFields: validatedFields.length
-      };
-      
-    } catch (visionError) {
-      console.error('[GOOGLE VISION] Error:', visionError.message);
-      // Fall back to OpenRouter if Vision fails
-      console.log('[DETECT FIELDS] Falling back to OpenRouter...');
-      detectionMethod = 'openrouter';
-      
-      try {
-        aiResponseText = await callVisionModelWithFallback(base64Image, detectionPrompt);
-        
-        console.log('[DETECT FIELDS] Detection method: ⚠️ OpenRouter fallback');
-        
-        // Parse JSON response using robust extraction and repair
-        try {
-          detectedFields = extractAndParseJSON(aiResponseText);
-        } catch (parseError) {
-          console.error('[DETECT FIELDS] OpenRouter JSON parse failed:', parseError.message);
-          throw parseError;
-        }
-        
-      } catch (fallbackError) {
-        console.error("[DETECT FIELDS] All vision models failed:", fallbackError.message);
-        // Return graceful 200 response with image saved but no fields detected
-        return res.status(200).json({
-          success: true,
-          imageUrl: imageUrl,
-          imageWidth: imgWidth,
-          imageHeight: imgHeight,
-          worksheetTitle: '',
-          subject: '',
-          worksheetStatus: 'blank',
-          worksheetType: 'questions',
-          fields: [],
-          totalFields: 0,
-          hasAnswerKey: false,
-          aiError: true,
-          detectionMethod: 'none',
-          message: 'Could not detect fields automatically. The worksheet image was saved successfully.'
-        });
-      }
-    }
-
-    console.log(
-      "[DETECT FIELDS] Detected fields:",
-      detectedFields.totalFields || 0
-    );
-
-    // Smart validator: trust AI coordinates but fix bad/missing values
-    function validateFieldCoordinates(fields, imageWidth, imageHeight) {
-      if (!fields || fields.length === 0) return [];
-
-      // Auto-detect if values are pixels or percentages
-      // If any x > 100 or any y > 100 → values are pixels
-      const maxX = Math.max(...fields.map(f => parseFloat(f.x) || 0));
-      const maxY = Math.max(...fields.map(f => parseFloat(f.y) || 0));
-      const maxW = Math.max(...fields.map(f => parseFloat(f.width || f.w) || 0));
-      const maxH = Math.max(...fields.map(f => parseFloat(f.height || f.h) || 0));
-
-      // Determine if pixel or percentage values
-      const isPixelValues = maxX > 100 || maxY > 100;
-
-      // Use actual image dimensions or sensible defaults
-      const imgW = imageWidth || 720;
-      const imgH = imageHeight || 960;
-
-      console.log(`[DETECT FIELDS] Coordinate type: ${isPixelValues ? 'PIXELS' : 'PERCENTAGES'}`);
-      console.log(`[DETECT FIELDS] Image size: ${imgW}x${imgH}`);
-      console.log(`[DETECT FIELDS] Max values: x=${maxX} y=${maxY} w=${maxW} h=${maxH}`);
-
-      // Check if all y values are the same (fallback needed)
-      const yValues = fields.map(f => parseFloat(f.y) || 0);
-      const allSameY = yValues.every(y => Math.abs(y - yValues[0]) < 2);
-      const hasNoCoords = fields.every(
-        f => !f.x && !f.y && !f.width && !f.height && !f.w && !f.h
-      );
-
-      if (hasNoCoords || (allSameY && fields.length > 1)) {
-        console.log('[DETECT FIELDS] AI gave no real coords, using fallback layout');
-        return generateFallbackPositions(fields);
-      }
-
-      // AI gave real coordinates → validate and fix each field
-      return fields.map((field, index) => {
-        let x = parseFloat(field.x) || 0;
-        let y = parseFloat(field.y) || 0;
-        let width = parseFloat(field.width || field.w) || 35;
-        let height = parseFloat(field.height || field.h) || 7;
-
-        // If pixel values, convert to percentages
-        if (isPixelValues) {
-          x = (x / imgW) * 100;
-          y = (y / imgH) * 100;
-          width = (width / imgW) * 100;
-          height = (height / imgH) * 100;
-        }
-
-        // Clamp to valid range
-        x = Math.max(0, Math.min(x, 95));
-        y = Math.max(0, Math.min(y, 95));
-        width = Math.max(10, Math.min(width, 90));
-        height = Math.max(4, Math.min(height, 30));
-
-        // Prevent overflow
-        if (x + width > 99) width = 99 - x;
-        if (y + height > 99) height = 99 - y;
-
-        return {
-          id: field.id || `field_${index + 1}`,
-          label: (field.label || `Field ${index + 1}`).toUpperCase(),
-          order: field.order || index + 1,
-          x: Math.round(x * 10) / 10,
-          y: Math.round(y * 10) / 10,
-          width: Math.round(width * 10) / 10,
-          height: Math.round(height * 10) / 10,
-          type: field.type || 'textarea',
-          isFilled: field.isFilled || false,
-          expectedAnswer: field.expectedAnswer || '',
-          hint: field.hint || `Write about ${field.label || 'this'}`
-        };
-      });
-    }
-
-    // Fallback when AI gives no coordinates:
-    function generateFallbackPositions(fields) {
-      const total = fields.length;
-      const startY = 15;
-      const endY = 88;
-      const spacing = (endY - startY) / Math.max(total - 1, 1);
-
-      return fields.map((field, index) => ({
-        id: field.id || `field_${index + 1}`,
-        label: (field.label || `Field ${index + 1}`).toUpperCase(),
-        order: field.order || index + 1,
-        x: 48,
-        y: Math.round((startY + index * spacing) * 10) / 10,
-        width: 48,
-        height: 8,
-        type: field.type || 'textarea',
-        isFilled: field.isFilled || false,
-        expectedAnswer: field.expectedAnswer || '',
-        hint: field.hint || `Write about ${field.label || 'this'}`
-      }));
-    }
-
-    // Add logging for raw AI fields
-    console.log('[DETECT FIELDS] Raw AI fields:', 
-      detectedFields.fields?.map(f => ({
-        label: f.label, x: f.x, y: f.y,
-        w: f.width || f.w, h: f.height || f.h
-      }))
-    );
-
-    // Get fields from AI response and sort by order
-    // If Google Vision was used, fields are already validated
-    let positionedFields;
-    if (detectionMethod === 'google-vision') {
-      positionedFields = detectedFields.fields || [];
-      console.log('[DETECT FIELDS] Using Google Vision validated fields directly');
-    } else {
-      // OpenRouter fallback: validate the fields
-      const rawFields = detectedFields.fields || [];
-      const sortedFields = rawFields.sort((a, b) => (a.order || 0) - (b.order || 0));
-      positionedFields = validateFieldCoordinates(sortedFields, imgWidth, imgHeight);
-      
-      console.log('[DETECT FIELDS] After validation:', 
-        positionedFields.map(f => ({
-          label: f.label, x: f.x, y: f.y,
-          w: f.width, h: f.height
-        }))
-      );
-    }
-
-    // Step 5: Return response with algorithmically positioned fields
-    return res.json({
-      success: true,
-      imageUrl: imageUrl,
-      imageWidth: imgWidth,
-      imageHeight: imgHeight,
-      worksheetTitle: detectedFields.worksheetTitle || '',
-      subject: detectedFields.subject || '',
-      worksheetStatus: detectedFields.worksheetStatus || 'blank',
-      worksheetType: detectedFields.worksheetType || 'questions',
-      fields: positionedFields,
-      totalFields: positionedFields.length,
-      hasAnswerKey: positionedFields.some(f => f.expectedAnswer && 
-                    f.expectedAnswer.trim() !== ''),
-      detectionMethod: detectionMethod
-    });
-  } catch (error) {
-    console.error("[DETECT FIELDS] Error:", error.message);
-    return sendError(
-      res,
-      500,
-      error.message || "Field detection failed"
-    );
-  }
-}
-
-/**
- * POST /api/worksheets/save-overlay
- * Auth: teacher only
- * Saves a PDF overlay worksheet with detected fields as a complete worksheet.
- * Accepts: { worksheetId?, title, subject, backgroundImageUrl, originalFileUrl, fields, gradeLevel?, language? }
- * Returns: the saved worksheet object with _id
- */
-async function saveOverlayWorksheet(req, res) {
-  console.log("[SAVE OVERLAY] Starting overlay worksheet save");
-
-  try {
-    const {
-      worksheetId,
-      title,
-      subject,
-      cefrLevel,
-      gradeCategory,
-      gradeLevel,
-      difficulty,
-      assignmentDeadline,
-      backgroundImageUrl,
-      originalFileUrl,
-      fields,
-    } = req.body;
-
-    // Validate required fields
-    if (!title || typeof title !== 'string' || !title.trim()) {
-      return sendError(res, 400, 'Title is required');
-    }
-    if (!subject || typeof subject !== 'string') {
-      return sendError(res, 400, 'Subject is required');
-    }
-    if (!backgroundImageUrl || typeof backgroundImageUrl !== 'string') {
-      return sendError(res, 400, 'Background image URL is required');
-    }
-    if (!originalFileUrl || typeof originalFileUrl !== 'string') {
-      return sendError(res, 400, 'Original file URL is required');
-    }
-    // Allow empty fields - image is still useful
-    const fieldsArray = Array.isArray(fields) ? fields : [];
-    console.log(`[SAVE OVERLAY] Saving with ${fieldsArray.length} fields`);
-
-    const teacherId = req.user?.id;
-    if (!teacherId) {
-      return sendError(res, 401, 'User not authenticated');
-    }
-
-    // Build activity9 object
-    const activity9 = {
-      title: req.body.title || 'Fill in the Fields',
-      instructions: req.body.instructions || '',
-      backgroundImageUrl,
-      originalFileUrl,
-      fields: fieldsArray.map((field, index) => ({
-        id: field.id || `field_${index + 1}`,
-        label: field.label || `Field ${index + 1}`,
-        x: Number(field.x) || 0,
-        y: Number(field.y) || 0,
-        width: Number(field.width) || 10,
-        height: Number(field.height) || 5,
-        type: field.type === 'textarea' ? 'textarea' : 'text',
-        isFilled: field.isFilled || false,
-        expectedAnswer: field.expectedAnswer || '',
-        hint: field.hint || '',
-      })),
-      totalFields: req.body.totalFields || fieldsArray.length,
-      worksheetStatus: req.body.worksheetStatus || 'blank',
-      hasAnswerKey: req.body.hasAnswerKey || false
-    };
-
-    // Calculate total points based on field count
-    const totalPoints = fieldsArray.length;
-
-    // Parse assignment deadline if provided, otherwise set default (7 days from now)
-    let parsedDeadline;
-    if (assignmentDeadline) {
-      parsedDeadline = new Date(assignmentDeadline);
-      if (isNaN(parsedDeadline.getTime())) {
-        parsedDeadline = new Date();
-        parsedDeadline.setDate(parsedDeadline.getDate() + 7);
-      }
-    } else {
-      parsedDeadline = new Date();
-      parsedDeadline.setDate(parsedDeadline.getDate() + 7);
-    }
-
-    // No theme for overlay worksheets (not applicable)
-    const themeObj = null;
-
-    let worksheet;
-
-    if (worksheetId && mongoose.Types.ObjectId.isValid(worksheetId)) {
-      // Update existing worksheet
-      worksheet = await Worksheet.findOneAndUpdate(
-        { _id: worksheetId, createdBy: teacherId },
-        {
-          title,
-          subject,
-          'meta.cefrLevel': cefrLevel || '',
-          'meta.gradeCategory': gradeCategory || '',
-          'meta.gradeLevel': gradeLevel || '',
-          'meta.difficulty': difficulty || 'Medium',
-          gradeLevel: gradeLevel || null,
-          assignmentDeadline: parsedDeadline,
-          theme: themeObj,
-          activity9,
-          totalPoints,
-          updatedAt: new Date(),
-        },
-        { new: true, runValidators: true }
-      );
-
-      if (!worksheet) {
-        return sendError(res, 404, 'Worksheet not found or you do not have permission to update it');
-      }
-
-      console.log('[SAVE OVERLAY] Updated existing worksheet:', worksheetId);
-    } else {
-      // Create new worksheet
-      worksheet = await Worksheet.create({
-        title,
-        description: `PDF overlay worksheet with ${fieldsArray.length} input fields.`,
-        subject,
-        'meta.cefrLevel': cefrLevel || '',
-        'meta.gradeCategory': gradeCategory || '',
-        'meta.gradeLevel': gradeLevel || '',
-        'meta.difficulty': difficulty || 'Medium',
-        gradeLevel: gradeLevel || null,
-        assignmentDeadline: parsedDeadline,
-        theme: themeObj,
-        activity9,
-        totalPoints,
-        createdBy: teacherId,
-        isPublished: true,
-        generationSource: 'manual',
-        activities: [
-          {
-            type: 'overlay',
-            title: activity9.title,
-            instructions: activity9.instructions,
-            data: {
-              backgroundImageUrl: activity9.backgroundImageUrl,
-              originalFileUrl: activity9.originalFileUrl,
-              fields: activity9.fields,
-              totalFields: activity9.totalFields,
-              worksheetStatus: activity9.worksheetStatus,
-              hasAnswerKey: activity9.hasAnswerKey,
-            },
-            order: 0,
-          },
-        ],
-      });
-
-      console.log('[SAVE OVERLAY] Created new worksheet:', worksheet._id);
-    }
-
-    return sendSuccess(res, { worksheet: worksheet.toObject() });
-  } catch (error) {
-    console.error('[SAVE OVERLAY] Error:', error.message);
-    return sendError(res, 500, error.message || 'Failed to save overlay worksheet');
-  }
-}
-
-/**
- * POST /api/worksheets/:id/download-overlay
- * Downloads a PDF of the overlay worksheet with student answers printed on it.
- * Accepts: { answers, results, studentName, score, total, className, assignmentTitle, subject, grade, dueDate }
- * Returns: PDF file as download
- */
-async function downloadOverlayPdf(req, res) {
-  console.log('[PDF BACKEND] === ANSWERS OBJECT INSPECTION ===');
-  console.log('[PDF BACKEND] typeof req.body.answers:', typeof req.body.answers);
-  console.log('[PDF BACKEND] req.body.answers instanceof Map:', req.body.answers instanceof Map);
-  console.log('[PDF BACKEND] Object.keys(req.body.answers):', Object.keys(req.body.answers || {}));
-  console.log('[PDF BACKEND] full answers object:', JSON.stringify(req.body.answers, null, 2));
-  console.log('[PDF BACKEND] Generating overlay PDF for worksheet:', req.params.id);
-
-  try {
-    const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
-    const sharp = require('sharp');
-    const fs = require('fs');
-    const path = require('path');
-
-    const worksheet = await Worksheet.findById(req.params.id);
-    if (!worksheet?.activity9) {
-      return res.status(404).json({ error: 'Not found' });
-    }
-
-    const activity9 = worksheet.activity9;
-    const answers = req.body.answers || {};
-    const results = req.body.results || {};
-    const studentName = req.body.studentName || 'Student';
-    const score = parseInt(req.body.score) || 0;
-    const total = parseInt(req.body.total) || activity9.fields?.length || 0;
-    const subject = req.body.subject || worksheet.meta?.subject || '';
-    const grade = req.body.grade || worksheet.meta?.gradeLevel || '';
-    const scorePct = total > 0 ? Math.round((score/total)*100) : 0;
-
-    console.log('[PDF BACKEND] Generating for:', studentName);
-    console.log('[PDF BACKEND] Answers received:', Object.keys(answers).length);
-    console.log('[PDF BACKEND] Score:', score, '/', total);
-
-    // Log field-level answer lookup
-    const fields = activity9.fields || [];
-    console.log('[PDF BACKEND] === FIELD-LEVEL ANSWER LOOKUP ===');
-    console.log('[PDF BACKEND] total fields:', fields.length);
-    fields.forEach(field => {
-      console.log('[PDF BACKEND] field lookup:', {
-        fieldId: field.id,
-        answer: answers?.[field.id],
-        hasAnswer: field.id in answers,
-        answerType: typeof answers?.[field.id]
-      });
-    });
-
-    // Load image from disk
-    const imageUrl = activity9.backgroundImageUrl || '';
-    const filename = imageUrl.split('/').pop();
-    const possiblePaths = [
-      path.join(__dirname, '../../uploads/templates', filename),
-      path.join(__dirname, '../uploads/templates', filename),
-      path.join(process.cwd(), 'uploads/templates', filename),
-    ];
-
-    let imagePath = null;
-    for (const p of possiblePaths) {
-      if (fs.existsSync(p)) { imagePath = p; break; }
-    }
-
-    if (!imagePath) {
-      return res.status(404).json({ error: 'Worksheet image not found' });
-    }
-
-    const imageBuffer = fs.readFileSync(imagePath);
-    const jpegBuffer = await sharp(imageBuffer).jpeg({ quality: 92 }).toBuffer();
-    const metadata = await sharp(imageBuffer).metadata();
-    const imgW = metadata.width || 800;
-    const imgH = metadata.height || 1000;
-
-    // Create PDF
-    const pdfDoc = await PDFDocument.create();
-    const regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-    // Page dimensions - A4 width
-    const pageWidth = 595;
-    
-    // SECTION A: Header (like viewer header)
-    const headerHeight = 120;
-    
-    // SECTION B: Score section  
-    const scoreHeight = 60;
-    
-    // SECTION C: Worksheet image
-    const imgDisplayW = pageWidth - 40; // 20px margin each side
-    const imgDisplayH = Math.round((imgH / imgW) * imgDisplayW);
-    
-    // SECTION D: Footer
-    const footerHeight = 35;
-    
-    // Total page height
-    const pageHeight = headerHeight + scoreHeight + imgDisplayH + footerHeight + 40;
-
-    const page = pdfDoc.addPage([pageWidth, pageHeight]);
-
-    // DRAW SECTION A: Header
-    page.drawRectangle({
-      x: 0,
-      y: pageHeight - headerHeight,
-      width: pageWidth,
-      height: headerHeight,
-      color: rgb(0.08, 0.35, 0.38)
-    });
-
-    page.drawText(worksheet.title || 'Worksheet', {
-      x: 20,
-      y: pageHeight - 35,
-      size: 18,
-      font: boldFont,
-      color: rgb(1, 1, 1)
-    });
-
-    page.drawText(`PDF overlay worksheet with ${total} input fields.`, {
-      x: 20,
-      y: pageHeight - 52,
-      size: 8,
-      font: regularFont,
-      color: rgb(0.8, 0.9, 0.9)
-    });
-
-    const metaText = [
-      subject ? `SUBJECT ${subject}` : '',
-      grade ? `GRADE ${grade}` : ''
-    ].filter(Boolean).join('   ');
-
-    if (metaText) {
-      page.drawText(metaText, {
-        x: 20,
-        y: pageHeight - 70,
-        size: 8,
-        font: regularFont,
-        color: rgb(0.8, 0.9, 0.9)
-      });
-    }
-
-    page.drawRectangle({
-      x: pageWidth - 160,
-      y: pageHeight - headerHeight + 10,
-      width: 145,
-      height: headerHeight - 20,
-      color: rgb(0.1, 0.42, 0.45),
-      borderColor: rgb(0.15, 0.5, 0.53),
-      borderWidth: 1
-    });
-
-    page.drawText('Student name', {
-      x: pageWidth - 150,
-      y: pageHeight - 40,
-      size: 7,
-      font: regularFont,
-      color: rgb(0.7, 0.85, 0.85)
-    });
-
-    page.drawText(studentName, {
-      x: pageWidth - 150,
-      y: pageHeight - 55,
-      size: 10,
-      font: boldFont,
-      color: rgb(1, 1, 1)
-    });
-
-    page.drawText('Date', {
-      x: pageWidth - 150,
-      y: pageHeight - 78,
-      size: 7,
-      font: regularFont,
-      color: rgb(0.7, 0.85, 0.85)
-    });
-
-    page.drawText(new Date().toLocaleDateString('en-US', {
-      month: '2-digit',
-      day: '2-digit', 
-      year: 'numeric'
-    }), {
-      x: pageWidth - 150,
-      y: pageHeight - 93,
-      size: 10,
-      font: boldFont,
-      color: rgb(1, 1, 1)
-    });
-
-    // DRAW SECTION B: Score
-    const scoreSectionY = pageHeight - headerHeight - scoreHeight;
-    
-    page.drawRectangle({
-      x: 15,
-      y: scoreSectionY,
-      width: pageWidth - 30,
-      height: scoreHeight - 5,
-      color: scorePct === 0 ? rgb(1, 0.97, 0.97) :
-             scorePct >= 70 ? rgb(0.97, 1, 0.97) :
-             rgb(1, 0.99, 0.95),
-      borderColor: scorePct === 0 ? rgb(0.9, 0.7, 0.7) :
-                   scorePct >= 70 ? rgb(0.7, 0.9, 0.7) :
-                   rgb(0.9, 0.85, 0.6),
-      borderWidth: 1
-    });
-
-    page.drawText('SCORE', {
-      x: 25,
-      y: scoreSectionY + scoreHeight - 18,
-      size: 7,
-      font: boldFont,
-      color: rgb(0.4, 0.4, 0.4)
-    });
-
-    const scoreColor = scorePct === 0 ? rgb(0.8, 0.1, 0.1) :
-                       scorePct >= 70 ? rgb(0.05, 0.55, 0.1) :
-                       rgb(0.7, 0.4, 0.0);
-
-    page.drawText(`${score} / ${total}`, {
-      x: 25,
-      y: scoreSectionY + 22,
-      size: 18,
-      font: boldFont,
-      color: scoreColor
-    });
-
-    page.drawText(`(${scorePct}%)`, {
-      x: 95,
-      y: scoreSectionY + 22,
-      size: 12,
-      font: boldFont,
-      color: scoreColor
-    });
-
-    const scoreMsg = scorePct === 0 ? 'Review and try again.' :
-                     scorePct >= 70 ? 'Great work!' :
-                     'Keep practicing!';
-    page.drawText(scoreMsg, {
-      x: 25,
-      y: scoreSectionY + 8,
-      size: 8,
-      font: regularFont,
-      color: rgb(0.5, 0.5, 0.5)
-    });
-
-    // DRAW SECTION C: Worksheet Image
-    const embeddedImage = await pdfDoc.embedJpg(jpegBuffer);
-    const imgY = scoreSectionY - imgDisplayH - 15;
-
-    page.drawRectangle({
-      x: 18,
-      y: imgY - 3,
-      width: imgDisplayW + 4,
-      height: imgDisplayH + 4,
-      color: rgb(0.85, 0.85, 0.85)
-    });
-
-    page.drawImage(embeddedImage, {
-      x: 20,
-      y: imgY,
-      width: imgDisplayW,
-      height: imgDisplayH
-    });
-
-    // OVERLAY ANSWERS ON IMAGE
-    console.log('[PDF] Drawing', fields.length, 'fields');
-
-    for (const field of fields) {
-      const studentAnswer = answers[field.id] || '';
-      const isCorrect = results[field.id];
-
-      if (!studentAnswer) continue;
-
-      const fieldX = 20 + (field.x / 100) * imgDisplayW;
-      const fieldW = (field.width / 100) * imgDisplayW;
-      const fieldH = Math.max((field.height / 100) * imgDisplayH, 20);
-      const fieldY = imgY + imgDisplayH - (field.y / 100) * imgDisplayH - fieldH;
-
-      console.log(`[PDF] Field "${field.label}":`, `answer="${studentAnswer.substring(0,30)}..."`, `correct=${isCorrect}`);
-
-      page.drawRectangle({
-        x: fieldX,
-        y: fieldY,
-        width: fieldW,
-        height: fieldH,
-        color: rgb(1, 1, 1),
-        opacity: 0.9
-      });
-
-      const borderColor = isCorrect === true ? rgb(0.086, 0.58, 0.26) :
-                           isCorrect === false ? rgb(0.86, 0.15, 0.15) :
-                           rgb(0.4, 0.4, 0.4);
-
-      page.drawRectangle({
-        x: fieldX,
-        y: fieldY,
-        width: fieldW,
-        height: fieldH,
-        borderColor: borderColor,
-        borderWidth: isCorrect !== null ? 2 : 1,
-        opacity: 0
-      });
-
-      const textColor = isCorrect === true ? rgb(0.04, 0.45, 0.12) :
-                         isCorrect === false ? rgb(0.75, 0.08, 0.08) :
-                         rgb(0.1, 0.1, 0.5);
-
-      const fontSize = Math.max(Math.min(fieldH * 0.38, 11), 9);
-      const maxChars = Math.floor(fieldW / (fontSize * 0.54));
-      const displayText = studentAnswer.length > maxChars ?
-        studentAnswer.substring(0, maxChars - 2) + '..' : studentAnswer;
-
-      page.drawText(displayText, {
-        x: fieldX + 4,
-        y: fieldY + fieldH * 0.28,
-        size: fontSize,
-        font: regularFont,
-        color: textColor
-      });
-
-      if (isCorrect === true) {
-        page.drawCircle({
-          x: fieldX + fieldW - 9,
-          y: fieldY + fieldH - 9,
-          size: 8,
-          color: rgb(0.086, 0.58, 0.26)
-        });
-        page.drawText('v', {
-          x: fieldX + fieldW - 13,
-          y: fieldY + fieldH - 15,
-          size: 9, font: boldFont,
-          color: rgb(1, 1, 1)
-        });
-      } else if (isCorrect === false) {
-        page.drawCircle({
-          x: fieldX + fieldW - 9,
-          y: fieldY + fieldH - 9,
-          size: 8,
-          color: rgb(0.86, 0.15, 0.15)
-        });
-        page.drawText('x', {
-          x: fieldX + fieldW - 13,
-          y: fieldY + fieldH - 15,
-          size: 9, font: boldFont,
-          color: rgb(1, 1, 1)
-        });
-      }
-    }
-
-    // DRAW SECTION D: Footer
-    page.drawRectangle({
-      x: 0, y: 0,
-      width: pageWidth,
-      height: footerHeight,
-      color: rgb(0.08, 0.55, 0.50),
-      opacity: 0.95
-    });
-
-    const footerLine1 = [studentName, subject ? `| ${subject}` : '', grade ? `Grade ${grade}` : ''].filter(Boolean).join(' ');
-    page.drawText(footerLine1, {
-      x: 10, y: 20,
-      size: 8, font: boldFont,
-      color: rgb(1, 1, 1)
-    });
-
-    page.drawText(`Score: ${score}/${total} (${scorePct}%) | Date: ${new Date().toLocaleDateString()}`, {
-      x: 10, y: 7,
-      size: 8, font: regularFont,
-      color: rgb(0.85, 0.95, 0.95)
-    });
-
-    const pdfBytes = await pdfDoc.save();
-
-    const safeTitle = (worksheet.title || 'worksheet').replace(/[^a-z0-9]/gi, '-').toLowerCase().substring(0, 40);
-    const safeName = studentName.replace(/[^a-z0-9]/gi, '-').toLowerCase();
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${safeName}_${safeTitle}.pdf"`);
-    res.setHeader('Content-Length', pdfBytes.length);
-    res.send(Buffer.from(pdfBytes));
-
-    console.log('[PDF] Generated successfully:', pdfBytes.length, 'bytes');
-
-  } catch (error) {
-    console.error('[PDF] Error:', error);
-    res.status(500).json({ error: 'PDF generation failed', message: error.message });
-  }
-}
-
-/**
- * Evaluates student answers using AI for activity9 overlay worksheets
- * @param {string} worksheetTitle - Title of the worksheet
- * @param {string} worksheetSubject - Subject of the worksheet
- * @param {Array} fields - Array of field objects
- * @param {Object} answers - Object mapping fieldId to student answer
- * @returns {Object} Object with results and feedbacks maps
- */
-async function evaluateAnswersWithAI(worksheetTitle, worksheetSubject, fields, answers) {
-  const fieldEvaluations = fields
-    .filter(f => answers[f.id] && answers[f.id].trim())
-    .map(f => ({
-      fieldId: f.id,
-      label: f.label,
-      studentAnswer: answers[f.id],
-      expectedAnswer: f.expectedAnswer || ''
-    }));
-
-  if (fieldEvaluations.length === 0) {
-    return {};
-  }
-
-  const prompt = `You are an expert teacher evaluating student worksheet answers.
-
-Worksheet: "${worksheetTitle}"
-Subject: "${worksheetSubject || 'General'}"
-
-Evaluate each student answer below.
-Consider an answer CORRECT if:
-- It shows understanding of the concept
-- It is factually accurate
-- It mentions key relevant points
-- Minor spelling mistakes are OK
-- Partial answers that show understanding = correct
-- Different wording that means the same thing = correct
-
-Consider an answer WRONG if:
-- It is completely unrelated to the label/question
-- It shows a fundamental misunderstanding
-- It is nonsense or random text
-
-${fieldEvaluations.map((f, i) => `
-Field ${i + 1}:
-Label: ${f.label}
-${f.expectedAnswer ? `Expected: ${f.expectedAnswer}` : ''}
-Student answered: "${f.studentAnswer}"
-`).join('\n')}
-
-Return ONLY this JSON array, no explanation:
-[
-  {
-    "fieldId": "field_1",
-    "correct": true,
-    "score": 1,
-    "feedback": "Good answer! You correctly identified..."
-  }
-]
-
-One object per field evaluated above.
-Return ONLY the JSON array.`;
-
-  // Use existing OpenRouter setup
-  const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_KEY;
-  const baseUrl = process.env.OPENROUTER_BASE_URL?.trim() || 'https://openrouter.ai/api/v1';
-  const model = process.env.LLAMA_MODEL?.trim() || 'meta-llama/llama-3-8b-instruct';
-
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://roznahub.com',
-      'X-Title': 'RoznaHub'
-    },
-    body: JSON.stringify({
-      model: model,
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1000,
-      temperature: 0.1
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error(`AI evaluation failed: ${response.status}`);
-  }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || '';
-
-  // Parse JSON response
-  let cleaned = content.trim()
-    .replace(/```json\s*/gi, '')
-    .replace(/```\s*/gi, '')
-    .trim();
-
-  const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) throw new Error('Invalid AI response');
-
-  const evaluations = JSON.parse(jsonMatch[0]);
-
-  // Convert to results map
-  const results = {};
-  const feedbacks = {};
-
-  for (const ev of evaluations) {
-    results[ev.fieldId] = ev.correct === true;
-    feedbacks[ev.fieldId] = ev.feedback || '';
-  }
-
-  return { results, feedbacks };
-}
-
-/**
- * POST /api/worksheets/:id/evaluate-answers
- * Evaluates student answers using AI for activity9 overlay worksheets
- */
-async function evaluateAnswers(req, res) {
-  try {
-    const worksheet = await Worksheet.findById(req.params.id);
-
-    if (!worksheet || !worksheet.activity9) {
-      return res.status(404).json({
-        error: 'Worksheet not found'
-      });
-    }
-
-    const { answers } = req.body;
-    if (!answers || Object.keys(answers).length === 0) {
-      return res.status(400).json({
-        error: 'No answers provided'
-      });
-    }
-
-    const fields = worksheet.activity9.fields || [];
-    const title = worksheet.title || 'Worksheet';
-    const subject = worksheet.meta?.subject || 'General';
-
-    console.log('[EVALUATE] Evaluating', Object.keys(answers).length, 'answers');
-    console.log('[EVALUATE] Worksheet:', title);
-
-    const { results, feedbacks } = await evaluateAnswersWithAI(title, subject, fields, answers);
-
-    const score = Object.values(results).filter(v => v === true).length;
-    const total = Object.keys(results).length;
-
-    console.log('[EVALUATE] Score:', score, '/', total);
-
-    res.json({
-      success: true,
-      results,
-      feedbacks,
-      score,
-      total,
-      percentage: total > 0 ? Math.round((score / total) * 100) : 0
-    });
-
-  } catch (error) {
-    console.error('[EVALUATE] Error:', error.message);
-    res.status(500).json({
-      error: 'Evaluation failed',
-      message: error.message
-    });
-  }
-}
-
-/**
  * Returns the visual analysis prompt for the AI
  * @returns The prompt string for visual design analysis
  */
@@ -4602,6 +3354,7 @@ Return ONLY this JSON object, nothing else:
 module.exports = {
   generateWorksheet,
   uploadAndGenerate,
+  extractWorksheetStructure: extractWorksheetStructureController,
   generateFromFile,
   createWorksheet,
   getMyWorksheets,
@@ -4623,8 +3376,4 @@ module.exports = {
   assignWorksheet,
   generateHtmlWorksheet,
   analyzeTemplate,
-  detectFields,
-  saveOverlayWorksheet,
-  downloadOverlayPdf,
-  evaluateAnswers,
 };

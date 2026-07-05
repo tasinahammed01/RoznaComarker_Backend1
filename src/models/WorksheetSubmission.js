@@ -59,7 +59,8 @@ const WorksheetSubmissionSchema = new Schema({
     enum: ['auto-graded', 'pending-review'],
     default: 'auto-graded'
   },
-  // Activity 9 overlay worksheet data
+  // DEPRECATED: legacy activity9 overlay format, kept for backward-compat
+  // grading of pre-migration worksheets. Do not use for new worksheets.
   activity9Answers: { type: Map, of: String, default: {} },
   activity9Results: { type: Map, of: Boolean, default: {} },
   activity9Feedbacks: { type: Map, of: String, default: {} },

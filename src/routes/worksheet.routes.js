@@ -31,6 +31,15 @@ router.post(
   worksheetController.uploadAndGenerate,
 );
 
+/* ── Extract Worksheet Structure (teacher only) ─────────────── */
+router.post(
+  "/extract-structure",
+  verifyJwtToken,
+  requireRole("teacher"),
+  upload.single("file"),
+  worksheetController.extractWorksheetStructure,
+);
+
 /* ── Gemini HTML Worksheet Generation (teacher only) ────── */
 router.post(
   "/gemini-html-generate",
@@ -56,37 +65,6 @@ router.post(
   requireRole("teacher"),
   upload.single("templateFile"),
   worksheetController.analyzeTemplate,
-);
-
-/* ── Detect Fields (teacher only, Vision AI) ─────────────────────── */
-router.post(
-  "/detect-fields",
-  verifyJwtToken,
-  requireRole("teacher"),
-  upload.single("file"),
-  worksheetController.detectFields,
-);
-
-/* ── Save Overlay Worksheet (teacher only) ─────────────────────── */
-router.post(
-  "/save-overlay",
-  verifyJwtToken,
-  requireRole("teacher"),
-  worksheetController.saveOverlayWorksheet,
-);
-
-/* ── Download Overlay PDF (student/teacher) ─────────────────────── */
-router.post(
-  "/:id/download-overlay",
-  verifyJwtToken,
-  worksheetController.downloadOverlayPdf,
-);
-
-/* ── Evaluate Answers with AI (student/teacher) ───────────────────── */
-router.post(
-  "/:id/evaluate-answers",
-  verifyJwtToken,
-  worksheetController.evaluateAnswers,
 );
 
 /* ── CRUD (teacher) ─────────────────────────────────────────── */
