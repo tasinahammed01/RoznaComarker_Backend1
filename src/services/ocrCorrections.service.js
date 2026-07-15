@@ -1,5 +1,9 @@
 const writingCorrectionsService = require('./writingCorrections.service');
 const logger = require('../utils/logger');
+const {
+  normalizeOcrTranscript,
+  buildNormalizedTranscriptFromWords
+} = require('../utils/ocrTranscriptNormalizer');
 
 function overlap(aStart, aEnd, bStart, bEnd) {
   const s = Math.max(aStart, bStart);
@@ -36,6 +40,7 @@ function normalizeOcrWordsFromStored(ocrDataWords) {
       return {
         id,
         page,
+        paragraphIndex: Number.isFinite(Number(w?.paragraphIndex)) ? Number(w.paragraphIndex) : undefined,
         text,
         bbox: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
       };
@@ -45,41 +50,38 @@ function normalizeOcrWordsFromStored(ocrDataWords) {
 
 function buildTranscriptAndSpans(ocrWords) {
   const list = Array.isArray(ocrWords) ? ocrWords : [];
-
-  let text = '';
-  const spans = [];
-
-  let prev = null;
-
-  for (const w of list) {
-    const t = typeof w.text === 'string' ? w.text.trim() : '';
-    if (!t) continue;
-
-    if (prev) {
-      const pb = prev.bbox;
-      const cb = w.bbox;
-      const needsNewline = pb && cb ? cb.y > (pb.y + pb.h + pb.h * 0.6) : false;
-      text += needsNewline ? '\n' : ' ';
-    }
-
-    const start = text.length;
-    text += t;
-    const end = text.length;
-
-    spans.push({ wordId: w.id, page: w.page, start, end, bbox: w.bbox });
-
-    prev = w;
-  }
-
-  return { text, spans };
+  const built = buildNormalizedTranscriptFromWords(list, (previous, current) => {
+    if (previous?.paragraphIndex != null && current?.paragraphIndex != null
+      && Number(previous.paragraphIndex) !== Number(current.paragraphIndex)) return '\n\n';
+    const pb = previous?.bbox;
+    const cb = current?.bbox;
+    return Boolean(pb && cb && cb.y > (pb.y + pb.h + pb.h * 0.6));
+  });
+  return {
+    text: built.text,
+    spans: built.spans.map(({ word, start, end, separatorBefore }) => ({
+      wordId: word.id,
+      page: word.page,
+      start,
+      end,
+      bbox: word.bbox,
+      separatorBefore
+    }))
+  };
 }
 
-function groupWordsIntoPages(ocrWords) {
+function groupWordsIntoPages(ocrWords, spans) {
   const pages = new Map();
+  const separators = new Map((Array.isArray(spans) ? spans : []).map((span) => [span.wordId, span.separatorBefore || '']));
   for (const w of Array.isArray(ocrWords) ? ocrWords : []) {
     if (!w) continue;
     if (!pages.has(w.page)) pages.set(w.page, []);
-    pages.get(w.page).push({ id: w.id, text: w.text, bbox: w.bbox });
+    pages.get(w.page).push({
+      id: w.id,
+      text: w.text,
+      bbox: w.bbox,
+      separatorBefore: separators.get(w.id) || ''
+    });
   }
 
   return Array.from(pages.entries())
@@ -94,10 +96,14 @@ function groupWordsIntoPages(ocrWords) {
 }
 
 async function buildOcrCorrections({ text, language, ocrWords }) {
-  const safeText = typeof text === 'string' ? text : '';
+  const safeText = normalizeOcrTranscript(text);
 
   const { text: transcriptText, spans } = buildTranscriptAndSpans(ocrWords);
-  const baseText = safeText.trim() ? safeText : transcriptText;
+  const baseText = safeText || transcriptText;
+  // Bounding boxes are safe only when their generated transcript is exactly
+  // the text being analyzed. Manual transcript edits still get text feedback,
+  // but are not attached to an unrelated OCR word box.
+  const alignedSpans = baseText === transcriptText ? spans : [];
 
   let issues = [];
   try {
@@ -115,7 +121,7 @@ async function buildOcrCorrections({ text, language, ocrWords }) {
     const start = typeof issue.start === 'number' ? issue.start : Number(issue.start);
     const end = typeof issue.end === 'number' ? issue.end : Number(issue.end);
 
-    const overlapping = spans.filter((s) => Number.isFinite(start) && Number.isFinite(end) && overlap(start, end, s.start, s.end));
+    const overlapping = alignedSpans.filter((s) => Number.isFinite(start) && Number.isFinite(end) && overlap(start, end, s.start, s.end));
 
     const wordIds = overlapping.map((s) => s.wordId);
     const bboxList = overlapping
@@ -142,7 +148,7 @@ async function buildOcrCorrections({ text, language, ocrWords }) {
     };
   });
 
-  const ocrPages = groupWordsIntoPages(ocrWords);
+  const ocrPages = groupWordsIntoPages(ocrWords, spans);
 
   return {
     ocr: ocrPages,

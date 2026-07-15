@@ -6,6 +6,7 @@ const File = require('../models/File');
 const logger = require('../utils/logger');
 
 const visionOcr = require('./visionOcr.service');
+const { normalizeOcrTranscript } = require('../utils/ocrTranscriptNormalizer');
 
 function toAbsoluteStoredPath(storedPath) {
   if (!storedPath || typeof storedPath !== 'string') return null;
@@ -33,7 +34,9 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
 
   const ocrPages = [];
   const perFileTexts = [];
+  const perFileRawTexts = [];
   let legacyFirstOcrText = '';
+  let legacyFirstRawOcrText = '';
   let legacyFirstOcrWords = [];
 
   let attempted = 0;
@@ -76,17 +79,20 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
     }
 
     const ocr = await visionOcr.extractOcrFromImageFile(absolute);
-    const text = ocr && (ocr.transcriptText || ocr.fullText) ? String(ocr.transcriptText || ocr.fullText) : '';
+    const rawText = ocr && (ocr.fullText || ocr.transcriptText) ? String(ocr.fullText || ocr.transcriptText) : '';
+    const text = normalizeOcrTranscript(ocr && (ocr.transcriptText || ocr.fullText));
     const words = toStoredOcrWords(ocr && Array.isArray(ocr.words) ? ocr.words : []);
 
     processed += 1;
 
     if (i === 0) {
       legacyFirstOcrText = text;
+      legacyFirstRawOcrText = rawText;
       legacyFirstOcrWords = words;
     }
 
     perFileTexts.push(text);
+    perFileRawTexts.push(rawText);
 
     const pages = (ocr && Array.isArray(ocr.pages) ? ocr.pages : [])
       .map((p) => {
@@ -107,6 +113,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
                 return {
                   text: t,
                   page: n,
+                  paragraphIndex: Number.isFinite(Number(w?.paragraphIndex)) ? Number(w.paragraphIndex) : undefined,
                   bbox: {
                     x0: x,
                     y0: y,
@@ -122,6 +129,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
           fileId,
           pageNumber: n,
           text: text,
+          rawText,
           words: pageWords
         };
       })
@@ -134,6 +142,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
         fileId,
         pageNumber: 1,
         text,
+        rawText,
         words
       });
     }
@@ -166,9 +175,14 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
 
   targetDoc.ocrStatus = 'completed';
   targetDoc.ocrText = legacyFirstOcrText;
+  targetDoc.rawOcrText = legacyFirstRawOcrText;
   targetDoc.ocrData = { words: legacyFirstOcrWords };
   targetDoc.ocrPages = ocrPages;
   targetDoc.combinedOcrText = perFileTexts
+    .map((t) => (typeof t === 'string' ? t.trim() : ''))
+    .filter(Boolean)
+    .join('\n\n');
+  targetDoc.rawCombinedOcrText = perFileRawTexts
     .map((t) => (typeof t === 'string' ? t.trim() : ''))
     .filter(Boolean)
     .join('\n\n');
@@ -200,6 +214,7 @@ function toStoredOcrWords(words) {
       return {
         text,
         page,
+        paragraphIndex: Number.isFinite(Number(w.paragraphIndex)) ? Number(w.paragraphIndex) : undefined,
         bbox: {
           x0,
           y0,
@@ -241,7 +256,8 @@ async function runOcrAndPersist({ fileId, targetDoc }) {
     const ocr = await visionOcr.extractOcrFromImageFile(absolute);
 
     targetDoc.ocrStatus = 'completed';
-    targetDoc.ocrText = ocr && (ocr.transcriptText || ocr.fullText) ? String(ocr.transcriptText || ocr.fullText) : '';
+    targetDoc.rawOcrText = ocr && (ocr.fullText || ocr.transcriptText) ? String(ocr.fullText || ocr.transcriptText) : '';
+    targetDoc.ocrText = normalizeOcrTranscript(ocr && (ocr.transcriptText || ocr.fullText));
     targetDoc.ocrError = undefined;
     targetDoc.ocrUpdatedAt = new Date();
 

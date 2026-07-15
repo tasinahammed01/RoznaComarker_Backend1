@@ -35,6 +35,9 @@ const ocrUploadSchema = new Schema(
       type: String,
       trim: true
     },
+    rawOcrText: {
+      type: String
+    },
     ocrError: {
       type: String,
       trim: true

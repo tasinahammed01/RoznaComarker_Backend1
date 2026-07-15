@@ -5,6 +5,7 @@ const { ImageAnnotatorClient } = require('@google-cloud/vision');
 const sizeOf = require('image-size');
 
 const logger = require('../utils/logger');
+const { buildNormalizedTranscriptFromWords } = require('../utils/ocrTranscriptNormalizer');
 
 function getBackendRootDir() {
   return path.resolve(__dirname, '..', '..');
@@ -113,35 +114,21 @@ function buildTranscriptFromWords(words) {
   const list = Array.isArray(words)
     ? words.filter(w => w && typeof w.id === 'string')
     : [];
-
-  let text = '';
-  const spans = [];
-  let prev = null;
-
-  for (const w of list) {
-    const wordText = typeof w.text === 'string' ? w.text.trim() : '';
-    if (!wordText) continue;
-
-    if (prev) {
-      text += shouldInsertNewline(prev, w) ? '\n' : ' ';
-    }
-
-    const start = text.length;
-    text += wordText;
-    const end = text.length;
-
-    spans.push({
-      id: w.id,
-      page: w.page,
+  const built = buildNormalizedTranscriptFromWords(list, (previous, current) => {
+    if (previous?.paragraphIndex != null && current?.paragraphIndex != null
+      && Number(previous.paragraphIndex) !== Number(current.paragraphIndex)) return '\n\n';
+    return shouldInsertNewline(previous, current);
+  });
+  return {
+    text: built.text,
+    spans: built.spans.map(({ word, start, end }) => ({
+      id: word.id,
+      page: word.page,
       start,
       end,
-      bbox: w.bbox
-    });
-
-    prev = w;
-  }
-
-  return { text, spans };
+      bbox: word.bbox
+    }))
+  };
 }
 
 /* ------------------------- main OCR ------------------------- */
@@ -186,6 +173,7 @@ async function extractOcrFromImageFile(absoluteFilePath) {
 
   const words = [];
   const perPageCounters = new Map();
+  let paragraphIndex = 0;
 
   for (let pIndex = 0; pIndex < pages.length; pIndex++) {
     const pageNumber = pIndex + 1;
@@ -193,6 +181,7 @@ async function extractOcrFromImageFile(absoluteFilePath) {
 
     for (const block of page.blocks || []) {
       for (const para of block.paragraphs || []) {
+        paragraphIndex += 1;
         for (const word of para.words || []) {
           const text = (word.symbols || [])
             .map(s => s?.text || '')
@@ -214,6 +203,7 @@ async function extractOcrFromImageFile(absoluteFilePath) {
           words.push({
             id: `word_${pageNumber}_${next}`,
             page: pageNumber,
+            paragraphIndex,
             text,
             bbox
           });
@@ -236,7 +226,7 @@ async function extractOcrFromImageFile(absoluteFilePath) {
           height,
           words: words
             .filter(w => w.page === idx + 1)
-            .map(w => ({ id: w.id, text: w.text, bbox: w.bbox })),
+            .map(w => ({ id: w.id, text: w.text, bbox: w.bbox, paragraphIndex: w.paragraphIndex })),
           lines: []
         }))
       : [
@@ -247,7 +237,8 @@ async function extractOcrFromImageFile(absoluteFilePath) {
             words: words.map(w => ({
               id: w.id,
               text: w.text,
-              bbox: w.bbox
+              bbox: w.bbox,
+              paragraphIndex: w.paragraphIndex
             })),
             lines: []
           }

@@ -27,6 +27,7 @@ const logger = require('../utils/logger');
 const { createNotification } = require('../services/notification.service');
 const { normalizeRubricDesignerPayload } = require('../utils/rubricNormalizer');
 const { repairAiRubric } = require('../utils/aiRubricRepair');
+const { getRubricAiConfig } = require('../services/rubricAiConfig.service');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -1293,8 +1294,13 @@ async function generateRubricDesignerFromPrompt(req, res) {
     }
 
     const apiKey = safeString(process.env.OPENROUTER_API_KEY).trim();
-    const baseUrl = safeString(process.env.OPENROUTER_BASE_URL).trim() || 'https://openrouter.ai/api/v1';
-    const model = safeString(process.env.LLAMA_MODEL).trim() || 'meta-llama/llama-3-8b-instruct';
+    const aiConfig = getRubricAiConfig();
+    const baseUrl = aiConfig.baseUrl;
+    const model = aiConfig.model;
+
+    if (aiConfig.provider !== 'openrouter') {
+      return sendError(res, 501, 'Configured rubric AI provider is unsupported');
+    }
 
     if (!apiKey) {
       return sendError(res, 501, 'AI provider not configured');
@@ -1339,17 +1345,19 @@ Rules:
 
     const userPrompt = `${prompt}\n\nGenerate a rubric designer for grading student submissions for this assignment.\n\nAssignment Title: ${assignmentTitle || 'N/A'}\nAssignment Writing Type: ${assignmentWritingType || 'N/A'}\nAssignment Instructions: ${assignmentInstructions || 'N/A'}\n\nOutput must match this exact JSON structure:\n{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}.\nRules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. Keep criteria 3-10 rows. Keep maxPoints as integers. Make criteria relevant to the writing type. Use clear descriptions in cells for each performance level. Use title: ${rubricTitle}.`;
 
-    const timeoutMs = Math.min(60000, Math.max(1, Number(process.env.OPENROUTER_TIMEOUT_MS) || 60000));
+    const timeoutMs = aiConfig.timeoutMs;
     const { signal, cancel } = buildTimeoutSignal(timeoutMs);
     const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
 
-    const maxTokens = Math.min(8000, Math.max(1200, Number(process.env.OPENROUTER_MAX_TOKENS) || 4000));
+    const maxTokens = aiConfig.maxTokens;
 
     const doRequest = async (promptText) => fetchCompat(endpoint, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'HTTP-Referer': safeString(process.env.FRONTEND_URL).trim() || 'http://localhost:4200',
+        'X-Title': 'Rozna Comarker'
       },
       body: JSON.stringify({
         model,
@@ -1391,10 +1399,9 @@ Rules:
       }
 
       const sc = resp && typeof resp.status === 'number' ? resp.status : 0;
-      if (sc === 429) {
-        status = 429;
-        msg = 'AI quota exceeded. Please try again later.';
-      }
+      if ([400, 401, 403, 404, 422, 429].includes(sc)) status = sc;
+      if (sc === 429) msg = 'AI quota exceeded. Please try again later.';
+      if (sc === 404 && !msg.trim()) msg = 'Configured AI model is unavailable at the upstream provider.';
       return sendError(res, status, msg);
     }
 

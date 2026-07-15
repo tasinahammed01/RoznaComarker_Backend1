@@ -1,6 +1,7 @@
 const path = require('path');
 
 const mongoose = require('mongoose');
+const { normalizeOcrTranscript } = require('../utils/ocrTranscriptNormalizer');
 
 const Upload = require('../models/Upload');
 const Assignment = require('../models/assignment.model');
@@ -166,7 +167,8 @@ async function setSubmissionTranscript({ teacherId, submissionId, transcriptText
 
   await assertTeacherOwnsClassOrThrow(teacherId, submission.class);
 
-  submission.transcriptText = transcriptText.trim();
+  submission.rawTranscriptText = transcriptText;
+  submission.transcriptText = normalizeOcrTranscript(transcriptText);
   const saved = await submission.save();
 
   return Submission.findById(saved._id)

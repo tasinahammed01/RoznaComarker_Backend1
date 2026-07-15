@@ -14,6 +14,10 @@ const logger = require("../utils/logger");
 
 const uploadService = require("../services/upload.service");
 const { buildOcrCorrections } = require("../services/ocrCorrections.service");
+const {
+  normalizeOcrTranscript,
+  getNormalizedSubmissionTranscript,
+} = require("../utils/ocrTranscriptNormalizer");
 
 const { ApiError } = require("../middlewares/error.middleware");
 const path = require("path");
@@ -99,15 +103,7 @@ async function downloadSubmissionPdf(req, res, next) {
       submissionId: submission._id,
     });
 
-    const transcriptText =
-      submission.transcriptText && String(submission.transcriptText).trim()
-        ? String(submission.transcriptText)
-        : submission.combinedOcrText &&
-            String(submission.combinedOcrText).trim()
-          ? String(submission.combinedOcrText)
-          : submission.ocrText && String(submission.ocrText).trim()
-            ? String(submission.ocrText)
-            : "";
+    const transcriptText = getNormalizedSubmissionTranscript(submission);
 
     const ocrWords =
       submission && submission.ocrData && typeof submission.ocrData === "object"
@@ -162,7 +158,7 @@ async function downloadSubmissionPdf(req, res, next) {
       const pageText = fileId
         ? ocrPages
             .filter((p) => p && p.fileId && String(p.fileId) === fileId)
-            .map((p) => (typeof p.text === "string" ? p.text.trim() : ""))
+            .map((p) => normalizeOcrTranscript(p?.text))
             .filter(Boolean)
             .join("\n\n")
         : "";

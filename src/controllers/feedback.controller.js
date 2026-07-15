@@ -20,6 +20,11 @@ const {
   parseRubricDesignerFromDocxTemplate,
 } = require("../services/docxRubricTemplateParser.service");
 const { buildOcrCorrections } = require("../services/ocrCorrections.service");
+const { getRubricAiConfig } = require("../services/rubricAiConfig.service");
+const {
+  normalizeOcrTranscript,
+  getNormalizedSubmissionTranscript,
+} = require("../utils/ocrTranscriptNormalizer");
 const {
   normalizeOcrWordsFromStored,
 } = require("../services/ocrCorrections.service");
@@ -645,15 +650,7 @@ async function getSubmissionFeedback(req, res) {
         teacherUser = null;
       }
 
-      const transcriptText =
-        submission.transcriptText && String(submission.transcriptText).trim()
-          ? String(submission.transcriptText)
-          : submission.combinedOcrText &&
-              String(submission.combinedOcrText).trim()
-            ? String(submission.combinedOcrText)
-            : submission.ocrText && String(submission.ocrText).trim()
-              ? String(submission.ocrText)
-              : "";
+      const transcriptText = getNormalizedSubmissionTranscript(submission);
 
       const normalizedWords = normalizeOcrWordsFromStored(
         submission.ocrData && submission.ocrData.words,
@@ -898,15 +895,7 @@ async function getSubmissionFeedback(req, res) {
           teacherUser = null;
         }
 
-        const transcriptText =
-          submission.transcriptText && String(submission.transcriptText).trim()
-            ? String(submission.transcriptText)
-            : submission.combinedOcrText &&
-                String(submission.combinedOcrText).trim()
-              ? String(submission.combinedOcrText)
-              : submission.ocrText && String(submission.ocrText).trim()
-                ? String(submission.ocrText)
-                : "";
+        const transcriptText = getNormalizedSubmissionTranscript(submission);
 
         const normalizedWords = normalizeOcrWordsFromStored(
           submission.ocrData && submission.ocrData.words,
@@ -1108,12 +1097,7 @@ async function getSubmissionFeedback(req, res) {
       if (!needsBackfill) {
         feedback = feedbackObj;
       } else {
-        const transcriptText =
-          submission.transcriptText && String(submission.transcriptText).trim()
-            ? String(submission.transcriptText)
-            : submission.ocrText && String(submission.ocrText).trim()
-              ? String(submission.ocrText)
-              : "";
+        const transcriptText = getNormalizedSubmissionTranscript(submission);
 
         const safeText =
           typeof transcriptText === "string" ? transcriptText : "";
@@ -1265,10 +1249,7 @@ async function generateRubricDesignerFromContext(req, res) {
       assignment && assignment.writingType,
     ).trim();
 
-    const studentText =
-      safeString(submission.transcriptText).trim() ||
-      safeString(submission.combinedOcrText).trim() ||
-      safeString(submission.ocrText).trim();
+    const studentText = getNormalizedSubmissionTranscript(submission);
 
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const teacherPrompt = safeString(body.prompt).trim();
@@ -1284,12 +1265,12 @@ async function generateRubricDesignerFromContext(req, res) {
     }
 
     const apiKey = safeString(process.env.OPENROUTER_API_KEY).trim();
-    const baseUrl =
-      safeString(process.env.OPENROUTER_BASE_URL).trim() ||
-      "https://openrouter.ai/api/v1";
-    const model =
-      safeString(process.env.LLAMA_MODEL).trim() ||
-      "meta-llama/llama-3-8b-instruct";
+    const aiConfig = getRubricAiConfig();
+    const baseUrl = aiConfig.baseUrl;
+    const model = aiConfig.model;
+    if (aiConfig.provider !== "openrouter") {
+      return sendError(res, 501, "Configured rubric AI provider is unsupported");
+    }
     if (!apiKey) {
       return sendError(res, 501, "AI provider not configured");
     }
@@ -1968,15 +1949,7 @@ async function generateAiRubricFromDesigner(req, res) {
           teacherId,
         });
 
-    const transcriptText =
-      submission.transcriptText && String(submission.transcriptText).trim()
-        ? String(submission.transcriptText)
-        : submission.combinedOcrText &&
-            String(submission.combinedOcrText).trim()
-          ? String(submission.combinedOcrText)
-          : submission.ocrText && String(submission.ocrText).trim()
-            ? String(submission.ocrText)
-            : "";
+    const transcriptText = getNormalizedSubmissionTranscript(submission);
 
     if (!transcriptText.trim()) {
       return sendError(
@@ -2183,12 +2156,7 @@ async function generateAiSubmissionFeedback(req, res) {
       return sendError(res, 403, "Not class teacher");
     }
 
-    const transcriptText =
-      submission.transcriptText && String(submission.transcriptText).trim()
-        ? String(submission.transcriptText)
-        : submission.ocrText && String(submission.ocrText).trim()
-          ? String(submission.ocrText)
-          : "";
+    const transcriptText = getNormalizedSubmissionTranscript(submission);
 
     const normalizedWords = normalizeOcrWordsFromStored(
       submission.ocrData && submission.ocrData.words,
@@ -2347,8 +2315,8 @@ async function generateAiSubmissionFeedback(req, res) {
         provider === "openai"
           ? safeString(process.env.OPENAI_MODEL).trim() || "gpt-4o-mini"
           : safeString(
-              process.env.OPENROUTER_MODEL || process.env.LLAMA_MODEL,
-            ).trim() || "meta-llama/llama-3-8b-instruct";
+              process.env.OPENROUTER_MODEL || process.env.PRIMARY_AI_MODEL,
+            ).trim() || "openai/gpt-oss-120b";
 
       if (apiKey) {
         const systemInstruction =
@@ -3247,12 +3215,12 @@ async function generateRubricDesignerFromPrompt(req, res) {
         });
 
     const apiKey = safeString(process.env.OPENROUTER_API_KEY).trim();
-    const baseUrl =
-      safeString(process.env.OPENROUTER_BASE_URL).trim() ||
-      "https://openrouter.ai/api/v1";
-    const model =
-      safeString(process.env.LLAMA_MODEL).trim() ||
-      "meta-llama/llama-3-8b-instruct";
+    const aiConfig = getRubricAiConfig();
+    const baseUrl = aiConfig.baseUrl;
+    const model = aiConfig.model;
+    if (aiConfig.provider !== "openrouter") {
+      return sendError(res, 501, "Configured rubric AI provider is unsupported");
+    }
 
     if (!apiKey) {
       return sendError(res, 501, "AI provider not configured");
@@ -3818,14 +3786,11 @@ async function attachEvaluationToFeedbackDoc(feedbackDoc) {
     return feedback;
   }
 
-  const transcriptText =
-    submission.transcriptText && String(submission.transcriptText).trim()
-      ? String(submission.transcriptText)
-      : submission.combinedOcrText && String(submission.combinedOcrText).trim()
-        ? String(submission.combinedOcrText)
-        : submission.ocrText && String(submission.ocrText).trim()
-          ? String(submission.ocrText)
-          : "";
+  if (submission.transcriptText) submission.transcriptText = normalizeOcrTranscript(submission.transcriptText);
+  if (submission.combinedOcrText) submission.combinedOcrText = normalizeOcrTranscript(submission.combinedOcrText);
+  if (submission.ocrText) submission.ocrText = normalizeOcrTranscript(submission.ocrText);
+
+  const transcriptText = getNormalizedSubmissionTranscript(submission);
 
   const ocrWords =
     submission && submission.ocrData && typeof submission.ocrData === "object"
@@ -4187,15 +4152,7 @@ async function generateAiFeedbackFromOcr(req, res) {
       return sendError(res, 404, "Assignment not found");
     }
 
-    const ocrText =
-      submission.transcriptText && String(submission.transcriptText).trim()
-        ? String(submission.transcriptText)
-        : submission.combinedOcrText &&
-            String(submission.combinedOcrText).trim()
-          ? String(submission.combinedOcrText)
-          : typeof submission.ocrText === "string"
-            ? submission.ocrText
-            : "";
+    const ocrText = getNormalizedSubmissionTranscript(submission);
     if (!String(ocrText || "").trim()) {
       return sendError(res, 400, "Submission OCR text is empty");
     }

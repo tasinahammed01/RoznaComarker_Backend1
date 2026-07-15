@@ -50,12 +50,16 @@ const submissionSchema = new Schema(
         fileId: { type: Schema.Types.ObjectId, ref: 'File', required: false },
         pageNumber: { type: Number, required: false },
         text: { type: String, trim: true },
+        rawText: { type: String },
         words: { type: Schema.Types.Mixed, default: undefined }
       }
     ],
     combinedOcrText: {
       type: String,
       trim: true
+    },
+    rawCombinedOcrText: {
+      type: String
     },
     status: {
       type: String,
@@ -86,6 +90,9 @@ const submissionSchema = new Schema(
       type: String,
       trim: true
     },
+    rawOcrText: {
+      type: String
+    },
     ocrError: {
       type: String,
       trim: true
@@ -100,6 +107,9 @@ const submissionSchema = new Schema(
     transcriptText: {
       type: String,
       trim: true
+    },
+    rawTranscriptText: {
+      type: String
     },
     feedback: {
       type: Schema.Types.ObjectId,

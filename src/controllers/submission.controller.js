@@ -13,6 +13,11 @@ const uploadService = require('../services/upload.service');
 const { runOcrAndPersist, runOcrAndPersistForFiles } = require('../services/ocrPipeline.service');
 const { normalizeOcrWordsFromStored, buildOcrCorrections } = require('../services/ocrCorrections.service');
 const { autoGenerateRubricDesignerForSubmission } = require('../services/autoRubricDesigner.service');
+const {
+  normalizeOcrTranscript,
+  getNormalizedSubmissionTranscript,
+  withNormalizedWordSeparators
+} = require('../utils/ocrTranscriptNormalizer');
 
 const { createNotification } = require('../services/notification.service');
 
@@ -133,14 +138,18 @@ function normalizeSubmissionForClient(req, submission) {
     doc.fileUrl = String(doc.fileUrls[0] || '');
   }
 
-  const combinedCandidate =
-    (doc.transcriptText && String(doc.transcriptText).trim())
-      ? String(doc.transcriptText)
-      : (doc.combinedOcrText && String(doc.combinedOcrText).trim())
-        ? String(doc.combinedOcrText)
-        : (doc.ocrText && String(doc.ocrText).trim())
-          ? String(doc.ocrText)
-          : '';
+  const combinedCandidate = getNormalizedSubmissionTranscript(doc);
+
+  if (doc.transcriptText) doc.transcriptText = normalizeOcrTranscript(doc.transcriptText);
+  if (doc.ocrText) doc.ocrText = normalizeOcrTranscript(doc.ocrText);
+  if (doc.combinedOcrText) doc.combinedOcrText = normalizeOcrTranscript(doc.combinedOcrText);
+  if (Array.isArray(doc.ocrPages)) {
+    for (const page of doc.ocrPages) {
+      if (!page) continue;
+      if (typeof page.text === 'string') page.text = normalizeOcrTranscript(page.text);
+      if (Array.isArray(page.words)) page.words = withNormalizedWordSeparators(page.words);
+    }
+  }
 
   if (!doc.combinedOcrText || !String(doc.combinedOcrText).trim()) {
     doc.combinedOcrText = combinedCandidate;
@@ -157,6 +166,11 @@ function normalizeSubmissionForClient(req, submission) {
         words: legacyWords
       }
     ];
+  }
+  if (Array.isArray(doc.ocrPages)) {
+    for (const page of doc.ocrPages) {
+      if (page && Array.isArray(page.words)) page.words = withNormalizedWordSeparators(page.words);
+    }
   }
 
   // Validate file existence before normalizing URLs
@@ -419,6 +433,8 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
 
       existing.ocrStatus = 'pending';
       existing.ocrText = undefined;
+      existing.rawOcrText = undefined;
+      existing.rawCombinedOcrText = undefined;
       existing.ocrError = undefined;
       existing.ocrData = undefined;
       existing.ocrUpdatedAt = new Date();

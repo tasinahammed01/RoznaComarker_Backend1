@@ -9,10 +9,10 @@ const OpenAI = require("openai");
  * Includes retry mechanism, timeout handling, and comprehensive error handling.
  */
 
-const AI_PROVIDER = process.env.AI_PROVIDER || "openrouter";
+const AI_PROVIDER = process.env.PRIMARY_AI_PROVIDER || "openrouter";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const OPENROUTER_MODEL =
-  process.env.LLAMA_MODEL || "meta-llama/llama-3-8b-instruct";
+  process.env.PRIMARY_AI_MODEL || "openai/gpt-oss-120b";
 const OPENROUTER_BASE_URL =
   process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
 const OPENROUTER_TIMEOUT_MS =
@@ -288,7 +288,7 @@ function validateAIConfig() {
     }
     if (!OPENROUTER_MODEL) {
       warnings.push(
-        "LLAMA_MODEL not set, using default: meta-llama/llama-3-8b-instruct",
+        "PRIMARY_AI_MODEL not set, using default: openai/gpt-oss-120b",
       );
     }
     if (!OPENROUTER_BASE_URL) {

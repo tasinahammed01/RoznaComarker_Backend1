@@ -9,6 +9,8 @@ const { fetchCompat, buildTimeoutSignal } = require('./httpClient.service');
 const { safeJsonParse } = require('../utils/aiJsonParser');
 const { normalizeRubricDesignerPayload } = require('../utils/rubricNormalizer');
 const logger = require('../utils/logger');
+const { getRubricAiConfig } = require('./rubricAiConfig.service');
+const { getNormalizedSubmissionTranscript } = require('../utils/ocrTranscriptNormalizer');
 
 function safeString(v) {
   return typeof v === 'string' ? v : (v == null ? '' : String(v));
@@ -57,7 +59,7 @@ async function autoGenerateRubricDesignerForSubmission({ submissionId }) {
     return { ok: false, skipped: true, reason: 'teacher_not_found' };
   }
 
-  const studentText = safeString(submission.transcriptText).trim() || safeString(submission.combinedOcrText).trim() || safeString(submission.ocrText).trim();
+  const studentText = getNormalizedSubmissionTranscript(submission);
   if (!studentText) {
     return { ok: false, skipped: true, reason: 'no_text' };
   }
@@ -68,8 +70,13 @@ async function autoGenerateRubricDesignerForSubmission({ submissionId }) {
   }
 
   const apiKey = safeString(process.env.OPENROUTER_API_KEY).trim();
-  const baseUrl = safeString(process.env.OPENROUTER_BASE_URL).trim() || 'https://openrouter.ai/api/v1';
-  const model = safeString(process.env.LLAMA_MODEL).trim() || 'meta-llama/llama-3-8b-instruct';
+  const aiConfig = getRubricAiConfig();
+  const baseUrl = aiConfig.baseUrl;
+  const model = aiConfig.model;
+
+  if (aiConfig.provider !== 'openrouter') {
+    return { ok: false, skipped: true, reason: 'unsupported_ai_provider' };
+  }
 
   if (!apiKey) {
     return { ok: false, skipped: true, reason: 'ai_not_configured' };

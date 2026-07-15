@@ -1,4 +1,5 @@
 const { checkTextWithLanguageTool } = require('./languageTool.service');
+const { normalizeOcrTranscript } = require('../utils/ocrTranscriptNormalizer');
 const CorrectionLegend = require('../models/CorrectionLegend');
 
 let _legendCache = null;
@@ -187,7 +188,7 @@ async function getLegend() {
 }
 
 async function check({ text, language }) {
-  const safeText = typeof text === 'string' ? text : '';
+  const safeText = normalizeOcrTranscript(text);
   const [lt, legend] = await Promise.all([
     checkTextWithLanguageTool({ text: safeText, language }),
     getLegendFromDb()
