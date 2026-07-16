@@ -32,6 +32,9 @@ const {
 const {
   computeAcademicEvaluation,
 } = require("../modules/academicEvaluationEngine");
+const {
+  buildWritingAssessment,
+} = require("../services/writingAssessment.service");
 
 const {
   fetchCompat,
@@ -50,8 +53,95 @@ function sendSuccess(res, data) {
   });
 }
 
+// Canonical weighted rubric configuration matching the PDF schema
+const WEIGHTED_RUBRIC_CONFIG = {
+  CONTENT: { maxScore: 20 },
+  ORGANIZATION: { maxScore: 20 },
+  GRAMMAR: { maxScore: 25 },
+  VOCABULARY: { maxScore: 20 },
+  MECHANICS: { maxScore: 10 },
+  PRESENTATION: { maxScore: 5 }
+};
+
 function defaultRubricItem() {
   return { score: 0, maxScore: 5, comment: "" };
+}
+
+// Create a default rubric item with category-specific maxScore
+function createDefaultRubricItem(category) {
+  const config = WEIGHTED_RUBRIC_CONFIG[category];
+  return {
+    score: 0,
+    maxScore: config ? config.maxScore : 5,
+    comment: ""
+  };
+}
+
+// Canonical weighted score builder - converts 0-5 scores to weighted scores
+function buildWeightedRubricScores({
+  contentScore = 0,
+  organizationScore = 0,
+  grammarScore = 0,
+  vocabularyScore = 0,
+  mechanicsScore = 0,
+  presentationScore = 0,
+  contentComment = "",
+  organizationComment = "",
+  grammarComment = "",
+  vocabularyComment = "",
+  mechanicsComment = "",
+  presentationComment = ""
+}) {
+  const clamp = (score, max) => Math.max(0, Math.min(max, Number(score) || 0));
+
+  return {
+    CONTENT: {
+      score: clamp(contentScore, WEIGHTED_RUBRIC_CONFIG.CONTENT.maxScore),
+      maxScore: WEIGHTED_RUBRIC_CONFIG.CONTENT.maxScore,
+      comment: contentComment
+    },
+    ORGANIZATION: {
+      score: clamp(organizationScore, WEIGHTED_RUBRIC_CONFIG.ORGANIZATION.maxScore),
+      maxScore: WEIGHTED_RUBRIC_CONFIG.ORGANIZATION.maxScore,
+      comment: organizationComment
+    },
+    GRAMMAR: {
+      score: clamp(grammarScore, WEIGHTED_RUBRIC_CONFIG.GRAMMAR.maxScore),
+      maxScore: WEIGHTED_RUBRIC_CONFIG.GRAMMAR.maxScore,
+      comment: grammarComment
+    },
+    VOCABULARY: {
+      score: clamp(vocabularyScore, WEIGHTED_RUBRIC_CONFIG.VOCABULARY.maxScore),
+      maxScore: WEIGHTED_RUBRIC_CONFIG.VOCABULARY.maxScore,
+      comment: vocabularyComment
+    },
+    MECHANICS: {
+      score: clamp(mechanicsScore, WEIGHTED_RUBRIC_CONFIG.MECHANICS.maxScore),
+      maxScore: WEIGHTED_RUBRIC_CONFIG.MECHANICS.maxScore,
+      comment: mechanicsComment
+    },
+    PRESENTATION: {
+      score: clamp(presentationScore, WEIGHTED_RUBRIC_CONFIG.PRESENTATION.maxScore),
+      maxScore: WEIGHTED_RUBRIC_CONFIG.PRESENTATION.maxScore,
+      comment: presentationComment
+    }
+  };
+}
+
+// Calculate overall score as simple sum of weighted rubric scores (no 70/30 mix)
+function computeOverallScoreFromWeightedRubric(rubricScores) {
+  const rs = rubricScores && typeof rubricScores === "object" ? rubricScores : {};
+  const categories = ["CONTENT", "ORGANIZATION", "GRAMMAR", "VOCABULARY", "MECHANICS", "PRESENTATION"];
+  
+  let total = 0;
+  for (const cat of categories) {
+    const item = rs[cat];
+    if (item && typeof item.score === "number") {
+      total += Math.max(0, item.score);
+    }
+  }
+  
+  return Math.min(100, Math.round(total * 10) / 10);
 }
 
 function buildDefaultSubmissionFeedbackDoc({
@@ -66,11 +156,12 @@ function buildDefaultSubmissionFeedbackDoc({
     studentId,
     teacherId,
     rubricScores: {
-      CONTENT: defaultRubricItem(),
-      ORGANIZATION: defaultRubricItem(),
-      GRAMMAR: defaultRubricItem(),
-      VOCABULARY: defaultRubricItem(),
-      MECHANICS: defaultRubricItem(),
+      CONTENT: createDefaultRubricItem("CONTENT"),
+      ORGANIZATION: createDefaultRubricItem("ORGANIZATION"),
+      GRAMMAR: createDefaultRubricItem("GRAMMAR"),
+      VOCABULARY: createDefaultRubricItem("VOCABULARY"),
+      MECHANICS: createDefaultRubricItem("MECHANICS"),
+      PRESENTATION: createDefaultRubricItem("PRESENTATION"),
     },
     overallScore: 0,
     grade: "F",
@@ -216,12 +307,16 @@ function gradeFromOverallScore100(score100) {
   return "F";
 }
 
-function normalizeRubricItemPayload(item) {
+function normalizeRubricItemPayload(item, category) {
   const obj = item && typeof item === "object" ? item : {};
   const scoreRaw = obj.score;
   const score = Number(scoreRaw);
-  if (!Number.isFinite(score) || score < 0 || score > 5) {
-    return { error: "score must be a number between 0 and 5" };
+  
+  const config = WEIGHTED_RUBRIC_CONFIG[category];
+  const maxScore = config ? config.maxScore : 5;
+  
+  if (!Number.isFinite(score) || score < 0 || score > maxScore) {
+    return { error: `score must be a number between 0 and ${maxScore}` };
   }
 
   const comment =
@@ -233,7 +328,7 @@ function normalizeRubricItemPayload(item) {
   return {
     value: {
       score,
-      maxScore: 5,
+      maxScore,
       comment,
     },
   };
@@ -246,9 +341,22 @@ function normalizeAiFeedbackPerCategoryPayload(value) {
     const obj = it && typeof it === "object" ? it : {};
     const category = safeString(obj.category).trim();
     const message = safeString(obj.message).trim();
-    const scoreOutOf5 = clampScore5(obj.scoreOutOf5);
+    
+    // Support both old scoreOutOf5 and new score/maxScore formats
+    let score, maxScore;
+    if (typeof obj.scoreOutOf5 === "number") {
+      // Legacy format: convert to weighted
+      const catConfig = WEIGHTED_RUBRIC_CONFIG[category] || { maxScore: 5 };
+      score = (obj.scoreOutOf5 / 5) * catConfig.maxScore;
+      maxScore = catConfig.maxScore;
+    } else {
+      // New format
+      score = Number(obj.score) || 0;
+      maxScore = Number(obj.maxScore) || 5;
+    }
+    
     if (!category && !message) continue;
-    out.push({ category, message, scoreOutOf5 });
+    out.push({ category, message, score, maxScore });
   }
   return out;
 }
@@ -482,41 +590,112 @@ function buildAiFeedbackDefaults({
       message: safeString(
         sf.contentFeedback && sf.contentFeedback.summary,
       ).trim(),
-      scoreOutOf5: clampScore5(rs.CONTENT && rs.CONTENT.score),
+      score: Number(rs.CONTENT && rs.CONTENT.score) || 0,
+      maxScore: WEIGHTED_RUBRIC_CONFIG.CONTENT.maxScore,
+      scoreOutOf5: ((Number(rs.CONTENT && rs.CONTENT.score) || 0) / WEIGHTED_RUBRIC_CONFIG.CONTENT.maxScore) * 5,
     },
     {
       category: "ORGANIZATION",
       message: safeString(
         sf.structureFeedback && sf.structureFeedback.summary,
       ).trim(),
-      scoreOutOf5: clampScore5(rs.ORGANIZATION && rs.ORGANIZATION.score),
+      score: Number(rs.ORGANIZATION && rs.ORGANIZATION.score) || 0,
+      maxScore: WEIGHTED_RUBRIC_CONFIG.ORGANIZATION.maxScore,
+      scoreOutOf5: ((Number(rs.ORGANIZATION && rs.ORGANIZATION.score) || 0) / WEIGHTED_RUBRIC_CONFIG.ORGANIZATION.maxScore) * 5,
     },
     {
       category: "GRAMMAR",
       message: safeString(
         sf.grammarFeedback && sf.grammarFeedback.summary,
       ).trim(),
-      scoreOutOf5: clampScore5(rs.GRAMMAR && rs.GRAMMAR.score),
+      score: Number(rs.GRAMMAR && rs.GRAMMAR.score) || 0,
+      maxScore: WEIGHTED_RUBRIC_CONFIG.GRAMMAR.maxScore,
+      scoreOutOf5: ((Number(rs.GRAMMAR && rs.GRAMMAR.score) || 0) / WEIGHTED_RUBRIC_CONFIG.GRAMMAR.maxScore) * 5,
     },
     {
       category: "VOCABULARY",
       message: safeString(
         sf.vocabularyFeedback && sf.vocabularyFeedback.summary,
       ).trim(),
-      scoreOutOf5: clampScore5(rs.VOCABULARY && rs.VOCABULARY.score),
+      score: Number(rs.VOCABULARY && rs.VOCABULARY.score) || 0,
+      maxScore: WEIGHTED_RUBRIC_CONFIG.VOCABULARY.maxScore,
+      scoreOutOf5: ((Number(rs.VOCABULARY && rs.VOCABULARY.score) || 0) / WEIGHTED_RUBRIC_CONFIG.VOCABULARY.maxScore) * 5,
     },
     {
       category: "MECHANICS",
       message: safeString(
         sf.grammarFeedback && sf.grammarFeedback.summary,
       ).trim(),
-      scoreOutOf5: clampScore5(rs.MECHANICS && rs.MECHANICS.score),
+      score: Number(rs.MECHANICS && rs.MECHANICS.score) || 0,
+      maxScore: WEIGHTED_RUBRIC_CONFIG.MECHANICS.maxScore,
+      scoreOutOf5: ((Number(rs.MECHANICS && rs.MECHANICS.score) || 0) / WEIGHTED_RUBRIC_CONFIG.MECHANICS.maxScore) * 5,
     },
-  ].filter((x) => x.message || x.scoreOutOf5 > 0);
+    {
+      category: "PRESENTATION",
+      message: "",
+      score: Number(rs.PRESENTATION && rs.PRESENTATION.score) || 0,
+      maxScore: WEIGHTED_RUBRIC_CONFIG.PRESENTATION.maxScore,
+      scoreOutOf5: ((Number(rs.PRESENTATION && rs.PRESENTATION.score) || 0) / WEIGHTED_RUBRIC_CONFIG.PRESENTATION.maxScore) * 5,
+    },
+  ].filter((x) => x.message || x.score > 0);
 
   return {
     perCategory,
     overallComments: safeString(overallComments).trim(),
+  };
+}
+
+function buildAiFeedbackFromRubricScores(rubricScores) {
+  const rs = rubricScores && typeof rubricScores === "object" ? rubricScores : {};
+  
+  const perCategory = [
+    {
+      category: "CONTENT",
+      message: rs.CONTENT?.comment || "",
+      score: Number(rs.CONTENT?.score) || 0,
+      maxScore: WEIGHTED_RUBRIC_CONFIG.CONTENT.maxScore,
+      scoreOutOf5: ((Number(rs.CONTENT?.score) || 0) / WEIGHTED_RUBRIC_CONFIG.CONTENT.maxScore) * 5,
+    },
+    {
+      category: "ORGANIZATION",
+      message: rs.ORGANIZATION?.comment || "",
+      score: Number(rs.ORGANIZATION?.score) || 0,
+      maxScore: WEIGHTED_RUBRIC_CONFIG.ORGANIZATION.maxScore,
+      scoreOutOf5: ((Number(rs.ORGANIZATION?.score) || 0) / WEIGHTED_RUBRIC_CONFIG.ORGANIZATION.maxScore) * 5,
+    },
+    {
+      category: "GRAMMAR",
+      message: rs.GRAMMAR?.comment || "",
+      score: Number(rs.GRAMMAR?.score) || 0,
+      maxScore: WEIGHTED_RUBRIC_CONFIG.GRAMMAR.maxScore,
+      scoreOutOf5: ((Number(rs.GRAMMAR?.score) || 0) / WEIGHTED_RUBRIC_CONFIG.GRAMMAR.maxScore) * 5,
+    },
+    {
+      category: "VOCABULARY",
+      message: rs.VOCABULARY?.comment || "",
+      score: Number(rs.VOCABULARY?.score) || 0,
+      maxScore: WEIGHTED_RUBRIC_CONFIG.VOCABULARY.maxScore,
+      scoreOutOf5: ((Number(rs.VOCABULARY?.score) || 0) / WEIGHTED_RUBRIC_CONFIG.VOCABULARY.maxScore) * 5,
+    },
+    {
+      category: "MECHANICS",
+      message: rs.MECHANICS?.comment || "",
+      score: Number(rs.MECHANICS?.score) || 0,
+      maxScore: WEIGHTED_RUBRIC_CONFIG.MECHANICS.maxScore,
+      scoreOutOf5: ((Number(rs.MECHANICS?.score) || 0) / WEIGHTED_RUBRIC_CONFIG.MECHANICS.maxScore) * 5,
+    },
+    {
+      category: "PRESENTATION",
+      message: rs.PRESENTATION?.comment || "",
+      score: Number(rs.PRESENTATION?.score) || 0,
+      maxScore: WEIGHTED_RUBRIC_CONFIG.PRESENTATION.maxScore,
+      scoreOutOf5: ((Number(rs.PRESENTATION?.score) || 0) / WEIGHTED_RUBRIC_CONFIG.PRESENTATION.maxScore) * 5,
+    },
+  ];
+
+  return {
+    perCategory,
+    overallComments: "",
   };
 }
 
@@ -588,6 +767,71 @@ function buildDynamicRubricComments({
   };
 }
 
+// Normalize legacy feedback records to canonical weighted rubric format
+function normalizeLegacyFeedback(feedback) {
+  if (!feedback || typeof feedback !== 'object') return feedback;
+
+  const rs = feedback.rubricScores || {};
+  const needsNormalization =
+    !rs.PRESENTATION ||
+    rs.CONTENT?.maxScore !== 20 ||
+    rs.ORGANIZATION?.maxScore !== 20 ||
+    rs.GRAMMAR?.maxScore !== 25 ||
+    rs.VOCABULARY?.maxScore !== 20 ||
+    rs.MECHANICS?.maxScore !== 10 ||
+    rs.PRESENTATION?.maxScore !== 5;
+
+  if (!needsNormalization) return feedback;
+
+  const normalized = { ...feedback };
+
+  // Ensure all 6 categories exist with correct maxScores
+  normalized.rubricScores = {
+    CONTENT: {
+      score: Number(rs.CONTENT?.score) || 0,
+      maxScore: 20,
+      comment: rs.CONTENT?.comment || ''
+    },
+    ORGANIZATION: {
+      score: Number(rs.ORGANIZATION?.score) || 0,
+      maxScore: 20,
+      comment: rs.ORGANIZATION?.comment || ''
+    },
+    GRAMMAR: {
+      score: Number(rs.GRAMMAR?.score) || 0,
+      maxScore: 25,
+      comment: rs.GRAMMAR?.comment || ''
+    },
+    VOCABULARY: {
+      score: Number(rs.VOCABULARY?.score) || 0,
+      maxScore: 20,
+      comment: rs.VOCABULARY?.comment || ''
+    },
+    MECHANICS: {
+      score: Number(rs.MECHANICS?.score) || 0,
+      maxScore: 10,
+      comment: rs.MECHANICS?.comment || ''
+    },
+    PRESENTATION: {
+      score: Number(rs.PRESENTATION?.score) || 0,
+      maxScore: 5,
+      comment: rs.PRESENTATION?.comment || ''
+    }
+  };
+
+  // Update assessment version if missing or old
+  if (!normalized.assessmentVersion || normalized.assessmentVersion !== 'writing-rubric-100-v1') {
+    normalized.assessmentVersion = 'writing-rubric-100-v1';
+  }
+
+  // Update maxOverallScore if missing or incorrect
+  if (!normalized.maxOverallScore || normalized.maxOverallScore !== 100) {
+    normalized.maxOverallScore = 100;
+  }
+
+  return normalized;
+}
+
 async function getSubmissionFeedback(req, res) {
   try {
     const { submissionId } = req.params;
@@ -625,6 +869,37 @@ async function getSubmissionFeedback(req, res) {
     let feedback = await SubmissionFeedback.findOne({
       submissionId: submission._id,
     });
+
+    // Normalize legacy feedback records if they exist
+    if (feedback) {
+      const feedbackObj = feedback.toObject();
+      const normalized = normalizeLegacyFeedback(feedbackObj);
+      if (normalized !== feedbackObj) {
+        // Save normalized version to database - only update the fields that changed
+        try {
+          await SubmissionFeedback.findOneAndUpdate(
+            { submissionId: submission._id },
+            {
+              $set: {
+                rubricScores: normalized.rubricScores,
+                assessmentVersion: normalized.assessmentVersion,
+                maxOverallScore: normalized.maxOverallScore
+              }
+            },
+            { new: true }
+          );
+          // Reload the feedback document as a Mongoose document
+          feedback = await SubmissionFeedback.findOne({ submissionId: submission._id });
+        } catch (saveErr) {
+          logger.warn({
+            message: 'Failed to save normalized feedback',
+            submissionId,
+            error: saveErr?.message
+          });
+          // Continue with original feedback document
+        }
+      }
+    }
 
     const correctionStatistics = await buildSubmissionCorrectionStatistics(submission);
     const countsFromStatistics = {
@@ -679,186 +954,60 @@ async function getSubmissionFeedback(req, res) {
 
       const transcriptText = getNormalizedSubmissionTranscript(submission);
 
-      const normalizedWords = normalizeOcrWordsFromStored(
-        submission.ocrData && submission.ocrData.words,
-      );
-
-      let built;
-      try {
-        built = await buildOcrCorrections({
-          text: transcriptText,
-          language: "en-US",
-          ocrWords: normalizedWords,
-        });
-      } catch {
-        built = { corrections: [], fullText: transcriptText };
-      }
-
-      // Always use the persisted teacher AI config so student/teacher views compute identical scores.
-      // JWT payload may not include aiConfig and can lead to different defaults between roles.
-      const aiCfg = normalizeTeacherAiConfig(teacherUser);
-      const allCorrections = Array.isArray(built && built.corrections)
-        ? built.corrections
-        : [];
-      const corrections = filterCorrectionsByAiConfig(allCorrections, aiCfg);
-      const counts = countsFromStatistics;
-
-      const correctedText = applyCorrectionsToText(transcriptText, corrections);
-
       const assignment = await Assignment.findOne({
         _id: submission.assignment,
         isActive: true,
       });
-      const normalizedAssignmentRubrics = normalizeAssignmentRubrics(
-        assignment && assignment.rubrics,
-      );
 
-      const clamp5 = (n) => {
-        const x = Number(n);
-        if (!Number.isFinite(x)) return 0;
-        return Math.max(0, Math.min(5, x));
-      };
-
-      const safeText = typeof transcriptText === "string" ? transcriptText : "";
-      const wordCount = safeText.trim()
-        ? safeText.trim().split(/\s+/).filter(Boolean).length
-        : 0;
-
-      const grammarCount = Number(counts && counts.GRAMMAR) || 0;
-      const mechanicsCount = Number(counts && counts.MECHANICS) || 0;
-      const organizationCount = Number(counts && counts.ORGANIZATION) || 0;
-      const contentCount = Number(counts && counts.CONTENT) || 0;
-
-      const penaltyCfg = strictnessPenaltyConfig(aiCfg.strictness);
-
-      // Grammar & Mechanics (/5) based on issue density.
-      const grammarMechanicsIssues = grammarCount + mechanicsCount;
-      const grammarMechanics = clamp5(
-        5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * penaltyCfg.gm,
-      );
-
-      // Structure & Organization (/5) from paragraph structure + organization issues.
-      const paragraphCount = safeText
-        .split(/\n\s*\n+/)
-        .filter((p) => String(p).trim()).length;
-      const paragraphPenalty =
-        paragraphCount >= 3 ? 0 : paragraphCount === 2 ? 0.5 : 1;
-      const structureOrganization = clamp5(
-        5 -
-          paragraphPenalty -
-          (organizationCount / Math.max(1, wordCount)) * penaltyCfg.org,
-      );
-
-      // Content Relevance (/5) from content issues + very short submissions penalty.
-      const lengthPenalty = wordCount >= 120 ? 0 : wordCount >= 60 ? 0.5 : 1;
-      const contentRelevance = clamp5(
-        5 -
-          lengthPenalty -
-          (contentCount / Math.max(1, wordCount)) * penaltyCfg.content,
-      );
-
-      const overallRubricScore = clamp5(
-        (grammarMechanics + structureOrganization + contentRelevance) / 3,
-      );
-
-      logger.debug(
-        `Dynamic AI rubric generated for submission ${submissionId}`,
-      );
-
-      const rubricComments = buildDynamicRubricComments({
-        wordCount,
-        grammarCount,
-        mechanicsCount,
-        organizationCount,
-        contentCount,
-        paragraphCount,
-        grammarMechanics,
-        structureOrganization,
-        contentRelevance,
-        overallRubricScore,
+      // Use new canonical writing assessment service
+      const assessment = await buildWritingAssessment({
+        submission,
+        assignment,
+        transcriptText,
+        correctionStatistics: correctionStatistics,
+        strictness: teacherUser?.aiConfig?.strictness || 'balanced'
       });
 
-      const rubricScores = {
-        // Mapped into existing schema keys (no DB schema changes).
-        CONTENT: {
-          score: contentRelevance,
-          maxScore: 5,
-          comment: rubricComments.contentRelevance,
-        },
-        ORGANIZATION: {
-          score: structureOrganization,
-          maxScore: 5,
-          comment: rubricComments.structureOrganization,
-        },
-        GRAMMAR: {
-          score: grammarMechanics,
-          maxScore: 5,
-          comment: rubricComments.grammarMechanics,
-        },
-        VOCABULARY: { score: 0, maxScore: 5, comment: "" },
-        MECHANICS: {
-          score: overallRubricScore,
-          maxScore: 5,
-          comment: rubricComments.overallRubricScore,
-        },
-      };
+      const rubricScores = assessment.rubricScores;
+      const overallScore100 = assessment.overallScore;
+      const grade = assessment.grade;
 
-      const evaluation = computeAcademicEvaluation({
-        text: correctedText,
-        issues: corrections,
-        teacherOverrideScores: null,
-      });
+      // Build aiFeedback from weighted rubric scores
+      const aiFeedback = buildAiFeedbackFromRubricScores(rubricScores);
 
-      const languageToolScore100 = clampScore100(
-        evaluation &&
-          evaluation.effectiveRubric &&
-          evaluation.effectiveRubric.overallScore,
-      );
-      const overallScore100 = computeCombinedOverallScore100({
-        rubricScores,
-        languageToolScore100,
-        rubricWeight: 0.7,
-      });
-      const grade = gradeFromOverallScore100(overallScore100);
-
-      const overallComments = buildGeneralComments({
-        text: correctedText,
-        rubricScores: {
-          CONTENT: contentRelevance,
-          ORGANIZATION: structureOrganization,
-          GRAMMAR: grammarMechanics,
-        },
-        counts,
-      });
-      const detailedFeedback = ensureDetailedFeedbackDynamic({
-        detailedFeedback: buildDetailedFeedbackDefaults({
-          structuredFeedback: evaluation && evaluation.structuredFeedback,
-        }),
-        counts,
-      });
-      const aiFeedback = buildAiFeedbackDefaults({
-        rubricScores,
-        structuredFeedback: evaluation && evaluation.structuredFeedback,
-        overallComments,
+      // Build detailedFeedback from assessment evidence
+      const detailedFeedback = buildDetailedFeedbackDefaults({
+        structuredFeedback: null,
       });
 
       // Teacher comment must start empty and must not be AI-generated.
       aiFeedback.overallComments = "";
       logger.debug("Teacher comment initialized as empty");
 
-      const created = await SubmissionFeedback.create({
-        submissionId: submission._id,
-        classId: submission.class,
-        studentId: submission.student,
-        teacherId,
-        overallScore: overallScore100,
-        grade,
-        correctionStats: correctionStatistics,
-        detailedFeedback,
-        rubricScores,
-        aiFeedback,
-        overriddenByTeacher: false,
-      });
+      const created = await SubmissionFeedback.findOneAndUpdate(
+        { submissionId: submission._id },
+        {
+          submissionId: submission._id,
+          classId: submission.class,
+          studentId: submission.student,
+          teacherId,
+          assessmentVersion: assessment.assessmentVersion,
+          maxOverallScore: assessment.maxOverallScore,
+          overallScore: overallScore100,
+          grade,
+          correctionStats: correctionStatistics,
+          detailedFeedback,
+          rubricScores,
+          aiFeedback,
+          overriddenByTeacher: false,
+        },
+        {
+          new: true,
+          upsert: true,
+          runValidators: true,
+          setDefaultsOnInsert: true
+        }
+      );
 
       feedback = withCanonicalStatistics(created);
     } else {
@@ -915,156 +1064,32 @@ async function getSubmissionFeedback(req, res) {
 
         const transcriptText = getNormalizedSubmissionTranscript(submission);
 
-        const normalizedWords = normalizeOcrWordsFromStored(
-          submission.ocrData && submission.ocrData.words,
-        );
+        const assignment = await Assignment.findOne({
+          _id: submission.assignment,
+          isActive: true,
+        });
 
-        let built;
-        try {
-          built = await buildOcrCorrections({
-            text: transcriptText,
-            language: "en-US",
-            ocrWords: normalizedWords,
-          });
-        } catch {
-          built = { corrections: [], fullText: transcriptText };
-        }
-
-        // Always use the persisted teacher AI config so student/teacher views compute identical scores.
-        // JWT payload may not include aiConfig and can lead to different defaults between roles.
-        const aiCfg = normalizeTeacherAiConfig(teacherUser);
-        const allCorrections = Array.isArray(built && built.corrections)
-          ? built.corrections
-          : [];
-        const corrections = filterCorrectionsByAiConfig(allCorrections, aiCfg);
-        const counts = countsFromStatistics;
-
-        const correctedText = applyCorrectionsToText(
+        // Use new canonical writing assessment service for backfill
+        const assessment = await buildWritingAssessment({
+          submission,
+          assignment,
           transcriptText,
-          corrections,
-        );
-
-        const clamp5 = (n) => {
-          const x = Number(n);
-          if (!Number.isFinite(x)) return 0;
-          return Math.max(0, Math.min(5, x));
-        };
-
-        const safeText =
-          typeof transcriptText === "string" ? transcriptText : "";
-        const wordCount = safeText.trim()
-          ? safeText.trim().split(/\s+/).filter(Boolean).length
-          : 0;
-
-        const grammarCount = Number(counts && counts.GRAMMAR) || 0;
-        const mechanicsCount = Number(counts && counts.MECHANICS) || 0;
-        const organizationCount = Number(counts && counts.ORGANIZATION) || 0;
-        const contentCount = Number(counts && counts.CONTENT) || 0;
-
-        const penaltyCfg = strictnessPenaltyConfig(aiCfg.strictness);
-
-        const grammarMechanicsIssues = grammarCount + mechanicsCount;
-        const grammarMechanics = clamp5(
-          5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * penaltyCfg.gm,
-        );
-
-        const paragraphCount = safeText
-          .split(/\n\s*\n+/)
-          .filter((p) => String(p).trim()).length;
-        const paragraphPenalty =
-          paragraphCount >= 3 ? 0 : paragraphCount === 2 ? 0.5 : 1;
-        const structureOrganization = clamp5(
-          5 -
-            paragraphPenalty -
-            (organizationCount / Math.max(1, wordCount)) * penaltyCfg.org,
-        );
-
-        const lengthPenalty = wordCount >= 120 ? 0 : wordCount >= 60 ? 0.5 : 1;
-        const contentRelevance = clamp5(
-          5 -
-            lengthPenalty -
-            (contentCount / Math.max(1, wordCount)) * penaltyCfg.content,
-        );
-
-        const overallRubricScore = clamp5(
-          (grammarMechanics + structureOrganization + contentRelevance) / 3,
-        );
-
-        const rubricComments = buildDynamicRubricComments({
-          wordCount,
-          grammarCount,
-          mechanicsCount,
-          organizationCount,
-          contentCount,
-          paragraphCount,
-          grammarMechanics,
-          structureOrganization,
-          contentRelevance,
-          overallRubricScore,
+          correctionStatistics: correctionStatistics,
+          strictness: teacherUser?.aiConfig?.strictness || 'balanced'
         });
 
-        const rubricScores = {
-          CONTENT: {
-            score: contentRelevance,
-            maxScore: 5,
-            comment: rubricComments.contentRelevance,
-          },
-          ORGANIZATION: {
-            score: structureOrganization,
-            maxScore: 5,
-            comment: rubricComments.structureOrganization,
-          },
-          GRAMMAR: {
-            score: grammarMechanics,
-            maxScore: 5,
-            comment: rubricComments.grammarMechanics,
-          },
-          VOCABULARY: { score: 0, maxScore: 5, comment: "" },
-          MECHANICS: {
-            score: overallRubricScore,
-            maxScore: 5,
-            comment: rubricComments.overallRubricScore,
-          },
-        };
+        const rubricScores = assessment.rubricScores;
+        const overallScore100 = assessment.overallScore;
+        const grade = assessment.grade;
 
-        const evaluation = computeAcademicEvaluation({
-          text: correctedText,
-          issues: corrections,
-          teacherOverrideScores: null,
+        // Build aiFeedback from weighted rubric scores
+        const aiFeedback = buildAiFeedbackFromRubricScores(rubricScores);
+
+        // Build detailedFeedback from assessment evidence
+        const detailedFeedback = buildDetailedFeedbackDefaults({
+          structuredFeedback: null,
         });
 
-        const languageToolScore100 = clampScore100(
-          evaluation &&
-            evaluation.effectiveRubric &&
-            evaluation.effectiveRubric.overallScore,
-        );
-        const overallScore100 = computeCombinedOverallScore100({
-          rubricScores,
-          languageToolScore100,
-          rubricWeight: 0.7,
-        });
-        const grade = gradeFromOverallScore100(overallScore100);
-
-        const overallComments = buildGeneralComments({
-          text: correctedText,
-          rubricScores: {
-            CONTENT: contentRelevance,
-            ORGANIZATION: structureOrganization,
-            GRAMMAR: grammarMechanics,
-          },
-          counts,
-        });
-        const detailedFeedback = ensureDetailedFeedbackDynamic({
-          detailedFeedback: buildDetailedFeedbackDefaults({
-            structuredFeedback: evaluation && evaluation.structuredFeedback,
-          }),
-          counts,
-        });
-        const aiFeedback = buildAiFeedbackDefaults({
-          rubricScores,
-          structuredFeedback: evaluation && evaluation.structuredFeedback,
-          overallComments,
-        });
         aiFeedback.overallComments = "";
 
         try {
@@ -1072,6 +1097,8 @@ async function getSubmissionFeedback(req, res) {
             { submissionId: submission._id },
             {
               $set: {
+                assessmentVersion: assessment.assessmentVersion,
+                maxOverallScore: assessment.maxOverallScore,
                 overallScore: overallScore100,
                 grade,
                 correctionStats: correctionStatistics,
@@ -1099,104 +1126,70 @@ async function getSubmissionFeedback(req, res) {
         feedbackObj && feedbackObj.rubricScores
           ? feedbackObj.rubricScores
           : null;
-      const needsBackfill =
-        !rs?.GRAMMAR?.comment ||
-        !rs?.ORGANIZATION?.comment ||
-        !rs?.CONTENT?.comment ||
-        !rs?.MECHANICS?.comment;
+      
+      // Check if feedback needs regeneration based on assessment version or missing fields
+      const needsRegeneration =
+        !feedbackObj.assessmentVersion ||
+        feedbackObj.assessmentVersion !== 'writing-rubric-100-v1' ||
+        !rs?.PRESENTATION?.score ||
+        rs?.PRESENTATION?.maxScore !== 5 ||
+        rs?.VOCABULARY?.maxScore !== 20 ||
+        rs?.MECHANICS?.maxScore !== 10 ||
+        (feedbackObj.overriddenByTeacher === false && feedbackObj.overallScore <= 0);
 
-      if (!needsBackfill) {
+      if (!needsRegeneration) {
         feedback = feedbackObj;
       } else {
+        // Regenerate using new canonical assessment service
         const transcriptText = getNormalizedSubmissionTranscript(submission);
-
-        const safeText =
-          typeof transcriptText === "string" ? transcriptText : "";
-        const wordCount = safeText.trim()
-          ? safeText.trim().split(/\s+/).filter(Boolean).length
-          : 0;
-        const paragraphCount = safeText
-          .split(/\n\s*\n+/)
-          .filter((p) => String(p).trim()).length;
-
-        const cs =
-          feedbackObj && feedbackObj.correctionStats
-            ? feedbackObj.correctionStats
-            : {};
-        const grammarCount = Number(cs.grammar) || 0;
-        const mechanicsCount = Number(cs.mechanics) || 0;
-        const organizationCount = Number(cs.organization) || 0;
-        const contentCount = Number(cs.content) || 0;
-
-        const clamp5 = (n) => {
-          const x = Number(n);
-          if (!Number.isFinite(x)) return 0;
-          return Math.max(0, Math.min(5, x));
-        };
-
-        const grammarMechanicsIssues = grammarCount + mechanicsCount;
-        const grammarMechanics = clamp5(
-          5 - (grammarMechanicsIssues / Math.max(1, wordCount)) * 60,
-        );
-        const paragraphPenalty =
-          paragraphCount >= 3 ? 0 : paragraphCount === 2 ? 0.5 : 1;
-        const structureOrganization = clamp5(
-          5 -
-            paragraphPenalty -
-            (organizationCount / Math.max(1, wordCount)) * 40,
-        );
-        const lengthPenalty = wordCount >= 120 ? 0 : wordCount >= 60 ? 0.5 : 1;
-        const contentRelevance = clamp5(
-          5 - lengthPenalty - (contentCount / Math.max(1, wordCount)) * 40,
-        );
-        const overallRubricScore = clamp5(
-          (grammarMechanics + structureOrganization + contentRelevance) / 3,
-        );
-
-        const rubricComments = buildDynamicRubricComments({
-          wordCount,
-          grammarCount,
-          mechanicsCount,
-          organizationCount,
-          contentCount,
-          paragraphCount,
-          grammarMechanics,
-          structureOrganization,
-          contentRelevance,
-          overallRubricScore,
+        
+        const assignment = await Assignment.findOne({
+          _id: submission.assignment,
+          isActive: true,
         });
 
-        const updatedRubricScores = {
-          ...(rs || {}),
-          GRAMMAR: {
-            ...(rs?.GRAMMAR || {}),
-            comment: rubricComments.grammarMechanics,
-          },
-          ORGANIZATION: {
-            ...(rs?.ORGANIZATION || {}),
-            comment: rubricComments.structureOrganization,
-          },
-          CONTENT: {
-            ...(rs?.CONTENT || {}),
-            comment: rubricComments.contentRelevance,
-          },
-          MECHANICS: {
-            ...(rs?.MECHANICS || {}),
-            comment: rubricComments.overallRubricScore,
-          },
-        };
+        const assessment = await buildWritingAssessment({
+          submission,
+          assignment,
+          transcriptText,
+          correctionStatistics: correctionStatistics,
+        });
+
+        const rubricScores = assessment.rubricScores;
+        const overallScore100 = assessment.overallScore;
+        const grade = assessment.grade;
+
+        const aiFeedback = buildAiFeedbackFromRubricScores(rubricScores);
+        const detailedFeedback = buildDetailedFeedbackDefaults({
+          structuredFeedback: null,
+        });
 
         try {
           const saved = await SubmissionFeedback.findOneAndUpdate(
             { submissionId: submission._id },
-            { $set: { rubricScores: updatedRubricScores } },
+            {
+              $set: {
+                assessmentVersion: assessment.assessmentVersion,
+                maxOverallScore: assessment.maxOverallScore,
+                overallScore: overallScore100,
+                grade,
+                rubricScores,
+                aiFeedback,
+                detailedFeedback,
+              },
+            },
             { new: true },
           );
-          feedback = saved
-            ? saved.toObject()
-            : { ...feedbackObj, rubricScores: updatedRubricScores };
+          return sendSuccess(
+            res,
+            withCanonicalStatistics(
+              saved
+                ? saved.toObject()
+                : { ...feedbackObj, overallScore: overallScore100 },
+            ),
+          );
         } catch {
-          feedback = { ...feedbackObj, rubricScores: updatedRubricScores };
+          return sendSuccess(res, withCanonicalStatistics(feedbackObj));
         }
       }
     }
@@ -1204,7 +1197,24 @@ async function getSubmissionFeedback(req, res) {
     logger.debug(`[FEEDBACK GET] ${submissionId}`);
     return sendSuccess(res, withCanonicalStatistics(feedback));
   } catch (err) {
-    return sendError(res, 500, "Failed to fetch feedback");
+    logger.error({
+      message: 'Failed to fetch submission feedback',
+      submissionId: req?.params?.submissionId,
+      error: err?.message || String(err),
+      stack: err?.stack
+    });
+
+    const isDevelopment = process.env.NODE_ENV !== 'production';
+    const responseData = {
+      success: false,
+      message: 'Failed to fetch feedback'
+    };
+
+    if (isDevelopment) {
+      responseData.error = err?.message || String(err);
+    }
+
+    return res.status(500).json(responseData);
   }
 }
 
@@ -1992,7 +2002,7 @@ async function generateAiRubricFromDesigner(req, res) {
     const correctedText = applyCorrectionsToText(transcriptText, corrections);
 
     const evaluation = computeAcademicEvaluation({
-      text: correctedText,
+      text: transcriptText,
       issues: corrections,
       teacherOverrideScores: null,
     });
@@ -2022,46 +2032,21 @@ async function generateAiRubricFromDesigner(req, res) {
         3,
     });
 
-    const rubricScores = {
-      ...(base.rubricScores || {}),
-      CONTENT: {
-        score: to5(er && er.contentScore),
-        maxScore: 5,
-        comment:
-          safeString(
-            rubricComments && rubricComments.contentRelevance,
-          ).trim() || safeString(base?.rubricScores?.CONTENT?.comment),
-      },
-      ORGANIZATION: {
-        score: to5(er && er.structureScore),
-        maxScore: 5,
-        comment:
-          safeString(
-            rubricComments && rubricComments.structureOrganization,
-          ).trim() || safeString(base?.rubricScores?.ORGANIZATION?.comment),
-      },
-      GRAMMAR: {
-        score: to5(er && er.grammarScore),
-        maxScore: 5,
-        comment:
-          safeString(
-            rubricComments && rubricComments.grammarMechanics,
-          ).trim() || safeString(base?.rubricScores?.GRAMMAR?.comment),
-      },
-      VOCABULARY: {
-        score: to5(er && er.vocabularyScore),
-        maxScore: 5,
-        comment: safeString(base?.rubricScores?.VOCABULARY?.comment),
-      },
-      MECHANICS: {
-        score: to5(er && er.taskAchievementScore),
-        maxScore: 5,
-        comment:
-          safeString(
-            rubricComments && rubricComments.overallRubricScore,
-          ).trim() || safeString(base?.rubricScores?.MECHANICS?.comment),
-      },
-    };
+    // Convert 0-5 scores to weighted scores using canonical builder
+    const rubricScores = buildWeightedRubricScores({
+      contentScore: (to5(er && er.contentScore) / 5) * WEIGHTED_RUBRIC_CONFIG.CONTENT.maxScore,
+      organizationScore: (to5(er && er.structureScore) / 5) * WEIGHTED_RUBRIC_CONFIG.ORGANIZATION.maxScore,
+      grammarScore: (to5(er && er.grammarScore) / 5) * WEIGHTED_RUBRIC_CONFIG.GRAMMAR.maxScore,
+      vocabularyScore: (to5(er && er.vocabularyScore) / 5) * WEIGHTED_RUBRIC_CONFIG.VOCABULARY.maxScore,
+      mechanicsScore: (to5(er && er.taskAchievementScore) / 5) * WEIGHTED_RUBRIC_CONFIG.MECHANICS.maxScore,
+      presentationScore: 0,
+      contentComment: safeString(rubricComments && rubricComments.contentRelevance).trim() || safeString(base?.rubricScores?.CONTENT?.comment),
+      organizationComment: safeString(rubricComments && rubricComments.structureOrganization).trim() || safeString(base?.rubricScores?.ORGANIZATION?.comment),
+      grammarComment: safeString(rubricComments && rubricComments.grammarMechanics).trim() || safeString(base?.rubricScores?.GRAMMAR?.comment),
+      vocabularyComment: safeString(base?.rubricScores?.VOCABULARY?.comment),
+      mechanicsComment: safeString(rubricComments && rubricComments.overallRubricScore).trim() || safeString(base?.rubricScores?.MECHANICS?.comment),
+      presentationComment: ""
+    });
 
     const structuredFeedback =
       evaluation && evaluation.structuredFeedback
@@ -2105,18 +2090,8 @@ async function generateAiRubricFromDesigner(req, res) {
       aiFeedback,
       rubricDesigner: sanitizedRubricDesigner,
       overriddenByTeacher: false,
-      overallScore: computeCombinedOverallScore100({
-        rubricScores,
-        languageToolScore100: clampScore100(er && er.overallScore),
-        rubricWeight: 0.7,
-      }),
-      grade: gradeFromOverallScore100(
-        computeCombinedOverallScore100({
-          rubricScores,
-          languageToolScore100: clampScore100(er && er.overallScore),
-          rubricWeight: 0.7,
-        }),
-      ),
+      overallScore: computeOverallScoreFromWeightedRubric(rubricScores),
+      grade: gradeFromOverallScore100(computeOverallScoreFromWeightedRubric(rubricScores)),
     };
 
     const saved = await SubmissionFeedback.findOneAndUpdate(
@@ -2521,10 +2496,11 @@ async function upsertSubmissionFeedback(req, res) {
       "GRAMMAR",
       "VOCABULARY",
       "MECHANICS",
+      "PRESENTATION",
     ];
     const normalizedRubric = {};
     for (const k of keys) {
-      const normalized = normalizeRubricItemPayload(rubric[k]);
+      const normalized = normalizeRubricItemPayload(rubric[k], k);
       if (normalized.error) {
         return sendError(res, 400, `rubricScores.${k}.${normalized.error}`);
       }

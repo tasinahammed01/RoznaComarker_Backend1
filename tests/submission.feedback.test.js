@@ -8,6 +8,7 @@ const User = require('../src/models/user.model');
 const Class = require('../src/models/class.model');
 const Assignment = require('../src/models/assignment.model');
 const Membership = require('../src/models/membership.model');
+const SubmissionFeedback = require('../src/models/SubmissionFeedback');
 
 const app = require('../src/app');
 
@@ -139,5 +140,209 @@ describe('Submissions & Feedback APIs', () => {
     expect(teacherRead.status).toBe(200);
     expect(teacherRead.body).toHaveProperty('success', true);
     expect(teacherRead.body.data).toHaveProperty('_id', feedbackId);
+  });
+
+  test('GET /api/feedback/:submissionId normalizes legacy feedback with old maxScore values', async () => {
+    const teacher = await User.create({ firebaseUid: 't3', email: 't3@example.com', role: 'teacher' });
+    const student = await User.create({ firebaseUid: 's3', email: 's3@example.com', role: 'student' });
+
+    const classDoc = await Class.create({
+      name: 'Class 3',
+      teacher: teacher._id,
+      joinCode: 'join-code-3',
+      qrCodeUrl: 'data:,'
+    });
+
+    await Membership.create({ student: student._id, class: classDoc._id, status: 'active' });
+
+    const assignment = await Assignment.create({
+      title: 'A3',
+      writingType: 'essay',
+      deadline: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      class: classDoc._id,
+      teacher: teacher._id,
+      qrToken: 'qr-token-3'
+    });
+
+    const teacherToken = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
+    const studentToken = signTestJwt({ id: student._id, firebaseUid: student.firebaseUid, role: student.role });
+
+    const submit = await request(app)
+      .post(`/api/submissions/${assignment._id}`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .attach('file', Buffer.from('%PDF-1.4\n%test\n'), { filename: 'test.pdf', contentType: 'application/pdf' });
+
+    const submissionId = submit.body.data._id;
+
+    // Create legacy feedback with old maxScore values (all 5)
+    const legacyFeedback = await SubmissionFeedback.create({
+      submissionId: submissionId,
+      classId: classDoc._id,
+      studentId: student._id,
+      teacherId: teacher._id,
+      rubricScores: {
+        CONTENT: { score: 0, maxScore: 5, comment: '' },
+        ORGANIZATION: { score: 0, maxScore: 5, comment: '' },
+        GRAMMAR: { score: 0, maxScore: 5, comment: '' },
+        VOCABULARY: { score: 0, maxScore: 5, comment: '' },
+        MECHANICS: { score: 0, maxScore: 5, comment: '' },
+        PRESENTATION: { score: 0, maxScore: 5, comment: '' }
+      },
+      assessmentVersion: 'writing-rubric-100-v1',
+      maxOverallScore: 100,
+      overallScore: 0,
+      grade: 'F',
+      correctionStats: { content: 0, grammar: 0, organization: 0, vocabulary: 0, mechanics: 0 },
+      detailedFeedback: { strengths: [], areasForImprovement: [], actionSteps: [] },
+      aiFeedback: { perCategory: [], overallComments: '' },
+      overriddenByTeacher: false
+    });
+
+    // GET feedback should normalize the legacy record
+    const res = await request(app)
+      .get(`/api/feedback/${submissionId}`)
+      .set('Authorization', `Bearer ${studentToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('success', true);
+    
+    // Verify normalization happened
+    const feedback = res.body.data;
+    expect(feedback.rubricScores.CONTENT.maxScore).toBe(20);
+    expect(feedback.rubricScores.ORGANIZATION.maxScore).toBe(20);
+    expect(feedback.rubricScores.GRAMMAR.maxScore).toBe(25);
+    expect(feedback.rubricScores.VOCABULARY.maxScore).toBe(20);
+    expect(feedback.rubricScores.MECHANICS.maxScore).toBe(10);
+    expect(feedback.rubricScores.PRESENTATION.maxScore).toBe(5);
+  });
+
+  test('GET /api/feedback/:submissionId handles missing PRESENTATION category', async () => {
+    const teacher = await User.create({ firebaseUid: 't4', email: 't4@example.com', role: 'teacher' });
+    const student = await User.create({ firebaseUid: 's4', email: 's4@example.com', role: 'student' });
+
+    const classDoc = await Class.create({
+      name: 'Class 4',
+      teacher: teacher._id,
+      joinCode: 'join-code-4',
+      qrCodeUrl: 'data:,'
+    });
+
+    await Membership.create({ student: student._id, class: classDoc._id, status: 'active' });
+
+    const assignment = await Assignment.create({
+      title: 'A4',
+      writingType: 'essay',
+      deadline: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      class: classDoc._id,
+      teacher: teacher._id,
+      qrToken: 'qr-token-4'
+    });
+
+    const teacherToken = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
+    const studentToken = signTestJwt({ id: student._id, firebaseUid: student.firebaseUid, role: student.role });
+
+    const submit = await request(app)
+      .post(`/api/submissions/${assignment._id}`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .attach('file', Buffer.from('%PDF-1.4\n%test\n'), { filename: 'test.pdf', contentType: 'application/pdf' });
+
+    const submissionId = submit.body.data._id;
+
+    // Create feedback missing PRESENTATION category
+    const feedbackWithoutPresentation = await SubmissionFeedback.create({
+      submissionId: submissionId,
+      classId: classDoc._id,
+      studentId: student._id,
+      teacherId: teacher._id,
+      rubricScores: {
+        CONTENT: { score: 0, maxScore: 5, comment: '' },
+        ORGANIZATION: { score: 0, maxScore: 5, comment: '' },
+        GRAMMAR: { score: 0, maxScore: 5, comment: '' },
+        VOCABULARY: { score: 0, maxScore: 5, comment: '' },
+        MECHANICS: { score: 0, maxScore: 5, comment: '' }
+      },
+      assessmentVersion: 'writing-rubric-100-v1',
+      maxOverallScore: 100,
+      overallScore: 0,
+      grade: 'F',
+      correctionStats: { content: 0, grammar: 0, organization: 0, vocabulary: 0, mechanics: 0 },
+      detailedFeedback: { strengths: [], areasForImprovement: [], actionSteps: [] },
+      aiFeedback: { perCategory: [], overallComments: '' },
+      overriddenByTeacher: false
+    });
+
+    // GET feedback should add missing PRESENTATION category
+    const res = await request(app)
+      .get(`/api/feedback/${submissionId}`)
+      .set('Authorization', `Bearer ${studentToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('success', true);
+    
+    // Verify PRESENTATION was added
+    const feedback = res.body.data;
+    expect(feedback.rubricScores).toHaveProperty('PRESENTATION');
+    expect(feedback.rubricScores.PRESENTATION.maxScore).toBe(5);
+  });
+
+  test('GET /api/feedback/:submissionId returns canonical SubmissionFeedback with correct structure', async () => {
+    const teacher = await User.create({ firebaseUid: 't5', email: 't5@example.com', role: 'teacher' });
+    const student = await User.create({ firebaseUid: 's5', email: 's5@example.com', role: 'student' });
+
+    const classDoc = await Class.create({
+      name: 'Class 5',
+      teacher: teacher._id,
+      joinCode: 'join-code-5',
+      qrCodeUrl: 'data:,'
+    });
+
+    await Membership.create({ student: student._id, class: classDoc._id, status: 'active' });
+
+    const assignment = await Assignment.create({
+      title: 'A5',
+      writingType: 'essay',
+      deadline: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      class: classDoc._id,
+      teacher: teacher._id,
+      qrToken: 'qr-token-5'
+    });
+
+    const teacherToken = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
+    const studentToken = signTestJwt({ id: student._id, firebaseUid: student.firebaseUid, role: student.role });
+
+    const submit = await request(app)
+      .post(`/api/submissions/${assignment._id}`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .attach('file', Buffer.from('%PDF-1.4\n%test\n'), { filename: 'test.pdf', contentType: 'application/pdf' });
+
+    const submissionId = submit.body.data._id;
+
+    // GET feedback should return canonical structure
+    const res = await request(app)
+      .get(`/api/feedback/${submissionId}`)
+      .set('Authorization', `Bearer ${studentToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('success', true);
+    
+    const feedback = res.body.data;
+    // Verify canonical structure
+    expect(feedback).toHaveProperty('rubricScores');
+    expect(feedback).toHaveProperty('assessmentVersion');
+    expect(feedback).toHaveProperty('maxOverallScore');
+    expect(feedback).toHaveProperty('overallScore');
+    expect(feedback).toHaveProperty('grade');
+    expect(feedback).toHaveProperty('correctionStats');
+    expect(feedback).toHaveProperty('detailedFeedback');
+    expect(feedback).toHaveProperty('aiFeedback');
+    expect(feedback).toHaveProperty('overriddenByTeacher');
+    
+    // Verify all six rubric categories exist
+    expect(feedback.rubricScores).toHaveProperty('CONTENT');
+    expect(feedback.rubricScores).toHaveProperty('ORGANIZATION');
+    expect(feedback.rubricScores).toHaveProperty('GRAMMAR');
+    expect(feedback.rubricScores).toHaveProperty('VOCABULARY');
+    expect(feedback.rubricScores).toHaveProperty('MECHANICS');
+    expect(feedback.rubricScores).toHaveProperty('PRESENTATION');
   });
 });

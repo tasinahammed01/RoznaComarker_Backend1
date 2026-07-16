@@ -23,9 +23,7 @@ function correctionCategory(correction) {
   if (raw.includes('style') || raw.includes('organization') || raw.includes('structure')) return 'organization';
   if (raw.includes('vocab') || raw.includes('word choice')) return 'vocabulary';
   if (raw.includes('content')) return 'content';
-  // Preserve the existing backend mapping: recognized LanguageTool groups not
-  // covered above are content issues.
-  if (correction?.groupKey || correction?.groupLabel) return 'content';
+  // Unknown groups are not mapped to any category to avoid affecting weighted scores
   return null;
 }
 
