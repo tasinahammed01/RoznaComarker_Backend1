@@ -2,6 +2,18 @@ const mongoose = require('mongoose');
 
 const { Schema } = mongoose;
 
+const correctionStatisticsSchema = new Schema(
+  {
+    content: { type: Number, default: 0 },
+    grammar: { type: Number, default: 0 },
+    organization: { type: Number, default: 0 },
+    vocabulary: { type: Number, default: 0 },
+    mechanics: { type: Number, default: 0 },
+    total: { type: Number, default: 0 }
+  },
+  { _id: false }
+);
+
 const submissionSchema = new Schema(
   {
     student: {
@@ -110,6 +122,10 @@ const submissionSchema = new Schema(
     },
     rawTranscriptText: {
       type: String
+    },
+    correctionStatistics: {
+      type: correctionStatisticsSchema,
+      default: undefined
     },
     feedback: {
       type: Schema.Types.ObjectId,

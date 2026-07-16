@@ -20,6 +20,7 @@ const {
   parseRubricDesignerFromDocxTemplate,
 } = require("../services/docxRubricTemplateParser.service");
 const { buildOcrCorrections } = require("../services/ocrCorrections.service");
+const { buildSubmissionCorrectionStatistics } = require("../services/submissionCorrectionStatistics.service");
 const { getRubricAiConfig } = require("../services/rubricAiConfig.service");
 const {
   normalizeOcrTranscript,
@@ -624,6 +625,32 @@ async function getSubmissionFeedback(req, res) {
     let feedback = await SubmissionFeedback.findOne({
       submissionId: submission._id,
     });
+
+    const correctionStatistics = await buildSubmissionCorrectionStatistics(submission);
+    const countsFromStatistics = {
+      CONTENT: correctionStatistics.content,
+      GRAMMAR: correctionStatistics.grammar,
+      ORGANIZATION: correctionStatistics.organization,
+      VOCABULARY: correctionStatistics.vocabulary,
+      MECHANICS: correctionStatistics.mechanics,
+    };
+    const withCanonicalStatistics = (value) => {
+      const object = value && typeof value.toObject === "function" ? value.toObject() : { ...(value || {}) };
+      return {
+        ...object,
+        correctionStats: correctionStatistics,
+        correctionStatistics,
+      };
+    };
+
+    await Submission.updateOne(
+      { _id: submission._id },
+      { $set: { correctionStatistics } },
+    );
+    if (feedback) {
+      feedback.correctionStats = correctionStatistics;
+      await feedback.save();
+    }
     if (!feedback) {
       logger.debug(
         `Generating dynamic AI Feedback for submission ${submissionId}`,
@@ -674,10 +701,7 @@ async function getSubmissionFeedback(req, res) {
         ? built.corrections
         : [];
       const corrections = filterCorrectionsByAiConfig(allCorrections, aiCfg);
-      const counts = augmentCountsWithTextHeuristics(
-        transcriptText,
-        computeCountsFromCorrections(corrections),
-      );
+      const counts = countsFromStatistics;
 
       const correctedText = applyCorrectionsToText(transcriptText, corrections);
 
@@ -829,20 +853,14 @@ async function getSubmissionFeedback(req, res) {
         teacherId,
         overallScore: overallScore100,
         grade,
-        correctionStats: {
-          content: counts.CONTENT,
-          grammar: counts.GRAMMAR,
-          organization: counts.ORGANIZATION,
-          vocabulary: counts.VOCABULARY,
-          mechanics: counts.MECHANICS,
-        },
+        correctionStats: correctionStatistics,
         detailedFeedback,
         rubricScores,
         aiFeedback,
         overriddenByTeacher: false,
       });
 
-      feedback = created.toObject();
+      feedback = withCanonicalStatistics(created);
     } else {
       const feedbackObj = feedback.toObject();
 
@@ -885,7 +903,7 @@ async function getSubmissionFeedback(req, res) {
               ? classDoc.teacher
               : null;
         if (!teacherId) {
-          return sendSuccess(res, feedbackObj);
+          return sendSuccess(res, withCanonicalStatistics(feedbackObj));
         }
 
         let teacherUser = null;
@@ -919,10 +937,7 @@ async function getSubmissionFeedback(req, res) {
           ? built.corrections
           : [];
         const corrections = filterCorrectionsByAiConfig(allCorrections, aiCfg);
-        const counts = augmentCountsWithTextHeuristics(
-          transcriptText,
-          computeCountsFromCorrections(corrections),
-        );
+        const counts = countsFromStatistics;
 
         const correctedText = applyCorrectionsToText(
           transcriptText,
@@ -1059,13 +1074,7 @@ async function getSubmissionFeedback(req, res) {
               $set: {
                 overallScore: overallScore100,
                 grade,
-                correctionStats: {
-                  content: counts.CONTENT,
-                  grammar: counts.GRAMMAR,
-                  organization: counts.ORGANIZATION,
-                  vocabulary: counts.VOCABULARY,
-                  mechanics: counts.MECHANICS,
-                },
+                correctionStats: correctionStatistics,
                 rubricScores,
                 detailedFeedback,
                 aiFeedback,
@@ -1075,12 +1084,14 @@ async function getSubmissionFeedback(req, res) {
           );
           return sendSuccess(
             res,
-            saved
-              ? saved.toObject()
-              : { ...feedbackObj, overallScore: overallScore100 },
+            withCanonicalStatistics(
+              saved
+                ? saved.toObject()
+                : { ...feedbackObj, overallScore: overallScore100 },
+            ),
           );
         } catch {
-          return sendSuccess(res, feedbackObj);
+          return sendSuccess(res, withCanonicalStatistics(feedbackObj));
         }
       }
 
@@ -1191,7 +1202,7 @@ async function getSubmissionFeedback(req, res) {
     }
 
     logger.debug(`[FEEDBACK GET] ${submissionId}`);
-    return sendSuccess(res, feedback);
+    return sendSuccess(res, withCanonicalStatistics(feedback));
   } catch (err) {
     return sendError(res, 500, "Failed to fetch feedback");
   }

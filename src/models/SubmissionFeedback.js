@@ -19,7 +19,8 @@ const correctionStatsSchema = new Schema(
     grammar: { type: Number, default: 0 },
     organization: { type: Number, default: 0 },
     vocabulary: { type: Number, default: 0 },
-    mechanics: { type: Number, default: 0 }
+    mechanics: { type: Number, default: 0 },
+    total: { type: Number, default: 0 }
   },
   { _id: false }
 );

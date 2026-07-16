@@ -12,6 +12,7 @@ const OcrUpload = require('../models/OcrUpload');
 const uploadService = require('../services/upload.service');
 const { runOcrAndPersist, runOcrAndPersistForFiles } = require('../services/ocrPipeline.service');
 const { normalizeOcrWordsFromStored, buildOcrCorrections } = require('../services/ocrCorrections.service');
+const { buildSubmissionCorrectionStatistics } = require('../services/submissionCorrectionStatistics.service');
 const { autoGenerateRubricDesignerForSubmission } = require('../services/autoRubricDesigner.service');
 const {
   normalizeOcrTranscript,
@@ -715,6 +716,9 @@ async function getSubmissionsByAssignment(req, res) {
 
     for (const s of submissions) {
       normalizeSubmissionForClient(req, s);
+      // Compute canonical correction statistics for consistency with Student view
+      const correctionStatistics = await buildSubmissionCorrectionStatistics(s);
+      s.correctionStatistics = correctionStatistics;
     }
 
     return sendSuccess(res, submissions);
@@ -754,6 +758,10 @@ async function getMySubmissionByAssignmentId(req, res) {
 
     normalizeSubmissionForClient(req, submission);
 
+    // Compute canonical correction statistics for consistency with Teacher view
+    const correctionStatistics = await buildSubmissionCorrectionStatistics(submission);
+    submission.correctionStatistics = correctionStatistics;
+
     return sendSuccess(res, submission);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch submission');
@@ -781,6 +789,9 @@ async function getMySubmissions(req, res) {
 
     for (const s of submissions) {
       normalizeSubmissionForClient(req, s);
+      // Compute canonical correction statistics for consistency with Teacher view
+      const correctionStatistics = await buildSubmissionCorrectionStatistics(s);
+      s.correctionStatistics = correctionStatistics;
     }
 
     return sendSuccess(res, submissions);
