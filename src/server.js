@@ -1,6 +1,3 @@
-// Register TypeScript support so that .ts files can be required from this CJS server.
-require("tsx/cjs");
-
 const env = require("./config/env");
 const connectDB = require("./config/db");
 const logger = require("./utils/logger");

@@ -1,3 +1,8 @@
+// The worksheet document subsystem is TypeScript and is loaded directly at runtime.
+// Register the project's established CJS hook here so every app consumer (server,
+// tests, and scripts) gets the same module behavior.
+require("tsx/cjs");
+
 const express = require("express");
 const helmet = require("helmet");
 const morgan = require("morgan");
@@ -30,6 +35,7 @@ const flashcardRoutes = require("./routes/flashcard.routes");
 const sharedFlashcardRoutes = require("./routes/sharedFlashcard.routes");
 const worksheetRoutes = require("./routes/worksheet.routes");
 const unsplashRoutes = require("./routes/unsplash.routes");
+const adaptivePracticeRoutes = require("./routes/adaptivePractice.routes");
 // TypeScript worksheet generator routes
 // Method 1: text prompt → WorksheetDocument
 const { default: worksheetTextRoute } = require("./routes/worksheetTextRoute");
@@ -204,6 +210,7 @@ app.use("/api/worksheets/generate/file", worksheetFileRoute);
 app.use("/api/worksheet-documents", worksheetDocumentRoute);
 app.use("/api/worksheets", worksheetRoutes);
 app.use("/api/unsplash", unsplashRoutes);
+app.use("/api/adaptive-practice", adaptivePracticeRoutes);
 
 app.post(
   "/upload",
