@@ -23,6 +23,7 @@ const {
 const { createNotification } = require('../services/notification.service');
 
 const { bytesToMB, ensureActivePlan, incrementUsage } = require('../middlewares/usage.middleware');
+const { getPublicApiUrl, buildPublicUploadUrl } = require('../utils/publicApiUrl');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -95,8 +96,7 @@ function sendError(res, statusCode, message) {
 }
 
 function getRequestBaseUrl(req) {
-  const raw = `${req.protocol}://${req.get('host')}`;
-  return raw.replace(/\/+$/, '');
+  return getPublicApiUrl(req);
 }
 
 function normalizePublicUploadsUrlForDev(req, url) {
@@ -253,20 +253,8 @@ function normalizeSubmissionForClient(req, submission) {
   return doc;
 }
 
-function getBaseUrl(req) {
-  const fromEnv = (process.env.BASE_URL || '').trim();
-
-  // In development always use the current request host (typically localhost).
-  // This prevents generating URLs pointing to a remote VPS when running locally.
-  const raw = process.env.NODE_ENV === 'production'
-    ? (fromEnv.length ? fromEnv : `${req.protocol}://${req.get('host')}`)
-    : `${req.protocol}://${req.get('host')}`;
-  return raw.replace(/\/+$/, '');
-}
-
 function toPublicUrl(req, type, filename) {
-  const base = getBaseUrl(req);
-  return `${base}/uploads/${type}/${encodeURIComponent(filename)}`;
+  return buildPublicUploadUrl(req, type, filename);
 }
 
 function toStoredPath(type, filename) {

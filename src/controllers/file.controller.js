@@ -3,6 +3,7 @@ const path = require('path');
 const File = require('../models/File');
 
 const { bytesToMB, incrementUsage } = require('../middlewares/usage.middleware');
+const { buildPublicUploadUrl } = require('../utils/publicApiUrl');
 
 function sendError(res, statusCode, message) {
   return res.status(statusCode).json({
@@ -11,15 +12,8 @@ function sendError(res, statusCode, message) {
   });
 }
 
-function getBaseUrl(req) {
-  const fromEnv = (process.env.BASE_URL || '').trim();
-  const raw = fromEnv.length ? fromEnv : `${req.protocol}://${req.get('host')}`;
-  return raw.replace(/\/+$/, '');
-}
-
 function toPublicUrl(req, type, filename) {
-  const base = getBaseUrl(req);
-  return `${base}/uploads/${type}/${encodeURIComponent(filename)}`;
+  return buildPublicUploadUrl(req, type, filename);
 }
 
 function toStoredPath(type, filename) {
