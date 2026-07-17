@@ -16,6 +16,14 @@ const validateSubmission = [
   handleValidationResult
 ];
 
+router.get('/teacher/submissions/:submissionId/progress', verifyJwtToken, requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult, controller.getTeacherProgress);
+router.get('/teacher/sessions/:sessionId/activities/:activityId/attempts', verifyJwtToken, requireRole('teacher'),
+  param('sessionId').isMongoId().withMessage('Invalid session id'),
+  param('activityId').isString().trim().notEmpty().isLength({ max: 100 }),
+  query('page').optional().isInt({ min: 1 }), query('limit').optional().isInt({ min: 1, max: 25 }),
+  handleValidationResult, controller.getTeacherAttempts);
+
 router.get('/submissions/:submissionId', ...validateSubmission, controller.getSession);
 router.post('/submissions/:submissionId/generate', createSensitiveRateLimiter(), ...validateSubmission, controller.generateSession);
 router.post('/sessions/:sessionId/activities/:activityId/check', createSensitiveRateLimiter(), verifyJwtToken, requireRole('student'),

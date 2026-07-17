@@ -199,4 +199,4 @@ async function generateSession(submissionId, studentId, options = {}) {
   }
 }
 
-module.exports = { AdaptivePracticeError, calculateSkills, buildGenerationSourceFingerprint, getCurrentSession, generateSession, validateAiResponse, buildMessages };
+module.exports = { AdaptivePracticeError, calculateSkills, buildGenerationSourceFingerprint, loadOwnedSource, getCurrentSession, generateSession, validateAiResponse, buildMessages };

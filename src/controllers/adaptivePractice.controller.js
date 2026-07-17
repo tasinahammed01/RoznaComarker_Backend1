@@ -2,6 +2,7 @@
 
 const service = require('../services/adaptivePractice.service');
 const attemptService = require('../services/adaptivePracticeAttempt.service');
+const teacherService = require('../services/teacherAdaptivePractice.service');
 
 function send(res, status, data) {
   return res.status(status).json({ success: true, data });
@@ -48,4 +49,14 @@ async function listAttempts(req, res) {
   catch (error) { return handleError(res, error); }
 }
 
-module.exports = { getSession, generateSession, checkResponse, listAttempts };
+async function getTeacherProgress(req, res) {
+  try { return send(res, 200, await teacherService.getProgress(req.params.submissionId, req.user._id)); }
+  catch (error) { return handleError(res, error); }
+}
+
+async function getTeacherAttempts(req, res) {
+  try { return send(res, 200, await teacherService.getAttempts(req.params.sessionId, req.params.activityId, req.user._id, req.query.page, req.query.limit)); }
+  catch (error) { return handleError(res, error); }
+}
+
+module.exports = { getSession, generateSession, checkResponse, listAttempts, getTeacherProgress, getTeacherAttempts };
