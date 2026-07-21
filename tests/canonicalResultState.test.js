@@ -40,6 +40,28 @@ describe('canonical result state contract', () => {
       processingActive: false, automaticPollingAllowed: false, terminal: true });
   });
 
+  test('active evaluation never exposes matching persisted score or detailed feedback', () => {
+    const state = buildCanonicalResultState({ submission: { correctionStatus: 'completed', correctionSourceHash: 'hash',
+      correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION, evaluationStatus: 'processing', evaluationJobId: 'job' },
+    feedback: { evaluationSourceHash: 'hash', detailedFeedbackSourceHash: 'hash', overallScore: 88, grade: 'B',
+      detailedFeedback: { status: 'completed', sourceHash: 'hash', version: 'canonical-detailed-feedback-1',
+        areasForImprovement: [], strengths: [], actionSteps: [] } } });
+    expect(state).toMatchObject({ score: null, grade: null, evaluationStatus: 'processing',
+      evaluationCurrent: false, detailedFeedbackStatus: 'pending', detailedFeedbackCurrent: false });
+  });
+
+  test('completed matching lifecycle exposes score and valid structured detailed feedback together', () => {
+    const detailedFeedback = { status: 'completed', sourceHash: 'hash', version: 'canonical-detailed-feedback-1',
+      areasForImprovement: [{ id: 'area', category: 'GRAMMAR', title: 'Grammar', issueCount: 1, score: 20,
+        maxScore: 25, explanation: 'One issue.', dominantSymbols: [], examples: [] }],
+      strengths: [], actionSteps: [] };
+    const state = buildCanonicalResultState({ submission: { correctionStatus: 'completed', correctionSourceHash: 'hash',
+      correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION, evaluationStatus: 'completed' },
+    feedback: { evaluationSourceHash: 'hash', detailedFeedbackSourceHash: 'hash', overallScore: 88, grade: 'B', detailedFeedback } });
+    expect(state).toMatchObject({ score: 88, evaluationStatus: 'completed', evaluationCurrent: true,
+      detailedFeedbackStatus: 'completed', detailedFeedbackCurrent: true });
+  });
+
   test('completed canonical analysis permits genuine zero semantic counts', () => {
     const state = buildCanonicalResultState({ submission: { correctionStatus: 'completed', writingCorrections: [],
       correctionStatistics: { content: 0, grammar: 0, organization: 0, vocabulary: 0, mechanics: 0, total: 0 } } });

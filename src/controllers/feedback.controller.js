@@ -2498,6 +2498,12 @@ async function upsertSubmissionFeedback(req, res) {
       body.detailedFeedback && typeof body.detailedFeedback === "object"
         ? body.detailedFeedback
         : {};
+    const owns = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+    const legacyDetailedObject = ['strengths', 'areasForImprovement', 'actionSteps'].some((key) => owns(detailedFeedbackObj, key))
+      && ['strengths', 'areasForImprovement', 'actionSteps'].every((key) => !owns(detailedFeedbackObj, key)
+        || (Array.isArray(detailedFeedbackObj[key]) && detailedFeedbackObj[key].every((item) => typeof item === 'string')));
+    const replaceDetailedFeedback = legacyDetailedObject
+      || ['strengths', 'areasForImprovement', 'actionSteps'].some((key) => owns(body, key));
 
     const rubric =
       body.rubricScores && typeof body.rubricScores === "object"
@@ -2521,20 +2527,20 @@ async function upsertSubmissionFeedback(req, res) {
     }
 
     // Accept both the new contract (body.detailedFeedback.*) and legacy root arrays.
-    const strengths = normalizeStringArrayPayload(
+    const strengths = replaceDetailedFeedback ? normalizeStringArrayPayload(
       typeof detailedFeedbackObj.strengths !== "undefined"
         ? detailedFeedbackObj.strengths
         : body.strengths,
-    );
+    ) : [];
     if (strengths === null) {
       return sendError(res, 400, "strengths must be an array of strings");
     }
 
-    const areasForImprovement = normalizeStringArrayPayload(
+    const areasForImprovement = replaceDetailedFeedback ? normalizeStringArrayPayload(
       typeof detailedFeedbackObj.areasForImprovement !== "undefined"
         ? detailedFeedbackObj.areasForImprovement
         : body.areasForImprovement,
-    );
+    ) : [];
     if (areasForImprovement === null) {
       return sendError(
         res,
@@ -2543,11 +2549,11 @@ async function upsertSubmissionFeedback(req, res) {
       );
     }
 
-    const actionSteps = normalizeStringArrayPayload(
+    const actionSteps = replaceDetailedFeedback ? normalizeStringArrayPayload(
       typeof detailedFeedbackObj.actionSteps !== "undefined"
         ? detailedFeedbackObj.actionSteps
         : body.actionSteps,
-    );
+    ) : [];
     if (actionSteps === null) {
       return sendError(res, 400, "actionSteps must be an array of strings");
     }
@@ -2600,17 +2606,16 @@ async function upsertSubmissionFeedback(req, res) {
       teacherId,
       rubricScores: normalizedRubric,
       overriddenByTeacher: true,
-      detailedFeedback: {
-        strengths,
-        areasForImprovement,
-        actionSteps,
-      },
       aiFeedback: {
         perCategory,
         overallComments: aiOverallComments,
       },
       rubricDesigner: normalizedRubricDesigner.value,
     };
+
+    if (replaceDetailedFeedback) {
+      update.detailedFeedback = { strengths, areasForImprovement, actionSteps };
+    }
 
     if (typeof overallScore === "number") {
       update.overallScore = overallScore;

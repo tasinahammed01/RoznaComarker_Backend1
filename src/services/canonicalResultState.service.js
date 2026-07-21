@@ -45,10 +45,12 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
 
   const sourceHash = layoutCurrent ? (submission.correctionSourceHash || null) : null;
   const teacherOverride = layoutCurrent && Boolean(feedback?.overriddenByTeacher);
-  const evaluationCurrent = Boolean(feedback && (teacherOverride || (semanticComplete && sourceHash && feedback.evaluationSourceHash === sourceHash)));
   const correctionProcessing = correctionStatus === 'processing';
   const correctionPending = ['pending', 'processing'].includes(correctionStatus);
   const evaluationJobActive = semanticComplete && submission.evaluationStatus === 'processing' && Boolean(submission.evaluationJobId);
+  const evaluationLifecycleComplete = ['completed', 'partial'].includes(String(submission.evaluationStatus || ''));
+  const evaluationCurrent = Boolean(feedback && (teacherOverride || (semanticComplete
+    && evaluationLifecycleComplete && sourceHash && feedback.evaluationSourceHash === sourceHash)));
   let evaluationStatus = teacherOverride ? 'completed' : String(submission.evaluationStatus || 'pending');
   if (correctionProcessing && !teacherOverride) evaluationStatus = 'pending';
   else if (semanticFailed && !teacherOverride) evaluationStatus = 'blocked';
@@ -58,18 +60,20 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
   const detailedHashCurrent = Boolean(sourceHash && feedback?.detailedFeedbackSourceHash === sourceHash);
   const structuredDetailedFeedback = isStructuredDetailedFeedback(feedback?.detailedFeedback);
   const invalidCanonicalFeedback = Boolean(evaluationCurrent && detailedHashCurrent && feedback?.detailedFeedback && !structuredDetailedFeedback && !teacherOverride);
-  const detailedCurrent = Boolean(evaluationCurrent && (teacherOverride
+  const detailedCurrent = Boolean(!evaluationJobActive && evaluationCurrent && (teacherOverride
     ? feedback?.detailedFeedback
     : detailedHashCurrent && structuredDetailedFeedback));
   const detailedFeedbackStatus = correctionPending && !teacherOverride
     ? 'pending'
     : semanticFailed && !teacherOverride
     ? 'blocked'
+    : evaluationJobActive && !teacherOverride
+    ? 'pending'
     : invalidCanonicalFeedback
     ? 'failed'
     : detailedCurrent
     ? String(feedback?.detailedFeedback?.status || 'completed')
-    : feedback?.detailedFeedback ? 'stale' : evaluationJobActive ? 'pending' : 'blocked';
+    : feedback?.detailedFeedback ? 'stale' : 'blocked';
   const processingActive = ['pending', 'processing'].includes(String(submission.ocrStatus || 'completed'))
     || correctionProcessing || evaluationJobActive;
   const terminal = !processingActive && (semanticFailed || semanticComplete);
@@ -107,8 +111,8 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
     semanticNextRetryAt: submission.semanticNextRetryAt || null,
     semanticErrorCode,
     retryable: manualRetryAllowed,
-    score: evaluationCurrent && Number.isFinite(Number(feedback?.overallScore)) ? Number(feedback.overallScore) : null,
-    grade: evaluationCurrent && typeof feedback?.grade === 'string' ? feedback.grade : null,
+    score: !evaluationJobActive && evaluationCurrent && Number.isFinite(Number(feedback?.overallScore)) ? Number(feedback.overallScore) : null,
+    grade: !evaluationJobActive && evaluationCurrent && typeof feedback?.grade === 'string' ? feedback.grade : null,
     evaluationCurrent,
     detailedFeedbackCurrent: detailedCurrent
   };
