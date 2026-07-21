@@ -15,10 +15,10 @@ function parseAllowedOrigins(value) {
 
 function createCorsMiddleware() {
   const isProd = process.env.NODE_ENV === 'production';
-  const allowedOrigins = parseAllowedOrigins(process.env.FRONTEND_URL);
+  const allowedOrigins = parseAllowedOrigins(process.env.CORS_ORIGINS || process.env.FRONTEND_URL);
 
   if (isProd && !allowedOrigins.length) {
-    throw new Error('FRONTEND_URL must be set in production');
+    throw new Error('CORS_ORIGINS or FRONTEND_URL must be set in production');
   }
 
   return cors({

@@ -49,6 +49,38 @@ describe('canonical transcript layout', () => {
     expect(result.spans.map((span) => span.wordId)).toEqual(['1', '2', '3']);
   });
 
+  test('removes repeated detached right-margin binding glyphs without leaving separator gaps', () => {
+    const result = buildCanonicalPageFromWords([
+      word('w1', 'Students', 10, 10, 0, 23, 12), word('w2', 'learn', 26, 10, 0, 34, 12),
+      word('ring1', 'D', 95, 10, 9, 97, 12), word('ring2', 'D', 95, 14, 10, 97, 16),
+      word('w3', 'through', 10, 14, 1, 21, 16), word('w4', 'practice.', 24, 14, 1, 38, 16),
+      word('ring3', 'B', 95, 18, 11, 97, 20), word('ring4', '#', 96, 22, 12, 98, 24),
+      word('w5', 'Revision', 10, 18, 2, 22, 20), word('w6', 'helps.', 25, 18, 2, 34, 20)
+    ]);
+    expect(result.text).toBe('Students learn through practice. Revision helps.');
+    expect(result.text).not.toMatch(/\b[DB]\b|#/u);
+    expect(result.text).not.toContain('\n\n');
+    expect(result.spans.map((span) => span.wordId)).toEqual(['w1', 'w2', 'w3', 'w4', 'w5', 'w6']);
+  });
+
+  test('preserves legitimate single letters in the writing column and a lone grade at the edge', () => {
+    const result = buildCanonicalPageFromWords([
+      word('w1', 'Plan', 10, 10, 0), word('w2', 'B', 22, 10, 0, 24, 12), word('w3', 'is', 27, 10, 0),
+      word('w4', 'clear.', 36, 10, 0), word('grade', 'D', 95, 30, 4, 97, 32)
+    ]);
+    expect(result.text).toContain('Plan B is clear.');
+    expect(result.spans.map((span) => span.wordId)).toContain('grade');
+  });
+
+  test('uses a real blank-line-sized geometric gap for paragraphs but ordinary wraps remain spaces', () => {
+    const result = buildCanonicalPageFromWords([
+      word('w1', 'First', 10, 10, 0), word('w2', 'line', 20, 10, 0),
+      word('w3', 'wraps.', 10, 13, 1),
+      word('w4', 'New', 10, 24, 2), word('w5', 'paragraph.', 20, 24, 2)
+    ]);
+    expect(result.text).toBe('First line wraps.\n\nNew paragraph.');
+  });
+
   test('preserves uploaded file order and ignores duplicate page records', () => {
     const result = buildCanonicalSubmissionTranscript({ files: ['a', 'b'], ocrPages: [
       { fileId: 'b', pageNumber: 1, words: [{ text: 'Second', paragraphIndex: 0 }] },
@@ -62,6 +94,8 @@ describe('canonical transcript layout', () => {
     expect(result.wordSpans.map((span) => span.separatorBefore)).toEqual(['', ' ']);
     expect(result.wordSpans.map((span) => `${span.separatorBefore}${result.text.slice(span.start, span.end)}`).join(''))
       .toBe(result.text);
+    expect(new Set(result.wordSpans.map((span) => span.wordId)).size).toBe(2);
+    expect(result.wordSpans.map((span) => span.wordId)).toEqual(['word_a_1_1', 'word_b_1_1']);
   });
 
   test('legacy visual line breaks become spaces while blank lines remain paragraphs', () => {

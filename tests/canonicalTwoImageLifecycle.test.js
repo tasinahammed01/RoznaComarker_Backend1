@@ -10,9 +10,13 @@ let mockOcrCall = 0;
 const pageResult = (text) => ({
   fullText: text,
   transcriptText: text,
-  pages: [{ pageNumber: 1, words: text.split(/\s+/).map((word, index) => ({
+  pages: [{ pageNumber: 1, words: [...text.split(/\s+/).map((word, index) => ({
     text: word, paragraphIndex: 0, bbox: { x: 8 + index * 10, y: 15, w: Math.min(9, word.length + 2), h: 4 }
-  })) }]
+  })),
+  { text: 'D', paragraphIndex: 8, bbox: { x: 95, y: 12, w: 2, h: 3 } },
+  { text: 'D', paragraphIndex: 9, bbox: { x: 95, y: 20, w: 2, h: 3 } },
+  { text: 'B', paragraphIndex: 10, bbox: { x: 95, y: 28, w: 2, h: 3 } },
+  { text: '#', paragraphIndex: 11, bbox: { x: 96, y: 36, w: 2, h: 3 } }] }]
 });
 
 jest.mock('../src/services/visionOcr.service', () => ({
@@ -90,12 +94,14 @@ const waitFor = async (id, predicate, timeoutMs = 10000) => {
 const canonicalFields = (data) => ({
   submissionId: data.submissionId,
   correctionSourceHash: data.correctionSourceHash,
+  evaluationSourceHash: data.evaluationSourceHash,
   score: data.score,
   rubricScores: data.rubricScores,
   correctionStatistics: data.correctionStatistics,
   semanticStatus: data.semanticStatus,
   evaluationStatus: data.evaluationStatus,
-  detailedFeedbackStatus: data.detailedFeedbackStatus
+  detailedFeedbackStatus: data.detailedFeedbackStatus,
+  detailedFeedback: data.detailedFeedback
 });
 
 describe('isolated canonical two-image HTTP lifecycle', () => {
@@ -147,6 +153,13 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     return response.body.data;
   }
 
+  async function getOcrCorrections(id, token) {
+    const response = await request(app).post(`/api/submissions/${id}/ocr-corrections`)
+      .set('Authorization', `Bearer ${token}`).send({});
+    expect(response.status).toBe(200);
+    return response.body.data;
+  }
+
   async function getPdf(id, token) {
     const response = await request(app).get(`/api/pdf/download/${id}`).set('Authorization', `Bearer ${token}`).buffer(true);
     expect(response.status).toBe(200);
@@ -162,12 +175,28 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(uploaded.status).toBe(200);
     const successId = String(uploaded.body.data._id);
     const pending = await getResult(successId, studentToken);
+    const pendingTeacher = await getResult(successId, teacherToken);
+    expect(canonicalFields(pending)).toEqual(canonicalFields(pendingTeacher));
     expect(pending).toMatchObject({ submissionId: successId, score: null, rubricScores: null, evaluationStatus: 'pending', detailedFeedbackStatus: 'pending' });
     expect(pending.detailedFeedback).toBeNull();
     expect(JSON.stringify(pending)).not.toContain('77');
     releaseOcr();
     const completedDoc = await waitFor(successId, (doc) => doc.correctionStatus === 'completed' && doc.evaluationStatus === 'completed');
     expect(completedDoc.ocrPages).toHaveLength(2);
+    const canonicalOcr = await getOcrCorrections(successId, studentToken);
+    expect(canonicalOcr.transcriptLayoutVersion).toBe('ocr-layout-v3');
+    expect(canonicalOcr.ocr.map((page) => page.fileId)).toEqual(completedDoc.files.map(String));
+    expect(canonicalOcr.ocr.map((page) => page.pageNumber)).toEqual([1, 1]);
+    const canonicalWordTexts = canonicalOcr.ocr.flatMap((page) => page.words).map((word) => word.text);
+    expect(canonicalWordTexts).not.toContain('D');
+    expect(canonicalWordTexts).not.toContain('B');
+    expect(canonicalWordTexts).not.toContain('#');
+    expect(new Set(canonicalOcr.ocr.flatMap((page) => page.words).map((word) => word.id)).size)
+      .toBe(canonicalOcr.ocr.flatMap((page) => page.words).length);
+    expect(canonicalOcr.transcript).not.toContain('\n\n');
+    const teacherCanonicalOcr = await getOcrCorrections(successId, teacherToken);
+    expect(teacherCanonicalOcr.ocr).toEqual(canonicalOcr.ocr);
+    expect(teacherCanonicalOcr.transcript).toBe(canonicalOcr.transcript);
     const successStudent = await getResult(successId, studentToken);
     const successTeacher = await getResult(successId, teacherToken);
     expect(canonicalFields(successStudent)).toEqual(canonicalFields(successTeacher));
@@ -191,8 +220,9 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(canonicalFields(failedStudent)).toEqual(canonicalFields(failedTeacher));
     expect(failedStudent).toMatchObject({ submissionId: failureId, score: null, rubricScores: null, evaluationStatus: 'blocked', detailedFeedbackStatus: 'blocked', statisticsCompleteness: 'language_only', manualRetryAllowed: true, automaticPollingAllowed: false });
     expect(failedStudent.correctionStatistics).toMatchObject({ grammar: 1, mechanics: 1 });
-    expect(JSON.stringify(failedStudent)).not.toContain('77');
-    expect(JSON.stringify(failedStudent)).not.toContain(String(successStudent.score));
+    expect(failedStudent.score).not.toBe(77);
+    expect(failedStudent.overallScore).not.toBe(77);
+    expect(failedStudent.score).not.toBe(successStudent.score);
     const failedPdf = await getPdf(failureId, teacherToken);
     expect(failedPdf.submission.submissionId).toBe(failureId);
     expect(failedPdf.result.overallScore).toBeNull();

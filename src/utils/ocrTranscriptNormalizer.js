@@ -2,7 +2,7 @@
 
 // Increment whenever canonical reading-order or separator rules change. This is
 // intentionally independent from the correction prompt/schema version.
-const CANONICAL_TRANSCRIPT_LAYOUT_VERSION = 'ocr-layout-v2';
+const CANONICAL_TRANSCRIPT_LAYOUT_VERSION = 'ocr-layout-v3';
 
 const CLOSING_PUNCTUATION = /^[,.!?:;%\)\]\}’”]/u;
 const OPENING_PUNCTUATION = /[\(\[\{“]$/u;
@@ -49,6 +49,40 @@ function bboxOf(word) {
   const y1 = Number.isFinite(Number(box.y1)) ? Number(box.y1) : y0 + Number(box.h);
   if (![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0) return null;
   return { x0, y0, x1, y1, width: x1 - x0, height: y1 - y0, centerY: (y0 + y1) / 2 };
+}
+
+function sanitizeOcrMarginArtifacts(words) {
+  const candidates = (Array.isArray(words) ? words : []).map((word, inputIndex) => ({ word, inputIndex, box: bboxOf(word),
+    text: typeof word?.text === 'string' ? word.text.trim() : '' })).filter((item) => item.text);
+  const geometric = candidates.filter((item) => item.box);
+  if (geometric.length < 4) return candidates.map((item) => item.word);
+
+  const suspicious = (item) => item.text.length <= 2 && /^[#DB0O|Il1]+$/u.test(item.text);
+  const body = geometric.filter((item) => !suspicious(item) && item.text.length >= 2 && item.box.x0 < 88);
+  if (body.length < 3) return candidates.map((item) => item.word);
+  const heights = body.map((item) => item.box.height);
+  const medianHeight = median(heights) || 2;
+  const sortedRights = body.map((item) => item.box.x1).sort((a, b) => a - b);
+  const mainRight = sortedRights[Math.min(sortedRights.length - 1, Math.floor(sortedRights.length * 0.9))];
+  const edgeGlyphs = geometric.filter((item) => suspicious(item)
+    && (item.box.x0 >= 88 || item.box.x0 > mainRight + Math.max(2.5, medianHeight * 0.8)));
+
+  const clustered = new Set();
+  for (const item of edgeGlyphs) {
+    const peers = edgeGlyphs.filter((other) => other !== item
+      && Math.abs(((other.box.x0 + other.box.x1) / 2) - ((item.box.x0 + item.box.x1) / 2)) <= Math.max(4, medianHeight * 1.5)
+      && Math.abs(other.box.centerY - item.box.centerY) >= medianHeight * 0.8);
+    if (peers.length) clustered.add(item.inputIndex);
+  }
+
+  // Single letters are legitimate in prose, initials, and grades. Remove them
+  // only as part of a detached vertical edge cluster. A lone hash-like mark is
+  // removed only when it is extremely far outside the established text column.
+  return candidates.filter((item) => {
+    if (!item.box || !suspicious(item)) return true;
+    if (clustered.has(item.inputIndex)) return false;
+    return !(item.text === '#' && item.box.x0 >= 94 && item.box.x0 > mainRight + Math.max(4, medianHeight * 1.5));
+  }).map((item) => item.word);
 }
 
 function clusterVisualLines(words) {
@@ -112,7 +146,7 @@ function lineParagraphBoundary(previousLine, currentLine, context) {
 }
 
 function orderWordsAndSeparators(words) {
-  const cleaned = (Array.isArray(words) ? words : [])
+  const cleaned = sanitizeOcrMarginArtifacts(words)
     .map((word, index) => ({ ...word, text: typeof word?.text === 'string' ? word.text.trim() : '', __inputIndex: index }))
     .filter((word) => word.text);
   const lines = clusterVisualLines(cleaned);
@@ -228,7 +262,7 @@ function buildCanonicalSubmissionTranscript(submission) {
   for (const entry of pages) {
     const identifiedWords = (Array.isArray(entry.page.words) ? entry.page.words : []).map((word, index) => ({
       ...word,
-      id: typeof word?.id === 'string' && word.id ? word.id : `word_${entry.fileId}_${entry.pageNumber}_${index + 1}`,
+      id: `word_${entry.fileId}_${entry.pageNumber}_${typeof word?.id === 'string' && word.id ? word.id : index + 1}`,
       fileId: entry.fileId,
       page: entry.pageNumber
     }));
@@ -272,6 +306,7 @@ module.exports = {
   getOcrWordSeparator,
   buildNormalizedTranscriptFromWords,
   buildCanonicalPageFromWords,
+  sanitizeOcrMarginArtifacts,
   normalizeLegacyDisplayText,
   buildCanonicalSubmissionTranscript,
   getNormalizedSubmissionTranscript,
