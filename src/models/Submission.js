@@ -116,6 +116,11 @@ const submissionSchema = new Schema(
     ocrUpdatedAt: {
       type: Date
     },
+    // Changes on every resubmission so an older background OCR job cannot overwrite it.
+    ocrJobId: {
+      type: String,
+      index: true
+    },
     transcriptText: {
       type: String,
       trim: true
@@ -127,6 +132,36 @@ const submissionSchema = new Schema(
       type: correctionStatisticsSchema,
       default: undefined
     },
+    correctionStatus: {
+      type: String,
+      enum: ['pending', 'processing', 'completed', 'partial', 'failed'],
+      default: undefined,
+      index: true
+    },
+    writingCorrections: { type: [Schema.Types.Mixed], default: undefined },
+    correctionSourceHash: { type: String, trim: true },
+    correctionVersion: { type: String, trim: true },
+    correctionTranscriptLayoutVersion: { type: String, trim: true },
+    correctionError: { type: String, trim: true },
+    correctionUpdatedAt: { type: Date },
+    correctionJobId: { type: String, index: true },
+    semanticStatus: { type: String, enum: ['pending', 'processing', 'retry_wait', 'completed', 'failed'], default: undefined, index: true },
+    semanticAttempt: { type: Number, min: 0, default: undefined },
+    semanticMaxAttempts: { type: Number, min: 0, default: undefined },
+    semanticNextRetryAt: { type: Date, default: undefined },
+    semanticErrorCode: { type: String, trim: true },
+    semanticSourceKey: { type: String, trim: true, index: true },
+    semanticProvider: { type: String, trim: true },
+    semanticModel: { type: String, trim: true },
+    semanticPromptVersion: { type: String, trim: true },
+    semanticMetrics: { type: Schema.Types.Mixed, default: undefined },
+    evaluationStatus: { type: String, enum: ['pending', 'processing', 'completed', 'partial', 'failed', 'stale'], default: undefined, index: true },
+    evaluationJobId: { type: String, index: true },
+    evaluationSourceHash: { type: String, trim: true },
+    evaluationVersion: { type: String, trim: true },
+    evaluationRubricSourceHash: { type: String, trim: true },
+    evaluationError: { type: String, trim: true },
+    evaluationUpdatedAt: { type: Date },
     feedback: {
       type: Schema.Types.ObjectId,
       ref: 'Feedback'

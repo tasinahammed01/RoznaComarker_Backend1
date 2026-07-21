@@ -10,6 +10,9 @@ class EmailService {
 
   initializeTransporter() {
     try {
+      // Unit and HTTP integration tests must never create SMTP sockets. Email
+      // behavior is exercised with explicit transport mocks instead.
+      if (process.env.NODE_ENV === 'test') return;
       if (!process.env.SENDGRID_API_KEY) {
         logger.warn('SendGrid API key not found in environment variables');
         return;

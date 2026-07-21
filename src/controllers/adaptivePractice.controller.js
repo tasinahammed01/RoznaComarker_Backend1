@@ -26,11 +26,15 @@ async function getSession(req, res) {
 }
 
 async function generateSession(req, res) {
+  const requestReceivedAt = new Date();
   try {
     if (req.body?.regenerate === true) {
       return res.status(400).json({ success: false, code: 'REGENERATION_UNSUPPORTED', message: 'Regeneration is not supported yet.' });
     }
-    const data = await service.generateSession(req.params.submissionId, req.user._id, { retry: req.body?.retry === true });
+    const data = await service.generateSession(req.params.submissionId, req.user._id, {
+      retry: req.body?.retry === true,
+      requestReceivedAt
+    });
     return send(res, data.state === 'generating' ? 202 : 200, data);
   } catch (error) {
     return handleError(res, error);

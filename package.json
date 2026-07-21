@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "benchmark:semantic": "node scripts/benchmarkSemanticAnalysis.js"
   },
   "dependencies": {
     "@google-cloud/vision": "^4.3.3",
@@ -16,7 +17,7 @@
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "express-mongo-sanitize": "^2.2.0",
-    "express-rate-limit": "^8.2.1",
+    "express-rate-limit": "^8.6.0",
     "express-validator": "^7.2.1",
     "firebase-admin": "^12.7.0",
     "groq-sdk": "^1.2.1",
@@ -27,7 +28,7 @@
     "jsonwebtoken": "^9.0.2",
     "mammoth": "^1.6.0",
     "mongoose": "^9.1.2",
-    "morgan": "^1.10.1",
+    "morgan": "^1.11.0",
     "multer": "^1.4.5-lts.1",
     "nodemailer": "^8.0.4",
     "openai": "^6.34.0",
@@ -36,11 +37,12 @@
     "pdfjs-dist": "^3.11.174",
     "pdfkit": "^0.16.0",
     "pdfmake": "^0.3.8",
+    "puppeteer": "^24.39.1",
     "qrcode": "^1.5.4",
     "sharp": "^0.34.5",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
-    "undici": "^6.23.0",
+    "undici": "^6.27.0",
     "uuid": "^9.0.1",
     "xlsx": "^0.18.5"
   },
@@ -60,6 +62,9 @@
   "jest": {
     "testMatch": [
       "<rootDir>/tests/**/*.test.js"
-    ]
+    ],
+    "transform": {
+      "^.+\\.tsx?$": "<rootDir>/tests/helpers/typescriptJestTransformer.cjs"
+    }
   }
 }

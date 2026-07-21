@@ -51,6 +51,7 @@ const adaptivePracticeSessionSchema = new Schema({
     promptVersion: { type: String, trim: true },
     startedAt: { type: Date },
     completedAt: { type: Date },
+    metrics: { type: Schema.Types.Mixed, default: undefined },
     errorCode: { type: String, trim: true },
     errorMessage: { type: String, trim: true }
   }

@@ -1,0 +1,5 @@
+﻿    ΓêÜ keeps edge markers inside the printable stage and chooses the nearest gutter (343 ms)
+    ΓêÜ rejects invalid and fully out-of-range boxes while clamping safe intersections (1 ms)
+    ΓêÜ coordinate conversion includes image gutter offset and preserves proportional box width (1 ms)
+    ΓêÜ HTML keeps exact underlines, compact references, escaped symbols, and no full-width leaders (37 ms)
+

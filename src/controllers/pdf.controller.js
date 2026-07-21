@@ -13,22 +13,11 @@ const User = require("../models/user.model");
 const logger = require("../utils/logger");
 
 const uploadService = require("../services/upload.service");
-const { buildOcrCorrections } = require("../services/ocrCorrections.service");
-const {
-  normalizeOcrTranscript,
-  getNormalizedSubmissionTranscript,
-} = require("../utils/ocrTranscriptNormalizer");
-
 const { ApiError } = require("../middlewares/error.middleware");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { v4: uuidv4 } = require("uuid");
-
-function getRequestBaseUrl(req) {
-  const raw = `${req.protocol}://${req.get("host")}`;
-  return raw.replace(/\/+$/, "");
-}
 
 async function getSubmissionWithPermissionsOrThrow({ user, submissionId }) {
   if (!mongoose.Types.ObjectId.isValid(submissionId)) {
@@ -74,16 +63,18 @@ async function getSubmissionWithPermissionsOrThrow({ user, submissionId }) {
 
 async function downloadSubmissionPdf(req, res, next) {
   try {
-    if (process.env.NODE_ENV === "test") {
+    if (process.env.NODE_ENV === "test" && process.env.ENABLE_TEST_PDF_HTTP !== "true") {
       throw new ApiError(
         501,
         "PDF generation is not available in test environment",
       );
     }
 
-    // Lazy-load to avoid pulling PDF generation during test imports.
+    // Lazy-load the read-only browser report pipeline during an authorized download.
     // eslint-disable-next-line global-require
-    const { generatePdf } = require("../modules/pdfGenerator");
+    const { generateSubmissionFeedbackPdf } = require("../modules/submissionFeedbackPdfGenerator");
+    // eslint-disable-next-line global-require
+    const { buildPersistedSubmissionFeedbackReport } = require("../services/submissionFeedbackReport.service");
 
     const submissionId =
       req.params && req.params.submissionId
@@ -102,74 +93,6 @@ async function downloadSubmissionPdf(req, res, next) {
     const submissionFeedback = await SubmissionFeedback.findOne({
       submissionId: submission._id,
     });
-
-    const transcriptText = getNormalizedSubmissionTranscript(submission);
-
-    const ocrWords =
-      submission && submission.ocrData && typeof submission.ocrData === "object"
-        ? submission.ocrData.words
-        : null;
-
-    const built = await buildOcrCorrections({
-      text: transcriptText,
-      language: "en-US",
-      ocrWords,
-    });
-
-    const issues = Array.isArray(built && built.corrections)
-      ? built.corrections
-      : [];
-
-    const baseUrl = getRequestBaseUrl(req);
-
-    const rawUrls =
-      Array.isArray(submission.fileUrls) && submission.fileUrls.length
-        ? submission.fileUrls
-        : submission.fileUrl && typeof submission.fileUrl === "string"
-          ? [submission.fileUrl]
-          : [];
-
-    const normalizedUrls = rawUrls
-      .map((u) => (typeof u === "string" ? u.trim() : ""))
-      .filter(Boolean)
-      .map((u) =>
-        u.startsWith("http")
-          ? u
-          : `${baseUrl}${u.startsWith("/") ? "" : "/"}${u}`,
-      );
-
-    const fileIds =
-      Array.isArray(submission.files) && submission.files.length
-        ? submission.files
-            .map((f) =>
-              f && typeof f === "object" && f._id ? String(f._id) : String(f),
-            )
-            .filter(Boolean)
-        : submission.file
-          ? [String(submission.file._id || submission.file)]
-          : [];
-
-    const ocrPages = Array.isArray(submission.ocrPages)
-      ? submission.ocrPages
-      : [];
-
-    const images = normalizedUrls.map((url, idx) => {
-      const fileId = fileIds[idx] || "";
-      const pageText = fileId
-        ? ocrPages
-            .filter((p) => p && p.fileId && String(p.fileId) === fileId)
-            .map((p) => normalizeOcrTranscript(p?.text))
-            .filter(Boolean)
-            .join("\n\n")
-        : "";
-
-      return {
-        url,
-        transcriptText: pageText || "",
-      };
-    });
-
-    const imageUrl = images.length ? images[0].url : "";
 
     const studentEmail =
       submission.student && typeof submission.student === "object"
@@ -190,15 +113,14 @@ async function downloadSubmissionPdf(req, res, next) {
         ? submission.assignment.publishedAt || submission.assignment.createdAt
         : null;
 
-    const header = {
+    const identity = {
       studentName,
       studentEmail,
-      submissionId: String(submission._id),
-      date: assignmentPublishDateRaw
-        ? new Date(assignmentPublishDateRaw).toLocaleString()
-        : submission.submittedAt
-          ? new Date(submission.submittedAt).toLocaleString()
-          : "",
+      title: String(submission.assignment?.title || submission.assignment?.name || ""),
+      className: String(submission.class?.name || ""),
+      teacherName: String(submission.assignment?.teacher?.displayName || submission.assignment?.teacher?.email || ""),
+      submittedAt: submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : assignmentPublishDateRaw ? new Date(assignmentPublishDateRaw).toLocaleString() : "",
+      assignmentInstructions: String(submission.assignment?.instructions || submission.assignment?.description || ""),
     };
 
     const tmpDir = path.join(os.tmpdir(), "rozna-pdf");
@@ -208,17 +130,18 @@ async function downloadSubmissionPdf(req, res, next) {
       `submission-feedback-${String(submission._id)}-${uuidv4()}.pdf`,
     );
 
-    const savedPath = await generatePdf(
-      {
-        header,
-        images,
-        transcriptText,
-        issues,
-        feedback,
-        submissionFeedback,
-      },
-      outputPath,
-    );
+    const { viewModel, diagnostics, timings } = await buildPersistedSubmissionFeedbackReport({ submission, submissionFeedback, feedback, identity });
+    logger.info(`[PDF MAP] submissionId=${String(submission._id)} diagnostics=${JSON.stringify(diagnostics)} statisticsMismatch=${viewModel.diagnostics.persistedStatisticsMismatch}`);
+    logger.metric({ event: "pdf_view_model_completed", submissionId: String(submission._id), submittedPageCount: viewModel.submittedPages.length, correctionCount: viewModel.statistics.total, missingAssetCount: diagnostics.missingAssetCount, ...timings });
+    const abortController = new AbortController();
+    const abortRequest = () => abortController.abort();
+    req.once("aborted", abortRequest);
+    let savedPath;
+    try {
+      savedPath = await generateSubmissionFeedbackPdf(viewModel, outputPath, { abortSignal: abortController.signal });
+    } finally {
+      req.removeListener("aborted", abortRequest);
+    }
 
     const safeFilename = "submission-feedback.pdf";
 
@@ -227,9 +150,10 @@ async function downloadSubmissionPdf(req, res, next) {
       "Content-Disposition",
       `attachment; filename="${safeFilename}"`,
     );
-    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.setHeader("Cache-Control", "private, no-cache, no-store, must-revalidate");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
+    res.setHeader("X-Content-Type-Options", "nosniff");
 
     return res.download(savedPath, safeFilename, async (err) => {
       try {
@@ -257,6 +181,7 @@ async function downloadSubmissionPdf(req, res, next) {
     } catch {
       // ignore
     }
+    if (req.aborted || res.destroyed) return undefined;
     if (err instanceof ApiError) {
       return next(err);
     }

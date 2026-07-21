@@ -5,7 +5,7 @@ const { ImageAnnotatorClient } = require('@google-cloud/vision');
 const sizeOf = require('image-size');
 
 const logger = require('../utils/logger');
-const { buildNormalizedTranscriptFromWords } = require('../utils/ocrTranscriptNormalizer');
+const { buildCanonicalPageFromWords } = require('../utils/ocrTranscriptNormalizer');
 
 function getBackendRootDir() {
   return path.resolve(__dirname, '..', '..');
@@ -99,30 +99,15 @@ function bboxFromVertices(vertices, width, height) {
   return { x, y, w, h };
 }
 
-function shouldInsertNewline(prevWord, currWord) {
-  const pb = prevWord && prevWord.bbox;
-  const cb = currWord && currWord.bbox;
-  if (!pb || !cb) return false;
-
-  const prevBottom = pb.y + pb.h;
-  const currTop = cb.y;
-
-  return currTop > prevBottom + pb.h * 0.6;
-}
-
 function buildTranscriptFromWords(words) {
   const list = Array.isArray(words)
     ? words.filter(w => w && typeof w.id === 'string')
     : [];
-  const built = buildNormalizedTranscriptFromWords(list, (previous, current) => {
-    if (previous?.paragraphIndex != null && current?.paragraphIndex != null
-      && Number(previous.paragraphIndex) !== Number(current.paragraphIndex)) return '\n\n';
-    return shouldInsertNewline(previous, current);
-  });
+  const built = buildCanonicalPageFromWords(list);
   return {
     text: built.text,
-    spans: built.spans.map(({ word, start, end }) => ({
-      id: word.id,
+    spans: built.spans.map(({ wordId, word, start, end }) => ({
+      id: wordId,
       page: word.page,
       start,
       end,

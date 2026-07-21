@@ -2,6 +2,7 @@ const env = require("./config/env");
 const connectDB = require("./config/db");
 const logger = require("./utils/logger");
 const { validateAIConfig } = require("./services/aiGeneration.service");
+const pdfBrowserManager = require("./services/pdfBrowserManager.service");
 
 const Plan = require("./models/Plan");
 
@@ -9,9 +10,9 @@ const app = require("./app");
 
 let server;
 
-function shutdown(reason) {
+async function shutdown(reason) {
   logger.warn(`Shutting down (${reason})`);
-
+  await pdfBrowserManager.closeBrowser();
   if (server) {
     server.close(() => {
       logger.info("HTTP server closed");
@@ -39,6 +40,9 @@ process.on("uncaughtException", (err) => {
 
 async function start() {
   await connectDB();
+  const pdfEngine = String(process.env.PDF_REPORT_ENGINE || "puppeteer").toLowerCase();
+  if (pdfEngine !== "puppeteer") throw new Error("Unsupported PDF_REPORT_ENGINE configuration.");
+  pdfBrowserManager.validateBrowserRuntime();
 
   // Validate AI provider configuration
   const aiConfigValidation = validateAIConfig();

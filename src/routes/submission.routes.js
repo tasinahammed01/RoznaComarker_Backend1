@@ -269,6 +269,10 @@ router.post(
   submissionController.getOcrCorrections
 );
 
+router.post('/:submissionId/ocr-corrections/regenerate', verifyJwtToken, requireRole(['student', 'teacher']),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult,
+  submissionController.regenerateCanonicalCorrections);
+
 router.get(
   '/:assignmentId',
   verifyJwtToken,

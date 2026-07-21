@@ -2,18 +2,20 @@ const path = require('path');
 const fs = require('fs');
 
 const File = require('../models/File');
+const Assignment = require('../models/assignment.model');
 
 const logger = require('../utils/logger');
 
 const visionOcr = require('./visionOcr.service');
 const { normalizeOcrTranscript } = require('../utils/ocrTranscriptNormalizer');
+const canonicalCorrectionsPipeline = require('./canonicalCorrectionsPipeline.service');
 
 function toAbsoluteStoredPath(storedPath) {
   if (!storedPath || typeof storedPath !== 'string') return null;
   return path.join(__dirname, '..', '..', storedPath);
 }
 
-async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
+async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
   const ids = Array.isArray(fileIds) ? fileIds.filter(Boolean) : [];
   const first = ids.length ? ids[0] : null;
   if (!first) {
@@ -27,10 +29,28 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
     throw new Error('Missing target doc');
   }
 
-  targetDoc.ocrStatus = 'pending';
-  targetDoc.ocrError = undefined;
-  targetDoc.ocrUpdatedAt = new Date();
-  await targetDoc.save();
+  const isCurrentJob = async () => !jobId || Boolean(await targetDoc.constructor.exists({ _id: targetDoc._id, ocrJobId: jobId }));
+  const saveCurrentJob = async () => {
+    if (!jobId) {
+      await targetDoc.save();
+      return true;
+    }
+    const values = targetDoc.toObject({ depopulate: true });
+    delete values._id;
+    delete values.__v;
+    const persisted = await targetDoc.constructor.updateOne(
+      { _id: targetDoc._id, ocrJobId: jobId },
+      { $set: values }
+    );
+    return persisted.modifiedCount === 1 || persisted.matchedCount === 1;
+  };
+  if (!(await isCurrentJob())) return { ocrStatus: 'superseded' };
+  if (!jobId) {
+    targetDoc.ocrStatus = 'pending';
+    targetDoc.ocrError = undefined;
+    targetDoc.ocrUpdatedAt = new Date();
+    if (!(await saveCurrentJob())) return { ocrStatus: 'superseded' };
+  }
 
   const ocrPages = [];
   const perFileTexts = [];
@@ -78,7 +98,18 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
       continue;
     }
 
-    const ocr = await visionOcr.extractOcrFromImageFile(absolute);
+    let ocr;
+    try {
+      ocr = await visionOcr.extractOcrFromImageFile(absolute);
+    } catch (err) {
+      logger.error({
+        message: 'OCR provider failed for uploaded file',
+        fileId: String(fileId),
+        error: err && err.message ? String(err.message) : 'Unknown OCR provider error',
+        stack: err && err.stack
+      });
+      continue;
+    }
     const rawText = ocr && (ocr.fullText || ocr.transcriptText) ? String(ocr.fullText || ocr.transcriptText) : '';
     const text = normalizeOcrTranscript(ocr && (ocr.transcriptText || ocr.fullText));
     const words = toStoredOcrWords(ocr && Array.isArray(ocr.words) ? ocr.words : []);
@@ -99,6 +130,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
         const pageNumber = typeof p?.pageNumber === 'number' ? p.pageNumber : Number(p?.pageNumber);
         const n = Number.isFinite(pageNumber) ? pageNumber : 1;
 
+        let wordIndex = 0;
         const pageWords = Array.isArray(p?.words)
           ? p.words
               .map((w) => {
@@ -110,7 +142,9 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
                 const ww = Number(bbox.w);
                 const hh = Number(bbox.h);
                 if (![x, y, ww, hh].every((v) => Number.isFinite(v))) return null;
+                wordIndex += 1;
                 return {
+                  id: `word_${String(fileId)}_${n}_${wordIndex}`,
                   text: t,
                   page: n,
                   paragraphIndex: Number.isFinite(Number(w?.paragraphIndex)) ? Number(w.paragraphIndex) : undefined,
@@ -161,10 +195,11 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
       fileIds: ids.map((x) => String(x))
     });
 
+    if (!(await isCurrentJob())) return { ocrStatus: 'superseded' };
     targetDoc.ocrStatus = 'failed';
     targetDoc.ocrError = msg;
     targetDoc.ocrUpdatedAt = new Date();
-    await targetDoc.save();
+    if (!(await saveCurrentJob())) return { ocrStatus: 'superseded' };
 
     return {
       ocrText: targetDoc.ocrText || '',
@@ -173,6 +208,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
     };
   }
 
+  if (!(await isCurrentJob())) return { ocrStatus: 'superseded' };
   targetDoc.ocrStatus = 'completed';
   targetDoc.ocrText = legacyFirstOcrText;
   targetDoc.rawOcrText = legacyFirstRawOcrText;
@@ -188,7 +224,16 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc }) {
     .join('\n\n');
   targetDoc.ocrError = undefined;
   targetDoc.ocrUpdatedAt = new Date();
-  await targetDoc.save();
+  if (!(await saveCurrentJob())) return { ocrStatus: 'superseded' };
+  try {
+    const assignmentDoc = targetDoc.assignment ? await Assignment.findById(targetDoc.assignment).lean().catch(() => null) : null;
+    await canonicalCorrectionsPipeline.generateAndPersist(targetDoc, { assignment: assignmentDoc ? {
+      title: assignmentDoc.title || '', description: assignmentDoc.description || assignmentDoc.instructions || '',
+      rubric: assignmentDoc.rubric || assignmentDoc.rubrics || null
+    } : {} });
+  } catch (err) {
+    logger.error({ message: 'Canonical correction generation failed after OCR', error: err?.message || err });
+  }
 
   return {
     ocrText: targetDoc.ocrText,

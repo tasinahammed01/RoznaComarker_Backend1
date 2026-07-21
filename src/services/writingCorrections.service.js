@@ -14,13 +14,20 @@ const LANGUAGETOOL_TO_ACADEMIC_GROUP = {
   other: 'VOCABULARY'
 };
 
-const LANGUAGETOOL_SYMBOLS = {
-  spelling: 'SP',
-  grammar: 'GR',
-  style: 'ST',
-  typography: 'TY',
-  other: 'CK'
-};
+const RULE_MAPPINGS = [
+  { re: /(MORFOLOGIK_RULE|SPELL|MISSPELL)/i, category: 'MECHANICS', symbol: 'SP' },
+  { re: /(PUNCTUATION|COMMA|APOSTROPHE|SENTENCE_WHITESPACE)/i, category: 'MECHANICS', symbol: 'P' },
+  { re: /(UPPERCASE|LOWERCASE|CASING|CAPITAL)/i, category: 'MECHANICS', symbol: 'CAP' },
+  { re: /(WHITESPACE|SPACE_BEFORE|DOUBLE_SPACE)/i, category: 'MECHANICS', symbol: 'SPC' },
+  { re: /(SUBJECT.*VERB|AGREEMENT|SVA|VERB_AGR|NON3PRS|THIRD_PERSON|DOES_NP_VBZ|PLURAL_VERB)/i, category: 'GRAMMAR', symbol: 'AGR' },
+  { re: /(VERB_FORM|INFINITIVE|GERUND|PARTICIPLE|BASE_FORM|MODAL.*VERB|TO_NON_BASE|AUXILIARY_VERB)/i, category: 'GRAMMAR', symbol: 'VF' },
+  { re: /(TENSE|PAST_TENSE|PRESENT_TENSE)/i, category: 'GRAMMAR', symbol: 'T' },
+  { re: /(ARTICLE|A_VS_AN|THE\b)/i, category: 'GRAMMAR', symbol: 'ART' },
+  { re: /(PREPOSITION|PREP_)/i, category: 'GRAMMAR', symbol: 'PREP' },
+  { re: /(WORD_ORDER|ORDER_OF_WORDS)/i, category: 'GRAMMAR', symbol: 'WO' },
+  { re: /(FRAGMENT|SENTENCE_FRAGMENT)/i, category: 'GRAMMAR', symbol: 'FRAG' },
+  { re: /(RUN_ON|COMMA_SPLICE)/i, category: 'GRAMMAR', symbol: 'RO' }
+];
 
 function defaultLegend() {
   return {
@@ -144,6 +151,19 @@ function legendMetaForGroup(groupKey, legend) {
   return { groupLabel: symbolLabel, symbol, symbolLabel, description, color };
 }
 
+function mapLanguageToolRule(match, legend = defaultLegend()) {
+  const rule = match?.rule || {};
+  const haystack = [rule.id, rule.category?.id, rule.issueType].filter(Boolean).join(' ');
+  let mapped = RULE_MAPPINGS.find((entry) => entry.re.test(haystack));
+  if (!mapped && /misspelling/i.test(String(rule.issueType || ''))) mapped = RULE_MAPPINGS[0];
+  if (!mapped) return null;
+  const group = legend.groups.find((item) => item.key === mapped.category);
+  const symbol = group?.symbols?.find((item) => item.symbol === mapped.symbol);
+  if (!group || !symbol) return null;
+  return { category: mapped.category, groupKey: mapped.category, groupLabel: group.label,
+    symbol: symbol.symbol, symbolLabel: symbol.label, description: symbol.description, color: group.color };
+}
+
 function toIssuesFromLanguageTool(text, ltResponse, legend) {
   const safeText = typeof text === 'string' ? text : '';
   const matches = ltResponse && Array.isArray(ltResponse.matches) ? ltResponse.matches : [];
@@ -161,8 +181,9 @@ function toIssuesFromLanguageTool(text, ltResponse, legend) {
         ? m.replacements[0].value
         : '';
 
-      const groupKey = classifyIssueType(m);
-      const meta = legendMetaForGroup(groupKey, legend);
+      const meta = mapLanguageToolRule(m, legend);
+      if (!meta) return null;
+      const groupKey = meta.groupKey;
 
       const message = typeof m.message === 'string' ? m.message : '';
 
@@ -183,6 +204,18 @@ function toIssuesFromLanguageTool(text, ltResponse, legend) {
     .filter(Boolean);
 }
 
+function languageToolDiagnostics(text, ltResponse, legend) {
+  const matches = Array.isArray(ltResponse?.matches) ? ltResponse.matches : [];
+  const counts = { rawMatches: matches.length, invalidOffset: 0, unknownRule: 0, unmappedSymbol: 0, persisted: 0 };
+  for (const match of matches) {
+    const start = Number(match?.offset); const length = Number(match?.length);
+    if (!Number.isFinite(start) || !Number.isFinite(length) || length <= 0 || start < 0 || start + length > text.length) { counts.invalidOffset++; continue; }
+    if (!match?.rule?.id) counts.unknownRule++;
+    if (!mapLanguageToolRule(match, legend)) counts.unmappedSymbol++; else counts.persisted++;
+  }
+  return counts;
+}
+
 async function getLegend() {
   return getLegendFromDb();
 }
@@ -199,11 +232,16 @@ async function check({ text, language }) {
     text: safeText,
     issues,
     legendSource: 'DB',
-    imageAnnotations: []
+    imageAnnotations: [],
+    diagnostics: languageToolDiagnostics(safeText, lt, legend)
   };
 }
 
 module.exports = {
   getLegend,
-  check
+  check,
+  defaultLegend,
+  mapLanguageToolRule,
+  toIssuesFromLanguageTool,
+  languageToolDiagnostics
 };

@@ -2,7 +2,8 @@ const writingCorrectionsService = require('./writingCorrections.service');
 const logger = require('../utils/logger');
 const {
   normalizeOcrTranscript,
-  buildNormalizedTranscriptFromWords
+  buildCanonicalPageFromWords,
+  getOcrWordSeparator
 } = require('../utils/ocrTranscriptNormalizer');
 
 function overlap(aStart, aEnd, bStart, bEnd) {
@@ -11,9 +12,10 @@ function overlap(aStart, aEnd, bStart, bEnd) {
   return e > s;
 }
 
-function normalizeOcrWordsFromStored(ocrDataWords) {
+function normalizeOcrWordsFromStored(ocrDataWords, options = {}) {
   const list = Array.isArray(ocrDataWords) ? ocrDataWords : [];
 
+  const fileId = String(options.fileId || 'legacy');
   const perPageCounters = new Map();
 
   return list
@@ -35,11 +37,11 @@ function normalizeOcrWordsFromStored(ocrDataWords) {
       const next = (perPageCounters.get(page) || 0) + 1;
       perPageCounters.set(page, next);
 
-      const id = `word_${page}_${next}`;
+      const id = typeof w?.id === 'string' && w.id ? w.id : `word_${fileId}_${page}_${next}`;
 
       return {
         id,
-        page,
+        page, fileId,
         paragraphIndex: Number.isFinite(Number(w?.paragraphIndex)) ? Number(w.paragraphIndex) : undefined,
         text,
         bbox: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
@@ -50,23 +52,37 @@ function normalizeOcrWordsFromStored(ocrDataWords) {
 
 function buildTranscriptAndSpans(ocrWords) {
   const list = Array.isArray(ocrWords) ? ocrWords : [];
-  const built = buildNormalizedTranscriptFromWords(list, (previous, current) => {
-    if (previous?.paragraphIndex != null && current?.paragraphIndex != null
-      && Number(previous.paragraphIndex) !== Number(current.paragraphIndex)) return '\n\n';
-    const pb = previous?.bbox;
-    const cb = current?.bbox;
-    return Boolean(pb && cb && cb.y > (pb.y + pb.h + pb.h * 0.6));
-  });
+  const groups = [];
+  for (const word of list) {
+    const key = `${String(word?.fileId || 'legacy')}:${Number(word?.page || 1)}`;
+    const current = groups[groups.length - 1];
+    if (!current || current.key !== key) groups.push({ key, words: [word] });
+    else current.words.push(word);
+  }
+  let text = '';
+  const spans = [];
+  let previousText = '';
+  for (const group of groups) {
+    const built = buildCanonicalPageFromWords(group.words);
+    if (!built.text) continue;
+    const boundary = text ? getOcrWordSeparator(previousText, built.text, ' ') : '';
+    text += boundary;
+    const offset = text.length;
+    text += built.text;
+    spans.push(...built.spans.map((span, index) => ({
+      wordId: span.wordId,
+      fileId: span.fileId,
+      page: span.page,
+      start: span.start + offset,
+      end: span.end + offset,
+      bbox: span.bbox,
+      separatorBefore: index === 0 ? boundary : span.separatorBefore
+    })));
+    previousText = built.spans[built.spans.length - 1]?.word?.text || built.text;
+  }
   return {
-    text: built.text,
-    spans: built.spans.map(({ word, start, end, separatorBefore }) => ({
-      wordId: word.id,
-      page: word.page,
-      start,
-      end,
-      bbox: word.bbox,
-      separatorBefore
-    }))
+    text,
+    spans
   };
 }
 
@@ -75,18 +91,20 @@ function groupWordsIntoPages(ocrWords, spans) {
   const separators = new Map((Array.isArray(spans) ? spans : []).map((span) => [span.wordId, span.separatorBefore || '']));
   for (const w of Array.isArray(ocrWords) ? ocrWords : []) {
     if (!w) continue;
-    if (!pages.has(w.page)) pages.set(w.page, []);
-    pages.get(w.page).push({
+    const key = `${String(w.fileId || 'legacy')}:${Number(w.page || 1)}`;
+    if (!pages.has(key)) pages.set(key, { fileId: w.fileId, pageNumber: Number(w.page || 1), words: [] });
+    pages.get(key).words.push({
       id: w.id,
+      fileId: w.fileId,
       text: w.text,
       bbox: w.bbox,
       separatorBefore: separators.get(w.id) || ''
     });
   }
 
-  return Array.from(pages.entries())
-    .sort((a, b) => a[0] - b[0])
-    .map(([pageNumber, words]) => ({
+  return Array.from(pages.values())
+    .map(({ fileId, pageNumber, words }) => ({
+      fileId,
       pageNumber,
       width: null,
       height: null,
@@ -159,5 +177,7 @@ async function buildOcrCorrections({ text, language, ocrWords }) {
 
 module.exports = {
   normalizeOcrWordsFromStored,
+  buildTranscriptAndSpans,
+  groupWordsIntoPages,
   buildOcrCorrections
 };

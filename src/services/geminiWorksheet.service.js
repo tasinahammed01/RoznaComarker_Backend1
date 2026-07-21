@@ -23,8 +23,7 @@ const groq = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
 const GEMINI_TIMEOUT_MS = 120_000; // 2 minutes
 
 // ─── Groq API Key Verification ──────────────────────────────────────────────
-console.log('[GROQ] API key present:', !!GROQ_API_KEY);
-console.log('[GROQ] API key prefix:', GROQ_API_KEY?.substring(0, 8));
+console.log('[GROQ] configured:', Boolean(GROQ_API_KEY));
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

@@ -1,0 +1,2511 @@
+﻿node.exe : npm warn Unknown cli config "--testNamePattern". This will stop working in the next major version of npm.
+At C:\Program Files\nodejs\npm.ps1:29 char:3
++   & $NODE_EXE $NPM_CLI_JS $args
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (npm warn Unknow...version of npm.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+> backend@1.0.0 test
+> jest --runInBand tests/submittedImageAnnotationLayout.test.js
+
+  console.log
+    #01 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=59.2, y=60.6, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.9mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #01 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 2 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=43.8, y=40.4, w=12.3, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.9mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #01 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=80.8, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.9mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #02 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=80.8, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: gutter-left
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: N/A
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #01 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=80.8, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.9mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #02 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=80.8, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: gutter-left
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: N/A
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #01 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=25.3, y=8.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #02 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=45.3, y=8.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #03 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=65.4, y=8.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #04 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=85.4, y=8.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #05 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=105.4, y=8.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #06 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=125.4, y=8.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #07 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=145.4, y=8.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #08 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=25.3, y=42.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #09 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=45.3, y=42.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #10 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=65.4, y=42.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #11 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=85.4, y=42.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #12 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=105.4, y=42.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #13 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=125.4, y=42.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #14 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=145.4, y=42.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #15 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=25.3, y=76.7, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #16 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=45.3, y=76.7, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #17 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=65.4, y=76.7, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #18 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=85.4, y=76.7, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #19 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=105.4, y=76.7, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #20 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=125.4, y=76.7, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #21 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=145.4, y=76.7, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #22 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=25.3, y=111.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #23 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=45.3, y=111.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #24 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=65.4, y=111.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #25 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=85.4, y=111.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #26 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=105.4, y=111.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #27 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=125.4, y=111.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #28 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=145.4, y=111.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #29 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=25.3, y=145.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #30 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=45.3, y=145.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #31 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=65.4, y=145.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #32 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=85.4, y=145.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #33 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=105.4, y=145.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #34 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=125.4, y=145.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #35 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=145.4, y=145.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.4mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #01 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=13.0, y=0.0, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: gutter-left
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: N/A
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #02 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=153.1, y=0.0, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: gutter-right
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: N/A
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: true
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #05 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=20.2, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.8mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #06 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=36.3, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.8mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #07 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=52.5, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.8mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #08 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=68.7, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.8mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #09 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=84.8, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.8mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #10 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=101.0, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.8mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #11 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=117.1, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.8mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #12 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=133.3, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.8mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #13 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=82.3, y=149.4, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.8mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #03 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=13.0, y=195.9, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.8mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #04 AGR
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+
+  console.log
+      bboxList: 1 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+
+  console.log
+      primaryAnchorBox: x=153.1, y=195.9, w=13.9, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+
+  console.log
+      distance: 4.8mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+
+  console.log
+    #01 <AGR>
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:338:15)
+          at Array.map (<anonymous>)
+
+  console.log
+      targetText: ""
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:339:15)
+          at Array.map (<anonymous>)
+
+  console.log
+      wordIds: [none]
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:340:15)
+          at Array.map (<anonymous>)
+
+  console.log
+      bboxList: 2 boxes
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:341:15)
+          at Array.map (<anonymous>)
+
+  console.log
+      primaryAnchorBox: x=43.8, y=40.4, w=12.3, h=4.0
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:342:15)
+          at Array.map (<anonymous>)
+
+  console.log
+      placement: above-center
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:343:15)
+          at Array.map (<anonymous>)
+
+  console.log
+      distance: 4.9mm
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:344:15)
+          at Array.map (<anonymous>)
+
+  console.log
+      gutter fallback: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:345:15)
+          at Array.map (<anonymous>)
+
+  console.log
+      useNumberOnly: false
+
+      at log (src/pdf/submittedImageAnnotationLayout.js:346:15)
+          at Array.map (<anonymous>)
+
+PASS tests/submittedImageAnnotationLayout.test.js
+  submitted image annotation layout
+    ΓêÜ maps one correction to one compact marker and one exact underline (78 ms)
+    ΓêÜ keeps multiple bbox segments but creates only one marker per canonical correction (16 ms)
+    ΓêÜ places same-position corrections without marker collisions and deterministically (90 ms)
+    ΓêÜ renders a dense 35-correction page without omissions, collisions, or unreadable overflow (925 ms)
+    ΓêÜ keeps edge markers inside the printable stage and chooses the nearest gutter (343 ms)
+    ΓêÜ rejects invalid and fully out-of-range boxes while clamping safe intersections (1 ms)
+    ΓêÜ coordinate conversion includes image gutter offset and preserves proportional box width (1 ms)
+    ΓêÜ HTML keeps exact underlines, compact references, escaped symbols, and no full-width leaders (37 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       8 passed, 8 total
+Snapshots:   0 total
+Time:        4.071 s, estimated 10 s
+Ran all test suites matching /tests\\submittedImageAnnotationLayout.test.js/i.

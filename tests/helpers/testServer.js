@@ -3,9 +3,19 @@ const { MongoMemoryServer } = require('mongodb-memory-server');
 
 let mongo;
 
+function assertIsolatedTestDatabase(uri) {
+  if (process.env.NODE_ENV !== 'test') throw new Error('Refusing test database startup unless NODE_ENV=test.');
+  const databaseName = new URL(uri).pathname.replace(/^\//, '').split('?')[0];
+  if (!/(?:^|[_-])test(?:$|[_-])/i.test(databaseName)) {
+    throw new Error(`Refusing non-test database name: ${databaseName || '(empty)'}`);
+  }
+  return databaseName;
+}
+
 async function connectInMemoryMongo() {
-  mongo = await MongoMemoryServer.create();
-  const uri = mongo.getUri();
+  mongo = await MongoMemoryServer.create({ instance: { dbName: 'projectrozna_http_test' } });
+  const uri = mongo.getUri('projectrozna_http_test');
+  assertIsolatedTestDatabase(uri);
 
   await mongoose.connect(uri);
 }
@@ -35,5 +45,6 @@ async function clearDatabase() {
 module.exports = {
   connectInMemoryMongo,
   disconnectInMemoryMongo,
-  clearDatabase
+  clearDatabase,
+  assertIsolatedTestDatabase
 };

@@ -8,19 +8,24 @@ const Membership = require('../models/membership.model');
 const Submission = require('../models/Submission');
 const File = require('../models/File');
 const OcrUpload = require('../models/OcrUpload');
+const SubmissionFeedback = require('../models/SubmissionFeedback');
 
 const uploadService = require('../services/upload.service');
 const { runOcrAndPersist, runOcrAndPersistForFiles } = require('../services/ocrPipeline.service');
-const { normalizeOcrWordsFromStored, buildOcrCorrections } = require('../services/ocrCorrections.service');
+const { normalizeOcrWordsFromStored } = require('../services/ocrCorrections.service');
 const { buildSubmissionCorrectionStatistics } = require('../services/submissionCorrectionStatistics.service');
 const { autoGenerateRubricDesignerForSubmission } = require('../services/autoRubricDesigner.service');
+const canonicalCorrectionsPipeline = require('../services/canonicalCorrectionsPipeline.service');
+const { buildCanonicalResultState } = require('../services/canonicalResultState.service');
 const {
   normalizeOcrTranscript,
   getNormalizedSubmissionTranscript,
+  buildCanonicalSubmissionTranscript,
   withNormalizedWordSeparators
 } = require('../utils/ocrTranscriptNormalizer');
 
 const { createNotification } = require('../services/notification.service');
+const logger = require('../utils/logger');
 
 const { bytesToMB, ensureActivePlan, incrementUsage } = require('../middlewares/usage.middleware');
 const { getPublicApiUrl, buildPublicUploadUrl } = require('../utils/publicApiUrl');
@@ -30,6 +35,25 @@ function sendSuccess(res, data) {
     success: true,
     data
   });
+}
+
+function hasValidOcrPages(doc) {
+  return Array.isArray(doc && doc.ocrPages) && doc.ocrPages.some((page) =>
+    page && ((Array.isArray(page.words) && page.words.length > 0) ||
+      (typeof page.text === 'string' && page.text.trim().length > 0))
+  );
+}
+
+function hasValidLegacyOcrWords(doc) {
+  const words = doc && doc.ocrData && typeof doc.ocrData === 'object' ? doc.ocrData.words : null;
+  return Array.isArray(words) && words.length > 0;
+}
+
+function hasUsableOcrData(doc) {
+  return hasValidOcrPages(doc) || hasValidLegacyOcrWords(doc) ||
+    ['ocrText', 'combinedOcrText', 'transcriptText'].some((key) =>
+      typeof doc?.[key] === 'string' && doc[key].trim().length > 0
+    );
 }
 
 async function uploadHandwrittenForOcr(req, res) {
@@ -421,11 +445,36 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       existing.qrToken = qrToken;
 
       existing.ocrStatus = 'pending';
+      existing.ocrJobId = new mongoose.Types.ObjectId().toString();
       existing.ocrText = undefined;
       existing.rawOcrText = undefined;
       existing.rawCombinedOcrText = undefined;
       existing.ocrError = undefined;
       existing.ocrData = undefined;
+      existing.ocrPages = [];
+      existing.combinedOcrText = undefined;
+      existing.transcriptText = undefined;
+      existing.writingCorrections = [];
+      existing.correctionStatistics = undefined;
+      existing.correctionStatus = 'pending';
+      existing.correctionSourceHash = undefined;
+      existing.correctionVersion = undefined;
+      existing.correctionTranscriptLayoutVersion = undefined;
+      existing.correctionError = undefined;
+      existing.correctionJobId = undefined;
+      existing.semanticSourceKey = undefined;
+      existing.semanticProvider = undefined;
+      existing.semanticModel = undefined;
+      existing.semanticPromptVersion = undefined;
+      existing.semanticMetrics = undefined;
+      existing.evaluationStatus = 'pending';
+      existing.evaluationJobId = undefined;
+      existing.evaluationSourceHash = undefined;
+      existing.evaluationVersion = undefined;
+      existing.evaluationRubricSourceHash = undefined;
+      existing.evaluationError = undefined;
+      existing.rawTranscriptText = undefined;
+      existing.correctionStatistics = undefined;
       existing.ocrUpdatedAt = new Date();
 
       const saved = await existing.save();
@@ -438,7 +487,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
           : (firstFile ? [firstFile._id] : []);
 
         const ocrPromise = ids.length
-          ? runOcrAndPersistForFiles({ fileIds: ids, targetDoc: saved })
+          ? runOcrAndPersistForFiles({ fileIds: ids, targetDoc: saved, jobId: saved.ocrJobId })
           : Promise.resolve();
 
         ocrPromise
@@ -516,6 +565,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       isLate,
       qrToken,
       ocrStatus: 'pending',
+      ocrJobId: new mongoose.Types.ObjectId().toString(),
       ocrUpdatedAt: new Date()
     });
 
@@ -527,7 +577,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
         : (firstFile ? [firstFile._id] : []);
 
       const ocrPromise = ids.length
-        ? runOcrAndPersistForFiles({ fileIds: ids, targetDoc: created })
+        ? runOcrAndPersistForFiles({ fileIds: ids, targetDoc: created, jobId: created.ocrJobId })
         : Promise.resolve();
 
       ocrPromise
@@ -789,6 +839,7 @@ async function getMySubmissions(req, res) {
 }
 
 async function getOcrCorrections(req, res) {
+  let logContext = {};
   try {
     const submissionId = req.params && req.params.submissionId;
     const user = req.user;
@@ -808,9 +859,16 @@ async function getOcrCorrections(req, res) {
       kind = 'ocr_upload';
     }
 
-    if (!doc) {
-      return sendSuccess(res, { corrections: [], ocr: [] });
-    }
+    if (!doc) return sendError(res, 404, 'Submission not found');
+
+    const requestedFileId = req.body && typeof req.body.fileId === 'string' ? String(req.body.fileId).trim() : '';
+    logContext = {
+      submissionId: String(submissionId),
+      userId: String(user._id),
+      role: user.role,
+      fileId: requestedFileId || null,
+      ocrStatus: doc.ocrStatus || null
+    };
 
     if (user.role === 'student') {
       if (String(doc.student) !== String(user._id)) {
@@ -825,27 +883,31 @@ async function getOcrCorrections(req, res) {
       return sendError(res, 403, 'Forbidden');
     }
 
-    const ocrDataWords = doc && doc.ocrData && typeof doc.ocrData === 'object' ? doc.ocrData.words : null;
-    const needsOcr = !ocrDataWords || !Array.isArray(ocrDataWords) || ocrDataWords.length === 0;
-
-    if (needsOcr) {
-      if (!doc.file) {
-        return sendSuccess(res, { corrections: [], ocr: [], ocrStatus: doc.ocrStatus || null, ocrError: doc.ocrError || null });
-      }
-
-      await runOcrAndPersist({ fileId: doc.file, targetDoc: doc });
-
-      if (doc.ocrStatus === 'failed') {
-        return sendSuccess(res, {
-          corrections: [],
-          ocr: [],
-          ocrStatus: doc.ocrStatus || null,
-          ocrError: doc.ocrError || null
-        });
-      }
+    const fileIds = Array.isArray(doc.files) && doc.files.length ? doc.files : (doc.file ? [doc.file] : []);
+    if (requestedFileId && !fileIds.some((id) => String(id && id._id ? id._id : id) === requestedFileId)) {
+      return sendError(res, 400, 'Invalid fileId for this submission');
     }
 
-    const requestedFileId = req.body && typeof req.body.fileId === 'string' ? String(req.body.fileId).trim() : '';
+    if (doc.ocrStatus === 'pending' || doc.ocrStatus === 'processing') {
+      return res.status(202).json({ success: true, data: {
+        processing: true, ocrStatus: doc.ocrStatus || 'pending', corrections: [], ocr: [],
+        processingActive: true, automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false,
+        ocrError: null, fileId: requestedFileId || null
+      }});
+    }
+    if (doc.ocrStatus === 'failed') {
+      return res.status(422).json({ success: false, message: 'OCR processing failed', data: {
+        processing: false, ocrStatus: 'failed', ocrError: doc.ocrError || 'OCR could not process this upload.',
+        fileId: requestedFileId || null
+      }});
+    }
+    if (!hasUsableOcrData(doc)) {
+      return res.status(409).json({ success: false, message: 'OCR data is not available', data: {
+        processing: false, ocrStatus: doc.ocrStatus || null,
+        ocrError: 'OCR completed without usable text. Please retry the upload.', fileId: requestedFileId || null
+      }});
+    }
+
     const hasRequestedFile = Boolean(requestedFileId);
 
     let pages = Array.isArray(doc.ocrPages) ? doc.ocrPages : [];
@@ -854,50 +916,84 @@ async function getOcrCorrections(req, res) {
       : pages;
 
     if (hasRequestedFile && !activePages.length) {
-      const ids = Array.isArray(doc.files) && doc.files.length
-        ? doc.files
-        : (doc.file ? [doc.file] : []);
-
-      const requestedExists = ids.some((id) => String(id) === requestedFileId);
-      if (requestedExists && ids.length) {
-        await runOcrAndPersistForFiles({ fileIds: ids, targetDoc: doc });
-        pages = Array.isArray(doc.ocrPages) ? doc.ocrPages : [];
-        activePages = pages.filter((p) => p && p.fileId && String(p.fileId) === requestedFileId);
-      }
+      return res.status(409).json({ success: false, message: 'OCR data for the requested file is not available', data: {
+        processing: false, ocrStatus: doc.ocrStatus || null,
+        ocrError: 'The requested image has no persisted OCR page.', fileId: requestedFileId
+      }});
     }
 
-    const normalizedWords = normalizeOcrWordsFromStored(doc.ocrData && doc.ocrData.words);
-
-    const pageText = activePages
-      .map((p) => (typeof p?.text === 'string' ? p.text : ''))
-      .map((t) => t.trim())
-      .filter(Boolean)
-      .join('\n\n');
-
-    let ocrWords = normalizedWords;
-    if (hasRequestedFile && activePages.length) {
-      const collected = [];
-      for (const p of activePages) {
-        const w = p && Array.isArray(p.words) ? p.words : [];
-        collected.push(...w);
-      }
-      ocrWords = normalizeOcrWordsFromStored(collected);
-    }
-
-    const built = await buildOcrCorrections({
-      text: pageText || doc.ocrText || '',
-      language: 'en-US',
-      ocrWords
+    const canonicalTranscript = buildCanonicalSubmissionTranscript(doc);
+    const canonicalPages = hasRequestedFile
+      ? canonicalTranscript.pages.filter((page) => page.fileId === requestedFileId)
+      : canonicalTranscript.pages;
+    const ocr = canonicalPages.map((p) => {
+      const fileId = String(p.fileId || 'legacy');
+      const words = normalizeOcrWordsFromStored(p.words || [], { fileId });
+      const separators = new Map((p.words || []).map((word) => [word.id, word.separatorBefore || '']));
+      return { pageNumber: Number(p.pageNumber || 1), fileId, width: null, height: null,
+        words: words.map((w) => ({ id: w.id, fileId, text: w.text, bbox: w.bbox, separatorBefore: separators.get(w.id) || '' })), lines: [] };
     });
+    const evaluationDoc = kind === 'submission' ? await SubmissionFeedback.findOne({ submissionId: doc._id }).lean() : null;
+    const resultState = buildCanonicalResultState({ submission: doc, feedback: evaluationDoc });
+    const hasCanonicalCorrections = resultState.correctionCurrent && Array.isArray(doc.writingCorrections);
+    const allCorrections = hasCanonicalCorrections ? doc.writingCorrections : [];
+    const corrections = hasRequestedFile ? allCorrections.filter((c) => String(c.fileId || '') === requestedFileId) : allCorrections;
+    const statistics = resultState.statistics || (hasCanonicalCorrections ? require('../services/correctionCanonical.service').statistics(allCorrections) : null);
+    const evaluationCurrent = resultState.evaluationCurrent;
+    res.set('Cache-Control', 'private, no-store');
+    res.set('Pragma', 'no-cache');
 
     return sendSuccess(res, {
-      corrections: built.corrections,
-      ocr: built.ocr,
+      processing: false,
+      corrections,
+      ocr,
       ocrStatus: doc.ocrStatus || null,
+      correctionStatus: resultState.correctionStatus,
+      correctionStage: resultState.correctionStage,
+      statisticsStatus: resultState.statisticsStatus,
+      statisticsCompleteness: resultState.statisticsCompleteness,
+      categoryAvailability: resultState.categoryAvailability,
+      sourceCounts: resultState.sourceCounts,
+      correctionErrorCode: resultState.correctionErrorCode,
+      retryable: resultState.retryable,
+      processingActive: resultState.processingActive,
+      automaticPollingAllowed: resultState.automaticPollingAllowed,
+      manualRetryAllowed: resultState.manualRetryAllowed,
+      terminal: resultState.terminal,
+      evaluationBlockedReason: resultState.evaluationBlockedReason,
+      detailedFeedbackBlockedReason: resultState.detailedFeedbackBlockedReason,
+      semanticStatus: resultState.semanticStatus,
+      semanticAttempt: resultState.semanticAttempt,
+      semanticMaxAttempts: resultState.semanticMaxAttempts,
+      semanticNextRetryAt: resultState.semanticNextRetryAt,
+      semanticErrorCode: resultState.semanticErrorCode,
+      statistics,
+      transcript: canonicalTranscript.text,
+      transcriptPages: canonicalTranscript.pages.map((page) => ({ fileId: page.fileId, pageNumber: page.pageNumber,
+        startChar: page.startChar, endChar: page.endChar, paragraphs: page.paragraphs || [] })),
+      transcriptWordSpans: canonicalTranscript.wordSpans.map((span) => ({ wordId: span.wordId, fileId: span.fileId,
+        page: span.page, start: span.start, end: span.end, separatorBefore: span.separatorBefore })),
+      transcriptSeparators: canonicalTranscript.separators,
+      transcriptSource: canonicalTranscript.source,
+      transcriptComplete: canonicalTranscript.isComplete,
+      transcriptLayoutVersion: canonicalTranscript.version,
+      correctionCurrent: resultState.correctionCurrent,
+      correctionSourceHash: resultState.correctionCurrent ? (doc.correctionSourceHash || null) : null,
+      evaluationStatus: resultState.evaluationStatus,
+      detailedFeedbackStatus: resultState.detailedFeedbackStatus,
+      detailedFeedbackSourceHash: resultState.detailedFeedbackCurrent ? (evaluationDoc?.detailedFeedbackSourceHash || null) : null,
+      detailedFeedbackVersion: resultState.detailedFeedbackCurrent ? (evaluationDoc?.detailedFeedbackVersion || null) : null,
+      detailedFeedback: resultState.detailedFeedbackCurrent ? (evaluationDoc?.detailedFeedback || null) : null,
+      overriddenByTeacher: Boolean(evaluationDoc?.overriddenByTeacher),
+      evaluationSourceHash: evaluationCurrent ? (evaluationDoc?.evaluationSourceHash || doc.correctionSourceHash || null) : null,
+      evaluation: evaluationCurrent ? { categoryScores: evaluationDoc.rubricScores || {}, overallScore: resultState.score, grade: resultState.grade,
+        strengths: evaluationDoc.detailedFeedback?.strengths || [], areasForImprovement: evaluationDoc.detailedFeedback?.areasForImprovement || [],
+        actionSteps: evaluationDoc.detailedFeedback?.actionSteps || [], source: evaluationDoc.evaluationSource || null } : null,
       ocrError: doc.ocrError || null,
       fileId: hasRequestedFile ? requestedFileId : null
     });
   } catch (err) {
+    logger.error({ message: 'Failed to fetch OCR corrections', ...logContext, error: err?.message, stack: err?.stack });
     const message =
       process.env.NODE_ENV === 'production'
         ? 'Failed to fetch OCR corrections'
@@ -907,6 +1003,43 @@ async function getOcrCorrections(req, res) {
   }
 }
 
+async function regenerateCanonicalCorrections(req, res) {
+  try {
+    const submission = await Submission.findById(req.params.submissionId);
+    if (!submission) return sendError(res, 404, 'Submission not found');
+    
+    // Role-based authorization
+    if (req.user.role === 'teacher') {
+      await uploadService.assertTeacherOwnsClassOrThrow(req.user._id, submission.class);
+    } else if (req.user.role === 'student') {
+      if (String(submission.student) !== String(req.user._id)) {
+        return sendError(res, 403, 'Forbidden');
+      }
+    } else {
+      return sendError(res, 403, 'Forbidden');
+    }
+    
+    if (submission.correctionStatus === 'processing') return res.status(409).json({ success: false, message: 'Correction generation is already processing', data: {
+      correctionStatus: 'processing', processingActive: true, automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false
+    }});
+    const assignment = await Assignment.findById(submission.assignment).lean();
+    const accepted = await Submission.updateOne({ _id: submission._id, correctionStatus: { $ne: 'processing' } }, { $set: {
+      correctionStatus: 'processing', correctionError: null, semanticStatus: 'pending', semanticAttempt: 0,
+      semanticNextRetryAt: null, semanticErrorCode: null
+    }});
+    if (!accepted.modifiedCount) return res.status(409).json({ success: false, message: 'Correction generation is already processing', data: {
+      correctionStatus: 'processing', processingActive: true, automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false
+    }});
+    submission.correctionStatus = 'processing';
+    setImmediate(() => canonicalCorrectionsPipeline.generateAndPersist(submission, { force: true, assignment: assignment ? {
+      title: assignment.title || '', description: assignment.description || assignment.instructions || '',
+      rubric: assignment.rubric || assignment.rubrics || null
+    } : {} }).catch((error) => logger.error({ message: 'Authorized correction regeneration failed', submissionId: String(submission._id), error: error?.message || error })));
+    return res.status(202).json({ success: true, data: { correctionStatus: 'processing', processingActive: true,
+      automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false } });
+  } catch (err) { return sendError(res, err?.statusCode || 500, err?.message || 'Failed to regenerate corrections'); }
+}
+
 module.exports = {
   submitByAssignmentId,
   submitByQrToken,
@@ -914,5 +1047,9 @@ module.exports = {
   getMySubmissions,
   getMySubmissionByAssignmentId,
   getOcrCorrections,
-  uploadHandwrittenForOcr
+  regenerateCanonicalCorrections,
+  uploadHandwrittenForOcr,
+  hasValidOcrPages,
+  hasValidLegacyOcrWords,
+  hasUsableOcrData
 };

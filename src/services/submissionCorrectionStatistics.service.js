@@ -80,6 +80,9 @@ function countSubmissionCorrections(entries) {
 
 async function buildSubmissionCorrectionStatistics(submission, options = {}) {
   if (!submission || typeof submission !== 'object') return { ...EMPTY_STATISTICS };
+  if (Array.isArray(submission.writingCorrections)) {
+    return countSubmissionCorrections(submission.writingCorrections).statistics;
+  }
   const buildCorrections = options.buildCorrections || buildOcrCorrections;
   const entries = [];
   const add = (list, context = {}) => {

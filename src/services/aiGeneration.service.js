@@ -54,9 +54,10 @@ async function generateWithOpenRouter(messages, options = {}) {
     max_tokens = 8000,
     response_format = null,
   } = options;
+  const model = typeof options.model === 'string' && options.model.trim() ? options.model.trim() : OPENROUTER_MODEL;
 
   const requestBody = {
-    model: OPENROUTER_MODEL,
+    model,
     messages,
     temperature,
     max_tokens,
@@ -71,8 +72,9 @@ async function generateWithOpenRouter(messages, options = {}) {
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
+      if (typeof options.onAttempt === 'function') await options.onAttempt({ attempt: attempt + 1, maxAttempts: MAX_RETRIES });
       console.log(
-        `[AI GENERATION] OpenRouter attempt ${attempt + 1}/${MAX_RETRIES} with model: ${OPENROUTER_MODEL}`,
+        `[AI GENERATION] OpenRouter attempt ${attempt + 1}/${MAX_RETRIES} with model: ${model}`,
       );
 
       const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
@@ -80,7 +82,7 @@ async function generateWithOpenRouter(messages, options = {}) {
         headers: {
           Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
           "Content-Type": "application/json",
-          "HTTP-Referer": process.env.FRONTEND_URL || "http://82.112.234.151:4200",
+          "HTTP-Referer": process.env.FRONTEND_URL || "http://localhost:4200",
           "X-Title": "RoznaComarker",
         },
         body: JSON.stringify(requestBody),
@@ -88,24 +90,24 @@ async function generateWithOpenRouter(messages, options = {}) {
       });
 
       if (!response.ok) {
-        const errorData = await response.text();
+        await response.text();
         console.error(
-          `[AI GENERATION] OpenRouter attempt ${attempt + 1} failed (${response.status}):`,
-          errorData,
+          `[AI GENERATION] OpenRouter attempt ${attempt + 1} failed (${response.status})`,
         );
 
         // Don't retry on authentication or invalid request errors
-        if (response.status === 401 || response.status === 400) {
+        if (response.status !== 429 && response.status < 500) {
           throw new Error(
-            `OpenRouter API error (${response.status}): ${errorData}`,
+            `OpenRouter API error (${response.status})`,
           );
         }
 
         // Retry on rate limit, server errors, or timeout
         lastError = new Error(
-          `OpenRouter API error (${response.status}): ${errorData}`,
+          `OpenRouter API error (${response.status})`,
         );
         if (attempt < MAX_RETRIES - 1) {
+          if (typeof options.onRetry === 'function') await options.onRetry({ attempt: attempt + 1, maxAttempts: MAX_RETRIES, delayMs: RETRY_DELAY_MS, code: `HTTP_${response.status}` });
           console.log(`[AI GENERATION] Retrying in ${RETRY_DELAY_MS}ms...`);
           await sleep(RETRY_DELAY_MS);
           continue;
@@ -117,6 +119,11 @@ async function generateWithOpenRouter(messages, options = {}) {
 
       // Normalize response to match OpenAI format
       const content = data.choices?.[0]?.message?.content || "";
+      if (typeof options.onResponse === 'function') await options.onResponse({
+        usage: data.usage || null,
+        model: data.model || model,
+        provider: 'openrouter'
+      });
       console.log(
         "[AI GENERATION] OpenRouter response length:",
         content.length,
@@ -127,11 +134,12 @@ async function generateWithOpenRouter(messages, options = {}) {
       lastError = error;
 
       // Don't retry on AbortError (timeout) if it's the last attempt
-      if (error.name === "AbortError" || error.code === "ETIMEDOUT") {
+      if (error.name === "AbortError" || error.name === "TimeoutError" || error.code === "ETIMEDOUT" || error.code === 23) {
         console.error(
           `[AI GENERATION] OpenRouter attempt ${attempt + 1} timed out`,
         );
         if (attempt < MAX_RETRIES - 1) {
+          if (typeof options.onRetry === 'function') await options.onRetry({ attempt: attempt + 1, maxAttempts: MAX_RETRIES, delayMs: RETRY_DELAY_MS, code: 'AI_PROVIDER_TIMEOUT' });
           console.log(`[AI GENERATION] Retrying in ${RETRY_DELAY_MS}ms...`);
           await sleep(RETRY_DELAY_MS);
           continue;
@@ -150,6 +158,7 @@ async function generateWithOpenRouter(messages, options = {}) {
           error.code,
         );
         if (attempt < MAX_RETRIES - 1) {
+          if (typeof options.onRetry === 'function') await options.onRetry({ attempt: attempt + 1, maxAttempts: MAX_RETRIES, delayMs: RETRY_DELAY_MS, code: 'AI_PROVIDER_NETWORK' });
           console.log(`[AI GENERATION] Retrying in ${RETRY_DELAY_MS}ms...`);
           await sleep(RETRY_DELAY_MS);
           continue;
@@ -178,6 +187,7 @@ async function generateWithOpenAI(messages, options = {}) {
     max_tokens = 8000,
     response_format = null,
   } = options;
+  const model = typeof options.model === 'string' && options.model.trim() ? options.model.trim() : OPENAI_MODEL;
 
   if (!openaiClient) {
     throw new Error("OpenAI client not initialized. Check OPENAI_API_KEY.");
@@ -187,12 +197,13 @@ async function generateWithOpenAI(messages, options = {}) {
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
+      if (typeof options.onAttempt === 'function') await options.onAttempt({ attempt: attempt + 1, maxAttempts: MAX_RETRIES });
       console.log(
-        `[AI GENERATION] OpenAI attempt ${attempt + 1}/${MAX_RETRIES} with model: ${OPENAI_MODEL}`,
+        `[AI GENERATION] OpenAI attempt ${attempt + 1}/${MAX_RETRIES} with model: ${model}`,
       );
 
       const completion = await openaiClient.chat.completions.create({
-        model: OPENAI_MODEL,
+        model,
         messages,
         temperature,
         max_tokens,
@@ -200,6 +211,11 @@ async function generateWithOpenAI(messages, options = {}) {
       });
 
       const content = completion.choices?.[0]?.message?.content || "";
+      if (typeof options.onResponse === 'function') await options.onResponse({
+        usage: completion.usage || null,
+        model: completion.model || model,
+        provider: 'openai'
+      });
       console.log("[AI GENERATION] OpenAI response length:", content.length);
 
       return content;
@@ -213,6 +229,7 @@ async function generateWithOpenAI(messages, options = {}) {
 
       // Retry on rate limit, server errors, or timeout
       if (attempt < MAX_RETRIES - 1) {
+        if (typeof options.onRetry === 'function') await options.onRetry({ attempt: attempt + 1, maxAttempts: MAX_RETRIES, delayMs: RETRY_DELAY_MS, code: error.code || `HTTP_${error.status || 'UNKNOWN'}` });
         console.log(`[AI GENERATION] Retrying in ${RETRY_DELAY_MS}ms...`);
         await sleep(RETRY_DELAY_MS);
         continue;
@@ -246,10 +263,7 @@ async function generateChatCompletion(messages, options = {}) {
       return await generateWithOpenRouter(messages, options);
     }
   } catch (error) {
-    console.error(
-      "[AI GENERATION] Error:",
-      error.response?.data || error.message,
-    );
+    console.error("[AI GENERATION] Request failed", { code: error.code || null, status: error.status || error.response?.status || null });
     throw error;
   }
 }
@@ -339,6 +353,16 @@ function validateAIConfig() {
   };
 }
 
+function getAIConfigStatus() {
+  const provider = String(AI_PROVIDER || '').toLowerCase();
+  const providerConfigured = provider === 'openai' || provider === 'openrouter';
+  const modelConfigured = provider === 'openai' ? Boolean(OPENAI_MODEL) : provider === 'openrouter' ? Boolean(OPENROUTER_MODEL) : false;
+  const credentialConfigured = provider === 'openai'
+    ? Boolean(String(process.env.OPENAI_API_KEY || '').trim())
+    : provider === 'openrouter' ? Boolean(String(process.env.OPENROUTER_API_KEY || '').trim()) : false;
+  return { providerConfigured, modelConfigured, credentialConfigured, configured: providerConfigured && modelConfigured && credentialConfigured };
+}
+
 module.exports = {
   generateChatCompletion,
   generateWithOpenRouter,
@@ -347,4 +371,5 @@ module.exports = {
   AI_PROVIDER,
   OPENAI_MODEL,
   OPENROUTER_MODEL,
+  getAIConfigStatus,
 };

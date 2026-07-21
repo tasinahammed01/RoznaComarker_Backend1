@@ -8,6 +8,7 @@ const User = require('../src/models/user.model');
 const Class = require('../src/models/class.model');
 const Assignment = require('../src/models/assignment.model');
 const Membership = require('../src/models/membership.model');
+const Submission = require('../src/models/Submission');
 const SubmissionFeedback = require('../src/models/SubmissionFeedback');
 
 const app = require('../src/app');
@@ -190,7 +191,7 @@ describe('Submissions & Feedback APIs', () => {
       },
       assessmentVersion: 'writing-rubric-100-v1',
       maxOverallScore: 100,
-      overallScore: 0,
+      overallScore: 77,
       grade: 'F',
       correctionStats: { content: 0, grammar: 0, organization: 0, vocabulary: 0, mechanics: 0 },
       detailedFeedback: { strengths: [], areasForImprovement: [], actionSteps: [] },
@@ -198,7 +199,9 @@ describe('Submissions & Feedback APIs', () => {
       overriddenByTeacher: false
     });
 
-    // GET feedback should normalize the legacy record
+    await Submission.updateOne({ _id: submissionId }, { $set: { ocrStatus: 'completed', correctionStatus: 'processing' } });
+
+    // Pending canonical evaluation must suppress the legacy record.
     const res = await request(app)
       .get(`/api/feedback/${submissionId}`)
       .set('Authorization', `Bearer ${studentToken}`);
@@ -206,14 +209,12 @@ describe('Submissions & Feedback APIs', () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('success', true);
     
-    // Verify normalization happened
     const feedback = res.body.data;
-    expect(feedback.rubricScores.CONTENT.maxScore).toBe(20);
-    expect(feedback.rubricScores.ORGANIZATION.maxScore).toBe(20);
-    expect(feedback.rubricScores.GRAMMAR.maxScore).toBe(25);
-    expect(feedback.rubricScores.VOCABULARY.maxScore).toBe(20);
-    expect(feedback.rubricScores.MECHANICS.maxScore).toBe(10);
-    expect(feedback.rubricScores.PRESENTATION.maxScore).toBe(5);
+    expect(feedback.score).toBeNull();
+    expect(feedback.rubricScores).toBeNull();
+    expect(feedback.evaluationStatus).toBe('pending');
+    expect(feedback.detailedFeedbackStatus).toBe('pending');
+    expect(JSON.stringify(feedback)).not.toContain('77');
   });
 
   test('GET /api/feedback/:submissionId handles missing PRESENTATION category', async () => {
@@ -271,7 +272,9 @@ describe('Submissions & Feedback APIs', () => {
       overriddenByTeacher: false
     });
 
-    // GET feedback should add missing PRESENTATION category
+    await Submission.updateOne({ _id: submissionId }, { $set: { ocrStatus: 'completed', correctionStatus: 'processing' } });
+
+    // GET feedback must not synthesize a default rubric while evaluation is pending.
     const res = await request(app)
       .get(`/api/feedback/${submissionId}`)
       .set('Authorization', `Bearer ${studentToken}`);
@@ -279,10 +282,12 @@ describe('Submissions & Feedback APIs', () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('success', true);
     
-    // Verify PRESENTATION was added
     const feedback = res.body.data;
-    expect(feedback.rubricScores).toHaveProperty('PRESENTATION');
-    expect(feedback.rubricScores.PRESENTATION.maxScore).toBe(5);
+    expect(feedback.score).toBeNull();
+    expect(feedback.rubricScores).toBeNull();
+    expect(feedback.evaluationStatus).toBe('pending');
+    expect(feedback.detailedFeedbackStatus).toBe('pending');
+    expect(JSON.stringify(feedback)).not.toContain('77');
   });
 
   test('GET /api/feedback/:submissionId returns canonical SubmissionFeedback with correct structure', async () => {
@@ -317,7 +322,9 @@ describe('Submissions & Feedback APIs', () => {
 
     const submissionId = submit.body.data._id;
 
-    // GET feedback should return canonical structure
+    await Submission.updateOne({ _id: submissionId }, { $set: { ocrStatus: 'completed', correctionStatus: 'processing' } });
+
+    // GET feedback should return the canonical pending structure.
     const res = await request(app)
       .get(`/api/feedback/${submissionId}`)
       .set('Authorization', `Bearer ${studentToken}`);
@@ -326,23 +333,10 @@ describe('Submissions & Feedback APIs', () => {
     expect(res.body).toHaveProperty('success', true);
     
     const feedback = res.body.data;
-    // Verify canonical structure
-    expect(feedback).toHaveProperty('rubricScores');
-    expect(feedback).toHaveProperty('assessmentVersion');
-    expect(feedback).toHaveProperty('maxOverallScore');
-    expect(feedback).toHaveProperty('overallScore');
-    expect(feedback).toHaveProperty('grade');
-    expect(feedback).toHaveProperty('correctionStats');
-    expect(feedback).toHaveProperty('detailedFeedback');
-    expect(feedback).toHaveProperty('aiFeedback');
-    expect(feedback).toHaveProperty('overriddenByTeacher');
-    
-    // Verify all six rubric categories exist
-    expect(feedback.rubricScores).toHaveProperty('CONTENT');
-    expect(feedback.rubricScores).toHaveProperty('ORGANIZATION');
-    expect(feedback.rubricScores).toHaveProperty('GRAMMAR');
-    expect(feedback.rubricScores).toHaveProperty('VOCABULARY');
-    expect(feedback.rubricScores).toHaveProperty('MECHANICS');
-    expect(feedback.rubricScores).toHaveProperty('PRESENTATION');
+    expect(feedback.score).toBeNull();
+    expect(feedback.rubricScores).toBeNull();
+    expect(feedback.evaluationStatus).toBe('pending');
+    expect(feedback.detailedFeedbackStatus).toBe('pending');
+    expect(JSON.stringify(feedback)).not.toContain('77');
   });
 });

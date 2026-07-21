@@ -30,6 +30,9 @@ const logger = {
   debug(message) {
     if (isProd()) return;
     console.debug(format('DEBUG', toMessage(message)));
+  },
+  metric(message) {
+    console.log(format('METRIC', toMessage(message)));
   }
 };
 

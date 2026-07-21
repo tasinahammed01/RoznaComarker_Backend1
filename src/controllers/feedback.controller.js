@@ -22,6 +22,7 @@ const {
 } = require("../services/docxRubricTemplateParser.service");
 const { buildOcrCorrections } = require("../services/ocrCorrections.service");
 const { buildSubmissionCorrectionStatistics } = require("../services/submissionCorrectionStatistics.service");
+const { buildCanonicalResultState } = require("../services/canonicalResultState.service");
 const { getRubricAiConfig } = require("../services/rubricAiConfig.service");
 const {
   normalizeOcrTranscript,
@@ -874,32 +875,9 @@ async function getSubmissionFeedback(req, res) {
     // Normalize legacy feedback records if they exist
     if (feedback) {
       const feedbackObj = feedback.toObject();
-      const normalized = normalizeLegacyFeedback(feedbackObj);
-      if (normalized !== feedbackObj) {
-        // Save normalized version to database - only update the fields that changed
-        try {
-          await SubmissionFeedback.findOneAndUpdate(
-            { submissionId: submission._id },
-            {
-              $set: {
-                rubricScores: normalized.rubricScores,
-                assessmentVersion: normalized.assessmentVersion,
-                maxOverallScore: normalized.maxOverallScore
-              }
-            },
-            { new: true }
-          );
-          // Reload the feedback document as a Mongoose document
-          feedback = await SubmissionFeedback.findOne({ submissionId: submission._id });
-        } catch (saveErr) {
-          logger.warn({
-            message: 'Failed to save normalized feedback',
-            submissionId,
-            error: saveErr?.message
-          });
-          // Continue with original feedback document
-        }
-      }
+      // GET/result retrieval is strictly read-only. Legacy normalization is a
+      // response-only compatibility transform and is never persisted here.
+      feedback = normalizeLegacyFeedback(feedbackObj);
     }
 
     const correctionStatistics = await buildSubmissionCorrectionStatistics(submission);
@@ -918,6 +896,33 @@ async function getSubmissionFeedback(req, res) {
         correctionStatistics,
       };
     };
+
+    // Result retrieval is read-only. Background canonical evaluation owns all
+    // generation and persistence; never backfill or regenerate from this path.
+    res.set('Cache-Control', 'private, no-store');
+    res.set('Pragma', 'no-cache');
+    if (!feedback) {
+      const resultState = buildCanonicalResultState({ submission, feedback: null });
+      return sendSuccess(res, {
+        submissionId: String(submission._id),
+        ...resultState, overallScore: null, grade: null, rubricScores: null, detailedFeedback: null,
+        correctionStats: correctionStatistics, correctionStatistics,
+        evaluationSourceHash: null, correctionSourceHash: submission.correctionSourceHash || null
+      });
+    }
+    const currentFeedback = withCanonicalStatistics(feedback);
+    const resultState = buildCanonicalResultState({ submission, feedback: currentFeedback });
+    const safeFeedback = resultState.evaluationCurrent ? currentFeedback : {};
+    return sendSuccess(res, {
+      submissionId: String(submission._id),
+      ...safeFeedback, ...resultState,
+      overallScore: resultState.score, grade: resultState.grade,
+      rubricScores: resultState.evaluationCurrent ? currentFeedback.rubricScores : null,
+      detailedFeedback: resultState.detailedFeedbackCurrent ? currentFeedback.detailedFeedback : null,
+      correctionStats: correctionStatistics, correctionStatistics,
+      evaluationSourceHash: resultState.evaluationCurrent ? (currentFeedback.evaluationSourceHash || submission.correctionSourceHash) : null,
+      correctionSourceHash: submission.correctionSourceHash || null
+    });
 
     await Submission.updateOne(
       { _id: submission._id },
@@ -993,6 +998,8 @@ async function getSubmissionFeedback(req, res) {
           studentId: submission.student,
           teacherId,
           assessmentVersion: assessment.assessmentVersion,
+          evaluationSourceHash: submission.correctionSourceHash || null,
+          evaluationVersion: assessment.assessmentVersion,
           maxOverallScore: assessment.maxOverallScore,
           overallScore: overallScore100,
           grade,
@@ -1099,6 +1106,8 @@ async function getSubmissionFeedback(req, res) {
             {
               $set: {
                 assessmentVersion: assessment.assessmentVersion,
+                evaluationSourceHash: submission.correctionSourceHash || null,
+                evaluationVersion: assessment.assessmentVersion,
                 maxOverallScore: assessment.maxOverallScore,
                 overallScore: overallScore100,
                 grade,
@@ -1130,13 +1139,14 @@ async function getSubmissionFeedback(req, res) {
       
       // Check if feedback needs regeneration based on assessment version or missing fields
       const needsRegeneration =
-        !feedbackObj.assessmentVersion ||
-        feedbackObj.assessmentVersion !== 'writing-rubric-100-v1' ||
-        !rs?.PRESENTATION?.score ||
-        rs?.PRESENTATION?.maxScore !== 5 ||
-        rs?.VOCABULARY?.maxScore !== 20 ||
-        rs?.MECHANICS?.maxScore !== 10 ||
-        (feedbackObj.overriddenByTeacher === false && feedbackObj.overallScore <= 0);
+        !feedbackObj.overriddenByTeacher && (
+          feedbackObj.evaluationSourceHash !== submission.correctionSourceHash ||
+          !feedbackObj.assessmentVersion ||
+          feedbackObj.assessmentVersion !== 'writing-rubric-100-v1' ||
+          !rs?.PRESENTATION?.score || rs?.PRESENTATION?.maxScore !== 5 ||
+          rs?.VOCABULARY?.maxScore !== 20 || rs?.MECHANICS?.maxScore !== 10 ||
+          feedbackObj.overallScore <= 0
+        );
 
       if (!needsRegeneration) {
         feedback = feedbackObj;
@@ -1171,6 +1181,8 @@ async function getSubmissionFeedback(req, res) {
             {
               $set: {
                 assessmentVersion: assessment.assessmentVersion,
+                evaluationSourceHash: submission.correctionSourceHash || null,
+                evaluationVersion: assessment.assessmentVersion,
                 maxOverallScore: assessment.maxOverallScore,
                 overallScore: overallScore100,
                 grade,
