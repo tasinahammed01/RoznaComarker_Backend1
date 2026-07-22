@@ -6,7 +6,8 @@ const logger = require('../utils/logger');
 const { ApiError } = require('../middlewares/error.middleware');
 
 const numberEnv = (name, fallback, min = 1) => { const value = Number(process.env[name]); return Number.isFinite(value) && value >= min ? Math.floor(value) : fallback; };
-const config = () => ({ maxConcurrent: numberEnv('PDF_MAX_CONCURRENT_RENDERS', 2), queueLimit: numberEnv('PDF_RENDER_QUEUE_LIMIT', 8, 0), queueWaitMs: numberEnv('PDF_QUEUE_WAIT_TIMEOUT_MS', 15000), renderTimeoutMs: numberEnv('PDF_RENDER_TIMEOUT_MS', 60000), imageLoadTimeoutMs: numberEnv('PDF_IMAGE_LOAD_TIMEOUT_MS', 15000), pageReadyTimeoutMs: numberEnv('PDF_PAGE_READY_TIMEOUT_MS', 15000) });
+const booleanEnv = (name, fallback = false) => { const value = String(process.env[name] ?? '').trim().toLowerCase(); return value ? ['1', 'true', 'yes', 'on'].includes(value) : fallback; };
+const config = () => ({ maxConcurrent: numberEnv('PDF_MAX_CONCURRENT_RENDERS', 2), queueLimit: numberEnv('PDF_RENDER_QUEUE_LIMIT', 8, 0), queueWaitMs: numberEnv('PDF_QUEUE_WAIT_TIMEOUT_MS', 15000), renderTimeoutMs: numberEnv('PDF_RENDER_TIMEOUT_MS', 60000), imageLoadTimeoutMs: numberEnv('PDF_IMAGE_LOAD_TIMEOUT_MS', 15000), pageReadyTimeoutMs: numberEnv('PDF_PAGE_READY_TIMEOUT_MS', 15000), noSandbox: booleanEnv('PDF_CHROME_NO_SANDBOX', false) });
 
 let browser = null; let launchPromise = null; let coldStarts = 0; let restarts = 0; let timeouts = 0; let active = 0; const queue = [];
 
@@ -28,12 +29,15 @@ async function getBrowser() {
   if (launchPromise) return launchPromise;
   launchPromise = (async () => {
     const puppeteer = getPuppeteer(); const resolved = resolveBrowserExecutable(); const isRestart = Boolean(browser);
+    const noSandbox = config().noSandbox;
     const instance = await puppeteer.launch({ headless: true, executablePath: resolved.executablePath,
+      ...(noSandbox ? { args: ['--no-sandbox', '--disable-setuid-sandbox'] } : {}),
       timeout: numberEnv('PUPPETEER_LAUNCH_TIMEOUT_MS', 30000),
       protocolTimeout: numberEnv('PUPPETEER_PROTOCOL_TIMEOUT_MS', 30000) });
     browser = instance; coldStarts += isRestart ? 0 : 1; restarts += isRestart ? 1 : 0;
     instance.once('disconnected', () => { if (browser === instance) browser = null; logger.metric({ event: 'pdf_browser_disconnected' }); });
-    logger.metric({ event: isRestart ? 'pdf_browser_restarted' : 'pdf_browser_started', strategy: resolved.strategy, coldStarts, restarts }); return instance;
+    logger.metric({ event: isRestart ? 'pdf_browser_restarted' : 'pdf_browser_started', strategy: resolved.strategy,
+      sandboxMode: noSandbox ? 'disabled_by_configuration' : 'enabled', coldStarts, restarts }); return instance;
   })().finally(() => { launchPromise = null; });
   return launchPromise;
 }

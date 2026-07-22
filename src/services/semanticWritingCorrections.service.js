@@ -76,15 +76,20 @@ function buildLegacySemanticRequestForBenchmark({ transcript, assignment = {}, l
 
 function parseJson(value, expectedHash) {
   const text = String(value || '').trim().replace(/^```json\s*/iu, '').replace(/```$/u, '').trim();
-  const parsed = JSON.parse(text);
-  if (!expectedHash || parsed?.transcriptHash !== expectedHash) throw new Error('Semantic analysis did not confirm the complete transcript hash');
-  if (!Array.isArray(parsed?.corrections)) throw new Error('Semantic analysis corrections must be an array');
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch { throw semanticError('SEMANTIC_RESPONSE_INVALID', 'json_parse', 'Semantic analysis returned invalid JSON'); }
+  if (!expectedHash || parsed?.transcriptHash !== expectedHash)
+    throw semanticError('SEMANTIC_SOURCE_MISMATCH', 'source_hash', 'Semantic analysis did not confirm the complete transcript hash');
+  if (!Array.isArray(parsed?.corrections))
+    throw semanticError('SEMANTIC_SCHEMA_INVALID', 'schema_validation', 'Semantic analysis corrections must be an array');
   return parsed.corrections.slice(0, 40);
 }
 
-function invalidSemanticResponse(message) {
+function semanticError(code, stage, message) {
   const error = new Error(message);
-  error.code = 'SEMANTIC_RESPONSE_INVALID';
+  error.code = code;
+  error.validationStage = stage;
   return error;
 }
 
@@ -97,12 +102,12 @@ function validateCorrections(corrections, { transcript, legend }) {
       || typeof item.message !== 'string' || !item.message.trim() || typeof item.suggestedText !== 'string'
       || !Number.isFinite(Number(item.confidence)) || Number(item.confidence) < 0 || Number(item.confidence) > 1
       || !Number.isInteger(Number(item.occurrence)) || Number(item.occurrence) < 0) {
-      throw invalidSemanticResponse('Semantic analysis returned an incomplete correction');
+      throw semanticError('SEMANTIC_SCHEMA_INVALID', 'schema_validation', 'Semantic analysis returned an incomplete correction');
     }
     let offset = -1;
     for (let occurrence = 0; occurrence <= Number(item.occurrence); occurrence += 1) {
       offset = transcript.indexOf(item.quotedText, offset + 1);
-      if (offset < 0) throw invalidSemanticResponse('Semantic analysis returned non-verbatim evidence');
+      if (offset < 0) throw semanticError('SEMANTIC_EVIDENCE_UNGROUNDED', 'evidence_grounding', 'Semantic analysis returned non-verbatim evidence');
     }
   }
   return corrections;
@@ -125,9 +130,20 @@ async function analyze(input, dependencies = {}) {
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
     onAttempt: input.onAttempt, onRetry: input.onRetry });
   const parseStartedAt = Date.now();
-  const corrections = validateCorrections(parseJson(completion.content, input.transcriptHash), {
-    transcript: input.transcript, legend: request.legend
-  });
+  let corrections;
+  try {
+    corrections = validateCorrections(parseJson(completion.content, input.transcriptHash), {
+      transcript: input.transcript, legend: request.legend
+    });
+  } catch (error) {
+    if (completion.finishReason === 'MAX_TOKENS' && error?.code === 'SEMANTIC_RESPONSE_INVALID') {
+      error.code = 'GOOGLE_OUTPUT_TRUNCATED'; error.validationStage = 'json_parse';
+    }
+    error.candidateCount = completion.candidateCount;
+    error.finishReason = completion.finishReason;
+    error.responseTextLength = completion.responseTextLength;
+    throw error;
+  }
   const semanticParseMs = Date.now() - parseStartedAt;
   return { corrections, provider: completion.provider, model: completion.model,
     usage: completion.usage, sourceKey: semanticSourceKey({ correctionSourceHash: input.transcriptHash, config }),

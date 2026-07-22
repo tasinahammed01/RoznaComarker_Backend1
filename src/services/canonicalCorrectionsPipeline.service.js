@@ -87,7 +87,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   }
   await SubmissionFeedback.updateOne({ submissionId: doc._id, overriddenByTeacher: { $ne: true } },
     { $unset: { evaluationSourceHash: 1 } }).catch(() => {});
-  let ai = []; let semanticError = null; let semanticReturnedCount = 0; let semanticRun = null;
+  let ai = []; let semanticError = null; let semanticReturnedCount = 0; let semanticRun = null; let failedSemanticAttempt = 0;
   const rejectionReasons = { lowConfidence: 0, invalidCategoryOrSymbol: 0, invalidQuotation: 0, duplicate: 0 };
   let semanticValidationMs = 0; let semanticMappingMs = 0;
   const semanticStartedAt = Date.now();
@@ -96,6 +96,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     semanticRun = await semantic.analyze({ transcript, assignment, languageToolCorrections: lt, transcriptHash: hash,
       pageManifest: canonicalTranscript.pages.map((page) => ({ fileId: page.fileId, pageNumber: page.pageNumber, startChar: page.startChar, endChar: page.endChar })),
       onAttempt: async ({ attempt, maxAttempts, provider, model, attemptTimeoutMs, remainingBudgetMs }) => {
+        failedSemanticAttempt = attempt;
         await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
           semanticStatus: 'processing', semanticAttempt: attempt, semanticMaxAttempts: maxAttempts, semanticNextRetryAt: null
         }});
@@ -132,20 +133,19 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   } catch (err) {
     semanticError = err;
     // Safe diagnostic logging for semantic failures (without exposing secrets)
-    const errorCode = err?.code || 'UNKNOWN';
-    const isConfigError = errorCode === 'AI_PROVIDER_NOT_CONFIGURED';
-    const isTimeout = errorCode === 'AI_PROVIDER_TIMEOUT';
-    const isBudgetError = errorCode === 'SEMANTIC_BUDGET_EXHAUSTED';
-    const isInvalidResponse = errorCode === 'SEMANTIC_RESPONSE_INVALID' || errorCode === 'AI_PROVIDER_RESPONSE_INVALID';
+    const errorCode = safeErrorCode(err) || 'SEMANTIC_ANALYSIS_FAILED';
     logger.warn({
       message: 'Semantic analysis failure',
-      submissionId: String(doc._id),
       errorCode,
-      errorType: isConfigError ? 'CONFIGURATION' : isTimeout ? 'TIMEOUT' : isBudgetError ? 'BUDGET' : isInvalidResponse ? 'INVALID_RESPONSE' : 'UNKNOWN',
       provider: semanticConfig.provider,
       model: semanticConfig.model,
-      attempt: semanticRun?.metrics?.attemptCount || 0,
+      attempt: failedSemanticAttempt,
       durationMs: Date.now() - semanticStartedAt,
+      httpStatus: Number(err?.httpStatus || err?.status) || null,
+      candidateCount: Number.isFinite(Number(err?.candidateCount)) ? Number(err.candidateCount) : null,
+      finishReason: typeof err?.finishReason === 'string' ? err.finishReason : null,
+      responseTextLength: Number.isFinite(Number(err?.responseTextLength)) ? Number(err.responseTextLength) : null,
+      validationStage: typeof err?.validationStage === 'string' ? err.validationStage : null,
       credentialConfigured: getSemanticAIConfigStatus(semanticConfig).credentialConfigured
     });
   }

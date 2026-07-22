@@ -15,8 +15,10 @@ const countSources = (corrections) => (corrections || []).reduce((out, item) => 
 
 function safeErrorCode(error) {
   const explicitCode = typeof error === 'object' && error && typeof error.code === 'string' ? error.code : '';
-  if (['AI_PROVIDER_NOT_CONFIGURED', 'AI_PROVIDER_TIMEOUT', 'SEMANTIC_BUDGET_EXHAUSTED',
-    'AI_PROVIDER_RESPONSE_INVALID'].includes(explicitCode)) return explicitCode;
+  if (['AI_PROVIDER_NOT_CONFIGURED', 'AI_PROVIDER_TIMEOUT', 'SEMANTIC_BUDGET_EXHAUSTED', 'AI_PROVIDER_RESPONSE_INVALID',
+    'SEMANTIC_RESPONSE_INVALID', 'SEMANTIC_SOURCE_MISMATCH', 'SEMANTIC_SCHEMA_INVALID', 'SEMANTIC_EVIDENCE_UNGROUNDED',
+    'GOOGLE_RESPONSE_EMPTY', 'GOOGLE_RESPONSE_BLOCKED', 'GOOGLE_OUTPUT_TRUNCATED'].includes(explicitCode)
+    || /^HTTP_(400|401|403|404|429|500|502|503|504)$/u.test(explicitCode)) return explicitCode;
   const message = String(error || '').toLowerCase();
   if (!message) return null;
   if (message.includes('config') || message.includes('api key') || message.includes('credential')) return 'AI_PROVIDER_NOT_CONFIGURED';

@@ -4,7 +4,7 @@ jest.mock('../src/services/languageTool.service', () => ({ checkTextWithLanguage
 jest.mock('../src/models/CorrectionLegend', () => ({ findOne: jest.fn(() => ({ lean: jest.fn().mockResolvedValue(null) })) }));
 jest.mock('../src/models/SubmissionFeedback', () => ({ updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }) }));
 jest.mock('../src/services/semanticAIClient.service', () => ({ getSemanticAIConfig: () => ({ provider: 'openrouter', model: 'approved/model',
-  maxRetries: 1, fallback: null }) }));
+  maxRetries: 1, fallback: null }), getSemanticAIConfigStatus: () => ({ credentialConfigured: true }) }));
 jest.mock('../src/services/semanticWritingCorrections.service', () => ({ SEMANTIC_PROMPT_VERSION: 'semantic-compact-v2',
   semanticSourceKey: () => 'semantic-key', analyze: jest.fn(async () => ({ corrections: [], provider: 'openrouter', model: 'approved/model',
     metrics: { attemptCount: 1, promptInputTokenEstimate: 100 } })) }));
@@ -16,6 +16,7 @@ const metrics = require('../src/services/semanticMetrics.service');
 const pipeline = require('../src/services/canonicalCorrectionsPipeline.service');
 const canonical = require('../src/services/correctionCanonical.service');
 const { CANONICAL_TRANSCRIPT_LAYOUT_VERSION } = require('../src/utils/ocrTranscriptNormalizer');
+const logger = require('../src/utils/logger');
 
 describe('semantic single-flight job lock', () => {
   beforeEach(() => {
@@ -60,5 +61,28 @@ describe('semantic single-flight job lock', () => {
     expect(semantic.analyze).not.toHaveBeenCalled();
     expect(model.updateOne).not.toHaveBeenCalled();
     expect(metrics.snapshot().semanticJobsReused).toBe(1);
+  });
+
+  test('failed provider attempt is numbered and safe diagnostics exclude request and response data', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+    semantic.analyze.mockImplementationOnce(async (input) => {
+      await input.onAttempt({ attempt: 1, maxAttempts: 2, provider: 'openrouter', model: 'approved/model',
+        attemptTimeoutMs: 1000, remainingBudgetMs: 2000 });
+      const error = new Error('must-not-be-logged-provider-output');
+      Object.assign(error, { code: 'SEMANTIC_RESPONSE_INVALID', validationStage: 'json_parse', responseTextLength: 27,
+        candidateCount: 1, finishReason: 'STOP', httpStatus: 200 });
+      throw error;
+    });
+    const state = { _id: 'submission-failure', ocrJobId: 'ocr-job', semanticStatus: undefined };
+    const model = { updateOne: jest.fn(async (_query, update) => { Object.assign(state, update.$set || {}); return { modifiedCount: 1 }; }),
+      findById: jest.fn() };
+    await pipeline.generateAndPersist({ ...state, files: ['f1'], ocrPages: [{ fileId: 'f1', pageNumber: 1,
+      text: 'private transcript evidence' }], constructor: model, writingCorrections: [] }, { assignment: { title: 'private prompt' } });
+    const diagnostic = warn.mock.calls.find(([entry]) => entry?.message === 'Semantic analysis failure')?.[0];
+    expect(diagnostic).toMatchObject({ attempt: 1, errorCode: 'SEMANTIC_RESPONSE_INVALID', validationStage: 'json_parse',
+      responseTextLength: 27, candidateCount: 1, finishReason: 'STOP', credentialConfigured: true });
+    const serialized = JSON.stringify(diagnostic);
+    for (const secret of ['private transcript evidence', 'private prompt', 'must-not-be-logged-provider-output']) expect(serialized).not.toContain(secret);
+    warn.mockRestore();
   });
 });

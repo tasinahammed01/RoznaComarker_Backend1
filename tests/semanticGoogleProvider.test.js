@@ -14,6 +14,10 @@ const googleOk = (content) => ({ ok: true, status: 200, headers: { get: () => nu
   candidates: [{ content: { parts: [{ text: content }] } }],
   usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 }
 }) });
+const googlePayload = (payload) => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(payload) });
+const attempt = (payload) => client.providerAttempt({ messages: [{ role: 'user', content: 'private-prompt' }], provider: 'google',
+  model: 'gemini-3.6-flash', maxOutputTokens: 2400, attemptTimeoutMs: 1000,
+  fetchImpl: jest.fn(async () => googlePayload(payload)), env, now: Date.now });
 
 describe('direct Google semantic provider', () => {
   test('resolves gemini-3.6-flash through Google with only GEMINI_API_KEY', async () => {
@@ -41,17 +45,55 @@ describe('direct Google semantic provider', () => {
   });
 
   test('rejects invalid JSON and hash mismatches before returning corrections', async () => {
-    expect(() => semantic.parseJson('not json', 'hash')).toThrow();
-    expect(() => semantic.parseJson('{"transcriptHash":"stale","corrections":[]}', 'hash')).toThrow('complete transcript hash');
+    expect(() => semantic.parseJson('not json', 'hash')).toThrow(expect.objectContaining({ code: 'SEMANTIC_RESPONSE_INVALID', validationStage: 'json_parse' }));
+    expect(() => semantic.parseJson('{"corrections":[]}', 'hash')).toThrow(expect.objectContaining({ code: 'SEMANTIC_SOURCE_MISMATCH' }));
+    expect(() => semantic.parseJson('{"transcriptHash":"stale","corrections":[]}', 'hash')).toThrow(expect.objectContaining({ code: 'SEMANTIC_SOURCE_MISMATCH', validationStage: 'source_hash' }));
+    expect(() => semantic.parseJson('{"transcriptHash":"hash"}', 'hash')).toThrow(expect.objectContaining({ code: 'SEMANTIC_SCHEMA_INVALID', validationStage: 'schema_validation' }));
   });
 
   test('rejects incomplete and fabricated/non-verbatim evidence', () => {
     const legend = semantic.compactSemanticLegend();
     expect(() => semantic.validateCorrections([{ category: 'CONTENT', symbol: 'DEV', quotedText: 'real' }],
-      { transcript: 'real essay', legend })).toThrow('incomplete correction');
+      { transcript: 'real essay', legend })).toThrow(expect.objectContaining({ code: 'SEMANTIC_SCHEMA_INVALID' }));
     expect(() => semantic.validateCorrections([{ category: 'CONTENT', symbol: 'DEV', quotedText: 'fabricated', occurrence: 0,
       message: 'Develop this.', suggestedText: 'Add evidence.', confidence: 0.9 }],
-    { transcript: 'real essay', legend })).toThrow('non-verbatim evidence');
+    { transcript: 'real essay', legend })).toThrow(expect.objectContaining({ code: 'SEMANTIC_EVIDENCE_UNGROUNDED' }));
+  });
+
+  test('joins genuine text parts and ignores thought and non-text parts', async () => {
+    const result = await attempt({ candidates: [{ finishReason: 'STOP', content: { parts: [
+      { text: '{"transcriptHash":"hash",' }, { thought: true, text: 'private reasoning' }, { inlineData: { mimeType: 'x' } },
+      { text: '"corrections":[]}' }
+    ] } }], usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 2 } });
+    expect(result).toMatchObject({ content: '{"transcriptHash":"hash","corrections":[]}', candidateCount: 1,
+      finishReason: 'STOP', responseTextLength: 42 });
+    expect(result.content).not.toContain('private reasoning');
+  });
+
+  test.each([
+    [{ candidates: [] }, 'GOOGLE_RESPONSE_EMPTY'],
+    [{ candidates: [{ finishReason: 'STOP', content: { parts: [] } }] }, 'GOOGLE_RESPONSE_EMPTY'],
+    [{ promptFeedback: { blockReason: 'SAFETY' }, candidates: [] }, 'GOOGLE_RESPONSE_BLOCKED'],
+    [{ candidates: [{ finishReason: 'SAFETY', content: { parts: [{ text: 'hidden' }] } }] }, 'GOOGLE_RESPONSE_BLOCKED'],
+    [{ candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [] } }] }, 'GOOGLE_OUTPUT_TRUNCATED']
+  ])('normalizes unusable Google response %#', async (payload, code) => {
+    await expect(attempt(payload)).rejects.toMatchObject({ code, validationStage: 'provider_response' });
+  });
+
+  test('MAX_TOKENS with incomplete JSON is normalized as truncation', async () => {
+    const input = { transcript: 'Essay', transcriptHash: 'hash' };
+    const runCompletion = jest.fn(async () => ({ content: '{"transcriptHash":"hash",', provider: 'google', model: 'gemini-3.6-flash',
+      finishReason: 'MAX_TOKENS', candidateCount: 1, responseTextLength: 25, metrics: {} }));
+    await expect(semantic.analyze(input, { config: { ...config, fallback: null }, env, runCompletion }))
+      .rejects.toMatchObject({ code: 'GOOGLE_OUTPUT_TRUNCATED', validationStage: 'json_parse', finishReason: 'MAX_TOKENS' });
+  });
+
+  test.each([400, 401, 403, 404, 429, 500])('preserves safe Google HTTP metadata for %s', async (status) => {
+    const fetchImpl = jest.fn(async () => ({ ok: false, status, headers: { get: (name) => name === 'retry-after' ? '2' : null },
+      text: async () => JSON.stringify({ error: { code: status, status: 'SAFE_STATUS', message: 'private provider message' } }) }));
+    await expect(client.providerAttempt({ messages: [], provider: 'google', model: 'gemini-3.6-flash', maxOutputTokens: 256,
+      attemptTimeoutMs: 1000, fetchImpl, env, now: Date.now })).rejects.toMatchObject({ code: `HTTP_${status}`,
+      httpStatus: status, googleErrorCode: status, googleErrorStatus: 'SAFE_STATUS', retryAfterMs: 2000 });
   });
 
   test('accepts only the pinned direct Google model and reports its credential without exposing it', () => {

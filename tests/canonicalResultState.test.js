@@ -89,6 +89,9 @@ describe('canonical result state contract', () => {
     expect(state.detailedFeedbackCurrent).toBe(false);
     expect(state.detailedFeedbackStatus).toBe('stale');
     expect(safeErrorCode('request timed out with private provider details')).toBe('AI_PROVIDER_TIMEOUT');
+    for (const code of ['SEMANTIC_RESPONSE_INVALID', 'SEMANTIC_SOURCE_MISMATCH', 'SEMANTIC_SCHEMA_INVALID',
+      'SEMANTIC_EVIDENCE_UNGROUNDED', 'GOOGLE_RESPONSE_EMPTY', 'GOOGLE_RESPONSE_BLOCKED', 'GOOGLE_OUTPUT_TRUNCATED', 'HTTP_429'])
+      expect(safeErrorCode({ code })).toBe(code);
   });
 
   test('current hashes with malformed generic feedback fail explicitly and permit authorized repair', () => {

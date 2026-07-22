@@ -74,6 +74,14 @@ function timeoutError() {
   return error;
 }
 
+function providerResponseError(code, stage, metadata = {}) {
+  const error = new Error('Semantic provider returned an unusable response');
+  error.code = code;
+  error.validationStage = stage;
+  Object.assign(error, metadata);
+  return error;
+}
+
 async function providerAttempt({ messages, provider, model, maxOutputTokens, attemptTimeoutMs, fetchImpl, env, now }) {
   const credential = credentialFor(provider, env);
   const endpoint = endpointFor(provider, env);
@@ -111,27 +119,49 @@ async function providerAttempt({ messages, provider, model, maxOutputTokens, att
   }
   const headersAt = now();
   if (!response.ok) {
-    await response.text().catch(() => '');
+    const rawErrorBody = await response.text().catch(() => '');
+    let googleError = null;
+    if (google) {
+      try { googleError = JSON.parse(rawErrorBody)?.error || null; } catch { /* safe metadata unavailable */ }
+    }
     const error = new Error(`Semantic provider request failed (${response.status})`);
     error.status = response.status;
+    error.httpStatus = response.status;
     error.code = `HTTP_${response.status}`;
     error.retryAfterMs = retryAfterMs(response, headersAt);
+    if (googleError && typeof googleError === 'object') {
+      error.googleErrorStatus = typeof googleError.status === 'string' ? googleError.status.slice(0, 80) : null;
+      error.googleErrorCode = Number.isFinite(Number(googleError.code)) ? Number(googleError.code) : null;
+    }
     throw error;
   }
   const rawBody = await response.text();
   const completedAt = now();
   let payload;
   try { payload = JSON.parse(rawBody); }
-  catch { const error = new Error('Semantic provider returned invalid response JSON'); error.code = 'AI_PROVIDER_RESPONSE_INVALID'; throw error; }
-  const content = google
-    ? (payload?.candidates?.[0]?.content?.parts || []).map((part) => part?.text || '').join('')
-    : payload?.choices?.[0]?.message?.content || '';
+  catch { throw providerResponseError('AI_PROVIDER_RESPONSE_INVALID', 'provider_json'); }
+  const candidates = google && Array.isArray(payload?.candidates) ? payload.candidates : [];
+  const candidateCount = candidates.length;
+  const finishReason = google && typeof candidates[0]?.finishReason === 'string' ? candidates[0].finishReason : null;
+  const blockReason = google && typeof payload?.promptFeedback?.blockReason === 'string' ? payload.promptFeedback.blockReason : null;
+  const googleMetadata = { candidateCount, finishReason, blockReason };
+  if (google && (blockReason || finishReason === 'SAFETY')) {
+    throw providerResponseError('GOOGLE_RESPONSE_BLOCKED', 'provider_response', googleMetadata);
+  }
+  const content = google ? (Array.isArray(candidates[0]?.content?.parts) ? candidates[0].content.parts : [])
+    .filter((part) => part && part.thought !== true && typeof part.text === 'string')
+    .map((part) => part.text).join('') : payload?.choices?.[0]?.message?.content || '';
+  if (google && !content.trim()) {
+    throw providerResponseError(finishReason === 'MAX_TOKENS' ? 'GOOGLE_OUTPUT_TRUNCATED' : 'GOOGLE_RESPONSE_EMPTY',
+      'provider_response', { ...googleMetadata, responseTextLength: content.length });
+  }
   const usage = google && payload?.usageMetadata ? {
     prompt_tokens: payload.usageMetadata.promptTokenCount,
     completion_tokens: payload.usageMetadata.candidatesTokenCount,
     total_tokens: payload.usageMetadata.totalTokenCount
   } : payload?.usage || null;
-  return { content, usage, signal,
+  return { content, usage, signal, candidateCount: google ? candidateCount : null,
+    finishReason: google ? finishReason : null, blockReason: google ? blockReason : null, responseTextLength: content.length,
     timings: { semanticProviderConnectMs: null, semanticTimeToFirstByteMs: headersAt - startedAt,
       semanticProviderMs: completedAt - startedAt }, provider, model };
 }
@@ -193,4 +223,4 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
 }
 
 module.exports = { SEMANTIC_TRANSIENT_STATUSES, getSemanticAIConfig, getSemanticAIConfigStatus, retryAfterMs,
-  GOOGLE_SEMANTIC_MODELS, credentialFor, endpointFor, classifyTransient, providerAttempt, runSemanticCompletion };
+  GOOGLE_SEMANTIC_MODELS, credentialFor, endpointFor, classifyTransient, providerResponseError, providerAttempt, runSemanticCompletion };
