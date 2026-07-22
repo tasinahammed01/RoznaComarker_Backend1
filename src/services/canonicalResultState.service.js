@@ -36,14 +36,26 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
   const correctionStatus = layoutCurrent ? storedCorrectionStatus : 'stale';
   const corrections = layoutCurrent && Array.isArray(submission.writingCorrections) ? submission.writingCorrections : [];
   const sourceCounts = countSources(corrections);
-  const semanticComplete = correctionStatus === 'completed';
-  const semanticFailed = ['partial', 'failed', 'stale'].includes(correctionStatus);
-  const languageAvailable = ['processing', 'partial', 'completed'].includes(correctionStatus) && Array.isArray(submission.writingCorrections);
+  const semanticComplete = layoutCurrent && (submission.semanticStatus === 'completed' || (!submission.semanticStatus && correctionStatus === 'completed'));
+  const semanticFailed = !layoutCurrent || submission.semanticStatus === 'failed'
+    || (!submission.semanticStatus && ['partial', 'failed', 'stale'].includes(correctionStatus));
+  const explicitLanguageStatus = submission.languageToolStatus;
+  const retainedLanguageCurrent = layoutCurrent && explicitLanguageStatus === 'failed'
+    && submission.languageToolSourceHash === submission.correctionSourceHash
+    && submission.languageToolVersion === submission.correctionVersion
+    && submission.languageToolTranscriptLayoutVersion === CANONICAL_TRANSCRIPT_LAYOUT_VERSION
+    && corrections.some((item) => String(item?.source || '').toUpperCase() === 'LANGUAGETOOL');
+  const languageAvailable = layoutCurrent && (explicitLanguageStatus === 'completed' || retainedLanguageCurrent
+    || (!explicitLanguageStatus && ['processing', 'partial', 'completed'].includes(correctionStatus) && Array.isArray(submission.writingCorrections)));
+  const languageFailed = !layoutCurrent || (explicitLanguageStatus === 'failed' && !retainedLanguageCurrent)
+    || (!explicitLanguageStatus && ['failed', 'stale'].includes(correctionStatus));
   const statistics = layoutCurrent ? (submission.correctionStatistics || null) : null;
   const categoryAvailability = {};
   for (const category of LANGUAGE_CATEGORIES) categoryAvailability[category] = languageAvailable ? 'available'
-    : ['failed', 'stale'].includes(correctionStatus) ? 'failed' : 'pending';
+    : languageFailed ? 'failed' : 'pending';
   for (const category of SEMANTIC_CATEGORIES) categoryAvailability[category] = semanticComplete ? 'available' : semanticFailed ? 'failed' : 'pending';
+  const canonicalComplete = semanticComplete && languageAvailable && correctionStatus === 'completed';
+  const anyCategoryAvailable = semanticComplete || languageAvailable;
 
   const sourceHash = layoutCurrent ? (submission.correctionSourceHash || null) : null;
   const teacherOverride = layoutCurrent && Boolean(feedback?.overriddenByTeacher);
@@ -90,9 +102,12 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
     correctionStatus,
     correctionCurrent: layoutCurrent,
     transcriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
-    correctionStage: correctionStatus === 'completed' ? 'complete' : semanticFailed ? 'semantic_failed' : languageAvailable ? 'semantic' : 'language_tool',
-    statisticsStatus: semanticComplete ? 'complete' : semanticFailed ? (languageAvailable ? 'partial' : 'failed') : languageAvailable ? 'partial' : 'processing',
-    statisticsCompleteness: semanticComplete ? 'canonical' : languageAvailable ? 'language_only' : 'none',
+    correctionStage: correctionStatus === 'completed' ? 'complete' : semanticFailed ? 'semantic_failed'
+      : languageFailed ? 'language_tool_failed' : languageAvailable ? 'semantic' : 'language_tool',
+    statisticsStatus: canonicalComplete ? 'complete' : anyCategoryAvailable ? 'partial'
+      : (semanticFailed || languageFailed) ? 'failed' : 'processing',
+    statisticsCompleteness: canonicalComplete ? 'canonical' : semanticComplete && !languageAvailable ? 'semantic_only'
+      : languageAvailable ? 'language_only' : 'none',
     statistics,
     categoryAvailability,
     sourceCounts,

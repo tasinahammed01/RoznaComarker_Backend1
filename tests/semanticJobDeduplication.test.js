@@ -85,4 +85,44 @@ describe('semantic single-flight job lock', () => {
     for (const secret of ['private transcript evidence', 'private prompt', 'must-not-be-logged-provider-output']) expect(serialized).not.toContain(secret);
     warn.mockRestore();
   });
+
+  test('LanguageTool timeout retains only same-hash canonical language corrections', async () => {
+    const assignment = { title: 'Essay' };
+    const transcript = 'A complete essay.';
+    const hash = pipeline.buildCorrectionSourceHash({ transcript, assignment });
+    const retained = { id: 'lt-1', source: 'LANGUAGETOOL', category: 'GRAMMAR', symbol: 'AGR',
+      quotedText: 'essay', startChar: 11, endChar: 16 };
+    const state = { _id: 'submission-retained', ocrJobId: 'ocr-job', semanticStatus: 'failed' };
+    const model = { updateOne: jest.fn(async (query, update) => {
+      if (query.correctionJobId && query.correctionJobId !== state.correctionJobId) return { modifiedCount: 0 };
+      Object.assign(state, update.$set || {}); return { modifiedCount: 1 };
+    }), findById: jest.fn(async () => ({ ...state, constructor: model })) };
+    writing.check.mockRejectedValueOnce(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }));
+    await pipeline.generateAndPersist({ ...state, files: ['f1'], ocrPages: [{ fileId: 'f1', pageNumber: 1, text: transcript }],
+      correctionSourceHash: hash, correctionVersion: canonical.VERSION,
+      correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
+      writingCorrections: [retained], constructor: model }, { assignment, force: true });
+    expect(state).toMatchObject({ correctionStatus: 'partial', languageToolStatus: 'failed',
+      languageToolSourceHash: hash, semanticStatus: 'completed' });
+    expect(state.writingCorrections).toContainEqual(retained);
+    expect(state.correctionStatistics.grammar).toBe(1);
+  });
+
+  test('LanguageTool timeout after a source change cannot reuse old language corrections', async () => {
+    const state = { _id: 'submission-changed', ocrJobId: 'ocr-job', semanticStatus: 'failed' };
+    const model = { updateOne: jest.fn(async (query, update) => {
+      if (query.correctionJobId && query.correctionJobId !== state.correctionJobId) return { modifiedCount: 0 };
+      Object.assign(state, update.$set || {}); return { modifiedCount: 1 };
+    }), findById: jest.fn(async () => ({ ...state, constructor: model })) };
+    writing.check.mockRejectedValueOnce(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }));
+    await pipeline.generateAndPersist({ ...state, files: ['f1'], ocrPages: [{ fileId: 'f1', pageNumber: 1,
+      text: 'A changed essay.' }], correctionSourceHash: 'old-hash', correctionVersion: canonical.VERSION,
+      correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
+      writingCorrections: [{ id: 'old', source: 'LANGUAGETOOL', category: 'GRAMMAR' }], constructor: model },
+    { assignment: { title: 'Essay' }, force: true });
+    expect(state).toMatchObject({ correctionStatus: 'partial', languageToolStatus: 'failed', languageToolSourceHash: null,
+      semanticStatus: 'completed' });
+    expect(state.writingCorrections.filter((item) => item.source === 'LANGUAGETOOL')).toEqual([]);
+    expect(state.correctionStatistics).toMatchObject({ grammar: null, mechanics: null });
+  });
 });

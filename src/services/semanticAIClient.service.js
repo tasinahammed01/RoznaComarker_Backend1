@@ -2,10 +2,17 @@
 
 const SEMANTIC_TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 const GOOGLE_SEMANTIC_MODELS = new Set(['gemini-3.6-flash']);
+const GOOGLE_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high']);
+const MAX_SEMANTIC_OUTPUT_TOKENS = 65536;
 
-const integer = (value, fallback, minimum = 0) => {
+const integer = (value, fallback, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) => {
   const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
+  return Number.isFinite(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
+};
+
+const googleThinkingLevel = (value) => {
+  const normalized = String(value || 'low').trim().toLowerCase();
+  return GOOGLE_THINKING_LEVELS.has(normalized) ? normalized : 'low';
 };
 
 function getSemanticAIConfig(env = process.env) {
@@ -24,7 +31,8 @@ function getSemanticAIConfig(env = process.env) {
     maxRetries: integer(env.SEMANTIC_AI_MAX_RETRIES, 1, 0),
     retryDelayMs: integer(env.SEMANTIC_AI_RETRY_DELAY_MS, 2000, 0),
     minAttemptBudgetMs: integer(env.SEMANTIC_AI_MIN_ATTEMPT_BUDGET_MS, 10000, 1000),
-    maxOutputTokens: integer(env.SEMANTIC_AI_MAX_OUTPUT_TOKENS, 2400, 256),
+    maxOutputTokens: integer(env.SEMANTIC_AI_MAX_OUTPUT_TOKENS, 8192, 256, MAX_SEMANTIC_OUTPUT_TOKENS),
+    googleThinkingLevel: googleThinkingLevel(env.SEMANTIC_AI_GOOGLE_THINKING_LEVEL),
     fallback,
     approvedModels: [...approvedModels]
   };
@@ -82,7 +90,8 @@ function providerResponseError(code, stage, metadata = {}) {
   return error;
 }
 
-async function providerAttempt({ messages, provider, model, maxOutputTokens, attemptTimeoutMs, fetchImpl, env, now }) {
+async function providerAttempt({ messages, provider, model, maxOutputTokens, googleThinkingLevel: configuredThinkingLevel = 'low',
+  attemptTimeoutMs, fetchImpl, env, now }) {
   const credential = credentialFor(provider, env);
   const endpoint = endpointFor(provider, env);
   if (!credential || !endpoint || !model) {
@@ -102,7 +111,8 @@ async function providerAttempt({ messages, provider, model, maxOutputTokens, att
     contents: messages.filter((item) => item?.role !== 'system').map((item) => ({
       role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(item.content || '') }]
     })),
-    generationConfig: { temperature: 0.1, maxOutputTokens, responseMimeType: 'application/json' }
+    generationConfig: { maxOutputTokens, responseMimeType: 'application/json',
+      thinkingConfig: { thinkingLevel: googleThinkingLevel(configuredThinkingLevel) } }
   } : { model, messages, temperature: 0.1, max_tokens: maxOutputTokens, response_format: { type: 'json_object' } });
   const startedAt = now();
   const signal = AbortSignal.timeout(attemptTimeoutMs);
@@ -192,7 +202,8 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
       attemptTimeoutMs, remainingBudgetMs: remaining });
     try {
       const result = await providerAttempt({ messages, provider: target.provider, model: target.model,
-        maxOutputTokens: config.maxOutputTokens, attemptTimeoutMs, fetchImpl, env, now });
+        maxOutputTokens: config.maxOutputTokens, googleThinkingLevel: config.googleThinkingLevel,
+        attemptTimeoutMs, fetchImpl, env, now });
       attempts.push({ attempt, provider: target.provider, model: target.model, durationMs: result.timings.semanticProviderMs, status: 'completed' });
       return { ...result, metrics: { attemptCount: attempt, timeoutCount, retryDelayMs: retryDelayTotalMs,
         semanticProviderMs: result.timings.semanticProviderMs, semanticTimeToFirstByteMs: result.timings.semanticTimeToFirstByteMs,
@@ -223,4 +234,5 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
 }
 
 module.exports = { SEMANTIC_TRANSIENT_STATUSES, getSemanticAIConfig, getSemanticAIConfigStatus, retryAfterMs,
-  GOOGLE_SEMANTIC_MODELS, credentialFor, endpointFor, classifyTransient, providerResponseError, providerAttempt, runSemanticCompletion };
+  GOOGLE_SEMANTIC_MODELS, GOOGLE_THINKING_LEVELS, MAX_SEMANTIC_OUTPUT_TOKENS, credentialFor, endpointFor,
+  classifyTransient, providerResponseError, providerAttempt, runSemanticCompletion };

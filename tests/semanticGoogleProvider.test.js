@@ -8,7 +8,8 @@ const semantic = require('../src/services/semanticWritingCorrections.service');
 
 const config = { provider: 'google', model: 'gemini-3.6-flash', approvedModels: ['gemini-3.6-flash', 'openai/gpt-oss-20b'],
   attemptTimeoutMs: 45000, totalBudgetMs: 90000, maxRetries: 1, retryDelayMs: 0,
-  minAttemptBudgetMs: 10000, maxOutputTokens: 2400, fallback: { provider: 'openrouter', model: 'openai/gpt-oss-20b' } };
+  minAttemptBudgetMs: 10000, maxOutputTokens: 8192, googleThinkingLevel: 'low',
+  fallback: { provider: 'openrouter', model: 'openai/gpt-oss-20b' } };
 const env = { GEMINI_API_KEY: 'gemini-secret', OPENROUTER_API_KEY: 'router-secret' };
 const googleOk = (content) => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({
   candidates: [{ content: { parts: [{ text: content }] } }],
@@ -16,7 +17,7 @@ const googleOk = (content) => ({ ok: true, status: 200, headers: { get: () => nu
 }) });
 const googlePayload = (payload) => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(payload) });
 const attempt = (payload) => client.providerAttempt({ messages: [{ role: 'user', content: 'private-prompt' }], provider: 'google',
-  model: 'gemini-3.6-flash', maxOutputTokens: 2400, attemptTimeoutMs: 1000,
+  model: 'gemini-3.6-flash', maxOutputTokens: 8192, googleThinkingLevel: 'low', attemptTimeoutMs: 1000,
   fetchImpl: jest.fn(async () => googlePayload(payload)), env, now: Date.now });
 
 describe('direct Google semantic provider', () => {
@@ -27,6 +28,10 @@ describe('direct Google semantic provider', () => {
     expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent');
     expect(options.headers).toMatchObject({ 'x-goog-api-key': 'gemini-secret', 'Content-Type': 'application/json' });
     expect(options.headers).not.toHaveProperty('Authorization');
+    const body = JSON.parse(options.body);
+    expect(body.generationConfig).toEqual({ maxOutputTokens: 8192, responseMimeType: 'application/json',
+      thinkingConfig: { thinkingLevel: 'low' } });
+    expect(body.generationConfig).not.toHaveProperty('temperature');
     expect(JSON.stringify(options)).not.toContain('router-secret');
     expect(result).toMatchObject({ provider: 'google', model: 'gemini-3.6-flash', content: '{"transcriptHash":"hash","corrections":[]}' });
   });
@@ -37,7 +42,8 @@ describe('direct Google semantic provider', () => {
     const fetchImpl = jest.fn(async (_url, options) => {
       const body = JSON.parse(options.body);
       expect(body.contents[0].parts[0].text).toBe(request.messages[1].content);
-      expect(body.generationConfig).toMatchObject({ responseMimeType: 'application/json', maxOutputTokens: 2400 });
+      expect(body.generationConfig).toMatchObject({ responseMimeType: 'application/json', maxOutputTokens: 8192,
+        thinkingConfig: { thinkingLevel: 'low' } });
       return googleOk('{"transcriptHash":"hash","corrections":[]}');
     });
     const result = await semantic.analyze(input, { config: { ...config, maxRetries: 0, fallback: null }, env, fetchImpl });
@@ -106,6 +112,24 @@ describe('direct Google semantic provider', () => {
       expect(client.getSemanticAIConfigStatus(invalid, { GEMINI_API_KEY: 'secret' }))
         .toMatchObject({ configured: false, modelConfigured: false, credentialConfigured: true });
     }
+  });
+
+  test('defaults invalid Google thinking levels safely and bounds the output cap', () => {
+    const parsed = client.getSemanticAIConfig({ SEMANTIC_AI_GOOGLE_THINKING_LEVEL: 'unsupported',
+      SEMANTIC_AI_MAX_OUTPUT_TOKENS: '999999' });
+    expect(parsed.googleThinkingLevel).toBe('low');
+    expect(parsed.maxOutputTokens).toBe(8192);
+    expect(client.getSemanticAIConfig({ SEMANTIC_AI_GOOGLE_THINKING_LEVEL: ' HIGH ',
+      SEMANTIC_AI_MAX_OUTPUT_TOKENS: '8192' })).toMatchObject({ googleThinkingLevel: 'high', maxOutputTokens: 8192 });
+  });
+
+  test('preserves OpenRouter temperature and JSON request behavior', async () => {
+    const fetchImpl = jest.fn(async () => ({ ok: true, status: 200, headers: { get: () => null },
+      text: async () => JSON.stringify({ choices: [{ message: { content: '{}' } }] }) }));
+    await client.providerAttempt({ messages: [{ role: 'user', content: 'bounded' }], provider: 'openrouter',
+      model: 'openai/gpt-oss-20b', maxOutputTokens: 8192, attemptTimeoutMs: 1000, fetchImpl, env, now: Date.now });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({ temperature: 0.1, max_tokens: 8192,
+      response_format: { type: 'json_object' } });
   });
 
   test('missing Google key fails before any HTTP request', async () => {

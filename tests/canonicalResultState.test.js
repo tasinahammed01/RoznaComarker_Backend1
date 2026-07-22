@@ -70,6 +70,33 @@ describe('canonical result state contract', () => {
     expect(state.statistics.content).toBe(0);
   });
 
+  test('LanguageTool failure never turns missing analysis into synthetic zero availability', () => {
+    const state = buildCanonicalResultState({ submission: { correctionStatus: 'partial', semanticStatus: 'completed',
+      languageToolStatus: 'failed', correctionSourceHash: 'hash', correctionVersion: 'v',
+      correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
+      writingCorrections: [{ source: 'AI', category: 'CONTENT' }],
+      correctionStatistics: { content: 1, grammar: null, organization: 0, vocabulary: 0, mechanics: null, total: 1 } } });
+    expect(state.statisticsCompleteness).toBe('semantic_only');
+    expect(state.categoryAvailability).toMatchObject({ grammar: 'failed', mechanics: 'failed', content: 'available' });
+    expect(state.statistics.grammar).toBeNull();
+    expect(state.score).toBeNull();
+  });
+
+  test('same-hash retained LanguageTool corrections remain available but result stays partial', () => {
+    const state = buildCanonicalResultState({ submission: { correctionStatus: 'partial', semanticStatus: 'completed',
+      languageToolStatus: 'failed', correctionSourceHash: 'hash', correctionVersion: 'v',
+      correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
+      languageToolSourceHash: 'hash', languageToolVersion: 'v',
+      languageToolTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
+      writingCorrections: [{ source: 'LANGUAGETOOL', category: 'GRAMMAR' }, { source: 'AI', category: 'CONTENT' }],
+      correctionStatistics: { content: 1, grammar: 1, organization: 0, vocabulary: 0, mechanics: 0, total: 2 } } });
+    expect(state.statisticsCompleteness).toBe('language_only');
+    expect(state.statisticsStatus).toBe('partial');
+    expect(state.categoryAvailability).toEqual({ grammar: 'available', mechanics: 'available',
+      content: 'available', organization: 'available', vocabulary: 'available' });
+    expect(state.score).toBeNull();
+  });
+
   test('missing and stale evaluation are null while a legitimate completed zero remains zero', () => {
     const base = { correctionStatus: 'completed', correctionSourceHash: 'new',
       correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION, writingCorrections: [] };
