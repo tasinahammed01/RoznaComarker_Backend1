@@ -82,6 +82,32 @@ function parseJson(value, expectedHash) {
   return parsed.corrections.slice(0, 40);
 }
 
+function invalidSemanticResponse(message) {
+  const error = new Error(message);
+  error.code = 'SEMANTIC_RESPONSE_INVALID';
+  return error;
+}
+
+function validateCorrections(corrections, { transcript, legend }) {
+  const allowed = new Set((legend || []).flatMap((group) => (group.symbols || [])
+    .map((item) => `${group.category}:${item.symbol}`)));
+  for (const item of corrections) {
+    if (!item || typeof item !== 'object' || !SEMANTIC_CATEGORIES.has(item.category)
+      || !allowed.has(`${item.category}:${item.symbol}`) || typeof item.quotedText !== 'string' || !item.quotedText
+      || typeof item.message !== 'string' || !item.message.trim() || typeof item.suggestedText !== 'string'
+      || !Number.isFinite(Number(item.confidence)) || Number(item.confidence) < 0 || Number(item.confidence) > 1
+      || !Number.isInteger(Number(item.occurrence)) || Number(item.occurrence) < 0) {
+      throw invalidSemanticResponse('Semantic analysis returned an incomplete correction');
+    }
+    let offset = -1;
+    for (let occurrence = 0; occurrence <= Number(item.occurrence); occurrence += 1) {
+      offset = transcript.indexOf(item.quotedText, offset + 1);
+      if (offset < 0) throw invalidSemanticResponse('Semantic analysis returned non-verbatim evidence');
+    }
+  }
+  return corrections;
+}
+
 function semanticSourceKey({ correctionSourceHash, config = getSemanticAIConfig(), legendVersion = defaultLegend().version }) {
   return crypto.createHash('sha256').update(JSON.stringify({ correctionSourceHash, provider: config.provider, model: config.model,
     fallback: config.fallback, promptVersion: SEMANTIC_PROMPT_VERSION, schemaVersion: SEMANTIC_SCHEMA_VERSION, legendVersion })).digest('hex');
@@ -99,7 +125,9 @@ async function analyze(input, dependencies = {}) {
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
     onAttempt: input.onAttempt, onRetry: input.onRetry });
   const parseStartedAt = Date.now();
-  const corrections = parseJson(completion.content, input.transcriptHash);
+  const corrections = validateCorrections(parseJson(completion.content, input.transcriptHash), {
+    transcript: input.transcript, legend: request.legend
+  });
   const semanticParseMs = Date.now() - parseStartedAt;
   return { corrections, provider: completion.provider, model: completion.model,
     usage: completion.usage, sourceKey: semanticSourceKey({ correctionSourceHash: input.transcriptHash, config }),
@@ -109,4 +137,4 @@ async function analyze(input, dependencies = {}) {
 
 module.exports = { SEMANTIC_PROMPT_VERSION, SEMANTIC_SCHEMA_VERSION, compactAssignment, compactSemanticLegend,
   compactLanguageToolExclusions, compactPageManifest, buildSemanticRequest, buildLegacySemanticRequestForBenchmark,
-  parseJson, semanticSourceKey, analyze };
+  parseJson, validateCorrections, semanticSourceKey, analyze };

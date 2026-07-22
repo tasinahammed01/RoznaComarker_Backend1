@@ -92,6 +92,7 @@ async function generate({ submission, assignment }) {
     const assessment = await buildWritingAssessment({ submission, assignment, transcriptText: null,
       corrections: submission.writingCorrections || [], correctionStatistics: stats });
     const rubricScores = synchronizedRubricScores(assessment.rubricScores, stats);
+    if (!hasValidRubricScores(rubricScores)) throw new Error('Canonical assessment is missing required rubric categories');
     const overallScore = Object.values(rubricScores).reduce((sum, item) => sum + item.score, 0);
     const detailedFeedbackStartedAt = Date.now();
     const detailedFeedback = detailedFeedbackService.buildDeterministicDetailedFeedback({ corrections: submission.writingCorrections || [],

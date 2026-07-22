@@ -1,6 +1,7 @@
 'use strict';
 
 const SEMANTIC_TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+const GOOGLE_SEMANTIC_MODELS = new Set(['gemini-2.5-flash']);
 
 const integer = (value, fallback, minimum = 0) => {
   const parsed = Number.parseInt(value, 10);
@@ -32,19 +33,23 @@ function getSemanticAIConfig(env = process.env) {
 function credentialFor(provider, env = process.env) {
   if (provider === 'openrouter') return String(env.OPENROUTER_API_KEY || '').trim();
   if (provider === 'openai') return String(env.OPENAI_API_KEY || '').trim();
+  if (provider === 'google') return String(env.GEMINI_API_KEY || '').trim();
   return '';
 }
 
 function endpointFor(provider, env = process.env) {
   if (provider === 'openrouter') return `${String(env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/u, '')}/chat/completions`;
   if (provider === 'openai') return `${String(env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/u, '')}/chat/completions`;
+  if (provider === 'google') return String(env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/u, '');
   return '';
 }
 
 function getSemanticAIConfigStatus(config = getSemanticAIConfig(), env = process.env) {
-  const providerConfigured = ['openrouter', 'openai'].includes(config.provider);
-  return { providerConfigured, modelConfigured: Boolean(config.model), credentialConfigured: Boolean(credentialFor(config.provider, env)),
-    configured: providerConfigured && Boolean(config.model) && Boolean(credentialFor(config.provider, env)) };
+  const providerConfigured = ['google', 'openrouter', 'openai'].includes(config.provider);
+  const modelConfigured = Boolean(config.model) && (config.provider !== 'google' || GOOGLE_SEMANTIC_MODELS.has(config.model));
+  const credentialConfigured = Boolean(credentialFor(config.provider, env));
+  return { providerConfigured, modelConfigured, credentialConfigured,
+    configured: providerConfigured && modelConfigured && credentialConfigured };
 }
 
 function retryAfterMs(response, now = Date.now()) {
@@ -77,14 +82,27 @@ async function providerAttempt({ messages, provider, model, maxOutputTokens, att
     error.code = 'AI_PROVIDER_NOT_CONFIGURED';
     throw error;
   }
-  const requestBody = JSON.stringify({ model, messages, temperature: 0.1, max_tokens: maxOutputTokens,
-    response_format: { type: 'json_object' } });
+  if (provider === 'google' && !GOOGLE_SEMANTIC_MODELS.has(model)) {
+    const error = new Error('Semantic AI provider configuration is incomplete.');
+    error.code = 'AI_PROVIDER_NOT_CONFIGURED';
+    throw error;
+  }
+  const google = provider === 'google';
+  const systemText = messages.filter((item) => item?.role === 'system').map((item) => String(item.content || '')).join('\n');
+  const requestBody = JSON.stringify(google ? {
+    ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
+    contents: messages.filter((item) => item?.role !== 'system').map((item) => ({
+      role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(item.content || '') }]
+    })),
+    generationConfig: { temperature: 0.1, maxOutputTokens, responseMimeType: 'application/json' }
+  } : { model, messages, temperature: 0.1, max_tokens: maxOutputTokens, response_format: { type: 'json_object' } });
   const startedAt = now();
   const signal = AbortSignal.timeout(attemptTimeoutMs);
   let response;
   try {
-    response = await fetchImpl(endpoint, { method: 'POST', headers: {
-      Authorization: `Bearer ${credential}`, 'Content-Type': 'application/json',
+    const requestEndpoint = google ? `${endpoint}/models/${encodeURIComponent(model)}:generateContent` : endpoint;
+    response = await fetchImpl(requestEndpoint, { method: 'POST', headers: {
+      ...(google ? { 'x-goog-api-key': credential } : { Authorization: `Bearer ${credential}` }), 'Content-Type': 'application/json',
       ...(provider === 'openrouter' ? { 'HTTP-Referer': env.FRONTEND_URL || 'http://localhost:4200', 'X-Title': 'RoznaComarker' } : {})
     }, body: requestBody, signal });
   } catch (error) {
@@ -105,7 +123,15 @@ async function providerAttempt({ messages, provider, model, maxOutputTokens, att
   let payload;
   try { payload = JSON.parse(rawBody); }
   catch { const error = new Error('Semantic provider returned invalid response JSON'); error.code = 'AI_PROVIDER_RESPONSE_INVALID'; throw error; }
-  return { content: payload?.choices?.[0]?.message?.content || '', usage: payload?.usage || null, signal,
+  const content = google
+    ? (payload?.candidates?.[0]?.content?.parts || []).map((part) => part?.text || '').join('')
+    : payload?.choices?.[0]?.message?.content || '';
+  const usage = google && payload?.usageMetadata ? {
+    prompt_tokens: payload.usageMetadata.promptTokenCount,
+    completion_tokens: payload.usageMetadata.candidatesTokenCount,
+    total_tokens: payload.usageMetadata.totalTokenCount
+  } : payload?.usage || null;
+  return { content, usage, signal,
     timings: { semanticProviderConnectMs: null, semanticTimeToFirstByteMs: headersAt - startedAt,
       semanticProviderMs: completedAt - startedAt }, provider, model };
 }
@@ -167,4 +193,4 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
 }
 
 module.exports = { SEMANTIC_TRANSIENT_STATUSES, getSemanticAIConfig, getSemanticAIConfigStatus, retryAfterMs,
-  classifyTransient, providerAttempt, runSemanticCompletion };
+  GOOGLE_SEMANTIC_MODELS, credentialFor, endpointFor, classifyTransient, providerAttempt, runSemanticCompletion };

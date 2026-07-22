@@ -52,4 +52,15 @@ describe('canonical evaluation write guards', () => {
     expect(mockFindOneAndUpdate.mock.calls[1][0]).toMatchObject({ submissionId: 'submission-1', evaluationJobId: expect.any(String) });
     expect(mockFindOneAndUpdate.mock.calls[1][1].$set).toMatchObject({ detailedFeedbackSourceHash: 'hash', detailedFeedbackVersion: 'canonical-detailed-feedback-2' });
   });
+
+  test('missing rubric categories fail before any score or detailed feedback is persisted', async () => {
+    mockBuildWritingAssessment.mockResolvedValueOnce({ assessmentVersion: 'assessment-v1', grade: 'F', rubricScores: {
+      CONTENT: { score: 10, maxScore: 20, comment: 'Incomplete result.' }
+    } });
+    const record = submission(true);
+    await generate({ submission: record.value, assignment: { title: 'Essay' } });
+    expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(1);
+    expect(record.updateOne).toHaveBeenLastCalledWith(expect.objectContaining({ evaluationJobId: expect.any(String) }),
+      expect.objectContaining({ $set: expect.objectContaining({ evaluationStatus: 'failed' }) }));
+  });
 });
