@@ -1,6 +1,8 @@
 'use strict';
 
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const request = require('supertest');
 const { createCorsMiddleware } = require('../src/middlewares/cors.middleware');
 const { getPublicApiUrl, buildPublicUploadUrl } = require('../src/utils/publicApiUrl');
@@ -36,8 +38,30 @@ describe('production URL and CORS configuration', () => {
       .set('Access-Control-Request-Headers', 'authorization,content-type');
     expect(response.status).toBe(204);
     expect(response.headers['access-control-allow-origin']).toBe('https://comarkers.roznahub.com');
+    expect(response.headers['access-control-allow-credentials']).toBe('true');
     expect(response.headers['access-control-allow-headers'].toLowerCase()).toContain('authorization');
     expect(response.headers['access-control-allow-headers'].toLowerCase()).toContain('content-type');
+  });
+
+  test('allows requests without an Origin header', async () => {
+    const response = await request(app()).get('/api/assignments/my');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  test('never combines credentials with a wildcard allow-origin header', async () => {
+    const responses = await Promise.all([
+      request(app()).get('/api/assignments/my'),
+      request(app()).get('/api/assignments/my').set('Origin', 'https://comarkers.roznahub.com'),
+    ]);
+
+    for (const response of responses) {
+      expect(response.headers['access-control-allow-origin']).not.toBe('*');
+      if (response.headers['access-control-allow-credentials'] === 'true') {
+        expect(response.headers['access-control-allow-origin']).not.toBe('*');
+      }
+    }
   });
 
   test('rejects an unapproved production origin', async () => {
@@ -65,5 +89,24 @@ describe('production URL and CORS configuration', () => {
       req,
       'https://assets.example.com/submissions/example.png'
     )).toBe('https://assets.example.com/submissions/example.png');
+  });
+
+  test('serves an existing submitted image without an Origin header', async () => {
+    const submissionsRoot = path.resolve(__dirname, '../uploads/submissions');
+    const filename = fs.readdirSync(submissionsRoot).find((name) => /\.(?:jpe?g|png)$/i.test(name));
+    expect(filename).toBeDefined();
+
+    const productionApp = require('../src/app');
+    const response = await request(productionApp).get(`/uploads/submissions/${encodeURIComponent(filename)}`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  test('returns 404 instead of a CORS 403 for a missing submitted image without Origin', async () => {
+    const productionApp = require('../src/app');
+    const response = await request(productionApp).get('/uploads/submissions/cors-regression-missing-image.jpg');
+
+    expect(response.status).toBe(404);
   });
 });

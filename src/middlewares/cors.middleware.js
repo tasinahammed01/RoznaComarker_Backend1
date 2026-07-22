@@ -27,6 +27,10 @@ function createCorsMiddleware() {
         return callback(null, true); // Allow any origin in development for flexibility
       }
 
+      if (!origin) {
+        return callback(null, true);
+      }
+
       const normalizedOrigin = normalizeUrl(origin);
 
       if (allowedOrigins.includes(normalizedOrigin)) {
