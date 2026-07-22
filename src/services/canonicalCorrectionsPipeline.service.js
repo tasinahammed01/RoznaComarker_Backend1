@@ -8,7 +8,7 @@ const logger = require('../utils/logger');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 const canonicalEvaluation = require('./canonicalEvaluation.service');
 const { safeErrorCode } = require('./canonicalResultState.service');
-const { getSemanticAIConfig } = require('./semanticAIClient.service');
+const { getSemanticAIConfig, getSemanticAIConfigStatus } = require('./semanticAIClient.service');
 const semanticMetrics = require('./semanticMetrics.service');
 
 function wordsFromSubmission(doc) {
@@ -146,7 +146,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
       model: semanticConfig.model,
       attempt: semanticRun?.metrics?.attemptCount || 0,
       durationMs: Date.now() - semanticStartedAt,
-      credentialConfigured: Boolean(semanticConfig.apiKey)
+      credentialConfigured: getSemanticAIConfigStatus(semanticConfig).credentialConfigured
     });
   }
   const semanticAiMs = Date.now() - semanticStartedAt;

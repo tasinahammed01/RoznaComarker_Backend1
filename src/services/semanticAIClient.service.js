@@ -1,7 +1,7 @@
 'use strict';
 
 const SEMANTIC_TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
-const GOOGLE_SEMANTIC_MODELS = new Set(['gemini-2.5-flash']);
+const GOOGLE_SEMANTIC_MODELS = new Set(['gemini-3.6-flash']);
 
 const integer = (value, fallback, minimum = 0) => {
   const parsed = Number.parseInt(value, 10);

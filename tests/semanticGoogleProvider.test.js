@@ -6,7 +6,7 @@ jest.mock('../src/models/CorrectionLegend', () => ({ findOne: jest.fn(() => ({ l
 const client = require('../src/services/semanticAIClient.service');
 const semantic = require('../src/services/semanticWritingCorrections.service');
 
-const config = { provider: 'google', model: 'gemini-2.5-flash', approvedModels: ['gemini-2.5-flash', 'openai/gpt-oss-20b'],
+const config = { provider: 'google', model: 'gemini-3.6-flash', approvedModels: ['gemini-3.6-flash', 'openai/gpt-oss-20b'],
   attemptTimeoutMs: 45000, totalBudgetMs: 90000, maxRetries: 1, retryDelayMs: 0,
   minAttemptBudgetMs: 10000, maxOutputTokens: 2400, fallback: { provider: 'openrouter', model: 'openai/gpt-oss-20b' } };
 const env = { GEMINI_API_KEY: 'gemini-secret', OPENROUTER_API_KEY: 'router-secret' };
@@ -16,15 +16,15 @@ const googleOk = (content) => ({ ok: true, status: 200, headers: { get: () => nu
 }) });
 
 describe('direct Google semantic provider', () => {
-  test('resolves gemini-2.5-flash through Google with only GEMINI_API_KEY', async () => {
+  test('resolves gemini-3.6-flash through Google with only GEMINI_API_KEY', async () => {
     const fetchImpl = jest.fn(async () => googleOk('{"transcriptHash":"hash","corrections":[]}'));
     const result = await client.runSemanticCompletion({ messages: [{ role: 'user', content: 'bounded prompt' }], config, env, fetchImpl });
     const [url, options] = fetchImpl.mock.calls[0];
-    expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent');
+    expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent');
     expect(options.headers).toMatchObject({ 'x-goog-api-key': 'gemini-secret', 'Content-Type': 'application/json' });
     expect(options.headers).not.toHaveProperty('Authorization');
     expect(JSON.stringify(options)).not.toContain('router-secret');
-    expect(result).toMatchObject({ provider: 'google', model: 'gemini-2.5-flash', content: '{"transcriptHash":"hash","corrections":[]}' });
+    expect(result).toMatchObject({ provider: 'google', model: 'gemini-3.6-flash', content: '{"transcriptHash":"hash","corrections":[]}' });
   });
 
   test('uses the unchanged bounded semantic prompt and validates a structured response', async () => {
@@ -37,7 +37,7 @@ describe('direct Google semantic provider', () => {
       return googleOk('{"transcriptHash":"hash","corrections":[]}');
     });
     const result = await semantic.analyze(input, { config: { ...config, maxRetries: 0, fallback: null }, env, fetchImpl });
-    expect(result).toMatchObject({ corrections: [], provider: 'google', model: 'gemini-2.5-flash' });
+    expect(result).toMatchObject({ corrections: [], provider: 'google', model: 'gemini-3.6-flash' });
   });
 
   test('rejects invalid JSON and hash mismatches before returning corrections', async () => {
@@ -54,17 +54,30 @@ describe('direct Google semantic provider', () => {
     { transcript: 'real essay', legend })).toThrow('non-verbatim evidence');
   });
 
-  test('rejects unsupported Google model configuration instead of switching models', () => {
-    const invalid = client.getSemanticAIConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'google/gemini-2.5-flash',
-      SEMANTIC_AI_APPROVED_MODELS: ' google/gemini-2.5-flash ', GEMINI_API_KEY: 'secret' });
-    expect(client.getSemanticAIConfigStatus(invalid, { GEMINI_API_KEY: 'secret' })).toMatchObject({ configured: false, modelConfigured: false });
+  test('accepts only the pinned direct Google model and reports its credential without exposing it', () => {
+    const valid = client.getSemanticAIConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'gemini-3.6-flash', GEMINI_API_KEY: 'secret' });
+    expect(client.getSemanticAIConfigStatus(valid, { GEMINI_API_KEY: 'secret' }))
+      .toMatchObject({ configured: true, modelConfigured: true, credentialConfigured: true });
+    expect(client.credentialFor('google', { GEMINI_API_KEY: 'secret', OPENROUTER_API_KEY: 'wrong' })).toBe('secret');
+    for (const model of ['gemini-2.5-flash', 'google/gemini-3.6-flash']) {
+      const invalid = client.getSemanticAIConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: model, GEMINI_API_KEY: 'secret' });
+      expect(client.getSemanticAIConfigStatus(invalid, { GEMINI_API_KEY: 'secret' }))
+        .toMatchObject({ configured: false, modelConfigured: false, credentialConfigured: true });
+    }
+  });
+
+  test('missing Google key fails before any HTTP request', async () => {
+    const fetchImpl = jest.fn();
+    await expect(client.runSemanticCompletion({ messages: [{ role: 'user', content: 'x' }], config, env: {}, fetchImpl }))
+      .rejects.toMatchObject({ code: 'AI_PROVIDER_NOT_CONFIGURED' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test('trims approved models and permits fallback only after a transient failure', async () => {
-    const parsed = client.getSemanticAIConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'gemini-2.5-flash', GEMINI_API_KEY: 'g',
+    const parsed = client.getSemanticAIConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'gemini-3.6-flash', GEMINI_API_KEY: 'g',
       SEMANTIC_AI_FALLBACK_PROVIDER: 'openrouter', SEMANTIC_AI_FALLBACK_MODEL: 'openai/gpt-oss-20b',
-      SEMANTIC_AI_APPROVED_MODELS: ' gemini-2.5-flash , openai/gpt-oss-20b ' });
-    expect(parsed.approvedModels).toEqual(['gemini-2.5-flash', 'openai/gpt-oss-20b']);
+      SEMANTIC_AI_APPROVED_MODELS: ' gemini-3.6-flash , openai/gpt-oss-20b ' });
+    expect(parsed.approvedModels).toEqual(['gemini-3.6-flash', 'openai/gpt-oss-20b']);
     const fetchImpl = jest.fn(async (url) => url.includes('googleapis.com')
       ? { ok: false, status: 503, headers: { get: () => null }, text: async () => '' }
       : ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({ choices: [{ message: { content: '{}' } }] }) }));
