@@ -125,7 +125,6 @@ function getRequestBaseUrl(req) {
 
 function normalizePublicUploadsUrlForDev(req, url) {
   if (!url) return url;
-  if (process.env.NODE_ENV === 'production') return url;
 
   const raw = String(url);
   const marker = '/uploads/';
@@ -1049,6 +1048,7 @@ module.exports = {
   getOcrCorrections,
   regenerateCanonicalCorrections,
   uploadHandwrittenForOcr,
+  normalizePublicUploadsUrlForDev,
   hasValidOcrPages,
   hasValidLegacyOcrWords,
   hasUsableOcrData

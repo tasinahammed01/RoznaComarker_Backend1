@@ -4,6 +4,7 @@ const express = require('express');
 const request = require('supertest');
 const { createCorsMiddleware } = require('../src/middlewares/cors.middleware');
 const { getPublicApiUrl, buildPublicUploadUrl } = require('../src/utils/publicApiUrl');
+const { normalizePublicUploadsUrlForDev } = require('../src/controllers/submission.controller');
 
 describe('production URL and CORS configuration', () => {
   const previous = {};
@@ -51,5 +52,18 @@ describe('production URL and CORS configuration', () => {
     expect(buildPublicUploadUrl(req, 'submissions', 'page one.png')).toBe(
       'https://comarkerback.roznahub.com/uploads/submissions/page%20one.png'
     );
+  });
+
+  test('normalizes legacy upload URLs in production and leaves other URLs unchanged', () => {
+    const req = { protocol: 'http', get: () => '127.0.0.1:5000' };
+
+    expect(normalizePublicUploadsUrlForDev(
+      req,
+      'http://localhost:5000/uploads/submissions/example.png'
+    )).toBe('https://comarkerback.roznahub.com/uploads/submissions/example.png');
+    expect(normalizePublicUploadsUrlForDev(
+      req,
+      'https://assets.example.com/submissions/example.png'
+    )).toBe('https://assets.example.com/submissions/example.png');
   });
 });
