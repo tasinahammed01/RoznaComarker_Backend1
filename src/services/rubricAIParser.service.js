@@ -1,4 +1,4 @@
-const { fetchCompat, buildTimeoutSignal } = require('./httpClient.service');
+const { completeRubric } = require('./rubricCompletion.service');
 
 function safeString(v) {
   return typeof v === 'string' ? v : (v == null ? '' : String(v));
@@ -114,12 +114,12 @@ Required structure:
 {
   "title": "Rubric Title",
   "levels": [
-    { "name": "Below Expectation", "score": 10 }
+    { "title": "Below Expectation", "maxPoints": 10 }
   ],
   "criteria": [
     {
       "title": "Content Relevance",
-      "descriptions": ["level1 desc", "level2 desc", "level3 desc", "level4 desc"]
+      "cells": ["level1 desc", "level2 desc", "level3 desc", "level4 desc"]
     }
   ]
 }
@@ -127,7 +127,7 @@ Required structure:
 Rules:
 - Output MUST be a single JSON object.
 - Do not include markdown, code fences, or commentary.
-- Each criteria.descriptions length MUST equal levels.length.
+- Each criteria.cells length MUST equal levels.length.
 - If levels are missing, infer a standard 4-level rubric.
 - If numeric scores are missing, infer increasing integer scores.
 `;
@@ -141,84 +141,15 @@ async function parseRubricTextToJson({ text }) {
     throw err;
   }
 
-  const apiKey = safeString(process.env.OPENAI_API_KEY).trim();
-  if (!apiKey) {
-    const err = new Error('AI provider not configured');
-    err.statusCode = 501;
-    throw err;
-  }
-
-  const model = safeString(process.env.OPENAI_MODEL).trim() || 'gpt-4o-mini';
-  const endpoint = safeString(process.env.OPENAI_BASE_URL).trim() || 'https://api.openai.com/v1/chat/completions';
-
-  const timeoutMs = Math.min(60000, Math.max(1, Number(process.env.OPENAI_TIMEOUT_MS) || 60000));
-  const { signal, cancel } = buildTimeoutSignal(timeoutMs);
-
-  const payload = {
-    model,
-    temperature: 0,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: buildSystemPrompt() },
-      { role: 'user', content: extractedText.length > 25000 ? extractedText.slice(0, 25000) : extractedText }
-    ]
-  };
-
-  let resp;
+  let rubric;
   try {
-    resp = await fetchCompat(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload),
-      signal
-    });
-  } catch (e) {
-    const name = e && typeof e === 'object' ? safeString(e.name) : '';
-    const msg = e && typeof e === 'object' ? safeString(e.message) : '';
-    const err = new Error(name === 'AbortError' || /aborted/i.test(msg) ? 'AI request timed out. Please try again.' : (msg || 'AI request failed'));
-    err.statusCode = name === 'AbortError' || /aborted/i.test(msg) ? 504 : 502;
-    throw err;
-  } finally {
-    cancel();
+    rubric = await completeRubric({ systemInstruction: buildSystemPrompt(),
+      userPrompt: extractedText.length > 25000 ? extractedText.slice(0, 25000) : extractedText });
+  } catch (error) {
+    error.statusCode = error.statusCode || 502;
+    throw error;
   }
-
-  if (!resp || !resp.ok) {
-    let message = 'AI parsing failure';
-    let statusCode = 502;
-    try {
-      const errJson = await resp.json();
-      const apiMsg = safeString(errJson && errJson.error && errJson.error.message).trim();
-      if (apiMsg) message = apiMsg;
-    } catch {
-      try {
-        const errText = safeString(await resp.text()).trim();
-        if (errText) message = errText;
-      } catch {
-        // ignore
-      }
-    }
-    if (resp.status === 429) {
-      statusCode = 429;
-      message = 'AI quota exceeded. Please try again later.';
-    }
-    const err = new Error(message);
-    err.statusCode = statusCode;
-    throw err;
-  }
-
-  const json = await resp.json();
-  const content = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
-  if (!content) {
-    const err = new Error('AI returned an empty response');
-    err.statusCode = 422;
-    throw err;
-  }
-
-  const parsed = safeJsonParse(content);
-  const normalized = normalizeRubricJson(parsed);
+  const normalized = normalizeRubricJson(rubric);
   if (!normalized) {
     const err = new Error('Invalid JSON response from AI');
     err.statusCode = 422;

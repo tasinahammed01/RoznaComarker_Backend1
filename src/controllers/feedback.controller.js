@@ -24,6 +24,8 @@ const { buildOcrCorrections } = require("../services/ocrCorrections.service");
 const { buildSubmissionCorrectionStatistics } = require("../services/submissionCorrectionStatistics.service");
 const { buildCanonicalResultState } = require("../services/canonicalResultState.service");
 const { getRubricAiConfig } = require("../services/rubricAiConfig.service");
+const { credentialFor } = require("../services/semanticAIClient.service");
+const { completeRubric } = require("../services/rubricCompletion.service");
 const {
   normalizeOcrTranscript,
   getNormalizedSubmissionTranscript,
@@ -1298,17 +1300,6 @@ async function generateRubricDesignerFromContext(req, res) {
       return sendSuccess(res, existing);
     }
 
-    const apiKey = safeString(process.env.OPENROUTER_API_KEY).trim();
-    const aiConfig = getRubricAiConfig();
-    const baseUrl = aiConfig.baseUrl;
-    const model = aiConfig.model;
-    if (aiConfig.provider !== "openrouter") {
-      return sendError(res, 501, "Configured rubric AI provider is unsupported");
-    }
-    if (!apiKey) {
-      return sendError(res, 501, "AI provider not configured");
-    }
-
     const systemInstruction = `
 You are a rubric generator.
 
@@ -1351,167 +1342,13 @@ Rules:
 
     const userPrompt = `${teacherPrompt ? teacherPrompt + "\n\n" : ""}Generate a rubric designer for grading the student's work.\n\nAssignment Title: ${assignmentTitle || "N/A"}\nAssignment Writing Type: ${assignmentWritingType || "N/A"}\nAssignment Instructions: ${assignmentInstructions || "N/A"}${studentTextSection}\n\nOutput must match this exact JSON structure:\n{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}.\nRules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. Keep criteria 3-10 rows. Keep maxPoints as integers. Make criteria relevant to the writing type. Use clear descriptions in cells for each performance level. Use title: ${rubricTitle}.`;
 
-    const timeoutMs = Math.min(
-      60000,
-      Math.max(1, Number(process.env.OPENROUTER_TIMEOUT_MS) || 60000),
-    );
-    const { signal, cancel } = buildTimeoutSignal(timeoutMs);
-    const endpoint = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
-
-    const maxTokens = Math.min(
-      8000,
-      Math.max(1200, Number(process.env.OPENROUTER_MAX_TOKENS) || 4000),
-    );
-
-    const doRequest = async (promptText) =>
-      fetchCompat(endpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          max_tokens: maxTokens,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: systemInstruction },
-            { role: "user", content: promptText },
-          ],
-        }),
-        signal,
-      });
-
-    let resp;
+    let rubricDesigner;
     try {
-      resp = await doRequest(userPrompt);
-    } catch (err) {
-      const name = err && typeof err === "object" ? safeString(err.name) : "";
-      const msg = err && typeof err === "object" ? safeString(err.message) : "";
-      if (name === "AbortError" || /aborted/i.test(msg)) {
-        return sendError(res, 504, "AI request timed out. Please try again.");
-      }
-      return sendError(res, 502, msg || "AI request failed");
-    } finally {
-      cancel();
+      rubricDesigner = await completeRubric({ systemInstruction, userPrompt,
+        assignmentId: String(submission.assignment?._id || submission.assignment || ''), submissionId: String(submission._id) });
+    } catch (error) {
+      return sendError(res, error.statusCode || 502, error.message || "AI rubric provider failed.");
     }
-
-    if (!resp || !resp.ok) {
-      let msg = "Failed to generate rubric";
-      let status = 502;
-      try {
-        const errJson = resp ? await resp.json() : null;
-        const apiMsg = safeString(
-          errJson && errJson.error && errJson.error.message,
-        ).trim();
-        if (apiMsg) msg = apiMsg;
-      } catch {
-        const errText = resp ? safeString(await resp.text()) : "";
-        if (errText) msg = errText;
-      }
-
-      const sc = resp && typeof resp.status === "number" ? resp.status : 0;
-      if (sc === 429) {
-        status = 429;
-        msg = "AI quota exceeded. Please try again later.";
-      }
-      return sendError(res, status, msg);
-    }
-
-    let content = "";
-    let cleaned = "";
-    let parsed = null;
-    let normalized = { value: null };
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const json = attempt === 0 ? await resp.json() : null;
-      if (attempt > 0) {
-        const { signal: signalN, cancel: cancelN } =
-          buildTimeoutSignal(timeoutMs);
-        try {
-          const nextResp = await fetchCompat(endpoint, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model,
-              temperature: 0.2,
-              max_tokens: maxTokens,
-              response_format: { type: "json_object" },
-              messages: [
-                { role: "system", content: systemInstruction },
-                { role: "user", content: buildRubricRetryPrompt(userPrompt) },
-              ],
-            }),
-            signal: signalN,
-          });
-          if (!nextResp || !nextResp.ok) break;
-          const nextJson = await nextResp.json();
-          content = safeString(
-            nextJson &&
-              nextJson.choices &&
-              nextJson.choices[0] &&
-              nextJson.choices[0].message &&
-              nextJson.choices[0].message.content,
-          ).trim();
-        } catch {
-          break;
-        } finally {
-          cancelN();
-        }
-      } else {
-        content = safeString(
-          json &&
-            json.choices &&
-            json.choices[0] &&
-            json.choices[0].message &&
-            json.choices[0].message.content,
-        ).trim();
-      }
-
-      if (!content) {
-        normalized = { error: "AI returned an empty response" };
-        break;
-      }
-
-      cleaned = stripMarkdownCodeFences(content);
-      if (isLikelyTruncatedJson(cleaned)) {
-        normalized = { error: "AI returned truncated JSON" };
-        continue;
-      }
-      parsed = safeJsonParse(cleaned) || extractFirstJsonObject(cleaned);
-      normalized = normalizeRubricDesignerPayload(parsed);
-      const candidate =
-        normalized && normalized.value ? normalized.value : null;
-      if (normalized.error || !candidate) break;
-      if (isCompleteRubricDesigner(candidate)) break;
-    }
-
-    if (normalized.error || !normalized.value) {
-      return sendError(
-        res,
-        422,
-        normalized.error || "Invalid JSON rubric returned from AI",
-      );
-    }
-
-    if (!isCompleteRubricDesigner(normalized.value)) {
-      return sendError(
-        res,
-        422,
-        "AI returned an incomplete rubric. Please try again.",
-      );
-    }
-
-    const rubricDesigner = {
-      ...normalized.value,
-      title:
-        normalized.value.title && String(normalized.value.title).trim().length
-          ? normalized.value.title
-          : rubricTitle,
-    };
 
     const sanitizedRubricDesigner =
       sanitizeRubricDesignerCriteria(rubricDesigner);
@@ -2851,29 +2688,14 @@ function isAllowedRubricUploadMime(mime) {
 function buildGeminiBaseUrlCandidates(baseUrl) {
   const raw =
     safeString(baseUrl).trim() ||
-    "https://generativelanguage.googleapis.com/v1";
+    "https://generativelanguage.googleapis.com/v1beta";
   const normalized = raw.replace(/\/$/, "");
-
-  const v1 = normalized
-    .replace(/\/v1beta$/i, "/v1")
-    .replace(/\/v1beta\//i, "/v1/");
-  const v1beta = normalized
-    .replace(/\/v1$/i, "/v1beta")
-    .replace(/\/v1\//i, "/v1beta/");
-
-  if (v1 === v1beta) return [v1];
-  return [v1, v1beta].filter((x, i, a) => x && a.indexOf(x) === i);
+  return [normalized];
 }
 
 function buildGeminiModelCandidates(model) {
   const m = safeString(model).trim();
-  const list = [
-    m,
-    "gemini-2.0-flash",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-2.0-flash",
-  ]
+  const list = [m]
     .map((x) => safeString(x).trim())
     .filter(Boolean);
 
@@ -2939,22 +2761,8 @@ async function geminiGenerateContentWithFallback({
         return { json };
       }
 
-      let msg = "Gemini error";
       let status = resp && typeof resp.status === "number" ? resp.status : 502;
-      try {
-        const errJson = resp ? await resp.json() : null;
-        const gemMsg = safeString(
-          errJson && errJson.error && errJson.error.message,
-        ).trim();
-        if (gemMsg) msg = gemMsg;
-      } catch {
-        try {
-          const errText = resp ? safeString(await resp.text()) : "";
-          if (errText) msg = errText;
-        } catch {
-          // ignore
-        }
-      }
+      if (resp) await resp.text().catch(() => "");
 
       if (status === 429) {
         return {
@@ -2965,11 +2773,7 @@ async function geminiGenerateContentWithFallback({
         };
       }
 
-      lastErr = { statusCode: 502, message: msg || "Gemini request failed" };
-      if (isGeminiModelNotSupportedError(status, msg)) {
-        continue;
-      }
-
+      lastErr = { statusCode: status >= 400 && status < 500 ? 502 : 502, message: "Gemini request failed" };
       return { error: lastErr };
     }
   }
@@ -2982,12 +2786,15 @@ async function callGeminiGenerateRubricFromFile({
   fileMime,
   fileBuffer,
 }) {
-  const apiKey = safeString(process.env.GEMINI_API_KEY).trim();
+  const aiConfig = getRubricAiConfig();
+  if (aiConfig.provider !== "google") {
+    return { error: { statusCode: 501, message: "Configured rubric AI provider does not support file input" } };
+  }
+  const apiKey = credentialFor(aiConfig.provider);
   const baseUrl =
     safeString(process.env.GEMINI_BASE_URL).trim() ||
-    "https://generativelanguage.googleapis.com/v1";
-  const model =
-    safeString(process.env.GEMINI_MODEL).trim() || "gemini-2.0-flash";
+    "https://generativelanguage.googleapis.com/v1beta";
+  const model = aiConfig.model;
 
   if (!apiKey) {
     return { error: { statusCode: 501, message: "Gemini not configured" } };
@@ -3007,10 +2814,7 @@ async function callGeminiGenerateRubricFromFile({
 
   const fullPrompt = `${systemInstruction}\nTeacher context/instructions:\n${safeString(promptText).trim() || "Convert the attached file into the required rubric JSON."}`;
 
-  const timeoutMs = Math.min(
-    30000,
-    Math.max(1, Number(process.env.GEMINI_TIMEOUT_MS) || 30000),
-  );
+  const timeoutMs = aiConfig.attemptTimeoutMs;
   const resp = await geminiGenerateContentWithFallback({
     apiKey,
     baseUrl,
@@ -3038,6 +2842,11 @@ async function callGeminiGenerateRubricFromFile({
   }
 
   const json = resp.json;
+  const finishReason = safeString(json?.candidates?.[0]?.finishReason).trim();
+  const blockReason = safeString(json?.promptFeedback?.blockReason).trim();
+  if (blockReason || finishReason === "SAFETY") {
+    return { error: { statusCode: 422, message: "Gemini blocked the rubric response" } };
+  }
   const parts =
     json &&
     json.candidates &&
@@ -3048,12 +2857,13 @@ async function callGeminiGenerateRubricFromFile({
       : [];
 
   const content = parts
-    .map((p) => safeString(p && p.text))
+    .filter((p) => p && p.thought !== true && typeof p.text === "string")
+    .map((p) => safeString(p.text))
     .join("\n")
     .trim();
   if (!content) {
     return {
-      error: { statusCode: 422, message: "Gemini returned an empty response" },
+      error: { statusCode: 422, message: finishReason === "MAX_TOKENS" ? "Gemini returned truncated output" : "Gemini returned an empty response" },
     };
   }
 
@@ -3219,18 +3029,6 @@ async function generateRubricDesignerFromPrompt(req, res) {
           teacherId,
         });
 
-    const apiKey = safeString(process.env.OPENROUTER_API_KEY).trim();
-    const aiConfig = getRubricAiConfig();
-    const baseUrl = aiConfig.baseUrl;
-    const model = aiConfig.model;
-    if (aiConfig.provider !== "openrouter") {
-      return sendError(res, 501, "Configured rubric AI provider is unsupported");
-    }
-
-    if (!apiKey) {
-      return sendError(res, 501, "AI provider not configured");
-    }
-
     const systemInstruction = `
 You are a rubric generator.
 
@@ -3264,95 +3062,17 @@ Rules:
 `;
     const userPrompt = `${prompt}\n\nOutput must match this exact JSON structure:\n{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}. Rules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. Keep criteria 3-10 rows. Keep maxPoints as integers.`;
 
-    const timeoutMs = Math.min(
-      60000,
-      Math.max(1, Number(process.env.OPENROUTER_TIMEOUT_MS) || 60000),
-    );
-    const { signal, cancel } = buildTimeoutSignal(timeoutMs);
-    const endpoint = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
-
-    let resp;
+    let rubricValue;
     try {
-      resp = await fetchCompat(endpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: systemInstruction },
-            { role: "user", content: userPrompt },
-          ],
-        }),
-        signal,
-      });
-    } catch (err) {
-      const name = err && typeof err === "object" ? safeString(err.name) : "";
-      const msg = err && typeof err === "object" ? safeString(err.message) : "";
-      if (name === "AbortError" || /aborted/i.test(msg)) {
-        return sendError(res, 504, "AI request timed out. Please try again.");
-      }
-      return sendError(res, 502, msg || "AI request failed");
-    } finally {
-      cancel();
-    }
-
-    if (!resp || !resp.ok) {
-      let msg = "Failed to generate rubric from prompt";
-      let status = 502;
-      try {
-        const errJson = resp ? await resp.json() : null;
-        const apiMsg = safeString(
-          errJson && errJson.error && errJson.error.message,
-        ).trim();
-        if (apiMsg) msg = apiMsg;
-      } catch {
-        const errText = resp ? safeString(await resp.text()) : "";
-        if (errText) msg = errText;
-      }
-
-      const sc = resp && typeof resp.status === "number" ? resp.status : 0;
-      if (sc === 401 || sc === 403) {
-        status = 502;
-        msg = msg || "AI authentication failed";
-      }
-      if (sc === 429) {
-        status = 429;
-        msg = "AI quota exceeded. Please try again later.";
-      }
-
-      return sendError(res, status, msg);
-    }
-
-    const json = await resp.json();
-    const content = safeString(
-      json &&
-        json.choices &&
-        json.choices[0] &&
-        json.choices[0].message &&
-        json.choices[0].message.content,
-    ).trim();
-    if (!content) {
-      return sendError(res, 422, "AI returned an empty response");
-    }
-
-    const cleaned = stripMarkdownCodeFences(content);
-    const parsed = safeJsonParse(cleaned) || extractFirstJsonObject(cleaned);
-    const normalized = normalizeRubricDesignerPayload(parsed);
-    if (normalized.error || !normalized.value) {
-      return sendError(
-        res,
-        422,
-        normalized.error || "Invalid JSON rubric returned from AI",
-      );
+      rubricValue = await completeRubric({ systemInstruction, userPrompt, submissionId: String(submission._id) });
+    } catch (error) {
+      return sendError(res, error.statusCode || 502, error.message || "AI rubric provider failed.");
     }
 
     const rubricDesignerTitle =
-      normalized.value.title ||
+      rubricValue.title ||
       `Rubric: ${safeString((submission && (submission.title || submission.name)) || "").trim() || "Submission"}`;
-    const rubricDesigner = { ...normalized.value, title: rubricDesignerTitle };
+    const rubricDesigner = { ...rubricValue, title: rubricDesignerTitle };
 
     const sanitizedRubricDesigner =
       sanitizeRubricDesignerCriteria(rubricDesigner);

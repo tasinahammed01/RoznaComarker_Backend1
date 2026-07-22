@@ -4,12 +4,7 @@ const Assignment = require('../models/assignment.model');
 const Submission = require('../models/Submission');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 
-const { fetchCompat, buildTimeoutSignal } = require('./httpClient.service');
-
-const { safeJsonParse } = require('../utils/aiJsonParser');
-const { normalizeRubricDesignerPayload } = require('../utils/rubricNormalizer');
-const logger = require('../utils/logger');
-const { getRubricAiConfig } = require('./rubricAiConfig.service');
+const { completeRubric } = require('./rubricCompletion.service');
 const { getNormalizedSubmissionTranscript } = require('../utils/ocrTranscriptNormalizer');
 
 function safeString(v) {
@@ -69,19 +64,6 @@ async function autoGenerateRubricDesignerForSubmission({ submissionId }) {
     return { ok: true, skipped: true, reason: 'teacher_overridden' };
   }
 
-  const apiKey = safeString(process.env.OPENROUTER_API_KEY).trim();
-  const aiConfig = getRubricAiConfig();
-  const baseUrl = aiConfig.baseUrl;
-  const model = aiConfig.model;
-
-  if (aiConfig.provider !== 'openrouter') {
-    return { ok: false, skipped: true, reason: 'unsupported_ai_provider' };
-  }
-
-  if (!apiKey) {
-    return { ok: false, skipped: true, reason: 'ai_not_configured' };
-  }
-
   const systemInstruction = `
 You are a rubric generator.
 
@@ -123,54 +105,14 @@ Rules:
 
   const prompt = `Generate a rubric designer for grading the student's work.\n\nAssignment Title: ${assignmentTitle || 'N/A'}\nAssignment Writing Type: ${assignmentWritingType || 'N/A'}\nAssignment Instructions: ${assignmentInstructions || 'N/A'}\n\nStudent Submission Text (OCR/Transcript):\n${cappedStudentText}\n\nOutput must match this exact JSON structure:\n{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}.\nRules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. Keep criteria 3-10 rows. Keep maxPoints as integers. Make criteria relevant to the writing type. Use clear descriptions in cells for each performance level. Use title: ${rubricTitle}.`;
 
-  const timeoutMs = Math.min(60000, Math.max(1, Number(process.env.OPENROUTER_TIMEOUT_MS) || 60000));
-  const { signal, cancel } = buildTimeoutSignal(timeoutMs);
-  const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
-
-  let resp;
+  let rubricDesigner;
   try {
-    resp = await fetchCompat(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemInstruction },
-          { role: 'user', content: prompt }
-        ]
-      }),
-      signal
-    });
-  } finally {
-    cancel();
+    rubricDesigner = await completeRubric({ systemInstruction, userPrompt: prompt,
+      assignmentId: String(assignment._id), submissionId: String(submission._id) });
+  } catch (error) {
+    return { ok: false, skipped: error?.code === 'AI_PROVIDER_NOT_CONFIGURED',
+      reason: error?.code === 'AI_PROVIDER_NOT_CONFIGURED' ? 'ai_not_configured' : 'ai_failed', errorCode: error?.code || 'RUBRIC_PROVIDER_FAILED' };
   }
-
-  if (!resp || !resp.ok) {
-    return { ok: false, skipped: false, reason: 'ai_failed' };
-  }
-
-  const json = await resp.json();
-  const rawText = safeString(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content).trim();
-  if (!rawText) {
-    return { ok: false, skipped: false, reason: 'empty_ai_response' };
-  }
-
-  logger.debug(`AI raw response: ${rawText}`);
-
-  const parsed = safeJsonParse(rawText);
-
-  if (!parsed) {
-    throw new Error("AI returned invalid JSON");
-  }
-
-  const rubricDesigner = normalizeRubricDesignerPayload(
-    parsed.rubricDesigner || parsed
-  );
-
-  logger.debug(`Parsed rubric: ${JSON.stringify(rubricDesigner)}`);
 
   const sanitizedRubricDesigner = sanitizeRubricDesignerCriteria(rubricDesigner);
 
