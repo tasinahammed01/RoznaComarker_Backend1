@@ -67,6 +67,7 @@ function calculateSkills(rubricScores) {
 }
 
 async function loadOwnedSource(submissionId, studentId) {
+  const startedAt = Date.now();
   if (!mongoose.Types.ObjectId.isValid(submissionId)) throw new AdaptivePracticeError(400, 'INVALID_SUBMISSION_ID', 'Invalid submission id.');
   const submission = await Submission.findById(submissionId).lean();
   if (!submission) throw new AdaptivePracticeError(404, 'SUBMISSION_NOT_FOUND', 'Submission not found.');
@@ -75,6 +76,28 @@ async function loadOwnedSource(submissionId, studentId) {
   const feedback = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
   if (!feedback) throw new AdaptivePracticeError(202, 'ANALYSIS_INCOMPLETE', 'Writing analysis is not complete yet.');
   if (!feedback.rubricScores || typeof feedback.rubricScores !== 'object') throw new AdaptivePracticeError(202, 'RUBRIC_NOT_AVAILABLE', 'Rubric scores are not available yet.');
+  const correctionSourceHash = String(submission.correctionSourceHash || '').trim();
+  const evaluationSourceHash = String(feedback.evaluationSourceHash || submission.evaluationSourceHash || '').trim();
+  const sourceHashMatch = Boolean(correctionSourceHash && evaluationSourceHash === correctionSourceHash);
+  logger.info({
+    message: 'Adaptive practice eligibility checked',
+    submissionId: String(submission._id),
+    state: submission.processingActive ? 'processing' : String(submission.evaluationStatus || 'unknown'),
+    correctionSourceHashPresent: Boolean(correctionSourceHash),
+    evaluationSourceHashPresent: Boolean(evaluationSourceHash),
+    sourceHashMatch,
+    durationMs: Date.now() - startedAt
+  });
+  if (submission.processingActive || ['pending', 'processing'].includes(submission.evaluationStatus)
+    || ['pending', 'processing', 'retry_wait'].includes(submission.semanticStatus)) {
+    throw new AdaptivePracticeError(202, 'ANALYSIS_PROCESSING', 'Writing analysis is still processing.');
+  }
+  if (submission.semanticStatus === 'failed') {
+    throw new AdaptivePracticeError(400, 'SEMANTIC_FAILED', 'Semantic writing analysis failed; adaptive practice is not available.');
+  }
+  if (submission.evaluationStatus !== 'completed' || !sourceHashMatch) {
+    throw new AdaptivePracticeError(400, 'STALE_EVALUATION', 'The evaluation does not match the latest canonical corrections.');
+  }
   const transcript = getNormalizedSubmissionTranscript(submission);
   if (!transcript) throw new AdaptivePracticeError(400, 'TRANSCRIPT_NOT_AVAILABLE', 'A usable transcript is required to generate practice.');
 
@@ -91,7 +114,9 @@ async function loadOwnedSource(submissionId, studentId) {
 }
 
 function sessionResponse(state, session = null) {
-  return { state, session };
+  const eligibilityReason = ({ idle: 'READY', generating: 'GENERATING', ready: 'ALREADY_GENERATED',
+    failed: 'RETRYABLE_FAILURE', 'no-weaknesses': 'NO_WEAK_SKILLS' })[state] || 'ANALYSIS_PROCESSING';
+  return { state, session, eligibilityReason };
 }
 
 async function sessionResponseWithProgress(state, session = null) {

@@ -131,7 +131,11 @@ const submissionFeedbackSchema = new Schema(
     evaluationJobId: { type: String, trim: true },
     evaluationVersion: { type: String, trim: true },
     evaluationRubricSourceHash: { type: String, trim: true },
-    evaluationSource: { type: String, enum: ['ai', 'deterministic_fallback'], default: 'deterministic_fallback' },
+    evaluationSource: { type: String, enum: ['ai', 'deterministic_fallback', 'provisional'], default: 'deterministic_fallback' },
+    evaluationStatus: { type: String, enum: ['pending', 'processing', 'completed', 'partial', 'failed'], default: 'pending' },
+    evaluationErrorCode: { type: String, trim: true },
+    evaluationProvider: { type: String, trim: true },
+    evaluationModel: { type: String, trim: true },
     grade: { type: String, default: 'F', trim: true },
 
     // Always AI-generated from LanguageTool/annotations counts (not teacher-authored).

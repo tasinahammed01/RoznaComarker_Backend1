@@ -1,6 +1,5 @@
 jest.mock('../src/models/SubmissionFeedback', () => ({}));
 jest.mock('../src/models/class.model', () => ({}));
-jest.mock('../src/services/writingAssessment.service', () => ({ buildWritingAssessment: jest.fn() }));
 
 const { stable, hashRubric, synchronizedRubricScores } = require('../src/services/canonicalEvaluation.service');
 
@@ -22,9 +21,15 @@ describe('canonical evaluation contract', () => {
     expect(result.ORGANIZATION.issueCount).toBe(1);
     expect(result.CONTENT.issueCount).toBe(4);
     expect(result.MECHANICS.issueCount).toBe(6);
-    expect(result.MECHANICS.comment).toContain('6 mechanics issues detected');
+    expect(result.MECHANICS.comment).toBe('Proofread.');
     for (const item of Object.values(result)) expect(item.score).toBeGreaterThanOrEqual(0);
     expect(Object.values(result).reduce((sum, item) => sum + item.score, 0)).toBe(86.5);
+  });
+
+  test('does not duplicate issue-count phrases already produced by scorers', () => {
+    const result = synchronizedRubricScores({ GRAMMAR: { score: 20, maxScore: 25,
+      comment: '12 grammar issues detected. Several repeated patterns affect clarity.' } }, { grammar: 12 });
+    expect(result.GRAMMAR.comment.match(/12 grammar issues detected/g)).toHaveLength(1);
   });
 
   test('stable rubric hashes ignore timestamps and object key order', () => {

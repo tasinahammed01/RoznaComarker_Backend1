@@ -29,13 +29,17 @@ async function seed(scores) {
   const teacherId = new mongoose.Types.ObjectId();
   const classId = new mongoose.Types.ObjectId();
   const assignment = await Assignment.create({ title: 'Essay', instructions: 'Write clearly.', deadline: new Date(Date.now() + 86400000), class: classId, teacher: teacherId });
-  const submission = await Submission.create({ student: studentId, assignment: assignment._id, class: classId, status: 'submitted', submittedAt: new Date(), transcriptText: 'This is the student writing.' });
+  const correctionSourceHash = 'current-canonical-source-hash';
+  const submission = await Submission.create({ student: studentId, assignment: assignment._id, class: classId, status: 'submitted', submittedAt: new Date(),
+    transcriptText: 'This is the student writing.', correctionStatus: 'completed', semanticStatus: 'completed',
+    evaluationStatus: 'completed', correctionSourceHash, evaluationSourceHash: correctionSourceHash });
   const rubricScores = {
     CONTENT: { score: 14, maxScore: 20 }, ORGANIZATION: { score: 14, maxScore: 20 },
     VOCABULARY: { score: 14, maxScore: 20 }, GRAMMAR: { score: 17.5, maxScore: 25 },
     MECHANICS: { score: 7, maxScore: 10 }, ...scores
   };
-  const feedback = await SubmissionFeedback.create({ submissionId: submission._id, classId, studentId, teacherId, rubricScores });
+  const feedback = await SubmissionFeedback.create({ submissionId: submission._id, classId, studentId, teacherId, rubricScores,
+    evaluationSourceHash: correctionSourceHash });
   return { studentId, assignment, submission, feedback };
 }
 

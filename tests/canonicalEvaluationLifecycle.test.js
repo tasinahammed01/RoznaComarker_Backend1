@@ -1,20 +1,16 @@
 const mockFindOneAndUpdate = jest.fn();
 const mockFindOne = jest.fn();
 const mockClassLean = jest.fn().mockResolvedValue({ teacher: 'teacher-1' });
-const mockBuildWritingAssessment = jest.fn().mockResolvedValue({
-  assessmentVersion: 'assessment-v1', grade: 'A', rubricScores: {
-    CONTENT: { score: 18, maxScore: 20, comment: 'Supported ideas.' },
-    ORGANIZATION: { score: 18, maxScore: 20, comment: 'Logical structure.' },
-    GRAMMAR: { score: 24, maxScore: 25, comment: 'Controlled grammar.' },
-    VOCABULARY: { score: 18, maxScore: 20, comment: 'Precise vocabulary.' },
-    MECHANICS: { score: 9, maxScore: 10, comment: 'Controlled mechanics.' },
-    PRESENTATION: { score: 5, maxScore: 5, comment: 'Readable.' }
-  }
-});
+const mockAssess = jest.fn().mockResolvedValue({ sourceHash: 'hash', status: 'completed', provider: 'test', model: 'rubric',
+  categories: {
+    CONTENT: { score: 18, maxScore: 20, comment: 'Supported ideas.', issueCount: 0, strengthEvidence: [{ quotedText: 'Essay text.', explanation: 'Clear idea.' }], improvementEvidence: [] },
+    ORGANIZATION: { score: 18, maxScore: 20, comment: 'Logical structure.', issueCount: 0, strengthEvidence: [{ quotedText: 'Essay text.', explanation: 'Clear structure.' }], improvementEvidence: [] },
+    VOCABULARY: { score: 18, maxScore: 20, comment: 'Precise vocabulary.', issueCount: 0, strengthEvidence: [{ quotedText: 'Essay text.', explanation: 'Clear wording.' }], improvementEvidence: [] }
+  }, metrics: {} });
 
 jest.mock('../src/models/SubmissionFeedback', () => ({ findOneAndUpdate: mockFindOneAndUpdate, findOne: mockFindOne }));
 jest.mock('../src/models/class.model', () => ({ findById: jest.fn(() => ({ select: () => ({ lean: mockClassLean }) })) }));
-jest.mock('../src/services/writingAssessment.service', () => ({ buildWritingAssessment: mockBuildWritingAssessment }));
+jest.mock('../src/services/semanticRubricAssessment.service', () => ({ assess: mockAssess }));
 
 const { generate } = require('../src/services/canonicalEvaluation.service');
 
@@ -24,6 +20,7 @@ function submission(jobStillCurrent) {
   return {
     value: { _id: 'submission-1', class: 'class-1', student: 'student-1', correctionStatus: 'completed',
       correctionSourceHash: 'hash', evaluationStatus: 'pending', writingCorrections: [],
+      ocrPages: [{ text: 'Essay text.' }],
       correctionStatistics: { content: 0, organization: 0, grammar: 0, vocabulary: 0, mechanics: 0, total: 0 },
       constructor: { updateOne, exists } },
     updateOne, exists
@@ -53,13 +50,22 @@ describe('canonical evaluation write guards', () => {
     expect(mockFindOneAndUpdate.mock.calls[1][1].$set).toMatchObject({ detailedFeedbackSourceHash: 'hash', detailedFeedbackVersion: 'canonical-detailed-feedback-2' });
   });
 
+  test('old evaluation versions are recomputed even when correction hash is unchanged', async () => {
+    const record = submission(true);
+    record.value.evaluationStatus = 'completed';
+    record.value.evaluationSourceHash = 'hash';
+    record.value.evaluationRubricSourceHash = require('../src/services/canonicalEvaluation.service').hashRubric({ title: 'Essay' });
+    record.value.evaluationVersion = 'canonical-evaluation-1';
+    await generate({ submission: record.value, assignment: { title: 'Essay' } });
+    expect(mockAssess).toHaveBeenCalled();
+    expect(record.updateOne).toHaveBeenCalledWith(expect.objectContaining({ evaluationStatus: { $ne: 'processing' } }), expect.any(Object));
+  });
+
   test('missing rubric categories fail before any score or detailed feedback is persisted', async () => {
-    mockBuildWritingAssessment.mockResolvedValueOnce({ assessmentVersion: 'assessment-v1', grade: 'F', rubricScores: {
-      CONTENT: { score: 10, maxScore: 20, comment: 'Incomplete result.' }
-    } });
+    mockAssess.mockRejectedValueOnce(Object.assign(new Error('bad semantic result'), { code: 'SEMANTIC_RUBRIC_SCHEMA_INVALID' }));
     const record = submission(true);
     await generate({ submission: record.value, assignment: { title: 'Essay' } });
-    expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(1);
+    expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(2);
     expect(record.updateOne).toHaveBeenLastCalledWith(expect.objectContaining({ evaluationJobId: expect.any(String) }),
       expect.objectContaining({ $set: expect.objectContaining({ evaluationStatus: 'failed' }) }));
   });

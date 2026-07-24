@@ -2,6 +2,7 @@
 
 const { CANONICAL_TRANSCRIPT_LAYOUT_VERSION } = require('../utils/ocrTranscriptNormalizer');
 const { isStructuredDetailedFeedback } = require('./canonicalDetailedFeedback.service');
+const { ASSESSMENT_VERSION, EVALUATION_VERSION } = require('./rubricLanguageScoring.service');
 
 const SEMANTIC_CATEGORIES = ['content', 'organization', 'vocabulary'];
 const LANGUAGE_CATEGORIES = ['grammar', 'mechanics'];
@@ -64,7 +65,9 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
   const evaluationJobActive = semanticComplete && submission.evaluationStatus === 'processing' && Boolean(submission.evaluationJobId);
   const evaluationLifecycleComplete = ['completed', 'partial'].includes(String(submission.evaluationStatus || ''));
   const evaluationCurrent = Boolean(feedback && (teacherOverride || (semanticComplete
-    && evaluationLifecycleComplete && sourceHash && feedback.evaluationSourceHash === sourceHash)));
+    && evaluationLifecycleComplete && sourceHash && feedback.evaluationSourceHash === sourceHash
+    && feedback.assessmentVersion === ASSESSMENT_VERSION && feedback.evaluationVersion === EVALUATION_VERSION
+    && submission.evaluationVersion === EVALUATION_VERSION)));
   let evaluationStatus = teacherOverride ? 'completed' : String(submission.evaluationStatus || 'pending');
   if (correctionProcessing && !teacherOverride) evaluationStatus = 'pending';
   else if (semanticFailed && !teacherOverride) evaluationStatus = 'blocked';
@@ -113,6 +116,10 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
     sourceCounts,
     correctionErrorCode: safeErrorCode(submission.correctionError),
     evaluationStatus,
+    evaluationSource: evaluationCurrent ? feedback?.evaluationSource || null : null,
+    evaluationVersion: evaluationCurrent ? feedback?.evaluationVersion || null : null,
+    assessmentVersion: evaluationCurrent ? feedback?.assessmentVersion || null : null,
+    evaluationErrorCode: feedback?.evaluationErrorCode || safeErrorCode(submission.evaluationError),
     detailedFeedbackStatus,
     processingActive,
     automaticPollingAllowed,

@@ -36,10 +36,17 @@ describe('canonical detailed feedback', () => {
   });
 
   test('does not infer a strength from zero issues without positive evaluation evidence', () => {
-    const result = service.buildDeterministicDetailedFeedback({ corrections, statistics, categoryScores, sourceHash: 'hash' });
+    const result = service.buildDeterministicDetailedFeedback({ corrections, statistics, categoryScores, sourceHash: 'hash',
+      semanticAssessment: { categories: { CONTENT: { strengthEvidence: [{ quotedText: 'Ideas address the task', explanation: 'This is concrete positive evidence.' }] } } } });
     expect(result.strengths.some((item) => item.category === 'ORGANIZATION')).toBe(false);
     expect(result.strengths.some((item) => item.category === 'CONTENT')).toBe(true);
     expect(result.strengths.find((item) => item.category === 'PRESENTATION').provisional).toBe(true);
+  });
+
+  test('does not infer semantic strengths from high scores alone', () => {
+    const result = service.buildDeterministicDetailedFeedback({ corrections, statistics, categoryScores, sourceHash: 'hash' });
+    expect(result.strengths.some((item) => item.category === 'CONTENT')).toBe(false);
+    expect(result.strengths.some((item) => /current rubric evaluation provides positive evidence/i.test(item.explanation))).toBe(false);
   });
 
   test('rejects stale hashes, contradictory counts and invented correction IDs', () => {

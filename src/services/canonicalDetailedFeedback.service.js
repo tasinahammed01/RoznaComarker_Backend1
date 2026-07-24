@@ -31,7 +31,7 @@ function isStructuredDetailedFeedback(feedback) {
     && feedback.actionSteps.every((item) => item && typeof item === 'object' && !Array.isArray(item));
 }
 
-function buildDeterministicDetailedFeedback({ corrections, statistics, categoryScores, sourceHash }) {
+function buildDeterministicDetailedFeedback({ corrections, statistics, categoryScores, sourceHash, semanticAssessment = null }) {
   const grouped = evidenceByCategory(corrections);
   const areas = [];
   for (const category of CATEGORIES) {
@@ -46,16 +46,21 @@ function buildDeterministicDetailedFeedback({ corrections, statistics, categoryS
   }
   areas.sort((a, b) => (a.score / Math.max(1, a.maxScore)) - (b.score / Math.max(1, b.maxScore)) || b.issueCount - a.issueCount);
 
+  const semanticStrengths = semanticAssessment?.categories || {};
   const strengths = [];
   for (const category of [...CATEGORIES, 'PRESENTATION']) {
-    const scoreItem = categoryScores?.[category]; if (!scoreItem?.maxScore || Number(scoreItem.score) / Number(scoreItem.maxScore) < 0.85) continue;
+    const scoreItem = categoryScores?.[category]; if (!scoreItem?.maxScore) continue;
     const key = category.toLowerCase(); const count = Number(statistics?.[key] || 0);
-    const evaluationEvidence = clean(scoreItem.comment);
-    if (category !== 'PRESENTATION' && !evaluationEvidence) continue;
+    const semanticEvidence = Array.isArray(semanticStrengths?.[category]?.strengthEvidence) ? semanticStrengths[category].strengthEvidence : [];
+    const evidence = semanticEvidence.map((item) => clean(item.quotedText, 160)).filter(Boolean).slice(0, 2);
+    if (category !== 'PRESENTATION' && !evidence.length) continue;
+    if (category !== 'PRESENTATION' && count && Number(scoreItem.score) / Number(scoreItem.maxScore) < 0.75) continue;
     strengths.push({ id: `strength_${key}`, category, title: category[0] + category.slice(1).toLowerCase(),
       score: Number(scoreItem.score), maxScore: Number(scoreItem.maxScore),
-      explanation: count ? `The rubric score remains strong while ${count} recorded issue${count === 1 ? '' : 's'} still need revision.` : 'The current rubric evaluation provides positive evidence for this category.',
-      evidence: evaluationEvidence ? [evaluationEvidence] : ['OCR readability supports a provisional presentation result.'], provisional: category === 'PRESENTATION' });
+      explanation: category === 'PRESENTATION'
+        ? 'Presentation is provisional and should be confirmed by teacher review.'
+        : clean(semanticEvidence[0]?.explanation || scoreItem.comment),
+      evidence: category === 'PRESENTATION' ? [clean(scoreItem.comment)] : evidence, provisional: category === 'PRESENTATION' });
   }
 
   const actionSteps = areas.slice(0, 5).map((area, index) => ({ id: `action_${area.category.toLowerCase()}`, priority: index + 1,

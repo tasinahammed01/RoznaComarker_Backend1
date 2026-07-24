@@ -1,6 +1,8 @@
 'use strict';
 
 const CATEGORIES = ['CONTENT', 'GRAMMAR', 'ORGANIZATION', 'VOCABULARY', 'MECHANICS'];
+const CURRENT_ASSESSMENT_VERSION = 'writing-rubric-100-v2';
+const CURRENT_EVALUATION_VERSION = 'canonical-evaluation-2';
 const COLORS = { CONTENT: '#e89b3c', GRAMMAR: '#39956b', ORGANIZATION: '#3b82a0', VOCABULARY: '#8958b8', MECHANICS: '#c59a15' };
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const id = (value) => String(value?._id || value || '');
@@ -56,7 +58,8 @@ function buildSubmissionFeedbackReportViewModel(input = {}) {
   const numberById = new Map(corrections.map((c, index) => [c.reportId, index + 1]));
   const statistics = Object.fromEntries(CATEGORIES.map((category) => [category.toLowerCase(), corrections.filter((c) => c.category === category).length])); statistics.total = corrections.length;
   const teacherOverride = Boolean(feedback.overriddenByTeacher || evaluation.overriddenByTeacher);
-  const evaluationCurrent = teacherOverride || (Boolean(submission.correctionSourceHash) && ['completed', 'partial'].includes(String(evaluation.status || 'completed')) && evaluation.evaluationSourceHash === submission.correctionSourceHash);
+  const evaluationCurrent = teacherOverride || (Boolean(submission.correctionSourceHash) && ['completed', 'partial'].includes(String(evaluation.status || 'completed')) && evaluation.evaluationSourceHash === submission.correctionSourceHash
+    && evaluation.assessmentVersion === CURRENT_ASSESSMENT_VERSION && evaluation.evaluationVersion === CURRENT_EVALUATION_VERSION);
   const detailedCurrent = teacherOverride || (Boolean(submission.correctionSourceHash) && feedback.detailedFeedbackSourceHash === submission.correctionSourceHash);
   const pageSource = Array.isArray(submission.transcriptPages) ? submission.transcriptPages : [];
   const pages = [...pageSource].sort((a, b) => (fileOrder.get(id(a.fileId)) ?? 99999) - (fileOrder.get(id(b.fileId)) ?? 99999) || Number(a.pageNumber || 1) - Number(b.pageNumber || 1));

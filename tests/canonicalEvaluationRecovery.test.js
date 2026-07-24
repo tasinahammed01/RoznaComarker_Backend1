@@ -3,14 +3,14 @@ describe('canonical evaluation interrupted-finalization recovery', () => {
     const sourceHash = 'source-hash';
     const assignment = { title: 'Essay', rubric: { version: 1 } };
     let service;
-    let buildWritingAssessment;
+    let semanticAssess;
     let feedbackFindOneAndUpdate;
     const submissionUpdateOne = jest.fn().mockResolvedValue({ modifiedCount: 1 });
 
     jest.isolateModules(() => {
-      buildWritingAssessment = jest.fn();
+      semanticAssess = jest.fn();
       feedbackFindOneAndUpdate = jest.fn();
-      jest.doMock('../src/services/writingAssessment.service', () => ({ buildWritingAssessment }));
+      jest.doMock('../src/services/semanticRubricAssessment.service', () => ({ assess: semanticAssess }));
       jest.doMock('../src/services/canonicalDetailedFeedback.service', () => ({
         VERSION: 'canonical-detailed-feedback-2',
         validateDetailedFeedback: jest.fn((feedback) => feedback),
@@ -20,6 +20,7 @@ describe('canonical evaluation interrupted-finalization recovery', () => {
       jest.doMock('../src/models/SubmissionFeedback', () => ({
         findOne: jest.fn(() => ({ lean: jest.fn().mockResolvedValue({
           submissionId: 'submission-1', evaluationJobId: 'job-1', evaluationSourceHash: sourceHash,
+          assessmentVersion: 'writing-rubric-100-v2', evaluationVersion: 'canonical-evaluation-2',
           evaluationRubricSourceHash: require('../src/services/canonicalEvaluation.service').hashRubric(assignment),
           detailedFeedbackSourceHash: sourceHash, detailedFeedbackVersion: 'canonical-detailed-feedback-2',
           detailedFeedback: { sourceHash, areasForImprovement: [], strengths: [], actionSteps: [] },
@@ -41,7 +42,7 @@ describe('canonical evaluation interrupted-finalization recovery', () => {
     expect(submissionUpdateOne).toHaveBeenCalledTimes(1);
     expect(submissionUpdateOne.mock.calls[0][0]).toMatchObject({ correctionSourceHash: sourceHash,
       evaluationStatus: 'processing', evaluationJobId: 'job-1' });
-    expect(buildWritingAssessment).not.toHaveBeenCalled();
+    expect(semanticAssess).not.toHaveBeenCalled();
     expect(feedbackFindOneAndUpdate).not.toHaveBeenCalled();
   });
 });
