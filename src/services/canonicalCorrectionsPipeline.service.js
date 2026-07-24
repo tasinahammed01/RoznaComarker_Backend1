@@ -202,14 +202,21 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'finalCorrectionsPersisted',
     languageToolCount: lt.length, semanticAiCount: ai.length, totalCount: corrections.length });
   let evaluationMs = 0; let detailedFeedbackMs = 0;
-  if (!failedStage) {
+  // Allow evaluation to proceed if semantic analysis succeeded, even if LanguageTool failed.
+  // Grammar/Mechanics scores will be degraded but Content/Organization/Vocabulary will be valid.
+  if (!semanticError) {
     const evaluationStartedAt = Date.now();
-    logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'evaluationStarted' });
+    logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'evaluationStarted',
+      languageToolFailed: Boolean(languageToolError), semanticSucceeded: true });
     const refreshed = await doc.constructor.findById(doc._id);
     const evaluationResult = refreshed ? await canonicalEvaluation.generate({ submission: refreshed, assignment }) : null;
     evaluationMs = Date.now() - evaluationStartedAt;
     detailedFeedbackMs = Number(evaluationResult?.timings?.detailedFeedbackMs || 0);
-    logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'evaluationCompleted', durationMs: evaluationMs });
+    logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'evaluationCompleted', durationMs: evaluationMs,
+      languageToolFailed: Boolean(languageToolError) });
+  } else {
+    logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'evaluationSkipped',
+      reason: 'semanticAnalysisFailed', semanticErrorCode: safeErrorCode(semanticError) });
   }
   logger.debug({ message: 'Canonical correction analysis completed', submissionId: String(doc._id),
     fileCount: Array.isArray(doc.files) ? doc.files.length : (doc.file ? 1 : 0), ocrPageCount: canonicalTranscript.pages.length,
