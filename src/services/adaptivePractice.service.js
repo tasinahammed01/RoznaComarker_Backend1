@@ -9,8 +9,23 @@ const AdaptivePracticeSession = require('../models/AdaptivePracticeSession');
 const { getNormalizedSubmissionTranscript, normalizeOcrTranscript } = require('../utils/ocrTranscriptNormalizer');
 const aiGeneration = require('./aiGeneration.service');
 const logger = require('../utils/logger');
-const ADAPTIVE_PRACTICE_MODEL = String(process.env.ADAPTIVE_PRACTICE_MODEL || '').trim()
-  || (aiGeneration.AI_PROVIDER === 'openai' ? aiGeneration.OPENAI_MODEL : aiGeneration.OPENROUTER_MODEL);
+
+const ADAPTIVE_PRACTICE_PROVIDER = String(
+  process.env.ADAPTIVE_PRACTICE_AI_PROVIDER || aiGeneration.AI_PROVIDER || 'openrouter'
+).trim().toLowerCase();
+
+const ADAPTIVE_PRACTICE_MODEL = String(
+  process.env.ADAPTIVE_PRACTICE_MODEL || ''
+).trim() || (
+  ADAPTIVE_PRACTICE_PROVIDER === 'openai'
+    ? aiGeneration.OPENAI_MODEL
+    : ADAPTIVE_PRACTICE_PROVIDER === 'google'
+      ? 'gemini-3.6-flash'
+      : aiGeneration.OPENROUTER_MODEL
+);
+
+const ADAPTIVE_PRACTICE_MAX_OUTPUT_TOKENS =
+  Number(process.env.ADAPTIVE_PRACTICE_AI_MAX_OUTPUT_TOKENS) || 4000;
 const {
   ADAPTIVE_PRACTICE_THRESHOLD,
   ADAPTIVE_PRACTICE_PROMPT_VERSION,
@@ -204,7 +219,7 @@ async function generateSession(submissionId, studentId, options = {}) {
     sourceSnapshot: { transcriptFingerprint: source.transcriptFingerprint, feedbackId: source.feedback._id, feedbackUpdatedAt: source.feedback.updatedAt, skills: source.assessedSkills },
     targetSkills: source.weakSkills.map((skill) => skill.id),
     activities: [],
-    generation: { provider: aiGeneration.AI_PROVIDER, model: ADAPTIVE_PRACTICE_MODEL, promptVersion: ADAPTIVE_PRACTICE_PROMPT_VERSION, startedAt: new Date(), metrics: { ...timings, promptCharacters, inputTokenEstimate, retryCount: 0, retryDelayMs: 0 } }
+    generation: { provider: ADAPTIVE_PRACTICE_PROVIDER, model: ADAPTIVE_PRACTICE_MODEL, promptVersion: ADAPTIVE_PRACTICE_PROMPT_VERSION, startedAt: new Date(), metrics: { ...timings, promptCharacters, inputTokenEstimate, retryCount: 0, retryDelayMs: 0 } }
   };
   try {
     session = await AdaptivePracticeSession.findOneAndUpdate(
@@ -225,9 +240,10 @@ async function generateSession(submissionId, studentId, options = {}) {
   try {
     const providerStarted = Date.now();
     const raw = await aiGeneration.generateChatCompletion(messages, {
+      provider: ADAPTIVE_PRACTICE_PROVIDER,
       temperature: 0.2,
       model: ADAPTIVE_PRACTICE_MODEL,
-      max_tokens: 4000,
+      max_tokens: ADAPTIVE_PRACTICE_MAX_OUTPUT_TOKENS,
       response_format: { type: 'json_object' },
       onAttempt: ({ attempt }) => { attemptCount = Math.max(attemptCount, attempt); },
       onRetry: ({ delayMs }) => { retryCount += 1; retryDelayMs += Number(delayMs || 0); },

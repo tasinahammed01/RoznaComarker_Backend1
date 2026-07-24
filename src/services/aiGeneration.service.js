@@ -20,6 +20,15 @@ const OPENROUTER_TIMEOUT_MS =
 const MAX_RETRIES = parseInt(process.env.AI_MAX_RETRIES) || 3;
 const RETRY_DELAY_MS = parseInt(process.env.AI_RETRY_DELAY_MS) || 1000;
 
+const GEMINI_API_KEY = String(process.env.GEMINI_API_KEY || '').trim();
+
+const GEMINI_BASE_URL =
+  process.env.GEMINI_BASE_URL ||
+  'https://generativelanguage.googleapis.com/v1';
+
+const GEMINI_TIMEOUT_MS =
+  Number(process.env.GEMINI_TIMEOUT_MS) || 60000;
+
 console.log("[AI GENERATION] Provider:", AI_PROVIDER);
 console.log("[AI GENERATION] OpenAI model:", OPENAI_MODEL);
 console.log("[AI GENERATION] OpenRouter model:", OPENROUTER_MODEL);
@@ -242,6 +251,187 @@ async function generateWithOpenAI(messages, options = {}) {
   throw lastError || new Error("OpenAI generation failed after all retries");
 }
 
+async function generateWithGemini(messages, options = {}) {
+  if (!GEMINI_API_KEY) {
+    const error = new Error('GEMINI_API_KEY is not configured');
+    error.code = 'AI_PROVIDER_NOT_CONFIGURED';
+    throw error;
+  }
+
+  const model = String(
+    options.model ||
+    process.env.ADAPTIVE_PRACTICE_MODEL ||
+    'gemini-3.6-flash'
+  ).trim();
+
+  const maxOutputTokens =
+    Number(options.max_tokens) ||
+    Number(options.maxOutputTokens) ||
+    4000;
+
+  const temperature =
+    Number.isFinite(Number(options.temperature))
+      ? Number(options.temperature)
+      : 0.2;
+
+  const systemMessages = messages
+    .filter((message) => message.role === 'system')
+    .map((message) => String(message.content || ''))
+    .filter(Boolean);
+
+  const conversationMessages = messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => ({
+      role: message.role === 'assistant' ? 'model' : 'user',
+      parts: [
+        {
+          text:
+            typeof message.content === 'string'
+              ? message.content
+              : JSON.stringify(message.content)
+        }
+      ]
+    }));
+
+  const body = {
+    contents: conversationMessages,
+    generationConfig: {
+      temperature,
+      maxOutputTokens
+    }
+  };
+
+  if (systemMessages.length > 0) {
+    body.systemInstruction = {
+      parts: [
+        {
+          text: systemMessages.join('\n\n')
+        }
+      ]
+    };
+  }
+
+  const controller = new AbortController();
+
+  const timeoutMs =
+    Number(process.env.ADAPTIVE_PRACTICE_AI_TIMEOUT_MS) ||
+    GEMINI_TIMEOUT_MS;
+
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    if (typeof options.onAttempt === 'function') {
+      options.onAttempt({
+        attempt: 1,
+        provider: 'google',
+        model
+      });
+    }
+
+    console.log(
+      `[AI GENERATION] Gemini attempt 1 with model: ${model}`
+    );
+
+    const response = await fetch(
+      `${GEMINI_BASE_URL}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      }
+    );
+
+    const responseText = await response.text();
+
+    let data;
+
+    try {
+      data = responseText
+        ? JSON.parse(responseText)
+        : {};
+    } catch {
+      data = {};
+    }
+
+    if (!response.ok) {
+      const providerMessage =
+        data?.error?.message ||
+        responseText ||
+        `Gemini API error (${response.status})`;
+
+      console.error(
+        '[AI GENERATION] Gemini request failed',
+        {
+          status: response.status,
+          model,
+          message: providerMessage
+        }
+      );
+
+      const error = new Error(providerMessage);
+      error.status = response.status;
+
+      if (response.status === 401 || response.status === 403) {
+        error.code = 'AI_PROVIDER_AUTH_ERROR';
+      } else if (response.status === 429) {
+        error.code = 'AI_PROVIDER_RATE_LIMIT';
+      } else if (response.status >= 500) {
+        error.code = 'AI_PROVIDER_UNAVAILABLE';
+      } else {
+        error.code = `AI_PROVIDER_HTTP_${response.status}`;
+      }
+
+      throw error;
+    }
+
+    const content = data?.candidates?.[0]?.content?.parts
+      ?.map((part) => part?.text || '')
+      .join('')
+      .trim();
+
+    if (!content) {
+      const error = new Error(
+        'Gemini returned an empty response'
+      );
+      error.code = 'AI_INVALID_RESPONSE';
+      throw error;
+    }
+
+    if (typeof options.onResponse === 'function') {
+      options.onResponse({
+        provider: 'google',
+        model,
+        usage: data?.usageMetadata || null
+      });
+    }
+
+    console.log(
+      `[AI GENERATION] Gemini generation successful with model: ${model}`
+    );
+
+    return content;
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const timeoutError = new Error(
+        `Gemini request timed out after ${timeoutMs}ms`
+      );
+
+      timeoutError.code = 'AI_PROVIDER_TIMEOUT';
+
+      throw timeoutError;
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /**
  * Generate chat completion using configured AI provider
  * @param {Array} messages - Array of message objects with role and content
@@ -249,21 +439,44 @@ async function generateWithOpenAI(messages, options = {}) {
  * @returns {Promise<string>} Generated content
  */
 async function generateChatCompletion(messages, options = {}) {
+  const provider = String(
+    options.provider || AI_PROVIDER || 'openrouter'
+  ).trim().toLowerCase();
+
   try {
-    if (AI_PROVIDER === "openai") {
+    if (provider === 'google') {
+      return await generateWithGemini(messages, options);
+    }
+
+    if (provider === 'openai') {
       return await generateWithOpenAI(messages, options);
-    } else if (AI_PROVIDER === "openrouter") {
-      return await generateWithOpenRouter(messages, options);
-    } else {
-      console.warn(
-        "[AI GENERATION] Unknown provider:",
-        AI_PROVIDER,
-        ", falling back to OpenRouter",
-      );
+    }
+
+    if (provider === 'openrouter') {
       return await generateWithOpenRouter(messages, options);
     }
+
+    const error = new Error(
+      `Unsupported AI provider: ${provider}`
+    );
+
+    error.code = 'AI_PROVIDER_UNSUPPORTED';
+
+    throw error;
   } catch (error) {
-    console.error("[AI GENERATION] Request failed", { code: error.code || null, status: error.status || error.response?.status || null });
+    console.error(
+      '[AI GENERATION] Request failed',
+      {
+        provider,
+        model: options.model || null,
+        code: error.code || null,
+        status:
+          error.status ||
+          error.response?.status ||
+          null
+      }
+    );
+
     throw error;
   }
 }
@@ -367,6 +580,7 @@ module.exports = {
   generateChatCompletion,
   generateWithOpenRouter,
   generateWithOpenAI,
+  generateWithGemini,
   validateAIConfig,
   AI_PROVIDER,
   OPENAI_MODEL,
