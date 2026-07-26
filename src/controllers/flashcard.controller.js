@@ -7,7 +7,11 @@ const Membership = require("../models/membership.model");
 const Assignment = require("../models/assignment.model");
 const { createNotification } = require("../services/notification.service");
 const logger = require("../utils/logger");
-const { generateChatCompletion } = require("../services/aiGeneration.service");
+const {
+  generateFeatureJson,
+  validateFlashcardOutput,
+  featureErrorHttp,
+} = require("../services/featureGemini.service");
 
 function sendSuccess(res, data, statusCode = 200) {
   return res.status(statusCode).json({ success: true, data });
@@ -360,7 +364,7 @@ async function generateFlashcards(req, res) {
     const shouldAddImages = addImage || includeImages;
 
     console.log("[FLASHCARD GENERATION] Parameters:", {
-      content,
+      contentLength: String(content || "").length,
       template: resolvedTemplate,
       count,
       language: resolvedLanguage,
@@ -374,9 +378,8 @@ async function generateFlashcards(req, res) {
       resolvedLanguage,
     );
 
-    console.log("[OPENROUTER REQUEST] Sending request to AI provider");
-
-    let rawText = await generateChatCompletion(
+    const generated = await generateFeatureJson(
+      "flashcard",
       [
         {
           role: "system",
@@ -392,91 +395,8 @@ No text before [. No text after ].`,
           content: userPrompt,
         },
       ],
-      {
-        temperature: 0.4,
-        max_tokens: 4000,
-      },
     );
-
-    if (!rawText) {
-      console.error("[FLASHCARD GENERATION] Empty response from AI");
-      return sendError(res, 500, "Empty response from AI");
-    }
-
-    console.log("[OPENROUTER RESPONSE] Response length:", rawText.length);
-    console.log(
-      "[OPENROUTER RESPONSE] First 200 chars:",
-      rawText.substring(0, 200),
-    );
-
-    rawText = normalizeGeneratedJsonText(rawText);
-
-    const firstBracketIndex = rawText.indexOf("[");
-    const lastBracketIndex = rawText.lastIndexOf("]");
-    if (firstBracketIndex >= 0 && lastBracketIndex > firstBracketIndex) {
-      rawText = rawText.slice(firstBracketIndex, lastBracketIndex + 1);
-    } else if (firstBracketIndex >= 0) {
-      rawText = rawText.slice(firstBracketIndex);
-    }
-
-    console.log("[JSON PARSE] Attempting to parse AI response");
-
-    let cards = tryParseGeneratedCards(rawText);
-
-    if (!cards) {
-      console.error(
-        "[JSON PARSE FAILED] Standard parsing failed, attempting recovery",
-      );
-      console.error(
-        "[JSON PARSE FAILED] Raw text after normalization:",
-        rawText.substring(0, 500),
-      );
-      cards = recoverGeneratedCards(rawText);
-    }
-
-    if (cards && cards.length > 0) {
-      console.log(
-        "[JSON PARSE SUCCESS] Parsed",
-        cards.length,
-        "cards from AI response",
-      );
-    } else {
-      console.error(
-        "[JSON PARSE FAILED] Recovery also failed, no valid cards found",
-      );
-      return sendError(
-        res,
-        500,
-        "AI response could not be parsed into valid flashcards",
-      );
-    }
-
-    cards = normalizeGeneratedCards(cards, count);
-
-    if (cards.length === 0) {
-      console.error(
-        "[FLASHCARD GENERATION] Normalization resulted in zero cards",
-      );
-      return sendError(
-        res,
-        500,
-        "AI returned no valid cards after normalization",
-      );
-    }
-
-    if (cards.length < count) {
-      logger.warn({
-        message: "Recovered partial flashcard generation response",
-        requestedCount: count,
-        recoveredCount: cards.length,
-      });
-      console.warn(
-        "[FLASHCARD GENERATION] Partial recovery: requested",
-        count,
-        "got",
-        cards.length,
-      );
-    }
+    let cards = validateFlashcardOutput(generated.value, count);
 
     // Add images if requested
     if (shouldAddImages) {
@@ -506,47 +426,15 @@ No text before [. No text after ].`,
     );
     return sendSuccess(res, cards);
   } catch (error) {
-    console.error(
-      "[FLASHCARD GENERATION ERROR] Generation failed:",
-      error.message,
-    );
-    console.error("[FLASHCARD GENERATION ERROR] Error details:", {
-      name: error.name,
-      code: error.code,
-      status: error.status,
-      response: error.response?.data || "No response data",
+    logger.error({
+      message: "Flashcard generation failed",
+      code: error?.code || "INTERNAL_ERROR",
+      provider: error?.provider || null,
+      model: error?.model || null,
+      status: Number(error?.status) || null,
     });
-
-    // Handle specific error cases
-    if (error.status === 402 || error.code === "insufficient_quota") {
-      return sendError(
-        res,
-        500,
-        "AI service credits exhausted. Contact admin.",
-      );
-    }
-    if (error.status === 429 || error.code === "rate_limit_exceeded") {
-      return sendError(
-        res,
-        500,
-        "AI service rate limited. Try again in a moment.",
-      );
-    }
-    if (error.status === 401 || error.code === "invalid_api_key") {
-      return sendError(
-        res,
-        500,
-        "AI service authentication failed. Check API key configuration.",
-      );
-    }
-    if (error.status === 400 || error.code === "invalid_request") {
-      return sendError(res, 500, "Invalid model ID or request format.");
-    }
-    if (error.name === "AbortError" || error.code === "ETIMEDOUT") {
-      return sendError(res, 500, "AI service request timed out. Try again.");
-    }
-
-    return sendError(res, 500, error.message || "Flashcard generation failed");
+    const mapped = featureErrorHttp(error);
+    return sendError(res, mapped.status, mapped.message);
   }
 }
 

@@ -38,7 +38,15 @@ const {
   extractContent,
   validateFile,
 } = require("../services/fileContentExtractor.service");
-const { generateChatCompletion } = require("../services/aiGeneration.service");
+const {
+  generateFeatureJson,
+  validateWorksheetOutput,
+  featureErrorHttp,
+} = require("../services/featureGemini.service");
+
+function generateGlobalChatCompletion(...args) {
+  return require("../services/aiGeneration.service").generateChatCompletion(...args);
+}
 const multer = require("multer");
 const jsonrepair = require("jsonrepair");
 const {
@@ -561,7 +569,12 @@ CRITICAL: Return complete valid JSON. Do not truncate.`;
  * Accepts: { inputType:'topic', content, questionCount, language, difficulty, questionTypes, templateStructure }
  */
 async function generateWorksheet(req, res) {
-  console.log("[GENERATE WORKSHEET] req.body:", JSON.stringify(req.body));
+  console.log("[GENERATE WORKSHEET] Request received", {
+    inputType: req.body?.inputType || "topic",
+    contentLength: String(req.body?.content || "").length,
+    activityTypeCount: Array.isArray(req.body?.activityTypes)
+      ? req.body.activityTypes.length : 0,
+  });
   try {
     const {
       inputType = "topic",
@@ -626,7 +639,8 @@ async function generateWorksheet(req, res) {
     }
 
     // Use structured output for reliable JSON
-    const rawText = await generateChatCompletion(
+    const generated = await generateFeatureJson(
+      "worksheet",
       [
         {
           role: "system",
@@ -635,27 +649,8 @@ async function generateWorksheet(req, res) {
         },
         { role: "user", content: prompt },
       ],
-      {
-        temperature: 0.2, // Lower temperature for more consistent output
-        max_tokens: 8000,
-        response_format: { type: "json_object" }, // Force JSON output
-      },
     );
-
-    console.log("[GENERATE] AI response length:", rawText.length);
-
-    // Use robust parser with JSON repair and validation
-    let parsed;
-    try {
-      parsed = parseWorksheetAIResponse(rawText, sourceText);
-    } catch (parseError) {
-      console.error("[GENERATE] Parse error:", parseError.message);
-      return res.status(500).json({
-        success: false,
-        message: "Worksheet generation failed",
-        error: parseError.message,
-      });
-    }
+    const parsed = validateWorksheetOutput(generated.value, resolvedTypes);
 
     console.log(
       "[GENERATE] Success — activities:",
@@ -680,31 +675,15 @@ async function generateWorksheet(req, res) {
       sourceContent: sourceText.slice(0, 500),
     });
   } catch (error) {
-    console.error(
-      "[GENERATE WORKSHEET] OpenAI error:",
-      error.response?.data || error.message,
-    );
-    if (error.status === 402)
-      return sendError(
-        res,
-        500,
-        "AI service credits exhausted. Contact admin.",
-      );
-    if (error.status === 429)
-      return sendError(
-        res,
-        500,
-        "AI service rate limited. Try again in a moment.",
-      );
-    if (error.status === 401)
-      return sendError(res, 500, "AI service authentication failed.");
-    if (error.status === 400)
-      return sendError(res, 500, "Invalid model ID or request format.");
-    return res.status(500).json({
-      success: false,
+    logger.error({
       message: "Worksheet generation failed",
-      error: error.message,
+      code: error?.code || "INTERNAL_ERROR",
+      provider: error?.provider || null,
+      model: error?.model || null,
+      status: Number(error?.status) || null,
     });
+    const mapped = featureErrorHttp(error);
+    return sendError(res, mapped.status, mapped.message);
   }
 }
 
@@ -787,7 +766,7 @@ async function uploadAndGenerate(req, res) {
     );
 
     // Use structured output for reliable JSON
-    const rawText = await generateChatCompletion(
+    const rawText = await generateGlobalChatCompletion(
       [
         {
           role: "system",
@@ -1711,7 +1690,7 @@ Correct answer: "${correctAnswer}"
 Student answer: "${studentAnswer}"
 Return ONLY JSON: {"isCorrect": true or false, "feedback": "one sentence explanation"}`;
 
-    const raw = await generateChatCompletion(
+    const raw = await generateGlobalChatCompletion(
       [
         {
           role: "system",
