@@ -29,7 +29,7 @@ async function callVisionModelWithFallback(base64Image, prompt, apiKey = null) {
           headers: {
             'Authorization': `Bearer ${effectiveApiKey}`,
             'Content-Type': 'application/json',
-            'HTTP-Referer': 'http://localhost:4200',
+            'HTTP-Referer': process.env.FRONTEND_URL || 'http://localhost:4200',
             'X-Title': 'RoznaHub'
           },
           body: JSON.stringify({

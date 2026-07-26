@@ -20,7 +20,7 @@ const required = [
 ];
 
 if (process.env.NODE_ENV === 'production') {
-  required.push('FRONTEND_URL');
+  required.push('FRONTEND_URL', 'CORS_ORIGINS', 'PUBLIC_API_URL', 'BASE_URL');
 }
 
 // Validate each required variable with a clear, individual error message
@@ -37,6 +37,9 @@ const env = {
   NODE_ENV: process.env.NODE_ENV,
   JWT_SECRET: process.env.JWT_SECRET,
   FRONTEND_URL: process.env.FRONTEND_URL,
+  CORS_ORIGINS: process.env.CORS_ORIGINS,
+  PUBLIC_API_URL: process.env.PUBLIC_API_URL,
+  BASE_URL: process.env.BASE_URL,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
   FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID,
