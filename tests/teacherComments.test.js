@@ -126,4 +126,36 @@ describe('canonical teacher comments', () => {
     expect(responses.every((response) => [200, 429].includes(response.status))).toBe(true);
     expect(await SubmissionFeedback.countDocuments({ submissionId: submission._id })).toBe(1);
   });
+
+  test('teacher rubric saving preserves comments and unrelated canonical data', async () => {
+    await SubmissionFeedback.create({
+      submissionId: submission._id, classId: classDoc._id, studentId: student._id, teacherId: teacher._id,
+      teacherComments: 'Keep this comment', correctionStats: { grammar: 2, total: 2 },
+      evaluationSourceHash: 'source-hash', detailedFeedbackSourceHash: 'source-hash',
+      rubricScores: { CONTENT: { score: 14, maxScore: 20 }, ORGANIZATION: { score: 11, maxScore: 20 },
+        GRAMMAR: { score: 5, maxScore: 25 }, VOCABULARY: { score: 9, maxScore: 20 },
+        MECHANICS: { score: 5.5, maxScore: 10 }, PRESENTATION: { score: 4.5, maxScore: 5 } },
+      overallScore: 49, grade: 'F', overriddenByTeacher: false
+    });
+    const rubricScores = { CONTENT: { score: 14, maxScore: 20, comment: 'c' },
+      ORGANIZATION: { score: 11, maxScore: 20, comment: 'o' },
+      GRAMMAR: { score: 5, maxScore: 25, comment: 'g' },
+      VOCABULARY: { score: 9, maxScore: 20, comment: 'v' },
+      MECHANICS: { score: 5.5, maxScore: 10, comment: 'm' },
+      PRESENTATION: { score: 3.5, maxScore: 5, comment: 'Teacher reviewed handwriting.' } };
+    const response = await request(app).put(`/api/feedback/${submission._id}`)
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .send({ rubricScores, overallScore: 51, detailedFeedback: {}, aiFeedback: { perCategory: [], overallComments: '' },
+        rubricDesigner: null });
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({ overallScore: 51, grade: 'F', overriddenByTeacher: true });
+    expect(response.body.data).not.toHaveProperty('scoreStatus');
+    expect(response.body.data).not.toHaveProperty('presentationReviewStatus');
+    const saved = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
+    expect(saved.rubricScores.PRESENTATION).toMatchObject({ score: 3.5, maxScore: 5,
+      comment: 'Teacher reviewed handwriting.' });
+    expect(saved).toMatchObject({ overallScore: 51, grade: 'F', teacherComments: 'Keep this comment',
+      evaluationSourceHash: 'source-hash', detailedFeedbackSourceHash: 'source-hash' });
+    expect(saved.correctionStats).toMatchObject({ grammar: 2, total: 2 });
+  });
 });

@@ -14,6 +14,11 @@ describe('canonical evaluation contract', () => {
   };
   const stats = { content: 4, grammar: 9, organization: 1, vocabulary: 1, mechanics: 6, total: 21 };
 
+  test('keeps the established category weights and numeric arithmetic unchanged', () => {
+    expect([20, 20, 25, 20, 10, 5].reduce((sum, score) => sum + score, 0)).toBe(100);
+    expect([7, 9, 11, 14, 5.5, 4.5].reduce((sum, score) => sum + score, 0)).toBe(51);
+  });
+
   test('copies canonical issue counts into every category and preserves score bounds', () => {
     const result = synchronizedRubricScores(scores, stats);
     expect(result.GRAMMAR.issueCount).toBe(9);

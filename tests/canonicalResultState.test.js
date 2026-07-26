@@ -92,6 +92,16 @@ describe('canonical result state contract', () => {
       detailedFeedbackStatus: 'completed', detailedFeedbackCurrent: true });
   });
 
+  test('returns the unchanged numeric score and grade without presentation-review status fields', () => {
+    const state = buildCanonicalResultState({ submission: completedSubmission(),
+      feedback: currentEvaluation({ overallScore: 51, grade: 'F', overriddenByTeacher: false }) });
+    expect(state).toMatchObject({ score: 51, grade: 'F' });
+    expect(state).not.toHaveProperty('scoreStatus');
+    expect(state).not.toHaveProperty('scoreStatusReason');
+    expect(state).not.toHaveProperty('presentationReviewStatus');
+    expect(state).not.toHaveProperty('scoreSummary');
+  });
+
   test('completed canonical analysis permits genuine zero semantic counts', () => {
     const state = buildCanonicalResultState({ submission: { correctionStatus: 'completed', writingCorrections: [],
       correctionStatistics: { content: 0, grammar: 0, organization: 0, vocabulary: 0, mechanics: 0, total: 0 } } });
