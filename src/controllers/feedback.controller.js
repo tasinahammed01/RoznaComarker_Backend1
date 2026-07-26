@@ -21,8 +21,10 @@ const {
   parseRubricDesignerFromDocxTemplate,
 } = require("../services/docxRubricTemplateParser.service");
 const { buildOcrCorrections } = require("../services/ocrCorrections.service");
-const { buildSubmissionCorrectionStatistics } = require("../services/submissionCorrectionStatistics.service");
+const { buildSubmissionCorrectionStatistics, countSubmissionCorrections } = require("../services/submissionCorrectionStatistics.service");
 const { buildCanonicalResultState } = require("../services/canonicalResultState.service");
+const { resolveTeacherComments } = require("../services/teacherComments.service");
+const { TEACHER_COMMENTS_MAX_LENGTH } = require("../models/SubmissionFeedback");
 const { getRubricAiConfig } = require("../services/rubricAiConfig.service");
 const { credentialFor } = require("../services/semanticAIClient.service");
 const { completeRubric } = require("../services/rubricCompletion.service");
@@ -872,17 +874,28 @@ async function getSubmissionFeedback(req, res) {
 
     let feedback = await SubmissionFeedback.findOne({
       submissionId: submission._id,
+    }).lean();
+    const legacyFeedback = await Feedback.findOne({ submission: submission._id })
+      .select("teacherComments textFeedback")
+      .lean();
+    const teacherComments = resolveTeacherComments({
+      submissionFeedback: feedback,
+      legacyFeedback,
     });
 
     // Normalize legacy feedback records if they exist
     if (feedback) {
-      const feedbackObj = feedback.toObject();
+      const feedbackObj = feedback;
       // GET/result retrieval is strictly read-only. Legacy normalization is a
       // response-only compatibility transform and is never persisted here.
       feedback = normalizeLegacyFeedback(feedbackObj);
     }
 
-    const correctionStatistics = await buildSubmissionCorrectionStatistics(submission);
+    // Result reads must never invoke a provider-backed legacy fallback. An empty
+    // persisted canonical array is a valid zero-correction result.
+    const correctionStatistics = countSubmissionCorrections(
+      Array.isArray(submission.writingCorrections) ? submission.writingCorrections : []
+    ).statistics;
     const countsFromStatistics = {
       CONTENT: correctionStatistics.content,
       GRAMMAR: correctionStatistics.grammar,
@@ -907,6 +920,7 @@ async function getSubmissionFeedback(req, res) {
       const resultState = buildCanonicalResultState({ submission, feedback: null });
       return sendSuccess(res, {
         submissionId: String(submission._id),
+        teacherComments,
         ...resultState, overallScore: null, grade: null, rubricScores: null, detailedFeedback: null,
         correctionStats: correctionStatistics, correctionStatistics,
         evaluationSourceHash: null, correctionSourceHash: submission.correctionSourceHash || null
@@ -914,10 +928,12 @@ async function getSubmissionFeedback(req, res) {
     }
     const currentFeedback = withCanonicalStatistics(feedback);
     const resultState = buildCanonicalResultState({ submission, feedback: currentFeedback });
-    const safeFeedback = resultState.evaluationCurrent ? currentFeedback : {};
+    const { teacherCommentsUpdatedBy: _internalTeacherCommentsUpdatedBy, ...publicFeedback } = currentFeedback;
+    const safeFeedback = resultState.evaluationCurrent ? publicFeedback : {};
     return sendSuccess(res, {
       submissionId: String(submission._id),
       ...safeFeedback, ...resultState,
+      teacherComments,
       overallScore: resultState.score, grade: resultState.grade,
       rubricScores: resultState.evaluationCurrent ? currentFeedback.rubricScores : null,
       detailedFeedback: resultState.detailedFeedbackCurrent ? currentFeedback.detailedFeedback : null,
@@ -2693,6 +2709,78 @@ function buildGeminiBaseUrlCandidates(baseUrl) {
   return [normalized];
 }
 
+async function updateTeacherComments(req, res) {
+  try {
+    const { submissionId } = req.params;
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) return sendError(res, 401, "Unauthorized");
+
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+      ? req.body
+      : {};
+    const keys = Object.keys(body);
+    if (keys.length !== 1 || keys[0] !== "teacherComments") {
+      return sendError(res, 400, "Only teacherComments is allowed");
+    }
+    if (typeof body.teacherComments !== "string") {
+      return sendError(res, 400, "teacherComments must be a string");
+    }
+    const teacherComments = body.teacherComments.trim();
+    if (teacherComments.length > TEACHER_COMMENTS_MAX_LENGTH) {
+      return sendError(res, 400, `teacherComments must be at most ${TEACHER_COMMENTS_MAX_LENGTH} characters`);
+    }
+
+    const submission = await Submission.findById(submissionId);
+    if (!submission) return sendError(res, 404, "Submission not found");
+    const classDoc = await Class.findOne({
+      _id: submission.class,
+      teacher: teacherId,
+      isActive: true,
+    }).select("_id");
+    if (!classDoc) return sendError(res, 403, "No permission");
+
+    const now = new Date();
+    const filter = { submissionId: submission._id };
+    const update = {
+      $set: {
+        teacherComments,
+        teacherCommentsUpdatedAt: now,
+        teacherCommentsUpdatedBy: teacherId,
+      },
+      $setOnInsert: {
+        submissionId: submission._id,
+        classId: submission.class,
+        studentId: submission.student,
+        teacherId,
+      },
+    };
+    let saved;
+    try {
+      saved = await SubmissionFeedback.findOneAndUpdate(filter, update, {
+        upsert: true,
+        new: true,
+        runValidators: true,
+        setDefaultsOnInsert: true,
+      });
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
+      saved = await SubmissionFeedback.findOneAndUpdate(filter, { $set: update.$set }, {
+        new: true,
+        runValidators: true,
+      });
+    }
+    if (!saved) return sendError(res, 500, "Failed to save teacher comments");
+    return sendSuccess(res, {
+      submissionId: String(submission._id),
+      teacherComments: saved.teacherComments,
+      teacherCommentsUpdatedAt: saved.teacherCommentsUpdatedAt,
+      teacherCommentsUpdatedBy: String(saved.teacherCommentsUpdatedBy),
+    });
+  } catch (err) {
+    return sendError(res, 500, "Failed to save teacher comments");
+  }
+}
+
 function buildGeminiModelCandidates(model) {
   const m = safeString(model).trim();
   const list = [m]
@@ -4295,6 +4383,7 @@ module.exports = {
   generateRubricDesignerFromFile,
   updateFeedback,
   getSubmissionFeedback,
+  updateTeacherComments,
   upsertSubmissionFeedback,
   getFeedbackBySubmissionForStudent,
   getFeedbackBySubmissionForTeacher,

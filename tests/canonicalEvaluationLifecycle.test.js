@@ -36,7 +36,8 @@ describe('canonical evaluation write guards', () => {
 
   test('a superseded job cannot persist detailed feedback', async () => {
     const record = submission(false);
-    await generate({ submission: record.value, assignment: { title: 'Essay' } });
+    const result = await generate({ submission: record.value, assignment: { title: 'Essay' } });
+    expect(result.status).toBe('superseded');
     expect(record.exists).toHaveBeenCalledWith(expect.objectContaining({ correctionSourceHash: 'hash', evaluationJobId: expect.any(String) }));
     expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(1);
     expect(mockFindOneAndUpdate.mock.calls[0][1].$set).not.toHaveProperty('detailedFeedback');
@@ -44,10 +45,15 @@ describe('canonical evaluation write guards', () => {
 
   test('a current job writes feedback only through its reserved job id', async () => {
     const record = submission(true);
-    await generate({ submission: record.value, assignment: { title: 'Essay' } });
+    mockAssess.mockResolvedValueOnce({ ...await mockAssess(), provider: 'openrouter', model: 'openai/gpt-oss-20b',
+      metrics: { attempts: [{ attempt: 1, provider: 'google', model: 'gemini-3.6-flash', status: 'provider_refusal', code: 'HTTP_402' },
+        { attempt: 2, provider: 'openrouter', model: 'openai/gpt-oss-20b', status: 'completed' }] } });
+    const result = await generate({ submission: record.value, assignment: { title: 'Essay' } });
+    expect(result).toMatchObject({ status: 'completed', provider: 'openrouter', model: 'openai/gpt-oss-20b', errorCode: null });
     expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(2);
     expect(mockFindOneAndUpdate.mock.calls[1][0]).toMatchObject({ submissionId: 'submission-1', evaluationJobId: expect.any(String) });
-    expect(mockFindOneAndUpdate.mock.calls[1][1].$set).toMatchObject({ detailedFeedbackSourceHash: 'hash', detailedFeedbackVersion: 'canonical-detailed-feedback-2' });
+    expect(mockFindOneAndUpdate.mock.calls[1][1].$set).toMatchObject({ detailedFeedbackSourceHash: 'hash',
+      detailedFeedbackVersion: 'canonical-detailed-feedback-2', evaluationProvider: 'openrouter', evaluationModel: 'openai/gpt-oss-20b' });
   });
 
   test('old evaluation versions are recomputed even when correction hash is unchanged', async () => {
@@ -62,10 +68,18 @@ describe('canonical evaluation write guards', () => {
   });
 
   test('missing rubric categories fail before any score or detailed feedback is persisted', async () => {
-    mockAssess.mockRejectedValueOnce(Object.assign(new Error('bad semantic result'), { code: 'SEMANTIC_RUBRIC_SCHEMA_INVALID' }));
+    mockAssess.mockRejectedValueOnce(Object.assign(new Error('bad semantic result'), {
+      code: 'HTTP_402', status: 402, attempts: [{ attempt: 1, provider: 'google', model: 'gemini-3.6-flash',
+        status: 'provider_refusal', code: 'HTTP_402' }]
+    }));
     const record = submission(true);
-    await generate({ submission: record.value, assignment: { title: 'Essay' } });
+    const result = await generate({ submission: record.value, assignment: { title: 'Essay' } });
+    expect(result).toMatchObject({ status: 'failed', provider: 'google', model: 'gemini-3.6-flash',
+      overallScore: null, errorCode: 'HTTP_402' });
     expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(2);
+    expect(mockFindOneAndUpdate.mock.calls[1][1].$unset).toMatchObject({
+      overallScore: 1, rubricScores: 1, detailedFeedback: 1
+    });
     expect(record.updateOne).toHaveBeenLastCalledWith(expect.objectContaining({ evaluationJobId: expect.any(String) }),
       expect.objectContaining({ $set: expect.objectContaining({ evaluationStatus: 'failed' }) }));
   });

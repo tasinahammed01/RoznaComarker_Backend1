@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { defaultLegend } = require('./writingCorrections.service');
 
-const VERSION = 'canonical-1';
+const VERSION = 'canonical-2';
 
 function legendIndex(legend = defaultLegend()) {
   const index = new Map();
@@ -44,6 +44,13 @@ function normalizeCorrection(raw, text, spans, legend, source) {
     source, category: raw.category, groupKey: raw.category, groupLabel: raw.category,
     symbol: raw.symbol, symbolLabel: meta.symbolLabel, color: meta.color, quotedText: quote,
     message: String(raw.message || '').trim(), suggestedText: String(raw.suggestedText || '').trim(),
+    ...(source === 'LANGUAGETOOL' ? {
+      classificationReason: String(raw.classificationReason || ''),
+      languageToolRuleId: String(raw.languageToolRuleId || ''),
+      languageToolCategoryId: String(raw.languageToolCategoryId || ''),
+      languageToolIssueType: String(raw.languageToolIssueType || ''),
+      languageToolMappingVersion: String(raw.languageToolMappingVersion || '')
+    } : {}),
     startChar: range.start, endChar: range.end, ...mapped,
     confidence: Math.max(0, Math.min(1, Number(raw.confidence) || 0)), editable: false };
 }

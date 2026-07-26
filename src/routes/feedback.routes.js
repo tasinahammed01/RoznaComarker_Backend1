@@ -200,6 +200,16 @@ router.put(
   feedbackController.upsertSubmissionFeedback
 );
 
+router.patch(
+  '/:submissionId/teacher-comments',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  feedbackController.updateTeacherComments
+);
+
 /**
  * @openapi
  * /api/feedback/{feedbackId}:

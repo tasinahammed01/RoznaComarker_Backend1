@@ -6,28 +6,54 @@ let _legendCache = null;
 let _legendCacheAt = 0;
 const LEGEND_CACHE_TTL_MS = 5 * 60 * 1000;
 
-const LANGUAGETOOL_TO_ACADEMIC_GROUP = {
-  spelling: 'MECHANICS',
-  grammar: 'GRAMMAR',
-  style: 'ORGANIZATION',
-  typography: 'MECHANICS',
-  other: 'VOCABULARY'
-};
+const LANGUAGE_TOOL_MAPPING_VERSION = 'language-tool-mapping-2';
 
-const RULE_MAPPINGS = [
-  { re: /(MORFOLOGIK_RULE|SPELL|MISSPELL)/i, category: 'MECHANICS', symbol: 'SP' },
-  { re: /(PUNCTUATION|COMMA|APOSTROPHE|SENTENCE_WHITESPACE)/i, category: 'MECHANICS', symbol: 'P' },
-  { re: /(UPPERCASE|LOWERCASE|CASING|CAPITAL)/i, category: 'MECHANICS', symbol: 'CAP' },
-  { re: /(WHITESPACE|SPACE_BEFORE|DOUBLE_SPACE)/i, category: 'MECHANICS', symbol: 'SPC' },
-  { re: /(SUBJECT.*VERB|AGREEMENT|SVA|VERB_AGR|NON3PRS|THIRD_PERSON|DOES_NP_VBZ|PLURAL_VERB)/i, category: 'GRAMMAR', symbol: 'AGR' },
-  { re: /(VERB_FORM|INFINITIVE|GERUND|PARTICIPLE|BASE_FORM|MODAL.*VERB|TO_NON_BASE|AUXILIARY_VERB)/i, category: 'GRAMMAR', symbol: 'VF' },
-  { re: /(TENSE|PAST_TENSE|PRESENT_TENSE)/i, category: 'GRAMMAR', symbol: 'T' },
-  { re: /(ARTICLE|A_VS_AN|THE\b)/i, category: 'GRAMMAR', symbol: 'ART' },
-  { re: /(PREPOSITION|PREP_)/i, category: 'GRAMMAR', symbol: 'PREP' },
-  { re: /(WORD_ORDER|ORDER_OF_WORDS)/i, category: 'GRAMMAR', symbol: 'WO' },
-  { re: /(FRAGMENT|SENTENCE_FRAGMENT)/i, category: 'GRAMMAR', symbol: 'FRAG' },
-  { re: /(RUN_ON|COMMA_SPLICE)/i, category: 'GRAMMAR', symbol: 'RO' }
-];
+const EXACT_RULE_OVERRIDES = Object.freeze({
+  EN_UPPER_CASE_NGRAM: ['MECHANICS', 'CAP'],
+  UPPERCASE_SENTENCE_START: ['MECHANICS', 'CAP'],
+  INFORMATIONS: ['VOCABULARY', 'WF'],
+  EVERYDAY_EVERY_DAY: ['VOCABULARY', 'WF'],
+  THERE_THEIR: ['VOCABULARY', 'WC'],
+  MORFOLOGIK_RULE_EN_US: ['MECHANICS', 'SP'],
+  MD_BASEFORM: ['GRAMMAR', 'VF'],
+  BASE_FORM: ['GRAMMAR', 'VF'],
+  HAVE_PART_AGREEMENT: ['GRAMMAR', 'VF'],
+  NON3PRS_VERB: ['GRAMMAR', 'AGR'],
+  AGREEMENT_SENT_START: ['GRAMMAR', 'AGR'],
+  HE_VERB_AGR: ['GRAMMAR', 'AGR'],
+  IT_VBZ: ['GRAMMAR', 'AGR'],
+  MANY_NN: ['GRAMMAR', 'AGR'],
+  EACH_EVERY_NNS: ['GRAMMAR', 'AGR'],
+  EN_A_VS_AN: ['GRAMMAR', 'ART'],
+  SENT_START_CONJUNCTIVE_LINKING_ADVERB_COMMA: ['MECHANICS', 'P'],
+  ENGLISH_WORD_REPEAT_RULE: ['VOCABULARY', 'REP'],
+  INFORMALITY: ['VOCABULARY', 'FORM']
+});
+
+const CATEGORY_MAPPINGS = Object.freeze({
+  CASING: ['MECHANICS', 'CAP'],
+  PUNCTUATION: ['MECHANICS', 'P'],
+  CONFUSED_WORDS: ['VOCABULARY', 'WC'],
+  REDUNDANCY: ['VOCABULARY', 'REP'],
+  COLLOCATIONS: ['VOCABULARY', 'COL'],
+  WORD_FORM: ['VOCABULARY', 'WF']
+});
+
+// Reviewed, anchored rule families only. These patterns inspect rule IDs alone.
+const REVIEWED_RULE_ID_PATTERNS = Object.freeze([
+  [/^(?:SUBJECT_VERB_AGREEMENT|SVA|VERB_AGR|DOES_NP_VBZ|PLURAL_VERB)(?:_|$)/u, 'GRAMMAR', 'AGR'],
+  [/^(?:VERB_FORM|INFINITIVE|GERUND|PARTICIPLE|BASE_FORM|TO_NON_BASE|AUXILIARY_VERB)(?:_|$)/u, 'GRAMMAR', 'VF'],
+  [/^(?:TENSE|PAST_TENSE|PRESENT_TENSE)(?:_|$)/u, 'GRAMMAR', 'T'],
+  [/^(?:ARTICLE|A_VS_AN)(?:_|$)/u, 'GRAMMAR', 'ART'],
+  [/^(?:PREPOSITION|PREP)(?:_|$)/u, 'GRAMMAR', 'PREP'],
+  [/^(?:WORD_ORDER|ORDER_OF_WORDS)(?:_|$)/u, 'GRAMMAR', 'WO'],
+  [/^(?:FRAGMENT|SENTENCE_FRAGMENT)(?:_|$)/u, 'GRAMMAR', 'FRAG'],
+  [/^(?:RUN_ON|COMMA_SPLICE)(?:_|$)/u, 'GRAMMAR', 'RO'],
+  [/^(?:WHITESPACE|SPACE_BEFORE|DOUBLE_SPACE)(?:_|$)/u, 'MECHANICS', 'SPC'],
+  [/^(?:PUNCTUATION|COMMA|APOSTROPHE)(?:_|$)/u, 'MECHANICS', 'P'],
+  [/^(?:UPPERCASE|LOWERCASE|CASING|CAPITAL)(?:_|$)/u, 'MECHANICS', 'CAP'],
+  [/^(?:MORFOLOGIK_RULE|SPELLING_RULE)(?:_|$)/u, 'MECHANICS', 'SP']
+]);
 
 function defaultLegend() {
   return {
@@ -121,46 +147,35 @@ async function getLegendFromDb() {
   return defaultLegend();
 }
 
-function classifyIssueType(match) {
-  const issueType = match && match.rule && typeof match.rule.issueType === 'string'
-    ? match.rule.issueType.toLowerCase()
-    : '';
-
-  if (issueType.includes('misspelling')) return 'spelling';
-  if (issueType.includes('grammar')) return 'grammar';
-  if (issueType.includes('typographical')) return 'typography';
-  if (issueType.includes('style')) return 'style';
-
-  return 'other';
-}
-
-function legendMetaForGroup(groupKey, legend) {
-  const activeLegend = legend || defaultLegend();
-  const academicGroupKey = LANGUAGETOOL_TO_ACADEMIC_GROUP[groupKey] || 'MECHANICS';
-  const groups = Array.isArray(activeLegend.groups) ? activeLegend.groups : [];
-
-  const group = groups.find(
-    (g) => g && typeof g.key === 'string' && g.key.toUpperCase() === academicGroupKey.toUpperCase()
-  ) || groups[groups.length - 1];
-
-  const symbol = LANGUAGETOOL_SYMBOLS[groupKey] || 'CK';
-  const symbolLabel = group && group.label ? group.label : groupKey;
-  const description = group && group.symbols && group.symbols[0] ? group.symbols[0].description : '';
-  const color = group && typeof group.color === 'string' ? group.color : '#FFC107';
-
-  return { groupLabel: symbolLabel, symbol, symbolLabel, description, color };
-}
-
 function mapLanguageToolRule(match, legend = defaultLegend()) {
   const rule = match?.rule || {};
-  const haystack = [rule.id, rule.category?.id, rule.issueType].filter(Boolean).join(' ');
-  let mapped = RULE_MAPPINGS.find((entry) => entry.re.test(haystack));
-  if (!mapped && /misspelling/i.test(String(rule.issueType || ''))) mapped = RULE_MAPPINGS[0];
-  if (!mapped) return null;
-  const group = legend.groups.find((item) => item.key === mapped.category);
-  const symbol = group?.symbols?.find((item) => item.symbol === mapped.symbol);
-  if (!group || !symbol) return null;
-  return { category: mapped.category, groupKey: mapped.category, groupLabel: group.label,
+  const ruleId = String(rule.id || '').trim().toUpperCase();
+  const categoryId = String(rule.category?.id || '').trim().toUpperCase();
+  const issueType = String(rule.issueType || '').trim().toLowerCase();
+  let mapped = EXACT_RULE_OVERRIDES[ruleId];
+  let reason = mapped ? 'EXACT_RULE_OVERRIDE' : null;
+  if (!mapped && CATEGORY_MAPPINGS[categoryId]) {
+    mapped = CATEGORY_MAPPINGS[categoryId];
+    reason = 'STRUCTURED_CATEGORY_ID';
+  }
+  if (!mapped && issueType === 'duplication') {
+    mapped = ['VOCABULARY', 'REP'];
+    reason = 'STRUCTURED_ISSUE_TYPE';
+  }
+  if (!mapped) {
+    const pattern = REVIEWED_RULE_ID_PATTERNS.find(([re]) => re.test(ruleId));
+    if (pattern) {
+      mapped = [pattern[1], pattern[2]];
+      reason = 'REVIEWED_RULE_ID_PATTERN';
+    }
+  }
+  const decisionBase = { ruleId, categoryId, issueType, mappingVersion: LANGUAGE_TOOL_MAPPING_VERSION };
+  if (!mapped) return { accepted: false, reason: 'UNSUPPORTED_LANGUAGETOOL_RULE', ...decisionBase };
+  const [category, mappedSymbol] = mapped;
+  const group = legend.groups.find((item) => item.key === category);
+  const symbol = group?.symbols?.find((item) => item.symbol === mappedSymbol);
+  if (!group || !symbol) return { accepted: false, reason: 'LEGEND_SYMBOL_UNAVAILABLE', ...decisionBase };
+  return { accepted: true, reason, ...decisionBase, category, groupKey: category, groupLabel: group.label,
     symbol: symbol.symbol, symbolLabel: symbol.label, description: symbol.description, color: group.color };
 }
 
@@ -182,7 +197,7 @@ function toIssuesFromLanguageTool(text, ltResponse, legend) {
         : '';
 
       const meta = mapLanguageToolRule(m, legend);
-      if (!meta) return null;
+      if (!meta.accepted) return null;
       const groupKey = meta.groupKey;
 
       const message = typeof m.message === 'string' ? m.message : '';
@@ -198,7 +213,12 @@ function toIssuesFromLanguageTool(text, ltResponse, legend) {
         symbolLabel: meta.symbolLabel,
         description: meta.description || message,
         color: meta.color,
-        message
+        message,
+        classificationReason: meta.reason,
+        languageToolRuleId: meta.ruleId,
+        languageToolCategoryId: meta.categoryId,
+        languageToolIssueType: meta.issueType,
+        languageToolMappingVersion: meta.mappingVersion
       };
     })
     .filter(Boolean);
@@ -206,13 +226,29 @@ function toIssuesFromLanguageTool(text, ltResponse, legend) {
 
 function languageToolDiagnostics(text, ltResponse, legend) {
   const matches = Array.isArray(ltResponse?.matches) ? ltResponse.matches : [];
-  const counts = { rawMatches: matches.length, invalidOffset: 0, unknownRule: 0, unmappedSymbol: 0, persisted: 0 };
+  const counts = { rawMatches: matches.length, accepted: 0, dropped: 0, invalidOffset: 0,
+    byRuleId: {}, byCategoryId: {}, byIssueType: {}, byFinalClassification: {},
+    dropReasons: {}, droppedGrammarRuleIds: [] };
+  const droppedGrammar = new Set();
+  const increment = (target, key) => { target[key || 'UNSPECIFIED'] = (target[key || 'UNSPECIFIED'] || 0) + 1; };
   for (const match of matches) {
     const start = Number(match?.offset); const length = Number(match?.length);
-    if (!Number.isFinite(start) || !Number.isFinite(length) || length <= 0 || start < 0 || start + length > text.length) { counts.invalidOffset++; continue; }
-    if (!match?.rule?.id) counts.unknownRule++;
-    if (!mapLanguageToolRule(match, legend)) counts.unmappedSymbol++; else counts.persisted++;
+    const ruleId = String(match?.rule?.id || 'UNSPECIFIED').toUpperCase();
+    const categoryId = String(match?.rule?.category?.id || 'UNSPECIFIED').toUpperCase();
+    const issueType = String(match?.rule?.issueType || 'UNSPECIFIED').toLowerCase();
+    increment(counts.byRuleId, ruleId); increment(counts.byCategoryId, categoryId); increment(counts.byIssueType, issueType);
+    if (!Number.isFinite(start) || !Number.isFinite(length) || length <= 0 || start < 0 || start + length > text.length) {
+      counts.invalidOffset++; counts.dropped++; increment(counts.dropReasons, 'INVALID_OFFSET'); continue;
+    }
+    const decision = mapLanguageToolRule(match, legend);
+    if (!decision.accepted) {
+      counts.dropped++; increment(counts.dropReasons, decision.reason);
+      if (categoryId === 'GRAMMAR' || issueType === 'grammar') droppedGrammar.add(ruleId);
+    } else {
+      counts.accepted++; increment(counts.byFinalClassification, `${decision.category}/${decision.symbol}`);
+    }
   }
+  counts.droppedGrammarRuleIds = [...droppedGrammar].sort();
   return counts;
 }
 
@@ -243,5 +279,6 @@ module.exports = {
   defaultLegend,
   mapLanguageToolRule,
   toIssuesFromLanguageTool,
-  languageToolDiagnostics
+  languageToolDiagnostics,
+  LANGUAGE_TOOL_MAPPING_VERSION
 };

@@ -62,6 +62,8 @@ async function getSubmissionWithPermissionsOrThrow({ user, submissionId }) {
 }
 
 async function downloadSubmissionPdf(req, res, next) {
+  const requestStartedAt = Date.now();
+  let outputPath = null;
   try {
     if (process.env.NODE_ENV === "test" && process.env.ENABLE_TEST_PDF_HTTP !== "true") {
       throw new ApiError(
@@ -92,7 +94,7 @@ async function downloadSubmissionPdf(req, res, next) {
 
     const submissionFeedback = await SubmissionFeedback.findOne({
       submissionId: submission._id,
-    });
+    }).lean();
 
     const studentEmail =
       submission.student && typeof submission.student === "object"
@@ -125,22 +127,48 @@ async function downloadSubmissionPdf(req, res, next) {
 
     const tmpDir = path.join(os.tmpdir(), "rozna-pdf");
     await fs.promises.mkdir(tmpDir, { recursive: true });
-    const outputPath = path.join(
+    outputPath = path.join(
       tmpDir,
       `submission-feedback-${String(submission._id)}-${uuidv4()}.pdf`,
     );
 
-    const { viewModel, diagnostics, timings } = await buildPersistedSubmissionFeedbackReport({ submission, submissionFeedback, feedback, identity });
-    logger.info(`[PDF MAP] submissionId=${String(submission._id)} diagnostics=${JSON.stringify(diagnostics)} statisticsMismatch=${viewModel.diagnostics.persistedStatisticsMismatch}`);
-    logger.metric({ event: "pdf_view_model_completed", submissionId: String(submission._id), submittedPageCount: viewModel.submittedPages.length, correctionCount: viewModel.statistics.total, missingAssetCount: diagnostics.missingAssetCount, ...timings });
     const abortController = new AbortController();
+    let requestBudgetExpired = false;
+    const requestBudgetMs = (() => {
+      const configured = Number(process.env.PDF_REQUEST_TIMEOUT_MS);
+      return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 55000;
+    })();
+    const requestBudgetTimer = setTimeout(() => {
+      requestBudgetExpired = true;
+      abortController.abort();
+    }, requestBudgetMs);
     const abortRequest = () => abortController.abort();
     req.once("aborted", abortRequest);
+    const abortClosedResponse = () => { if (!res.writableEnded) abortController.abort(); };
+    res.once("close", abortClosedResponse);
     let savedPath;
     try {
+      const memoryBefore = process.memoryUsage().rss;
+      const { viewModel, diagnostics, timings } = await buildPersistedSubmissionFeedbackReport({
+        submission, submissionFeedback, feedback, identity, abortSignal: abortController.signal
+      });
+      logger.info(`[PDF MAP] submissionId=${String(submission._id)} diagnostics=${JSON.stringify({
+        ...diagnostics, assetMetrics: undefined
+      })} statisticsMismatch=${viewModel.diagnostics.persistedStatisticsMismatch}`);
+      logger.metric({ event: "pdf_view_model_completed", submissionId: String(submission._id),
+        uploadedFileCount: Array.isArray(submission.files) ? submission.files.length : submission.file ? 1 : 0,
+        ocrPageCount: Array.isArray(submission.ocrPages) ? submission.ocrPages.length : 0,
+        submittedPageCount: viewModel.submittedPages.length, correctionCount: viewModel.statistics.total,
+        missingAssetCount: diagnostics.missingAssetCount, totalEmbeddedAssetBytes: diagnostics.totalEmbeddedAssetBytes,
+        memoryRssDeltaBytes: process.memoryUsage().rss - memoryBefore, ...timings });
       savedPath = await generateSubmissionFeedbackPdf(viewModel, outputPath, { abortSignal: abortController.signal });
+    } catch (error) {
+      if (requestBudgetExpired) throw new ApiError(504, "PDF generation timed out.");
+      throw error;
     } finally {
+      clearTimeout(requestBudgetTimer);
       req.removeListener("aborted", abortRequest);
+      res.removeListener("close", abortClosedResponse);
     }
 
     const safeFilename = "submission-feedback.pdf";
@@ -165,11 +193,15 @@ async function downloadSubmissionPdf(req, res, next) {
         logger.error(
           `[PDF ERROR] Download failed submissionId=${String(submission._id)} message=${err && err.message ? err.message : String(err)}`,
         );
-        return next(new ApiError(500, "Failed to download PDF"));
+        if (!res.headersSent && !res.destroyed) return next(new ApiError(500, "Failed to download PDF"));
+        return undefined;
       }
+      logger.metric({ event: "pdf_request_completed", submissionId: String(submission._id),
+        durationMs: Date.now() - requestStartedAt });
       return undefined;
     });
   } catch (err) {
+    if (outputPath) await fs.promises.unlink(outputPath).catch(() => {});
     try {
       const submissionId =
         req.params && req.params.submissionId
@@ -185,12 +217,7 @@ async function downloadSubmissionPdf(req, res, next) {
     if (err instanceof ApiError) {
       return next(err);
     }
-    return next(
-      new ApiError(
-        500,
-        `PDF generation failed: ${err && err.message ? err.message : String(err)}`,
-      ),
-    );
+    return next(new ApiError(500, "PDF generation failed."));
   }
 }
 

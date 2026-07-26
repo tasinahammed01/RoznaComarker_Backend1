@@ -75,6 +75,29 @@ function classifyTransient(error) {
     || ['ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND', 'ECONNREFUSED', 'EAI_AGAIN'].includes(error?.code);
 }
 
+function classifyProviderFailure(error, { isPrimary = false, fallbackConfigured = false } = {}) {
+  const status = Number(error?.status || error?.httpStatus);
+  if (status === 402) return {
+    retrySameProvider: false,
+    tryFallbackProvider: Boolean(isPrimary && fallbackConfigured),
+    terminalCode: 'PRIMARY_PROVIDER_PAYMENT_REQUIRED'
+  };
+  const transient = classifyTransient(error);
+  return {
+    retrySameProvider: transient,
+    tryFallbackProvider: Boolean(transient && isPrimary && fallbackConfigured),
+    terminalCode: error?.code || (status ? `HTTP_${status}` : 'SEMANTIC_PROVIDER_FAILURE')
+  };
+}
+
+function approvedFallback(config, env) {
+  const fallback = config?.fallback;
+  return Boolean(fallback
+    && ['google', 'openrouter', 'openai'].includes(fallback.provider)
+    && Array.isArray(config.approvedModels) && config.approvedModels.includes(fallback.model)
+    && credentialFor(fallback.provider, env));
+}
+
 function timeoutError() {
   const error = new Error('Semantic provider attempt timed out');
   error.name = 'TimeoutError';
@@ -88,6 +111,56 @@ function providerResponseError(code, stage, metadata = {}) {
   error.validationStage = stage;
   Object.assign(error, metadata);
   return error;
+}
+
+function safeResponseHeaders(response) {
+  const get = response?.headers?.get;
+  if (typeof get !== 'function') return { contentType: null, requestId: null };
+  return {
+    contentType: get.call(response.headers, 'content-type') || null,
+    requestId: get.call(response.headers, 'x-goog-request-id')
+      || get.call(response.headers, 'x-request-id') || null
+  };
+}
+
+function extractGoogleResponse(payload, metadata = {}) {
+  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+  const candidateCount = candidates.length;
+  const candidate = candidates[0];
+  const finishReason = typeof candidate?.finishReason === 'string' ? candidate.finishReason : null;
+  const blockReason = typeof payload?.promptFeedback?.blockReason === 'string'
+    ? payload.promptFeedback.blockReason : null;
+  const parts = candidate?.content?.parts;
+  const base = {
+    ...metadata,
+    candidateCount,
+    finishReason,
+    blockReason,
+    hasContent: Boolean(candidate?.content),
+    hasText: false,
+    responseTextLength: 0
+  };
+  if (blockReason || finishReason === 'SAFETY') {
+    throw providerResponseError('GOOGLE_RESPONSE_BLOCKED', 'provider_response', base);
+  }
+  if (finishReason === 'MAX_TOKENS') {
+    throw providerResponseError('GOOGLE_OUTPUT_TRUNCATED', 'provider_response', base);
+  }
+  if (!candidateCount) {
+    throw providerResponseError('GOOGLE_CANDIDATES_EMPTY', 'provider_response', base);
+  }
+  if (!candidate?.content || !Array.isArray(parts)) {
+    throw providerResponseError('GOOGLE_RESPONSE_STRUCTURE_UNSUPPORTED', 'provider_response', base);
+  }
+  const content = parts
+    .filter((part) => part && part.thought !== true && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('');
+  const resultMetadata = { ...base, hasText: Boolean(content.trim()), responseTextLength: content.length };
+  if (!content.trim()) {
+    throw providerResponseError('GOOGLE_RESPONSE_TEXT_MISSING', 'provider_response', resultMetadata);
+  }
+  return { content, metadata: resultMetadata };
 }
 
 async function providerAttempt({ messages, provider, model, maxOutputTokens, googleThinkingLevel: configuredThinkingLevel = 'low',
@@ -147,31 +220,31 @@ async function providerAttempt({ messages, provider, model, maxOutputTokens, goo
   }
   const rawBody = await response.text();
   const completedAt = now();
+  const responseHeaders = safeResponseHeaders(response);
+  const responseMetadata = {
+    provider,
+    model,
+    httpStatus: Number.isFinite(Number(response.status)) ? Number(response.status) : null,
+    ...responseHeaders,
+    responseBodyLength: rawBody.length,
+    durationMs: completedAt - startedAt
+  };
   let payload;
   try { payload = JSON.parse(rawBody); }
-  catch { throw providerResponseError('AI_PROVIDER_RESPONSE_INVALID', 'provider_json'); }
-  const candidates = google && Array.isArray(payload?.candidates) ? payload.candidates : [];
-  const candidateCount = candidates.length;
-  const finishReason = google && typeof candidates[0]?.finishReason === 'string' ? candidates[0].finishReason : null;
-  const blockReason = google && typeof payload?.promptFeedback?.blockReason === 'string' ? payload.promptFeedback.blockReason : null;
-  const googleMetadata = { candidateCount, finishReason, blockReason };
-  if (google && (blockReason || finishReason === 'SAFETY')) {
-    throw providerResponseError('GOOGLE_RESPONSE_BLOCKED', 'provider_response', googleMetadata);
-  }
-  const content = google ? (Array.isArray(candidates[0]?.content?.parts) ? candidates[0].content.parts : [])
-    .filter((part) => part && part.thought !== true && typeof part.text === 'string')
-    .map((part) => part.text).join('') : payload?.choices?.[0]?.message?.content || '';
-  if (google && !content.trim()) {
-    throw providerResponseError(finishReason === 'MAX_TOKENS' ? 'GOOGLE_OUTPUT_TRUNCATED' : 'GOOGLE_RESPONSE_EMPTY',
-      'provider_response', { ...googleMetadata, responseTextLength: content.length });
-  }
+  catch { throw providerResponseError('AI_PROVIDER_RESPONSE_INVALID', 'provider_json', responseMetadata); }
+  const googleResult = google ? extractGoogleResponse(payload, responseMetadata) : null;
+  const content = google ? googleResult.content : payload?.choices?.[0]?.message?.content || '';
+  const googleMetadata = google ? googleResult.metadata : {};
   const usage = google && payload?.usageMetadata ? {
     prompt_tokens: payload.usageMetadata.promptTokenCount,
     completion_tokens: payload.usageMetadata.candidatesTokenCount,
     total_tokens: payload.usageMetadata.totalTokenCount
   } : payload?.usage || null;
-  return { content, usage, signal, candidateCount: google ? candidateCount : null,
-    finishReason: google ? finishReason : null, blockReason: google ? blockReason : null, responseTextLength: content.length,
+  return { content, usage, signal, candidateCount: google ? googleMetadata.candidateCount : null,
+    finishReason: google ? googleMetadata.finishReason : null, blockReason: google ? googleMetadata.blockReason : null,
+    hasContent: google ? googleMetadata.hasContent : null, hasText: google ? googleMetadata.hasText : Boolean(content),
+    contentType: responseHeaders.contentType, requestId: responseHeaders.requestId, httpStatus: responseMetadata.httpStatus,
+    responseTextLength: content.length,
     timings: { semanticProviderConnectMs: null, semanticTimeToFirstByteMs: headersAt - startedAt,
       semanticProviderMs: completedAt - startedAt }, provider, model };
 }
@@ -189,13 +262,14 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
   let timeoutCount = 0;
   let retryDelayTotalMs = 0;
   const attempts = [];
+  let target = { provider: config.provider, model: config.model };
+  let fallbackSelected = false;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const remaining = deadline - now();
     if (remaining < config.minAttemptBudgetMs) {
       const error = new Error('Semantic processing budget exhausted before another attempt could start');
       error.code = 'SEMANTIC_BUDGET_EXHAUSTED'; error.cause = lastError; throw error;
     }
-    const target = attempt > 1 && config.fallback ? config.fallback : { provider: config.provider, model: config.model };
     const attemptTimeoutMs = Math.min(config.attemptTimeoutMs, remaining);
     const attemptStartedAt = now();
     if (typeof onAttempt === 'function') await onAttempt({ attempt, maxAttempts, provider: target.provider, model: target.model,
@@ -211,22 +285,33 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
         inputTokenCount: Number(result.usage?.prompt_tokens) || null, attempts, totalBudgetMs: config.totalBudgetMs } };
     } catch (error) {
       lastError = error;
-      const transient = classifyTransient(error);
+      const isPrimary = target.provider === config.provider && target.model === config.model;
+      const decision = classifyProviderFailure(error, { isPrimary, fallbackConfigured: approvedFallback(config, env) });
+      const transient = decision.retrySameProvider;
       if (error?.code === 'AI_PROVIDER_TIMEOUT' || ['AbortError', 'TimeoutError'].includes(error?.name)) timeoutCount += 1;
-      attempts.push({ attempt, provider: target.provider, model: target.model, status: transient ? 'transient_failure' : 'permanent_failure',
+      attempts.push({ attempt, provider: target.provider, model: target.model,
+        status: decision.tryFallbackProvider && !transient ? 'provider_refusal' : transient ? 'transient_failure' : 'permanent_failure',
         code: error?.code || null, durationMs: now() - attemptStartedAt });
-      if (!transient || attempt >= maxAttempts) throw error;
-      const requestedDelay = Number.isFinite(error?.retryAfterMs) ? error.retryAfterMs : config.retryDelayMs;
+      error.attempts = attempts;
+      error.terminalCode = decision.terminalCode;
+      const canFailover = decision.tryFallbackProvider && !fallbackSelected && attempt < maxAttempts;
+      if (!transient && !canFailover) throw error;
+      if (attempt >= maxAttempts) throw error;
+      const requestedDelay = canFailover ? 0
+        : Number.isFinite(error?.retryAfterMs) ? error.retryAfterMs : config.retryDelayMs;
       const remainingAfterFailure = deadline - now();
       if (requestedDelay + config.minAttemptBudgetMs > remainingAfterFailure) {
         const budgetError = new Error('Semantic processing budget exhausted before retry');
         budgetError.code = 'SEMANTIC_BUDGET_EXHAUSTED'; budgetError.cause = error; throw budgetError;
       }
       retryDelayTotalMs += requestedDelay;
+      if (canFailover || (isPrimary && approvedFallback(config, env))) {
+        target = config.fallback;
+        fallbackSelected = true;
+      }
       if (typeof onRetry === 'function') await onRetry({ attempt, maxAttempts, delayMs: requestedDelay,
-        code: error?.code || 'SEMANTIC_TRANSIENT_FAILURE', remainingBudgetMs: remainingAfterFailure,
-        nextProvider: attempt === 1 && config.fallback ? config.fallback.provider : config.provider,
-        nextModel: attempt === 1 && config.fallback ? config.fallback.model : config.model });
+        code: decision.terminalCode, remainingBudgetMs: remainingAfterFailure,
+        nextProvider: target.provider, nextModel: target.model });
       if (requestedDelay) await sleepFn(requestedDelay);
     }
   }
@@ -235,4 +320,5 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
 
 module.exports = { SEMANTIC_TRANSIENT_STATUSES, getSemanticAIConfig, getSemanticAIConfigStatus, retryAfterMs,
   GOOGLE_SEMANTIC_MODELS, GOOGLE_THINKING_LEVELS, MAX_SEMANTIC_OUTPUT_TOKENS, credentialFor, endpointFor,
-  classifyTransient, providerResponseError, providerAttempt, runSemanticCompletion };
+  classifyTransient, classifyProviderFailure, approvedFallback, providerResponseError, safeResponseHeaders,
+  extractGoogleResponse, providerAttempt, runSemanticCompletion };

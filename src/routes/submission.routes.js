@@ -273,6 +273,11 @@ router.post('/:submissionId/ocr-corrections/regenerate', verifyJwtToken, require
   param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult,
   submissionController.regenerateCanonicalCorrections);
 
+router.post('/:submissionId/evaluation/retry', verifyJwtToken, requireRole(['student', 'teacher']),
+  createSensitiveRateLimiter(),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult,
+  submissionController.retryCanonicalEvaluation);
+
 router.get(
   '/:assignmentId',
   verifyJwtToken,

@@ -77,8 +77,9 @@ describe('direct Google semantic provider', () => {
   });
 
   test.each([
-    [{ candidates: [] }, 'GOOGLE_RESPONSE_EMPTY'],
-    [{ candidates: [{ finishReason: 'STOP', content: { parts: [] } }] }, 'GOOGLE_RESPONSE_EMPTY'],
+    [{ candidates: [] }, 'GOOGLE_CANDIDATES_EMPTY'],
+    [{ candidates: [{ finishReason: 'STOP' }] }, 'GOOGLE_RESPONSE_STRUCTURE_UNSUPPORTED'],
+    [{ candidates: [{ finishReason: 'STOP', content: { parts: [] } }] }, 'GOOGLE_RESPONSE_TEXT_MISSING'],
     [{ promptFeedback: { blockReason: 'SAFETY' }, candidates: [] }, 'GOOGLE_RESPONSE_BLOCKED'],
     [{ candidates: [{ finishReason: 'SAFETY', content: { parts: [{ text: 'hidden' }] } }] }, 'GOOGLE_RESPONSE_BLOCKED'],
     [{ candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [] } }] }, 'GOOGLE_OUTPUT_TRUNCATED']
@@ -92,6 +93,16 @@ describe('direct Google semantic provider', () => {
       finishReason: 'MAX_TOKENS', candidateCount: 1, responseTextLength: 25, metrics: {} }));
     await expect(semantic.analyze(input, { config: { ...config, fallback: null }, env, runCompletion }))
       .rejects.toMatchObject({ code: 'GOOGLE_OUTPUT_TRUNCATED', validationStage: 'json_parse', finishReason: 'MAX_TOKENS' });
+  });
+
+  test('reports safe outer-response JSON diagnostics without retaining response content', async () => {
+    const fetchImpl = jest.fn(async () => ({ ok: true, status: 200, headers: { get: (name) => ({
+      'content-type': 'application/json', 'x-goog-request-id': 'safe-request-id'
+    }[name] || null) }, text: async () => '' }));
+    await expect(client.providerAttempt({ messages: [], provider: 'google', model: 'gemini-3.6-flash',
+      maxOutputTokens: 256, attemptTimeoutMs: 1000, fetchImpl, env, now: Date.now }))
+      .rejects.toMatchObject({ code: 'AI_PROVIDER_RESPONSE_INVALID', validationStage: 'provider_json',
+        httpStatus: 200, contentType: 'application/json', requestId: 'safe-request-id', responseBodyLength: 0 });
   });
 
   test.each([400, 401, 403, 404, 429, 500])('preserves safe Google HTTP metadata for %s', async (status) => {
@@ -153,7 +164,7 @@ describe('direct Google semantic provider', () => {
     expect(result).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-oss-20b' });
   });
 
-  test.each([401, 402])('terminal HTTP %s never retries or invokes fallback', async (status) => {
+  test.each([401])('terminal HTTP %s never retries or invokes fallback', async (status) => {
     const fetchImpl = jest.fn(async () => ({ ok: false, status, headers: { get: () => null }, text: async () => '' }));
     await expect(client.runSemanticCompletion({ messages: [{ role: 'user', content: 'x' }], config, env, fetchImpl })).rejects.toMatchObject({ code: `HTTP_${status}` });
     expect(fetchImpl).toHaveBeenCalledTimes(1);

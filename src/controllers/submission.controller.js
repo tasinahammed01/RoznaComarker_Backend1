@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const Assignment = require('../models/assignment.model');
 const Class = require('../models/class.model');
@@ -16,6 +17,7 @@ const { normalizeOcrWordsFromStored } = require('../services/ocrCorrections.serv
 const { buildSubmissionCorrectionStatistics } = require('../services/submissionCorrectionStatistics.service');
 const { autoGenerateRubricDesignerForSubmission } = require('../services/autoRubricDesigner.service');
 const canonicalCorrectionsPipeline = require('../services/canonicalCorrectionsPipeline.service');
+const canonicalEvaluation = require('../services/canonicalEvaluation.service');
 const { buildCanonicalResultState } = require('../services/canonicalResultState.service');
 const {
   normalizeOcrTranscript,
@@ -1045,6 +1047,48 @@ async function regenerateCanonicalCorrections(req, res) {
   } catch (err) { return sendError(res, err?.statusCode || 500, err?.message || 'Failed to regenerate corrections'); }
 }
 
+async function retryCanonicalEvaluation(req, res) {
+  try {
+    const submission = await Submission.findById(req.params.submissionId);
+    if (!submission) return sendError(res, 404, 'Submission not found');
+    if (req.user.role === 'teacher') await uploadService.assertTeacherOwnsClassOrThrow(req.user._id, submission.class);
+    else if (req.user.role === 'student') {
+      if (String(submission.student) !== String(req.user._id)) return sendError(res, 403, 'Forbidden');
+    } else return sendError(res, 403, 'Forbidden');
+    if (submission.evaluationStatus === 'processing') return res.status(409).json({
+      success: false, message: 'Evaluation is already processing',
+      data: { evaluationStatus: 'processing', processingActive: true, automaticPollingAllowed: true }
+    });
+    if (submission.correctionStatus !== 'completed' || submission.semanticStatus !== 'completed'
+      || !submission.correctionSourceHash || !Array.isArray(submission.writingCorrections)) {
+      return sendError(res, 409, 'Canonical corrections are not ready for evaluation-only retry');
+    }
+    const jobId = crypto.randomUUID();
+    const accepted = await Submission.updateOne({ _id: submission._id, correctionSourceHash: submission.correctionSourceHash,
+      correctionStatus: 'completed', semanticStatus: 'completed', evaluationStatus: { $ne: 'processing' } }, { $set: {
+      evaluationStatus: 'processing', evaluationJobId: jobId, evaluationError: null, evaluationErrorCode: null
+    } });
+    if (!accepted.modifiedCount) return res.status(409).json({ success: false, message: 'Evaluation is already processing' });
+    const assignment = await Assignment.findById(submission.assignment).lean();
+    submission.evaluationStatus = 'processing';
+    submission.evaluationJobId = jobId;
+    setImmediate(() => canonicalEvaluation.generate({ submission, prelockedJobId: jobId, assignment: assignment ? {
+      title: assignment.title || '', description: assignment.description || assignment.instructions || '',
+      rubric: assignment.rubric || assignment.rubrics || null
+    } : {} }).then((result) => logger.info({ message: 'Authorized evaluation-only retry finished',
+      submissionId: String(submission._id), status: result?.status || 'superseded',
+      provider: result?.provider || null, model: result?.model || null, errorCode: result?.errorCode || null }))
+      .catch((error) => logger.error({ message: 'Authorized evaluation-only retry crashed',
+        submissionId: String(submission._id), errorCode: error?.code || 'EVALUATION_RETRY_FAILED' })));
+    return res.status(202).json({ success: true, data: {
+      evaluationStatus: 'processing', processingActive: true, automaticPollingAllowed: true,
+      manualRetryAllowed: false, terminal: false
+    } });
+  } catch (err) {
+    return sendError(res, err?.statusCode || 500, err?.message || 'Failed to retry evaluation');
+  }
+}
+
 module.exports = {
   submitByAssignmentId,
   submitByQrToken,
@@ -1053,6 +1097,7 @@ module.exports = {
   getMySubmissionByAssignmentId,
   getOcrCorrections,
   regenerateCanonicalCorrections,
+  retryCanonicalEvaluation,
   uploadHandwrittenForOcr,
   normalizePublicUploadsUrlForDev,
   hasValidOcrPages,

@@ -1,4 +1,4 @@
-const { validateAssessment } = require('../src/services/semanticRubricAssessment.service');
+const { parseJson, validateAssessment } = require('../src/services/semanticRubricAssessment.service');
 
 const transcript = 'This essay has a clear idea. The ending repeats the same point.';
 const corrections = [
@@ -41,11 +41,32 @@ describe('semantic rubric assessment validation', () => {
       .toThrow(/correction ID/i);
   });
 
-  test('clamps category scores and preserves server-side maxima', () => {
+  test.each([99, -1, '18'])('rejects incorrect score type or range: %p', (score) => {
     const payload = valid();
-    payload.categories.CONTENT.score = 99;
-    const result = validateAssessment(payload, { sourceHash: 'hash', transcript, corrections });
-    expect(result.categories.CONTENT.score).toBe(20);
-    expect(result.categories.CONTENT.maxScore).toBe(20);
+    payload.categories.CONTENT.score = score;
+    expect(() => validateAssessment(payload, { sourceHash: 'hash', transcript, corrections }))
+      .toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_SCORE_INVALID',
+        validationStage: 'score_validation',
+        validationIssues: [{ path: 'categories.CONTENT.score', code: 'SEMANTIC_RUBRIC_SCORE_INVALID' }] }));
+  });
+
+  test('accepts exactly one surrounding Markdown JSON fence', () => {
+    expect(parseJson(`\`\`\`json\n${JSON.stringify(valid())}\n\`\`\``)).toEqual(valid());
+  });
+
+  test.each([
+    ['not json', 'SEMANTIC_RUBRIC_JSON_INVALID', 'json_parse'],
+    ['Here is the result: {"sourceHash":"hash"}', 'SEMANTIC_RUBRIC_JSON_INVALID', 'json_parse'],
+    ['```text\n{"sourceHash":"hash"}\n```', 'SEMANTIC_RUBRIC_MARKDOWN', 'markdown_fence'],
+    ['```json\n{"sourceHash":"hash"}\n```\nextra', 'SEMANTIC_RUBRIC_MARKDOWN', 'markdown_fence']
+  ])('rejects unsupported rubric serialization %#', (content, code, stage) => {
+    expect(() => parseJson(content)).toThrow(expect.objectContaining({ code, validationStage: stage }));
+  });
+
+  test('accepts a complete valid rubric response without changing scores', () => {
+    const result = validateAssessment(valid(), { sourceHash: 'hash', transcript, corrections });
+    expect(result.categories.CONTENT.score).toBe(18);
+    expect(result.categories.ORGANIZATION.score).toBe(16);
+    expect(result.categories.VOCABULARY.score).toBe(15);
   });
 });

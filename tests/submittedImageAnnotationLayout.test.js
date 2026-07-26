@@ -106,6 +106,16 @@ describe('submitted image annotation layout', () => {
     expect(mapped.w).toBeCloseTo(geometry.imageWidthMm * .1, 2);
   });
 
+  test('resizing the same aspect ratio does not double-scale normalized marker coordinates', () => {
+    const box = { x: 25, y: 20, w: 10, h: 5 };
+    const source = createSubmittedImageLayout(page([correction('c1', 25, 20, { bboxList: [box] })],
+      { imageWidth: 3000, imageHeight: 4000 }));
+    const optimized = createSubmittedImageLayout(page([correction('c1', 25, 20, { bboxList: [box] })],
+      { imageWidth: 1800, imageHeight: 2400 }));
+    expect(optimized.underlines[0].box).toEqual(source.underlines[0].box);
+    expect(optimized.markers[0].correction.displayNumber).toBe(source.markers[0].correction.displayNumber);
+  });
+
   test('HTML keeps exact underlines, compact references, escaped symbols, and no full-width leaders', () => {
     const unsafe = correction('c1', 20, 20, { symbol: '<AGR>', bboxList: [{ x: 20, y: 20, w: 8, h: 2 }, { x: 30, y: 20, w: 5, h: 2 }] });
     const vm = { submission: { uploadedPageCount: 1 }, result: { maximumScore: 100 }, statistics: {

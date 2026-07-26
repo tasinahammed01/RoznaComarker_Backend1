@@ -19,7 +19,7 @@ function safeErrorCode(error) {
   if (['AI_PROVIDER_NOT_CONFIGURED', 'AI_PROVIDER_TIMEOUT', 'SEMANTIC_BUDGET_EXHAUSTED', 'AI_PROVIDER_RESPONSE_INVALID',
     'SEMANTIC_RESPONSE_INVALID', 'SEMANTIC_SOURCE_MISMATCH', 'SEMANTIC_SCHEMA_INVALID', 'SEMANTIC_EVIDENCE_UNGROUNDED',
     'GOOGLE_RESPONSE_EMPTY', 'GOOGLE_RESPONSE_BLOCKED', 'GOOGLE_OUTPUT_TRUNCATED'].includes(explicitCode)
-    || /^HTTP_(400|401|403|404|429|500|502|503|504)$/u.test(explicitCode)) return explicitCode;
+    || /^HTTP_(400|401|402|403|404|408|429|500|502|503|504)$/u.test(explicitCode)) return explicitCode;
   const message = String(error || '').toLowerCase();
   if (!message) return null;
   if (message.includes('config') || message.includes('api key') || message.includes('credential')) return 'AI_PROVIDER_NOT_CONFIGURED';
@@ -62,44 +62,52 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
   const teacherOverride = layoutCurrent && Boolean(feedback?.overriddenByTeacher);
   const correctionProcessing = correctionStatus === 'processing';
   const correctionPending = ['pending', 'processing'].includes(correctionStatus);
-  const evaluationJobActive = semanticComplete && submission.evaluationStatus === 'processing' && Boolean(submission.evaluationJobId);
-  const evaluationLifecycleComplete = ['completed', 'partial'].includes(String(submission.evaluationStatus || ''));
+  const persistedEvaluationStatus = String(submission.evaluationStatus || 'pending');
+  const semanticStatus = layoutCurrent
+    ? submission.semanticStatus || (correctionProcessing ? 'processing' : semanticComplete ? 'completed' : semanticFailed ? 'failed' : 'pending')
+    : 'failed';
+  const semanticProcessing = ['pending', 'processing', 'retry_wait'].includes(semanticStatus);
+  const evaluationJobActive = semanticComplete && persistedEvaluationStatus === 'processing' && Boolean(submission.evaluationJobId);
+  const evaluationPending = semanticComplete && persistedEvaluationStatus === 'pending';
+  const evaluationProcessing = evaluationJobActive || evaluationPending;
+  const evaluationLifecycleComplete = ['completed', 'partial'].includes(persistedEvaluationStatus);
   const evaluationCurrent = Boolean(feedback && (teacherOverride || (semanticComplete
     && evaluationLifecycleComplete && sourceHash && feedback.evaluationSourceHash === sourceHash
     && feedback.assessmentVersion === ASSESSMENT_VERSION && feedback.evaluationVersion === EVALUATION_VERSION
     && submission.evaluationVersion === EVALUATION_VERSION)));
-  let evaluationStatus = teacherOverride ? 'completed' : String(submission.evaluationStatus || 'pending');
-  if (correctionProcessing && !teacherOverride) evaluationStatus = 'pending';
+  let evaluationStatus = teacherOverride ? 'completed' : persistedEvaluationStatus;
+  if ((correctionPending || semanticProcessing) && !teacherOverride) evaluationStatus = 'pending';
   else if (semanticFailed && !teacherOverride) evaluationStatus = 'blocked';
-  else if (!teacherOverride && evaluationJobActive) evaluationStatus = 'processing';
-  else if (!teacherOverride && evaluationCurrent) evaluationStatus = String(submission.evaluationStatus || 'completed');
-  else if (!teacherOverride && semanticComplete) evaluationStatus = 'blocked';
+  else if (!teacherOverride && evaluationProcessing) evaluationStatus = evaluationJobActive ? 'processing' : 'pending';
+  else if (!teacherOverride && evaluationCurrent) evaluationStatus = persistedEvaluationStatus;
+  else if (!teacherOverride && persistedEvaluationStatus === 'failed') evaluationStatus = 'failed';
+  else if (!teacherOverride && semanticComplete) evaluationStatus = 'stale';
   const detailedHashCurrent = Boolean(sourceHash && feedback?.detailedFeedbackSourceHash === sourceHash);
   const structuredDetailedFeedback = isStructuredDetailedFeedback(feedback?.detailedFeedback);
   const invalidCanonicalFeedback = Boolean(evaluationCurrent && detailedHashCurrent && feedback?.detailedFeedback && !structuredDetailedFeedback && !teacherOverride);
-  const detailedCurrent = Boolean(!evaluationJobActive && evaluationCurrent && (teacherOverride
+  const detailedCurrent = Boolean(!evaluationProcessing && evaluationCurrent && (teacherOverride
     ? feedback?.detailedFeedback
     : detailedHashCurrent && structuredDetailedFeedback));
   const detailedFeedbackStatus = correctionPending && !teacherOverride
     ? 'pending'
     : semanticFailed && !teacherOverride
     ? 'blocked'
-    : evaluationJobActive && !teacherOverride
-    ? 'pending'
+    : evaluationProcessing && !teacherOverride
+    ? 'processing'
     : invalidCanonicalFeedback
     ? 'failed'
     : detailedCurrent
     ? String(feedback?.detailedFeedback?.status || 'completed')
     : feedback?.detailedFeedback ? 'stale' : 'blocked';
   const processingActive = ['pending', 'processing'].includes(String(submission.ocrStatus || 'completed'))
-    || correctionProcessing || evaluationJobActive;
-  const terminal = !processingActive && (semanticFailed || semanticComplete);
+    || correctionPending || semanticProcessing || evaluationProcessing;
+  const terminal = !processingActive && (teacherOverride || evaluationCurrent || semanticFailed
+    || ['failed', 'stale'].includes(evaluationStatus));
   const automaticPollingAllowed = processingActive && !terminal;
   const semanticErrorCode = submission.semanticErrorCode || safeErrorCode(submission.correctionError);
-  // A failed canonical result must remain recoverable from both authorized UIs.
-  // Configuration can be repaired between attempts, so it must not permanently
-  // suppress the explicit, idempotent retry action.
-  const manualRetryAllowed = semanticFailed || invalidCanonicalFeedback;
+  const nonRetryableConfigurationFailure = semanticErrorCode === 'AI_PROVIDER_NOT_CONFIGURED';
+  const manualRetryAllowed = !nonRetryableConfigurationFailure && (semanticFailed
+    || ['failed', 'stale'].includes(evaluationStatus) || invalidCanonicalFeedback);
 
   return {
     correctionStatus,
@@ -119,7 +127,7 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
     evaluationSource: evaluationCurrent ? feedback?.evaluationSource || null : null,
     evaluationVersion: evaluationCurrent ? feedback?.evaluationVersion || null : null,
     assessmentVersion: evaluationCurrent ? feedback?.assessmentVersion || null : null,
-    evaluationErrorCode: feedback?.evaluationErrorCode || safeErrorCode(submission.evaluationError),
+    evaluationErrorCode: feedback?.evaluationErrorCode || submission.evaluationErrorCode || safeErrorCode(submission.evaluationError),
     detailedFeedbackStatus,
     processingActive,
     automaticPollingAllowed,
@@ -127,16 +135,14 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
     terminal,
     evaluationBlockedReason: evaluationStatus === 'blocked' ? 'corrections_incomplete' : null,
     detailedFeedbackBlockedReason: detailedFeedbackStatus === 'blocked' ? (semanticFailed ? 'evaluation_unavailable' : 'evaluation_unavailable') : null,
-    semanticStatus: layoutCurrent
-      ? submission.semanticStatus || (correctionProcessing ? 'processing' : semanticComplete ? 'completed' : semanticFailed ? 'failed' : 'pending')
-      : 'failed',
+    semanticStatus,
     semanticAttempt: Number(submission.semanticAttempt || 0),
     semanticMaxAttempts: Number(submission.semanticMaxAttempts || 0),
     semanticNextRetryAt: submission.semanticNextRetryAt || null,
     semanticErrorCode,
     retryable: manualRetryAllowed,
-    score: !evaluationJobActive && evaluationCurrent && Number.isFinite(Number(feedback?.overallScore)) ? Number(feedback.overallScore) : null,
-    grade: !evaluationJobActive && evaluationCurrent && typeof feedback?.grade === 'string' ? feedback.grade : null,
+    score: !evaluationProcessing && evaluationCurrent && Number.isFinite(Number(feedback?.overallScore)) ? Number(feedback.overallScore) : null,
+    grade: !evaluationProcessing && evaluationCurrent && typeof feedback?.grade === 'string' ? feedback.grade : null,
     evaluationCurrent,
     detailedFeedbackCurrent: detailedCurrent
   };

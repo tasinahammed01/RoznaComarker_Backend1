@@ -4,7 +4,7 @@ const Class = require('../models/class.model');
 const { computeCanonicalCorrectionStatistics } = require('./correctionCanonical.service');
 const detailedFeedbackService = require('./canonicalDetailedFeedback.service');
 const semanticRubricAssessment = require('./semanticRubricAssessment.service');
-const { ASSESSMENT_VERSION, EVALUATION_VERSION, RUBRIC_MAX, normalizedTranscript, countWords,
+const { ASSESSMENT_VERSION, EVALUATION_VERSION, normalizedTranscript, countWords,
   scoreGrammar, scoreMechanics, scorePresentation, gradeFromOverallScore } = require('./rubricLanguageScoring.service');
 
 const VERSION = EVALUATION_VERSION;
@@ -39,12 +39,16 @@ function supersededEvaluationError() {
   return error;
 }
 
-async function generate({ submission, assignment }) {
+async function generate({ submission, assignment, prelockedJobId = null }) {
   const sourceHash = submission.correctionSourceHash;
-  if (!sourceHash || submission.correctionStatus !== 'completed') return null;
+  if (!sourceHash || submission.correctionStatus !== 'completed') return { status: 'superseded' };
   const rubricHash = hashRubric(assignment);
   const stats = computeCanonicalCorrectionStatistics(submission.writingCorrections || []);
   const persistedFeedback = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
+  if (persistedFeedback?.overriddenByTeacher) return {
+    status: 'reused', sourceHash, provider: persistedFeedback.evaluationProvider || null,
+    model: persistedFeedback.evaluationModel || null, overallScore: Number(persistedFeedback.overallScore), errorCode: null
+  };
   const recoverableDetailed = persistedFeedback?.evaluationSourceHash === sourceHash
     && persistedFeedback?.evaluationRubricSourceHash === rubricHash
     && persistedFeedback?.assessmentVersion === ASSESSMENT_VERSION
@@ -63,8 +67,9 @@ async function generate({ submission, assignment }) {
       evaluationStatus: 'completed', evaluationSourceHash: sourceHash, evaluationVersion: VERSION,
       evaluationRubricSourceHash: rubricHash, evaluationUpdatedAt: new Date(), evaluationError: null
     }});
-    if (recovered.modifiedCount !== 1) return null;
-    return { sourceHash, rubricHash, stats, overallScore: Number(persistedFeedback.overallScore), recovered: true,
+    if (recovered.modifiedCount !== 1) return { status: 'superseded', sourceHash };
+    return { status: 'reused', sourceHash, rubricHash, stats, provider: persistedFeedback.evaluationProvider || null,
+      model: persistedFeedback.evaluationModel || null, overallScore: Number(persistedFeedback.overallScore), recovered: true,
       timings: { detailedFeedbackMs: 0 } };
   }
   const existingCurrent = submission.evaluationSourceHash === sourceHash
@@ -81,12 +86,21 @@ async function generate({ submission, assignment }) {
         corrections: submission.writingCorrections || [], statistics: stats,
         categoryScores: existingFeedback.rubricScores || {}, sourceHash
       });
-    if (existingFeedback?.overriddenByTeacher || validDetailed) return null;
+    if (existingFeedback?.overriddenByTeacher || validDetailed) return {
+      status: 'reused', sourceHash, provider: existingFeedback.evaluationProvider || null,
+      model: existingFeedback.evaluationModel || null, overallScore: Number(existingFeedback.overallScore), errorCode: null
+    };
   }
-  const jobId = crypto.randomUUID();
-  const locked = await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash, evaluationStatus: { $ne: 'processing' } },
-    { $set: { evaluationStatus: 'processing', evaluationJobId: jobId, evaluationError: null } });
-  if (!locked.modifiedCount) return null;
+  const jobId = prelockedJobId || crypto.randomUUID();
+  if (!prelockedJobId) {
+    const locked = await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash, evaluationStatus: { $ne: 'processing' } },
+      { $set: { evaluationStatus: 'processing', evaluationJobId: jobId, evaluationError: null, evaluationErrorCode: null } });
+    if (!locked.modifiedCount) return { status: 'superseded', sourceHash };
+  } else {
+    const ownsLock = await submission.constructor.exists({ _id: submission._id, correctionSourceHash: sourceHash,
+      evaluationStatus: 'processing', evaluationJobId: jobId });
+    if (!ownsLock) return { status: 'superseded', sourceHash };
+  }
   let feedbackPersisted = false;
   try {
     const classDoc = await Class.findById(submission.class).select('teacher').lean();
@@ -124,7 +138,7 @@ async function generate({ submission, assignment }) {
     const detailedFeedbackMs = Date.now() - detailedFeedbackStartedAt;
     const existing = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
     const jobStillCurrent = await submission.constructor.exists({ _id: submission._id, correctionSourceHash: sourceHash, evaluationJobId: jobId });
-    if (!jobStillCurrent) return null;
+    if (!jobStillCurrent) return { status: 'superseded', sourceHash };
     let savedFeedback = existing;
     if (!existing?.overriddenByTeacher) savedFeedback = await SubmissionFeedback.findOneAndUpdate({ submissionId: submission._id,
       evaluationJobId: jobId, overriddenByTeacher: { $ne: true } }, { $set: {
@@ -132,6 +146,7 @@ async function generate({ submission, assignment }) {
       assessmentVersion: ASSESSMENT_VERSION, evaluationVersion: VERSION, evaluationSourceHash: sourceHash,
       evaluationRubricSourceHash: rubricHash, evaluationSource: 'ai', evaluationStatus: semantic.status,
       evaluationProvider: semantic.provider, evaluationModel: semantic.model, evaluationErrorCode: null, correctionStats: stats,
+      evaluationAttempts: semantic.metrics?.attempts || [],
       rubricScores, overallScore, grade,
       detailedFeedback, detailedFeedbackSourceHash: sourceHash, detailedFeedbackVersion: detailedFeedbackService.VERSION
     }}, { new: true, runValidators: true });
@@ -140,7 +155,8 @@ async function generate({ submission, assignment }) {
     const completed = await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash,
       evaluationStatus: 'processing', evaluationJobId: jobId }, { $set: {
       evaluationStatus: semantic.status === 'partial' ? 'partial' : 'completed', evaluationSourceHash: sourceHash, evaluationVersion: VERSION,
-      evaluationRubricSourceHash: rubricHash, evaluationUpdatedAt: new Date(), evaluationError: null
+      evaluationRubricSourceHash: rubricHash, evaluationProvider: semantic.provider, evaluationModel: semantic.model,
+      evaluationAttempts: semantic.metrics?.attempts || [], evaluationUpdatedAt: new Date(), evaluationError: null, evaluationErrorCode: null
     }});
     if (completed.modifiedCount !== 1) throw supersededEvaluationError();
     console.info('[canonical-evaluation] canonical evaluation persisted', { submissionId: String(submission._id),
@@ -148,35 +164,52 @@ async function generate({ submission, assignment }) {
       overallScore });
     console.info('[canonical-evaluation] detailed feedback persisted', { submissionId: String(submission._id),
       sourceHashMatch: true, duration: detailedFeedbackMs });
-    return { sourceHash, rubricHash, stats, overallScore, timings: { detailedFeedbackMs } };
+    return { status: semantic.status === 'partial' ? 'partial' : 'completed', sourceHash, rubricHash, stats,
+      provider: semantic.provider, model: semantic.model, overallScore, errorCode: null,
+      attempts: semantic.metrics?.attempts || [], timings: { detailedFeedbackMs } };
   } catch (error) {
-    if (error?.code === 'ANALYSIS_JOB_SUPERSEDED') return null;
+    if (error?.code === 'ANALYSIS_JOB_SUPERSEDED') return { status: 'superseded', sourceHash };
     // A valid feedback write followed by an interrupted status update is
     // intentionally left recoverable by the idempotent path above.
-    if (feedbackPersisted) return null;
-    const transcript = normalizedTranscript(submission);
-    const wordCount = countWords(transcript);
-    const corrections = submission.writingCorrections || [];
-    const rubricScores = synchronizedRubricScores({
-      GRAMMAR: scoreGrammar({ corrections, wordCount }),
-      MECHANICS: scoreMechanics({ corrections, wordCount }),
-      PRESENTATION: scorePresentation(submission),
-      CONTENT: { score: 0, maxScore: RUBRIC_MAX.CONTENT, issueCount: Number(stats.content || 0),
-        comment: 'Content evaluation is unavailable because semantic rubric assessment did not complete.' },
-      ORGANIZATION: { score: 0, maxScore: RUBRIC_MAX.ORGANIZATION, issueCount: Number(stats.organization || 0),
-        comment: 'Organization evaluation is unavailable because semantic rubric assessment did not complete.' },
-      VOCABULARY: { score: 0, maxScore: RUBRIC_MAX.VOCABULARY, issueCount: Number(stats.vocabulary || 0),
-        comment: 'Vocabulary evaluation is unavailable because semantic rubric assessment did not complete.' }
-    }, stats);
+    if (feedbackPersisted) return { status: 'superseded', sourceHash };
+    const attempts = Array.isArray(error?.attempts) ? error.attempts : [];
+    const lastAttempt = attempts[attempts.length - 1] || {};
+    const errorCode = error?.code || 'SEMANTIC_RUBRIC_FAILED';
+    console.warn('[canonical-evaluation] semantic rubric assessment failed', {
+      submissionId: String(submission._id), provider: error?.provider || lastAttempt.provider || null,
+      model: error?.model || lastAttempt.model || null,
+      attempt: lastAttempt.attempt || null, httpStatus: Number(error?.httpStatus || error?.status) || null,
+      finishReason: error?.finishReason || null, candidateCount: Number.isFinite(error?.candidateCount) ? error.candidateCount : null,
+      hasContent: typeof error?.hasContent === 'boolean' ? error.hasContent : null,
+      hasText: typeof error?.hasText === 'boolean' ? error.hasText : null,
+      contentType: error?.contentType || null, responseTextLength: Number.isFinite(error?.responseTextLength)
+        ? error.responseTextLength : null,
+      markdownFenceDetected: error?.markdownFenceDetected === true,
+      validationStage: error?.validationStage || null,
+      validationIssues: Array.isArray(error?.validationIssues) ? error.validationIssues : [],
+      requestId: error?.requestId || null, durationMs: Number(error?.durationMs) || null,
+      tokenUsage: error?.usage ? {
+        promptTokens: Number(error.usage.prompt_tokens) || null,
+        completionTokens: Number(error.usage.completion_tokens) || null,
+        totalTokens: Number(error.usage.total_tokens) || null
+      } : null,
+      errorCode, attemptCount: attempts.length
+    });
     await SubmissionFeedback.findOneAndUpdate({ submissionId: submission._id, evaluationJobId: jobId, overriddenByTeacher: { $ne: true } },
-      { $set: { assessmentVersion: ASSESSMENT_VERSION, evaluationVersion: VERSION, evaluationSourceHash: sourceHash,
-        evaluationRubricSourceHash: rubricHash, evaluationSource: 'provisional', evaluationStatus: 'failed',
-        evaluationErrorCode: error?.code || 'SEMANTIC_RUBRIC_FAILED', correctionStats: stats, rubricScores,
-        detailedFeedback: { status: 'failed', sourceHash, areasForImprovement: [], strengths: [], actionSteps: [] },
-        detailedFeedbackSourceHash: sourceHash, detailedFeedbackVersion: detailedFeedbackService.VERSION } }, { runValidators: true });
+      { $set: { assessmentVersion: ASSESSMENT_VERSION, evaluationVersion: VERSION,
+        evaluationSource: 'provisional', evaluationStatus: 'failed', evaluationErrorCode: errorCode,
+        evaluationProvider: lastAttempt.provider || submission.evaluationProvider || null,
+        evaluationModel: lastAttempt.model || submission.evaluationModel || null,
+        evaluationAttempts: attempts, correctionStats: stats },
+      $unset: { evaluationSourceHash: 1, evaluationRubricSourceHash: 1, rubricScores: 1, overallScore: 1, grade: 1,
+        detailedFeedback: 1, detailedFeedbackSourceHash: 1, detailedFeedbackVersion: 1 } }, { runValidators: true });
     await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash, evaluationJobId: jobId },
-      { $set: { evaluationStatus: 'failed', evaluationError: String(error?.message || error), evaluationUpdatedAt: new Date() } });
-    return null;
+      { $set: { evaluationStatus: 'failed', evaluationError: `Canonical semantic rubric evaluation failed (${errorCode})`,
+        evaluationErrorCode: errorCode, evaluationProvider: lastAttempt.provider || null, evaluationModel: lastAttempt.model || null,
+        evaluationAttempts: attempts, evaluationUpdatedAt: new Date() },
+      $unset: { evaluationSourceHash: 1, evaluationRubricSourceHash: 1 } });
+    return { status: 'failed', sourceHash, provider: lastAttempt.provider || null, model: lastAttempt.model || null,
+      overallScore: null, errorCode, attempts };
   }
 }
 

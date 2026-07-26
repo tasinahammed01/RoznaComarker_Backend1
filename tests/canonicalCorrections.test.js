@@ -2,9 +2,11 @@ jest.mock('../src/services/languageTool.service', () => ({ checkTextWithLanguage
 jest.mock('../src/models/CorrectionLegend', () => ({ findOne: jest.fn(() => ({ lean: jest.fn().mockResolvedValue(null) })) }));
 
 const writing = require('../src/services/writingCorrections.service');
+const { checkTextWithLanguageTool } = require('../src/services/languageTool.service');
 const canonical = require('../src/services/correctionCanonical.service');
 const { normalizeOcrWordsFromStored, buildTranscriptAndSpans } = require('../src/services/ocrCorrections.service');
 const { buildCanonicalSubmissionTranscript } = require('../src/utils/ocrTranscriptNormalizer');
+const realRuleMetadata = require('./fixtures/languageToolRuleMetadata');
 
 describe('canonical correction primitives', () => {
   test.each([
@@ -15,7 +17,75 @@ describe('canonical correction primitives', () => {
   });
 
   test('omits unknown LanguageTool rules', () => {
-    expect(writing.mapLanguageToolRule({ rule: { id: 'UNKNOWN_STYLE_RULE', issueType: 'style' } })).toBeNull();
+    expect(writing.mapLanguageToolRule({ rule: { id: 'UNKNOWN_STYLE_RULE', issueType: 'style' } }))
+      .toMatchObject({ accepted: false, reason: 'UNSUPPORTED_LANGUAGETOOL_RULE' });
+  });
+
+  test.each(realRuleMetadata)('classifies captured metadata: $name', ({ rule, expected }) => {
+    expect(writing.mapLanguageToolRule({ rule })).toMatchObject({
+      accepted: true, category: expected[0], symbol: expected[1]
+    });
+  });
+
+  test('exact rule mapping wins over misleading misspelling issueType', () => {
+    expect(writing.mapLanguageToolRule({ rule: {
+      id: 'EN_UPPER_CASE_NGRAM', category: { id: 'TYPOS' }, issueType: 'misspelling'
+    } })).toMatchObject({ category: 'MECHANICS', symbol: 'CAP', reason: 'EXACT_RULE_OVERRIDE' });
+  });
+
+  test('unknown grammar rule is explicitly rejected instead of defaulting to mechanics', () => {
+    expect(writing.mapLanguageToolRule({ rule: {
+      id: 'NEW_UNKNOWN_GRAMMAR_RULE', category: { id: 'GRAMMAR' }, issueType: 'grammar'
+    } })).toMatchObject({ accepted: false, reason: 'UNSUPPORTED_LANGUAGETOOL_RULE' });
+  });
+
+  test('safe diagnostics expose accepted/dropped aggregates without student text', () => {
+    const privateText = 'Private student sentence';
+    const diagnostics = writing.languageToolDiagnostics(privateText, { matches: [
+      { offset: 0, length: 7, rule: { id: 'EN_UPPER_CASE_NGRAM', category: { id: 'CASING' }, issueType: 'misspelling' } },
+      { offset: 8, length: 7, rule: { id: 'UNKNOWN_GRAMMAR', category: { id: 'GRAMMAR' }, issueType: 'grammar' } }
+    ] }, writing.defaultLegend());
+    expect(diagnostics).toMatchObject({
+      rawMatches: 2, accepted: 1, dropped: 1,
+      byFinalClassification: { 'MECHANICS/CAP': 1 },
+      dropReasons: { UNSUPPORTED_LANGUAGETOOL_RULE: 1 },
+      droppedGrammarRuleIds: ['UNKNOWN_GRAMMAR']
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain(privateText);
+  });
+
+  test('check preserves classifier provenance and returns safe aggregate counts', async () => {
+    checkTextWithLanguageTool.mockResolvedValueOnce({ matches: [{
+      offset: 12, length: 4, message: 'Use lowercase here.', replacements: [{ value: 'show' }],
+      rule: { id: 'EN_UPPER_CASE_NGRAM', category: { id: 'CASING', name: 'Capitalization' }, issueType: 'misspelling' }
+    }] });
+    const result = await writing.check({ text: 'The results Show improvement.', language: 'en-US' });
+    expect(result.issues[0]).toMatchObject({
+      groupKey: 'MECHANICS', symbol: 'CAP', classificationReason: 'EXACT_RULE_OVERRIDE',
+      languageToolRuleId: 'EN_UPPER_CASE_NGRAM', languageToolCategoryId: 'CASING',
+      languageToolMappingVersion: writing.LANGUAGE_TOOL_MAPPING_VERSION
+    });
+    expect(result.diagnostics).toMatchObject({
+      rawMatches: 1, accepted: 1, dropped: 0, byFinalClassification: { 'MECHANICS/CAP': 1 }
+    });
+  });
+
+  test.each([
+    ['PUNCTUATION_RULE', 'PUNCTUATION', 'uncategorized', 'MECHANICS', 'P'],
+    ['WHITESPACE_RULE', 'TYPOGRAPHY', 'typographical', 'MECHANICS', 'SPC'],
+    ['TENSE_ERROR', 'GRAMMAR', 'grammar', 'GRAMMAR', 'T'],
+    ['ARTICLE_ERROR', 'GRAMMAR', 'grammar', 'GRAMMAR', 'ART'],
+    ['PREPOSITION_ERROR', 'GRAMMAR', 'grammar', 'GRAMMAR', 'PREP'],
+    ['WORD_ORDER_ERROR', 'GRAMMAR', 'grammar', 'GRAMMAR', 'WO'],
+    ['SENTENCE_FRAGMENT_ERROR', 'GRAMMAR', 'grammar', 'GRAMMAR', 'FRAG'],
+    ['COMMA_SPLICE_ERROR', 'GRAMMAR', 'grammar', 'GRAMMAR', 'RO'],
+    ['COLLOCATION_RULE', 'COLLOCATIONS', 'style', 'VOCABULARY', 'COL'],
+    ['INFORMALITY', 'STYLE', 'style', 'VOCABULARY', 'FORM'],
+    ['REPEAT_RULE', 'REDUNDANCY', 'duplication', 'VOCABULARY', 'REP']
+  ])('applies reviewed taxonomy policy for %s', (id, categoryId, issueType, category, symbol) => {
+    const decision = writing.mapLanguageToolRule({ rule: { id, category: { id: categoryId }, issueType } });
+    expect(decision).toMatchObject({ accepted: true, category, symbol });
+    expect(writing.mapLanguageToolRule({ rule: { id, category: { id: categoryId }, issueType } })).toEqual(decision);
   });
 
   test('requires an unambiguous quotation unless occurrence is supplied', () => {

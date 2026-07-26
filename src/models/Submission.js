@@ -148,6 +148,7 @@ const submissionSchema = new Schema(
     languageToolStatus: { type: String, enum: ['pending', 'processing', 'completed', 'failed'], default: undefined },
     languageToolSourceHash: { type: String, trim: true },
     languageToolVersion: { type: String, trim: true },
+    languageToolMappingVersion: { type: String, trim: true },
     languageToolTranscriptLayoutVersion: { type: String, trim: true },
     semanticStatus: { type: String, enum: ['pending', 'processing', 'retry_wait', 'completed', 'failed'], default: undefined, index: true },
     semanticAttempt: { type: Number, min: 0, default: undefined },
@@ -164,6 +165,10 @@ const submissionSchema = new Schema(
     evaluationSourceHash: { type: String, trim: true },
     evaluationVersion: { type: String, trim: true },
     evaluationRubricSourceHash: { type: String, trim: true },
+    evaluationProvider: { type: String, trim: true },
+    evaluationModel: { type: String, trim: true },
+    evaluationErrorCode: { type: String, trim: true },
+    evaluationAttempts: { type: Schema.Types.Mixed, default: undefined },
     evaluationError: { type: String, trim: true },
     evaluationUpdatedAt: { type: Date },
     feedback: {

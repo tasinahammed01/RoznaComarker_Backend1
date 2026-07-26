@@ -60,53 +60,75 @@ function buildRequest(input) {
   return { messages, promptCharacters: length, promptInputTokenEstimate: Math.ceil(length / 4), contextStatus };
 }
 
-function semanticRubricError(code, message) {
+function semanticRubricError(code, message, validationStage = 'schema_validation', path = null) {
   const error = new Error(message);
   error.code = code;
+  error.validationStage = validationStage;
+  error.validationIssues = path ? [{ path, code }] : [];
   return error;
 }
 
 function parseJson(content) {
   const text = String(content || '').trim();
-  if (/^```/u.test(text) || /```/u.test(text)) throw semanticRubricError('SEMANTIC_RUBRIC_MARKDOWN', 'Semantic rubric assessment returned Markdown');
-  try { return JSON.parse(text); }
-  catch { throw semanticRubricError('SEMANTIC_RUBRIC_JSON_INVALID', 'Semantic rubric assessment returned invalid JSON'); }
+  const fenced = text.match(/^```json\s*\r?\n([\s\S]*?)\r?\n```\s*$/iu);
+  const jsonText = fenced ? fenced[1].trim() : text;
+  if (/```/u.test(jsonText) || (!fenced && /^```/u.test(text))) {
+    const error = semanticRubricError('SEMANTIC_RUBRIC_MARKDOWN',
+      'Semantic rubric assessment returned unsupported Markdown', 'markdown_fence');
+    error.markdownFenceDetected = true;
+    throw error;
+  }
+  try { return JSON.parse(jsonText); }
+  catch {
+    throw semanticRubricError('SEMANTIC_RUBRIC_JSON_INVALID', 'Semantic rubric assessment returned invalid JSON',
+      'json_parse');
+  }
 }
 
-function assertQuote(transcript, quote) {
+function assertQuote(transcript, quote, path) {
   const value = String(quote || '').trim();
-  if (!value || !transcript.includes(value)) throw semanticRubricError('SEMANTIC_RUBRIC_EVIDENCE_UNGROUNDED', 'Semantic rubric evidence quote is not in the transcript');
+  if (!value || !transcript.includes(value)) {
+    throw semanticRubricError('SEMANTIC_RUBRIC_EVIDENCE_UNGROUNDED',
+      'Semantic rubric evidence quote is not in the transcript', 'evidence_validation', path);
+  }
   return value;
 }
 
 function validateAssessment(parsed, { sourceHash, transcript, corrections = [], contextStatus = 'none' }) {
   if (!parsed || typeof parsed !== 'object' || parsed.sourceHash !== sourceHash)
-    throw semanticRubricError('SEMANTIC_RUBRIC_SOURCE_MISMATCH', 'Semantic rubric assessment source hash mismatch');
+    throw semanticRubricError('SEMANTIC_RUBRIC_SOURCE_MISMATCH', 'Semantic rubric assessment source hash mismatch',
+      'source_hash', 'sourceHash');
   const categories = parsed.categories || {};
   const returned = Object.keys(categories);
   if (!SEMANTIC_CATEGORIES.every((category) => returned.includes(category)) || returned.some((category) => !SEMANTIC_CATEGORIES.includes(category)))
-    throw semanticRubricError('SEMANTIC_RUBRIC_SCHEMA_INVALID', 'Semantic rubric assessment returned invalid categories');
+    throw semanticRubricError('SEMANTIC_RUBRIC_SCHEMA_INVALID', 'Semantic rubric assessment returned invalid categories',
+      'schema_validation', 'categories');
   const correctionMap = new Map((corrections || []).map((item) => [String(item.id), item]));
   const validated = {};
   const seenEvidence = new Set();
   for (const category of SEMANTIC_CATEGORIES) {
     const item = categories[category] || {};
-    const maxScore = Number(item.maxScore);
-    const score = Number(item.score);
-    if (!Number.isFinite(score) || maxScore !== 20)
-      throw semanticRubricError('SEMANTIC_RUBRIC_SCORE_INVALID', 'Semantic rubric score is invalid');
-    const clampedScore = Math.max(0, Math.min(20, score));
+    const maxScore = item.maxScore;
+    const score = item.score;
+    if (typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > 20
+      || typeof maxScore !== 'number' || maxScore !== 20) {
+      throw semanticRubricError('SEMANTIC_RUBRIC_SCORE_INVALID', 'Semantic rubric score is invalid',
+        'score_validation', `categories.${category}.score`);
+    }
     let comment = clean(item.comment);
-    if (!comment) throw semanticRubricError('SEMANTIC_RUBRIC_SCHEMA_INVALID', 'Semantic rubric comment is missing');
+    if (!comment) throw semanticRubricError('SEMANTIC_RUBRIC_SCHEMA_INVALID', 'Semantic rubric comment is missing',
+      'schema_validation', `categories.${category}.comment`);
     if (category === 'CONTENT' && contextStatus === 'title_only' && !/title because detailed instructions were unavailable/i.test(comment))
       comment = `${comment} Evaluated against the assignment title because detailed instructions were unavailable.`;
     if (category === 'CONTENT' && contextStatus === 'none' && !/provisional/i.test(comment))
       comment = `${comment} Content task achievement is provisional because no assignment title or detailed instructions were available.`;
     const strengthEvidence = [];
     for (const ev of Array.isArray(item.strengthEvidence) ? item.strengthEvidence : []) {
-      const quotedText = assertQuote(transcript, ev?.quotedText);
+      const quotedText = assertQuote(transcript, ev?.quotedText, `categories.${category}.strengthEvidence.quotedText`);
       const explanation = clean(ev?.explanation, MAX_EXPLANATION);
-      if (!explanation) throw semanticRubricError('SEMANTIC_RUBRIC_SCHEMA_INVALID', 'Semantic rubric strength explanation is missing');
+      if (!explanation) throw semanticRubricError('SEMANTIC_RUBRIC_SCHEMA_INVALID',
+        'Semantic rubric strength explanation is missing', 'schema_validation',
+        `categories.${category}.strengthEvidence.explanation`);
       const key = `${category}:strength:${quotedText}:${explanation}`;
       if (!seenEvidence.has(key)) { seenEvidence.add(key); strengthEvidence.push({ quotedText, explanation }); }
     }
@@ -115,15 +137,20 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
       const correctionId = String(ev?.correctionId || '').trim();
       const correction = correctionMap.get(correctionId);
       if (!correction || correction.category !== category)
-        throw semanticRubricError('SEMANTIC_RUBRIC_CORRECTION_INVALID', 'Semantic rubric referenced an invalid correction ID');
-      const quotedText = assertQuote(transcript, ev?.quotedText || correction.quotedText);
+        throw semanticRubricError('SEMANTIC_RUBRIC_CORRECTION_INVALID',
+          'Semantic rubric referenced an invalid correction ID', 'evidence_validation',
+          `categories.${category}.improvementEvidence.correctionId`);
+      const quotedText = assertQuote(transcript, ev?.quotedText || correction.quotedText,
+        `categories.${category}.improvementEvidence.quotedText`);
       const explanation = clean(ev?.explanation, MAX_EXPLANATION);
       const suggestion = clean(ev?.suggestion, MAX_SUGGESTION);
-      if (!explanation || !suggestion) throw semanticRubricError('SEMANTIC_RUBRIC_SCHEMA_INVALID', 'Semantic rubric improvement evidence is incomplete');
+      if (!explanation || !suggestion) throw semanticRubricError('SEMANTIC_RUBRIC_SCHEMA_INVALID',
+        'Semantic rubric improvement evidence is incomplete', 'schema_validation',
+        `categories.${category}.improvementEvidence`);
       const key = `${category}:improve:${correctionId}:${quotedText}`;
       if (!seenEvidence.has(key)) { seenEvidence.add(key); improvementEvidence.push({ correctionId, quotedText, explanation, suggestion }); }
     }
-    validated[category] = { score: clampedScore, maxScore: 20, comment, issueCount: (corrections || []).filter((c) => c.category === category).length,
+    validated[category] = { score, maxScore: 20, comment, issueCount: (corrections || []).filter((c) => c.category === category).length,
       strengthEvidence, improvementEvidence };
   }
   return { sourceHash, categories: validated, status: contextStatus === 'none' ? 'partial' : 'completed' };
@@ -138,8 +165,27 @@ async function assess(input, dependencies = {}) {
   const startedAt = Date.now();
   const completion = await (dependencies.runCompletion || runSemanticCompletion)({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch });
-  const assessment = validateAssessment(parseJson(completion.content), { sourceHash: input.sourceHash,
-    transcript: input.transcript, corrections: input.corrections, contextStatus: request.contextStatus });
+  let assessment;
+  try {
+    assessment = validateAssessment(parseJson(completion.content), { sourceHash: input.sourceHash,
+      transcript: input.transcript, corrections: input.corrections, contextStatus: request.contextStatus });
+  } catch (error) {
+    error.provider = completion.provider;
+    error.model = completion.model;
+    error.httpStatus = completion.httpStatus;
+    error.finishReason = completion.finishReason;
+    error.candidateCount = completion.candidateCount;
+    error.hasContent = completion.hasContent;
+    error.hasText = completion.hasText;
+    error.contentType = completion.contentType;
+    error.responseTextLength = completion.responseTextLength;
+    error.requestId = completion.requestId;
+    error.durationMs = Date.now() - startedAt;
+    error.usage = completion.usage || null;
+    error.markdownFenceDetected = error.markdownFenceDetected === true
+      || /^```json\b/iu.test(String(completion.content || '').trim());
+    throw error;
+  }
   return { ...assessment, provider: completion.provider, model: completion.model, usage: completion.usage,
     metrics: { ...completion.metrics, semanticRubricAssessmentMs: Date.now() - startedAt,
       promptCharacters: request.promptCharacters, promptInputTokenEstimate: request.promptInputTokenEstimate } };

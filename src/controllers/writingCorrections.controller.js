@@ -18,6 +18,16 @@ async function check(req, res, next) {
     const result = await writingCorrectionsService.check({ text, language });
     return res.json(result);
   } catch (err) {
+    const timedOut = err?.name === 'AbortError'
+      || err?.code === 'ABORT_ERR'
+      || /aborted|timed?\s*out|timeout/i.test(String(err?.message || ''));
+    if (timedOut) {
+      return res.status(504).json({
+        success: false,
+        errorCode: 'LANGUAGETOOL_TIMEOUT',
+        message: 'LanguageTool request timed out'
+      });
+    }
     return next(err);
   }
 }

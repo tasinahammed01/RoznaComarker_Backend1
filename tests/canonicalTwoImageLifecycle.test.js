@@ -5,7 +5,10 @@ process.env.LANGUAGETOOL_URL = 'https://languagetool.test';
 
 let mockSemanticMode = 'success';
 let mockOcrGate = Promise.resolve();
+let mockRubricGate = Promise.resolve();
 let mockOcrCall = 0;
+let languageToolRequestCount = 0;
+let rubricProviderRequestCount = 0;
 
 const pageResult = (text) => ({
   fullText: text,
@@ -35,8 +38,8 @@ jest.mock('../src/services/semanticWritingCorrections.service', () => {
     ...actual,
     analyze: jest.fn(async () => {
       if (mockSemanticMode === 'failure') {
-        const error = new Error('Synthetic provider configuration failure');
-        error.code = 'AI_PROVIDER_NOT_CONFIGURED';
+        const error = new Error('Synthetic invalid provider response');
+        error.code = 'AI_PROVIDER_RESPONSE_INVALID';
         throw error;
       }
       return {
@@ -51,6 +54,10 @@ jest.mock('../src/services/semanticWritingCorrections.service', () => {
     })
   };
 });
+
+jest.mock('../src/services/autoRubricDesigner.service', () => ({
+  autoGenerateRubricDesignerForSubmission: jest.fn(async () => ({ skipped: true, reason: 'DETERMINISTIC_TEST' }))
+}));
 
 jest.mock('../src/modules/submissionFeedbackPdfGenerator', () => {
   const fs = require('fs');
@@ -104,6 +111,41 @@ const canonicalFields = (data) => ({
   detailedFeedback: data.detailedFeedback
 });
 
+function lineJson(prompt, prefix) {
+  const line = String(prompt).split('\n').find((item) => item.startsWith(prefix));
+  return JSON.parse(line.slice(prefix.length));
+}
+
+function rubricFixtureFromGoogleRequest(options) {
+  const requestBody = JSON.parse(options.body);
+  const prompt = requestBody.contents.flatMap((item) => item.parts || [])
+    .map((part) => part.text || '').join('\n');
+  const sourceHash = String(prompt.match(/^sourceHash=(.+)$/mu)?.[1] || '');
+  const corrections = lineJson(prompt, 'validatedCorrections=');
+  const byCategory = Object.fromEntries(corrections.map((item) => [item.category, item]));
+  const evidence = {
+    CONTENT: 'first test paragraph',
+    ORGANIZATION: 'second test paragraph',
+    VOCABULARY: 'erors'
+  };
+  const categories = Object.fromEntries(['CONTENT', 'ORGANIZATION', 'VOCABULARY'].map((category, index) => {
+    const correction = byCategory[category];
+    return [category, {
+      score: 18 - index,
+      maxScore: 20,
+      comment: `${category} evidence is grounded in the submitted transcript.`,
+      strengthEvidence: [{ quotedText: evidence[category], explanation: 'This is exact synthetic transcript evidence.' }],
+      improvementEvidence: [{
+        correctionId: correction.id,
+        quotedText: correction.quotedText,
+        explanation: 'This validated correction identifies a specific improvement.',
+        suggestion: correction.suggestedText
+      }]
+    }];
+  }));
+  return { sourceHash, categories };
+}
+
 describe('isolated canonical two-image HTTP lifecycle', () => {
   let teacher; let student; let failureStudent; let classDoc; let teacherToken; let studentToken; let failureToken;
   const originalFetch = global.fetch;
@@ -111,7 +153,28 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
   beforeAll(async () => {
     await connectInMemoryMongo();
     await Plan.seedDefaults();
-    global.fetch = jest.fn(async (_url, options) => {
+    global.fetch = jest.fn(async (url, options) => {
+      if (String(url).includes(':generateContent')) {
+        rubricProviderRequestCount += 1;
+        await mockRubricGate;
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => name === 'content-type' ? 'application/json' : null },
+          text: async () => JSON.stringify({
+            candidates: [{
+              finishReason: 'STOP',
+              content: { parts: [
+                { thought: true, text: 'synthetic thought content must be ignored' },
+                { text: JSON.stringify(rubricFixtureFromGoogleRequest(options)) }
+              ] }
+            }],
+            usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 100, totalTokenCount: 200 }
+          })
+        };
+      }
+      expect(String(url)).toBe(`${process.env.LANGUAGETOOL_URL}/v2/check`);
+      languageToolRequestCount += 1;
       const transcript = String(options?.body?.get?.('text') || '');
       const areOffset = transcript.indexOf('are');
       const errorsOffset = transcript.indexOf('erors');
@@ -170,6 +233,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
   test('success, semantic failure, and manual retry remain canonical across student, teacher, and PDF', async () => {
     const firstAssignment = await assignment('Lifecycle success', 'success');
     mockSemanticMode = 'success'; mockOcrCall = 0;
+    let releaseRubric; mockRubricGate = new Promise((resolve) => { releaseRubric = resolve; });
     let releaseOcr; mockOcrGate = new Promise((resolve) => { releaseOcr = resolve; });
     const uploaded = await uploadTwoImages(firstAssignment._id, studentToken);
     expect(uploaded.status).toBe(200);
@@ -181,6 +245,10 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(pending.detailedFeedback).toBeNull();
     expect(JSON.stringify(pending)).not.toContain('77');
     releaseOcr();
+    const processingDoc = await waitFor(successId, (doc) => doc.evaluationStatus === 'processing');
+    expect(processingDoc.semanticStatus).toBe('completed');
+    expect(processingDoc.correctionStatus).toBe('completed');
+    releaseRubric();
     const completedDoc = await waitFor(successId, (doc) => doc.correctionStatus === 'completed' && doc.evaluationStatus === 'completed');
     expect(completedDoc.ocrPages).toHaveLength(2);
     const canonicalOcr = await getOcrCorrections(successId, studentToken);
@@ -201,6 +269,9 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     const successTeacher = await getResult(successId, teacherToken);
     expect(canonicalFields(successStudent)).toEqual(canonicalFields(successTeacher));
     expect(successStudent.score).not.toBeNull();
+    expect(successStudent.grade).toBeTruthy();
+    expect(successStudent.evaluationSourceHash).toBe(successStudent.correctionSourceHash);
+    expect(successStudent.detailedFeedback).not.toBeNull();
     expect(successStudent.correctionStatistics).toMatchObject({ grammar: 1, mechanics: 1, content: 1, organization: 1, vocabulary: 1 });
     expect(canonicalFields(await getResult(successId, studentToken))).toEqual(canonicalFields(successStudent));
     expect(canonicalFields(await getResult(successId, teacherToken))).toEqual(canonicalFields(successTeacher));
@@ -208,9 +279,20 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(successPdf.submission.submissionId).toBe(successId);
     expect(successPdf.result.overallScore).toBe(successStudent.score);
     expect(successPdf.statistics).toMatchObject(successStudent.correctionStatistics);
+    expect(successPdf.detailedFeedback).toEqual(successStudent.detailedFeedback);
+    const adaptive = await request(app).get(`/api/adaptive-practice/submissions/${successId}`)
+      .set('Authorization', `Bearer ${studentToken}`);
+    expect(adaptive.status).toBe(200);
+    expect(['idle', 'no-weaknesses']).toContain(adaptive.body.data.state);
+    const readsBefore = { languageToolRequestCount, rubricProviderRequestCount };
+    await getResult(successId, studentToken);
+    await getResult(successId, teacherToken);
+    await getOcrCorrections(successId, studentToken);
+    await getPdf(successId, teacherToken);
+    expect({ languageToolRequestCount, rubricProviderRequestCount }).toEqual(readsBefore);
 
     const secondAssignment = await assignment('Lifecycle failure', 'failure');
-    mockSemanticMode = 'failure'; mockOcrCall = 0; mockOcrGate = Promise.resolve();
+    mockSemanticMode = 'failure'; mockOcrCall = 0; mockOcrGate = Promise.resolve(); mockRubricGate = Promise.resolve();
     const failedUpload = await uploadTwoImages(secondAssignment._id, failureToken);
     expect(failedUpload.status).toBe(200);
     const failureId = String(failedUpload.body.data._id);
@@ -239,5 +321,8 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(retriedPdf.result.overallScore).toBe(retriedStudent.score);
     expect(await SubmissionFeedback.countDocuments({ submissionId: failureId })).toBe(1);
     expect(require('../src/services/semanticWritingCorrections.service').analyze).toHaveBeenCalledTimes(3);
+    expect(languageToolRequestCount).toBe(3);
+    expect(rubricProviderRequestCount).toBe(2);
+    expect(global.fetch).toHaveBeenCalledTimes(languageToolRequestCount + rubricProviderRequestCount);
   }, 30000);
 });
