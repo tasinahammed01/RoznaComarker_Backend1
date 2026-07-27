@@ -15,7 +15,7 @@ const ADAPTIVE_PRACTICE_PROVIDER = String(
 ).trim().toLowerCase();
 
 const ADAPTIVE_PRACTICE_MODEL = String(
-  process.env.ADAPTIVE_PRACTICE_MODEL || ''
+  process.env.ADAPTIVE_PRACTICE_AI_MODEL || process.env.ADAPTIVE_PRACTICE_MODEL || ''
 ).trim() || (
   ADAPTIVE_PRACTICE_PROVIDER === 'openai'
     ? aiGeneration.OPENAI_MODEL

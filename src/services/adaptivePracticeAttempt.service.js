@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const AdaptivePracticeSession = require('../models/AdaptivePracticeSession');
 const AdaptivePracticeAttempt = require('../models/AdaptivePracticeAttempt');
-const aiGeneration = require('./aiGeneration.service');
+const checkAI = require('./adaptivePracticeCheckAI.service');
 const {
   ADAPTIVE_PRACTICE_CHECK_PROMPT_VERSION,
   ADAPTIVE_PRACTICE_PASS_THRESHOLD,
@@ -56,19 +56,24 @@ function buildCheckMessages(activity, response) {
 }
 
 function bounded(value, max) { return typeof value === 'string' && value.trim().length > 0 && value.trim().length <= max; }
+function containsExecutableHtml(value) { return /<\s*script\b|javascript\s*:|\bon\w+\s*=/iu.test(String(value || '')); }
 
 function validateCheckResult(raw, activity) {
-  if (typeof raw !== 'string' || raw.includes('```')) throw new AttemptError(502, 'INVALID_CHECK_RESPONSE', 'The checking provider returned an invalid response.');
+  if (typeof raw !== 'string') throw new AttemptError(502, 'ADAPTIVE_CHECK_AI_RESPONSE_INVALID', 'The checking provider returned an invalid response.');
+  const text = raw.replace(/^\uFEFF/u, '').trim();
+  const fenced = text.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu);
+  const json = fenced ? fenced[1].trim() : text;
+  if (!json) throw new AttemptError(502, 'ADAPTIVE_CHECK_AI_RESPONSE_EMPTY', 'The checking provider returned an empty response.');
   let value;
-  try { value = JSON.parse(raw); } catch { throw new AttemptError(502, 'INVALID_CHECK_RESPONSE', 'The checking provider returned invalid JSON.'); }
+  try { value = JSON.parse(json); } catch { throw new AttemptError(502, 'ADAPTIVE_CHECK_AI_RESPONSE_INVALID', 'The checking provider returned invalid JSON.'); }
   const keys = ['taskFulfillment', 'targetSkillApplication', 'checklistCompletion', 'summary', 'strength', 'nextImprovement', 'checklist', 'suggestedRevision'];
-  if (!value || Array.isArray(value) || Object.keys(value).length !== keys.length || Object.keys(value).some((key) => !keys.includes(key))) throw new AttemptError(502, 'INVALID_CHECK_RESPONSE', 'The checking provider returned an invalid structure.');
+  if (!value || Array.isArray(value) || Object.keys(value).length !== keys.length || Object.keys(value).some((key) => !keys.includes(key))) throw new AttemptError(502, 'ADAPTIVE_CHECK_AI_RESPONSE_INVALID', 'The checking provider returned an invalid structure.');
   const ranges = [['taskFulfillment', 30], ['targetSkillApplication', 50], ['checklistCompletion', 20]];
-  for (const [key, max] of ranges) if (!Number.isInteger(value[key]) || value[key] < 0 || value[key] > max) throw new AttemptError(502, 'INVALID_CHECK_RESPONSE', 'The checking provider returned invalid scores.');
-  if (![value.summary, value.strength, value.nextImprovement].every((item) => bounded(item, 500)) || !bounded(value.suggestedRevision, 2000)) throw new AttemptError(502, 'INVALID_CHECK_RESPONSE', 'The checking provider returned invalid feedback.');
-  if (!Array.isArray(value.checklist) || value.checklist.length !== activity.checklist.length) throw new AttemptError(502, 'INVALID_CHECK_RESPONSE', 'The checking provider returned an invalid checklist.');
+  for (const [key, max] of ranges) if (!Number.isInteger(value[key]) || value[key] < 0 || value[key] > max) throw new AttemptError(502, 'ADAPTIVE_CHECK_AI_RESPONSE_INVALID', 'The checking provider returned invalid scores.');
+  if (![value.summary, value.strength, value.nextImprovement].every((item) => bounded(item, 500) && !containsExecutableHtml(item)) || !bounded(value.suggestedRevision, 2000) || containsExecutableHtml(value.suggestedRevision)) throw new AttemptError(502, 'ADAPTIVE_CHECK_VALIDATION_FAILED', 'The checking provider returned invalid feedback.');
+  if (!Array.isArray(value.checklist) || value.checklist.length !== activity.checklist.length) throw new AttemptError(502, 'ADAPTIVE_CHECK_VALIDATION_FAILED', 'The checking provider returned an invalid checklist.');
   value.checklist.forEach((item, index) => {
-    if (!item || Object.keys(item).length !== 3 || item.item !== activity.checklist[index] || typeof item.met !== 'boolean' || !bounded(item.feedback, 300)) throw new AttemptError(502, 'INVALID_CHECK_RESPONSE', 'The checking provider changed the checklist.');
+    if (!item || Object.keys(item).length !== 3 || item.item !== activity.checklist[index] || typeof item.met !== 'boolean' || !bounded(item.feedback, 300) || containsExecutableHtml(item.feedback)) throw new AttemptError(502, 'ADAPTIVE_CHECK_VALIDATION_FAILED', 'The checking provider changed the checklist.');
   });
   const score = value.taskFulfillment + value.targetSkillApplication + value.checklistCompletion;
   return {
@@ -81,11 +86,12 @@ function validateCheckResult(raw, activity) {
 }
 
 async function allocateAttempt(base, response, fingerprint) {
+  const config = checkAI.getConfig();
   for (let retry = 0; retry < 5; retry++) {
     const latest = await AdaptivePracticeAttempt.findOne(base).sort({ attemptNumber: -1 }).select('attemptNumber').lean();
     try {
       const attempt = await AdaptivePracticeAttempt.create({ ...base, attemptNumber: (latest?.attemptNumber || 0) + 1, status: 'checking', response, responseFingerprint: fingerprint,
-        checking: { provider: aiGeneration.AI_PROVIDER, model: aiGeneration.AI_PROVIDER === 'openai' ? aiGeneration.OPENAI_MODEL : aiGeneration.OPENROUTER_MODEL, promptVersion: ADAPTIVE_PRACTICE_CHECK_PROMPT_VERSION, startedAt: new Date() } });
+        checking: { provider: config.provider || 'google', model: config.model, promptVersion: ADAPTIVE_PRACTICE_CHECK_PROMPT_VERSION, startedAt: new Date() } });
       return { attempt, created: true };
     } catch (error) {
       if (error?.code !== 11000) throw error;
@@ -138,16 +144,16 @@ async function checkResponse(sessionId, activityId, studentId, body = {}) {
     let lastError;
     for (let validationTry = 0; validationTry < 2; validationTry++) {
       try {
-        const raw = await aiGeneration.generateChatCompletion(buildCheckMessages(activity, response), { temperature: 0.1, max_tokens: 2500, response_format: { type: 'json_object' } });
+        const raw = await checkAI.generateCheckCompletion(buildCheckMessages(activity, response));
         result = validateCheckResult(raw, activity); break;
-      } catch (error) { lastError = error; if (error.code !== 'INVALID_CHECK_RESPONSE') throw error; }
+      } catch (error) { lastError = error; if (error.code !== 'ADAPTIVE_CHECK_AI_RESPONSE_INVALID') throw error; }
     }
     if (!result) throw lastError;
     attempt.status = 'ready'; attempt.result = result; attempt.checking.completedAt = new Date(); await attempt.save();
     return { state: 'ready', attempt, progress: await getProgressSummary(session), reused };
   } catch (error) {
     attempt.status = 'failed'; attempt.checking.completedAt = new Date(); attempt.checking.errorCode = error.code || 'AI_CHECK_FAILED'; attempt.checking.errorMessage = 'Your response could not be checked. Please try again.'; await attempt.save();
-    throw new AttemptError(502, error.code || 'AI_CHECK_FAILED', 'Your response could not be checked. Please try again.');
+    throw new AttemptError(Number(error.status) || 502, error.code || 'ADAPTIVE_CHECK_AI_RESPONSE_INVALID', 'Your response could not be checked. Please try again.');
   }
 }
 

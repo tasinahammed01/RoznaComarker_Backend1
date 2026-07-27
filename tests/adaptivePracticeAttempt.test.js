@@ -5,6 +5,7 @@ const { connectInMemoryMongo, disconnectInMemoryMongo, clearDatabase } = require
 const AdaptivePracticeSession = require('../src/models/AdaptivePracticeSession');
 const AdaptivePracticeAttempt = require('../src/models/AdaptivePracticeAttempt');
 const aiGeneration = require('../src/services/aiGeneration.service');
+const checkAI = require('../src/services/adaptivePracticeCheckAI.service');
 const service = require('../src/services/adaptivePracticeAttempt.service');
 
 const checklist = ['Connect the ideas clearly.', 'Use precise vocabulary.'];
@@ -24,7 +25,12 @@ async function seed() {
 }
 
 describe('adaptive practice attempts', () => {
-  beforeAll(connectInMemoryMongo);
+  beforeAll(async () => {
+    process.env.ADAPTIVE_PRACTICE_AI_PROVIDER = 'google';
+    process.env.ADAPTIVE_PRACTICE_AI_MODEL = 'gemini-3.6-flash';
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+    await connectInMemoryMongo();
+  });
   afterAll(disconnectInMemoryMongo);
   beforeEach(async () => { await clearDatabase(); jest.restoreAllMocks(); });
 
@@ -48,7 +54,7 @@ describe('adaptive practice attempts', () => {
 
   it('rejects empty, trivial, and oversized responses before calling AI', async () => {
     const { session, studentId, activityId } = await seed();
-    const spy = jest.spyOn(aiGeneration, 'generateChatCompletion');
+    const spy = jest.spyOn(checkAI, 'generateCheckCompletion');
     await expect(service.checkResponse(session._id, activityId, studentId, { response: '....' })).rejects.toMatchObject({ code: 'INVALID_PRACTICE_RESPONSE' });
     await expect(service.checkResponse(session._id, activityId, studentId, { response: 'x'.repeat(5001) })).rejects.toMatchObject({ code: 'INVALID_PRACTICE_RESPONSE' });
     expect(spy).not.toHaveBeenCalled();
@@ -57,7 +63,7 @@ describe('adaptive practice attempts', () => {
   it('checks, scores, persists, and restores progress without changing the session', async () => {
     const { session, studentId, activityId } = await seed();
     const before = session.toObject();
-    jest.spyOn(aiGeneration, 'generateChatCompletion').mockResolvedValue(result());
+    jest.spyOn(checkAI, 'generateCheckCompletion').mockResolvedValue(result());
     const checked = await service.checkResponse(session._id, activityId, studentId, { response: 'However, these ideas now connect more clearly.' });
     expect(checked.attempt.result.score).toBe(79);
     expect(checked.attempt.result.passed).toBe(true);
@@ -69,7 +75,7 @@ describe('adaptive practice attempts', () => {
 
   it('reuses an identical response and makes only one AI call', async () => {
     const { session, studentId, activityId } = await seed();
-    const spy = jest.spyOn(aiGeneration, 'generateChatCompletion').mockResolvedValue(result());
+    const spy = jest.spyOn(checkAI, 'generateCheckCompletion').mockResolvedValue(result());
     const body = { response: 'However, these ideas now connect more clearly.' };
     const first = await service.checkResponse(session._id, activityId, studentId, body);
     const second = await service.checkResponse(session._id, activityId, studentId, body);
@@ -82,7 +88,7 @@ describe('adaptive practice attempts', () => {
   it('coalesces concurrent identical checks into one attempt and AI call', async () => {
     const { session, studentId, activityId } = await seed();
     let release; const gate = new Promise((resolve) => { release = resolve; });
-    const spy = jest.spyOn(aiGeneration, 'generateChatCompletion').mockImplementation(async () => { await gate; return result(); });
+    const spy = jest.spyOn(checkAI, 'generateCheckCompletion').mockImplementation(async () => { await gate; return result(); });
     const body = { response: 'However, these ideas now connect more clearly.' };
     const first = service.checkResponse(session._id, activityId, studentId, body);
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -94,7 +100,7 @@ describe('adaptive practice attempts', () => {
 
   it('creates sequential attempts for changed responses and keeps the best score', async () => {
     const { session, studentId, activityId } = await seed();
-    jest.spyOn(aiGeneration, 'generateChatCompletion').mockResolvedValueOnce(result({ taskFulfillment: 15, targetSkillApplication: 25, checklistCompletion: 10 })).mockResolvedValueOnce(result());
+    jest.spyOn(checkAI, 'generateCheckCompletion').mockResolvedValueOnce(result({ taskFulfillment: 15, targetSkillApplication: 25, checklistCompletion: 10 })).mockResolvedValueOnce(result());
     await service.checkResponse(session._id, activityId, studentId, { response: 'This first revision connects the ideas somewhat.' });
     const second = await service.checkResponse(session._id, activityId, studentId, { response: 'However, this stronger revision connects the ideas clearly.' });
     expect(second.attempt.attemptNumber).toBe(2);
@@ -103,15 +109,15 @@ describe('adaptive practice attempts', () => {
 
   it('retries malformed provider output once and validates checklist order', async () => {
     const { session, studentId, activityId } = await seed();
-    const spy = jest.spyOn(aiGeneration, 'generateChatCompletion').mockResolvedValueOnce('{bad').mockResolvedValueOnce(result());
+    const spy = jest.spyOn(checkAI, 'generateCheckCompletion').mockResolvedValueOnce('{bad').mockResolvedValueOnce(result());
     const checked = await service.checkResponse(session._id, activityId, studentId, { response: 'However, these ideas now connect more clearly.' });
     expect(checked.state).toBe('ready'); expect(spy).toHaveBeenCalledTimes(2);
-    expect(() => service.validateCheckResult(result({ checklist: [...checklist].reverse().map((item) => ({ item, met: true, feedback: 'Present.' })) }), session.activities[0])).toThrow(expect.objectContaining({ code: 'INVALID_CHECK_RESPONSE' }));
+    expect(() => service.validateCheckResult(result({ checklist: [...checklist].reverse().map((item) => ({ item, met: true, feedback: 'Present.' })) }), session.activities[0])).toThrow(expect.objectContaining({ code: 'ADAPTIVE_CHECK_VALIDATION_FAILED' }));
   });
 
   it('contains provider failures, requires explicit retry, and hides raw errors', async () => {
     const { session, studentId, activityId } = await seed();
-    const spy = jest.spyOn(aiGeneration, 'generateChatCompletion').mockRejectedValueOnce(new Error('secret provider detail')).mockResolvedValueOnce(result());
+    const spy = jest.spyOn(checkAI, 'generateCheckCompletion').mockRejectedValueOnce(new Error('secret provider detail')).mockResolvedValueOnce(result());
     const body = { response: 'However, these ideas now connect more clearly.' };
     await expect(service.checkResponse(session._id, activityId, studentId, body)).rejects.toMatchObject({ message: 'Your response could not be checked. Please try again.' });
     const failed = await service.checkResponse(session._id, activityId, studentId, body);
@@ -125,5 +131,17 @@ describe('adaptive practice attempts', () => {
     const other = new mongoose.Types.ObjectId();
     await expect(service.checkResponse(session._id, activityId, other, { response: 'A sufficiently meaningful response.' })).rejects.toMatchObject({ code: 'FORBIDDEN' });
     await expect(service.listAttempts(session._id, other, activityId)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('uses dedicated Gemini and never calls the global OpenRouter path', async () => {
+    process.env.PRIMARY_AI_PROVIDER = 'openrouter';
+    process.env.PRIMARY_AI_MODEL = 'openai/gpt-oss-120b';
+    const { session, studentId, activityId } = await seed();
+    const globalSpy = jest.spyOn(aiGeneration, 'generateChatCompletion');
+    const geminiSpy = jest.spyOn(checkAI, 'generateCheckCompletion').mockResolvedValue(result());
+    const checked = await service.checkResponse(session._id, activityId, studentId, { response: 'However, these ideas now connect clearly.' });
+    expect(checked.attempt.checking).toMatchObject({ provider: 'google', model: 'gemini-3.6-flash' });
+    expect(geminiSpy).toHaveBeenCalledTimes(1);
+    expect(globalSpy).not.toHaveBeenCalled();
   });
 });
