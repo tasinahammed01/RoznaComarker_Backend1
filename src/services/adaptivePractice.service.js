@@ -7,22 +7,16 @@ const SubmissionFeedback = require('../models/SubmissionFeedback');
 const Assignment = require('../models/assignment.model');
 const AdaptivePracticeSession = require('../models/AdaptivePracticeSession');
 const { getNormalizedSubmissionTranscript, normalizeOcrTranscript } = require('../utils/ocrTranscriptNormalizer');
-const aiGeneration = require('./aiGeneration.service');
+const generationAI = require('./adaptivePracticeGenerationAI.service');
 const logger = require('../utils/logger');
 
 const ADAPTIVE_PRACTICE_PROVIDER = String(
-  process.env.ADAPTIVE_PRACTICE_AI_PROVIDER || aiGeneration.AI_PROVIDER || 'openrouter'
+  process.env.ADAPTIVE_PRACTICE_AI_PROVIDER || 'google'
 ).trim().toLowerCase();
 
 const ADAPTIVE_PRACTICE_MODEL = String(
-  process.env.ADAPTIVE_PRACTICE_AI_MODEL || process.env.ADAPTIVE_PRACTICE_MODEL || ''
-).trim() || (
-  ADAPTIVE_PRACTICE_PROVIDER === 'openai'
-    ? aiGeneration.OPENAI_MODEL
-    : ADAPTIVE_PRACTICE_PROVIDER === 'google'
-      ? 'gemini-3.6-flash'
-      : aiGeneration.OPENROUTER_MODEL
-);
+  process.env.ADAPTIVE_PRACTICE_AI_MODEL || 'gemini-3.6-flash'
+).trim();
 
 const ADAPTIVE_PRACTICE_MAX_OUTPUT_TOKENS =
   Number(process.env.ADAPTIVE_PRACTICE_AI_MAX_OUTPUT_TOKENS) || 4000;
@@ -157,9 +151,13 @@ function bounded(value, max) {
 }
 
 function validateAiResponse(raw, weakSkills, transcript) {
-  if (typeof raw !== 'string' || raw.includes('```')) throw new AdaptivePracticeError(502, 'INVALID_AI_JSON', 'The practice provider returned non-JSON output.');
+  if (typeof raw !== 'string') throw new AdaptivePracticeError(502, 'INVALID_AI_JSON', 'The practice provider returned non-JSON output.');
+  const text = raw.replace(/^\uFEFF/u, '').trim();
+  const fenced = text.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu);
+  const json = fenced ? fenced[1].trim() : text;
+  if (!json) throw new AdaptivePracticeError(502, 'INVALID_AI_JSON', 'The practice provider returned empty output.');
   let parsed;
-  try { parsed = JSON.parse(raw); } catch { throw new AdaptivePracticeError(502, 'INVALID_AI_JSON', 'The practice provider returned invalid JSON.'); }
+  try { parsed = JSON.parse(json); } catch { throw new AdaptivePracticeError(502, 'INVALID_AI_JSON', 'The practice provider returned invalid JSON.'); }
   if (!parsed || Array.isArray(parsed) || Object.keys(parsed).some((key) => key !== 'activities') || !Array.isArray(parsed.activities)) {
     throw new AdaptivePracticeError(502, 'INVALID_AI_SCHEMA', 'The practice provider returned an invalid top-level structure.');
   }
@@ -181,6 +179,24 @@ function validateAiResponse(raw, weakSkills, transcript) {
     if (!['foundational', 'developing', 'proficient'].includes(activity.difficulty)) throw new AdaptivePracticeError(502, 'INVALID_ACTIVITY_DIFFICULTY', `Activity ${activity.skillId} difficulty was invalid.`);
     return { activityId: crypto.randomUUID(), ...activity, evidence, checklist: activity.checklist.map((item) => item.trim()), createdAt: new Date() };
   });
+}
+
+const REPAIRABLE_GENERATION_CODES = new Set([
+  'INVALID_AI_JSON', 'INVALID_AI_SCHEMA', 'INVALID_ACTIVITY_COUNT', 'INVALID_ACTIVITY_FIELDS',
+  'INVALID_ACTIVITY_TARGET', 'INVALID_ACTIVITY_FIELD_LENGTH', 'UNGROUNDED_EVIDENCE',
+  'INVALID_ACTIVITY_CHECKLIST', 'INVALID_ACTIVITY_DIFFICULTY'
+]);
+
+function buildRepairMessages(source, validationError, previousOutput) {
+  const expectedCount = source.weakSkills.length;
+  const issue = validationError.code === 'INVALID_ACTIVITY_COUNT'
+    ? `The previous response had the wrong activity count. Return the complete array with exactly ${expectedCount} activities.`
+    : `The previous response failed validation with code ${validationError.code}.`;
+  return [
+    ...buildMessages(source),
+    { role: 'assistant', content: String(previousOutput || '') },
+    { role: 'user', content: `${issue}\nRepair the complete response. Return JSON only using exactly the previously specified schema, with one activity for every supplied target and no partial array.` }
+  ];
 }
 
 function buildMessages(source) {
@@ -233,26 +249,43 @@ async function generateSession(submissionId, studentId, options = {}) {
   }
   if (!session) return sessionResponse('generating', await AdaptivePracticeSession.findOne(key).lean());
 
-  let attemptCount = 0;
+  let providerAttemptCount = 0;
+  let repairAttemptCount = 0;
   let retryCount = 0;
   let retryDelayMs = 0;
   let usage = null;
   try {
     const providerStarted = Date.now();
-    const raw = await aiGeneration.generateChatCompletion(messages, {
-      provider: ADAPTIVE_PRACTICE_PROVIDER,
-      temperature: 0.2,
-      model: ADAPTIVE_PRACTICE_MODEL,
-      max_tokens: ADAPTIVE_PRACTICE_MAX_OUTPUT_TOKENS,
-      response_format: { type: 'json_object' },
-      onAttempt: ({ attempt }) => { attemptCount = Math.max(attemptCount, attempt); },
-      onRetry: ({ delayMs }) => { retryCount += 1; retryDelayMs += Number(delayMs || 0); },
-      onResponse: (metadata) => { usage = metadata?.usage || null; }
-    });
+    const deadline = providerStarted + (Number(process.env.ADAPTIVE_PRACTICE_AI_TIMEOUT_MS) || 60000);
+    let activities;
+    let previousOutput = '';
+    let validationError;
+    for (let generationAttempt = 0; generationAttempt < 2; generationAttempt += 1) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs < 1000) throw new AdaptivePracticeError(504, 'AI_PROVIDER_TIMEOUT', 'Adaptive practice generation timed out.');
+      const attemptMessages = generationAttempt === 0 ? messages : buildRepairMessages(source, validationError, previousOutput);
+      const result = await generationAI.generate(attemptMessages, { timeoutMs: remainingMs });
+      providerAttemptCount += 1;
+      if (generationAttempt === 1) repairAttemptCount = 1;
+      usage = result.usage || usage;
+      previousOutput = result.content;
+      const validationStarted = Date.now();
+      try {
+        activities = validateAiResponse(previousOutput, source.weakSkills, source.transcript);
+        timings.responseParsingMs = (timings.responseParsingMs || 0) + Date.now() - validationStarted;
+        break;
+      } catch (error) {
+        timings.responseParsingMs = (timings.responseParsingMs || 0) + Date.now() - validationStarted;
+        validationError = error;
+        logger.metric({ feature: 'adaptive_practice_generation', provider: ADAPTIVE_PRACTICE_PROVIDER,
+          model: ADAPTIVE_PRACTICE_MODEL, submissionId: String(source.submission._id),
+          attemptNumber: generationAttempt + 1, phase: generationAttempt ? 'repair' : 'initial',
+          expectedActivityCount: source.weakSkills.length, validationErrorCode: error.code,
+          markdownFencePresent: /^```/u.test(String(previousOutput).trim()), extractedTextLength: String(previousOutput).length });
+        if (!REPAIRABLE_GENERATION_CODES.has(error.code) || generationAttempt === 1) throw error;
+      }
+    }
     timings.providerRequestMs = Date.now() - providerStarted;
-    const parseStarted = Date.now();
-    const activities = validateAiResponse(raw, source.weakSkills, source.transcript);
-    timings.responseParsingMs = Date.now() - parseStarted;
     session.status = 'ready';
     session.activities = activities;
     session.generation.completedAt = new Date();
@@ -265,14 +298,18 @@ async function generateSession(submissionId, studentId, options = {}) {
       inputTokenEstimate,
       inputTokens: usage?.prompt_tokens ?? usage?.input_tokens ?? null,
       outputTokens: usage?.completion_tokens ?? usage?.output_tokens ?? null,
-      attemptCount,
+      attemptCount: providerAttemptCount,
+      providerAttemptCount,
+      repairAttemptCount,
+      totalAttemptCount: providerAttemptCount,
+      persisted: true,
       retryCount,
       retryDelayMs
     };
     await session.save();
     session.generation.metrics.databasePersistenceMs = Date.now() - persistenceStarted;
     session.generation.metrics.totalMs = Date.now() - totalStarted;
-    logger.metric({ event: 'adaptive_practice_generation_timing', submissionId: String(source.submission._id), provider: session.generation.provider, model: session.generation.model, ...session.generation.metrics });
+    logger.metric({ event: 'adaptive_practice_generation_timing', feature: 'adaptive_practice_generation', outcome: 'ready', submissionId: String(source.submission._id), provider: session.generation.provider, model: session.generation.model, ...session.generation.metrics });
     return sessionResponseWithProgress('ready', session.toObject());
   } catch (error) {
     session.status = 'failed';
@@ -280,12 +317,15 @@ async function generateSession(submissionId, studentId, options = {}) {
     session.generation.completedAt = new Date();
     session.generation.errorCode = error.code || 'AI_GENERATION_FAILED';
     session.generation.errorMessage = 'Adaptive practice could not be generated. Please try again.';
-    session.generation.metrics = { ...(session.generation.metrics || {}), ...timings, attemptCount, retryCount, retryDelayMs, totalMs: Date.now() - totalStarted };
+    session.generation.metrics = { ...(session.generation.metrics || {}), ...timings, attemptCount: providerAttemptCount,
+      providerAttemptCount, repairAttemptCount, totalAttemptCount: providerAttemptCount,
+      retryCount, retryDelayMs, finalErrorCode: error.code || 'AI_GENERATION_FAILED',
+      persisted: false, totalMs: Date.now() - totalStarted };
     await session.save();
-    logger.metric({ event: 'adaptive_practice_generation_timing', outcome: 'failed', submissionId: String(source.submission._id), provider: session.generation.provider, model: session.generation.model, errorCode: session.generation.errorCode, ...session.generation.metrics });
+    logger.metric({ event: 'adaptive_practice_generation_timing', feature: 'adaptive_practice_generation', outcome: 'failed', submissionId: String(source.submission._id), provider: session.generation.provider, model: session.generation.model, errorCode: session.generation.errorCode, ...session.generation.metrics });
     if (error instanceof AdaptivePracticeError) throw error;
     throw new AdaptivePracticeError(502, 'AI_GENERATION_FAILED', 'Adaptive practice could not be generated. Please try again.');
   }
 }
 
-module.exports = { AdaptivePracticeError, calculateSkills, buildGenerationSourceFingerprint, loadOwnedSource, getCurrentSession, generateSession, validateAiResponse, buildMessages };
+module.exports = { AdaptivePracticeError, calculateSkills, buildGenerationSourceFingerprint, loadOwnedSource, getCurrentSession, generateSession, validateAiResponse, buildMessages, buildRepairMessages };

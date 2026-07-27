@@ -6,7 +6,7 @@ const Submission = require('../src/models/Submission');
 const SubmissionFeedback = require('../src/models/SubmissionFeedback');
 const Assignment = require('../src/models/assignment.model');
 const AdaptivePracticeSession = require('../src/models/AdaptivePracticeSession');
-const aiGeneration = require('../src/services/aiGeneration.service');
+const generationAI = require('../src/services/adaptivePracticeGenerationAI.service');
 const service = require('../src/services/adaptivePractice.service');
 
 function aiPayload(targets, evidence = 'This is the student writing.') {
@@ -70,14 +70,14 @@ describe('adaptive practice', () => {
 
   it('does not call AI when there are no weaknesses', async () => {
     const { studentId, submission } = await seed({ CONTENT: { score: 14, maxScore: 20 }, ORGANIZATION: { score: 14, maxScore: 20 }, VOCABULARY: { score: 14, maxScore: 20 }, GRAMMAR: { score: 17.5, maxScore: 25 }, MECHANICS: { score: 7, maxScore: 10 } });
-    const spy = jest.spyOn(aiGeneration, 'generateChatCompletion');
+    const spy = jest.spyOn(generationAI, 'generate');
     expect((await service.generateSession(submission._id, studentId)).state).toBe('no-weaknesses');
     expect(spy).not.toHaveBeenCalled();
   });
 
   it('generates and persists a session for the owning student, then reuses it', async () => {
     const { studentId, submission } = await seed({ CONTENT: { score: 10, maxScore: 20 }, ORGANIZATION: { score: 14, maxScore: 20 }, VOCABULARY: { score: 14, maxScore: 20 }, GRAMMAR: { score: 17.5, maxScore: 25 }, MECHANICS: { score: 7, maxScore: 10 } });
-    const spy = jest.spyOn(aiGeneration, 'generateChatCompletion').mockResolvedValue(aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]));
+    const spy = jest.spyOn(generationAI, 'generate').mockResolvedValue({ content: aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]) });
     const first = await service.generateSession(submission._id, studentId);
     const second = await service.generateSession(submission._id, studentId);
     expect(first.state).toBe('ready');
@@ -88,13 +88,13 @@ describe('adaptive practice', () => {
 
   it('creates new sessions when rubric scores or transcript change', async () => {
     const { studentId, submission, feedback } = await seed({ CONTENT: { score: 10, maxScore: 20 } });
-    const spy = jest.spyOn(aiGeneration, 'generateChatCompletion').mockResolvedValue(aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]));
+    const spy = jest.spyOn(generationAI, 'generate').mockResolvedValue({ content: aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]) });
     const first = await service.generateSession(submission._id, studentId);
     await SubmissionFeedback.updateOne({ _id: feedback._id }, { $set: { 'rubricScores.CONTENT.score': 9 } });
     const second = await service.generateSession(submission._id, studentId);
     expect(second.session.sourceFingerprint).not.toBe(first.session.sourceFingerprint);
     await Submission.updateOne({ _id: submission._id }, { $set: { transcriptText: 'This is changed student writing.' } });
-    spy.mockResolvedValueOnce(aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }], 'This is changed student writing.'));
+    spy.mockResolvedValueOnce({ content: aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }], 'This is changed student writing.') });
     const third = await service.generateSession(submission._id, studentId);
     expect(third.session.sourceFingerprint).not.toBe(second.session.sourceFingerprint);
     expect(await AdaptivePracticeSession.countDocuments()).toBe(3);
@@ -105,9 +105,9 @@ describe('adaptive practice', () => {
     const { studentId, submission } = await seed({ CONTENT: { score: 10, maxScore: 20 } });
     let release;
     const pending = new Promise((resolve) => { release = resolve; });
-    const spy = jest.spyOn(aiGeneration, 'generateChatCompletion').mockImplementation(async () => {
+    const spy = jest.spyOn(generationAI, 'generate').mockImplementation(async () => {
       await pending;
-      return aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]);
+      return { content: aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]) };
     });
     const first = service.generateSession(submission._id, studentId);
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -140,7 +140,7 @@ describe('adaptive practice', () => {
   it('persists a safe failed state and supports retry without changing grading data', async () => {
     const { studentId, submission, feedback } = await seed({ CONTENT: { score: 10, maxScore: 20 } });
     const before = JSON.stringify((await SubmissionFeedback.findById(feedback._id).lean()).rubricScores);
-    jest.spyOn(aiGeneration, 'generateChatCompletion').mockRejectedValueOnce(new Error('provider secret')).mockResolvedValueOnce(aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]));
+    jest.spyOn(generationAI, 'generate').mockRejectedValueOnce(new Error('provider secret')).mockResolvedValueOnce({ content: aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]) });
     await expect(service.generateSession(submission._id, studentId)).rejects.toMatchObject({ status: 502 });
     expect((await AdaptivePracticeSession.findOne()).status).toBe('failed');
     expect((await service.generateSession(submission._id, studentId, { retry: true })).state).toBe('ready');
@@ -152,7 +152,7 @@ describe('adaptive practice', () => {
     const { studentId, submission, feedback } = await seed({ CONTENT: { score: 10, maxScore: 20 } });
     const submissionBefore = await Submission.findById(submission._id).lean();
     const feedbackBefore = await SubmissionFeedback.findById(feedback._id).lean();
-    jest.spyOn(aiGeneration, 'generateChatCompletion').mockResolvedValue(aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]));
+    jest.spyOn(generationAI, 'generate').mockResolvedValue({ content: aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]) });
     expect((await service.generateSession(submission._id, studentId)).state).toBe('ready');
     const submissionAfter = await Submission.findById(submission._id).lean();
     const feedbackAfter = await SubmissionFeedback.findById(feedback._id).lean();
@@ -160,5 +160,39 @@ describe('adaptive practice', () => {
     for (const field of submissionFields) expect(submissionAfter[field]).toEqual(submissionBefore[field]);
     const feedbackFields = ['overallScore', 'rubricScores', 'correctionStats', 'detailedFeedback', 'aiFeedback', 'overriddenByTeacher'];
     for (const field of feedbackFields) expect(feedbackAfter[field]).toEqual(feedbackBefore[field]);
+  });
+
+  it('repairs malformed JSON once and persists only the valid complete result', async () => {
+    const { studentId, submission } = await seed({ CONTENT: { score: 10, maxScore: 20 } });
+    const spy = jest.spyOn(generationAI, 'generate')
+      .mockResolvedValueOnce({ content: '{bad' })
+      .mockResolvedValueOnce({ content: aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]) });
+    const result = await service.generateSession(submission._id, studentId);
+    expect(result.state).toBe('ready');
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(await AdaptivePracticeSession.countDocuments({ status: 'ready' })).toBe(1);
+    expect(result.session.generation.metrics).toMatchObject({ providerAttemptCount: 2, repairAttemptCount: 1, persisted: true });
+  });
+
+  it('repairs a wrong count with a complete exact-count request', async () => {
+    const { studentId, submission } = await seed({ CONTENT: { score: 10, maxScore: 20 }, ORGANIZATION: { score: 10, maxScore: 20 } });
+    const targets = [{ id: 'CONTENT', category: 'Task Achievement' }, { id: 'ORGANIZATION', category: 'Coherence & Flow' }];
+    const spy = jest.spyOn(generationAI, 'generate')
+      .mockResolvedValueOnce({ content: aiPayload(targets.slice(0, 1)) })
+      .mockResolvedValueOnce({ content: aiPayload(targets) });
+    expect((await service.generateSession(submission._id, studentId)).state).toBe('ready');
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy.mock.calls[1][0].at(-1).content).toContain('complete array with exactly 2 activities');
+  });
+
+  it('stops after one failed repair and persists no partial activities', async () => {
+    const { studentId, submission } = await seed({ CONTENT: { score: 10, maxScore: 20 } });
+    const spy = jest.spyOn(generationAI, 'generate').mockResolvedValue({ content: '{bad' });
+    await expect(service.generateSession(submission._id, studentId)).rejects.toMatchObject({ code: 'INVALID_AI_JSON' });
+    expect(spy).toHaveBeenCalledTimes(2);
+    const failed = await AdaptivePracticeSession.findOne().lean();
+    expect(failed.status).toBe('failed');
+    expect(failed.activities).toEqual([]);
+    expect(failed.generation.metrics).toMatchObject({ persisted: false, repairAttemptCount: 1 });
   });
 });
