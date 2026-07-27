@@ -121,7 +121,7 @@ function rubricFixtureFromGoogleRequest(options) {
   const prompt = requestBody.contents.flatMap((item) => item.parts || [])
     .map((part) => part.text || '').join('\n');
   const sourceHash = String(prompt.match(/^sourceHash=(.+)$/mu)?.[1] || '');
-  const corrections = lineJson(prompt, 'validatedCorrections=');
+  const corrections = lineJson(prompt, 'correctionCatalog=');
   const byCategory = Object.fromEntries(corrections.map((item) => [item.category, item]));
   const evidence = {
     CONTENT: 'first test paragraph',
@@ -136,7 +136,8 @@ function rubricFixtureFromGoogleRequest(options) {
       comment: `${category} evidence is grounded in the submitted transcript.`,
       strengthEvidence: [{ quotedText: evidence[category], explanation: 'This is exact synthetic transcript evidence.' }],
       improvementEvidence: [{
-        correctionId: correction.id,
+        evidenceType: 'correction',
+        correctionId: correction.correctionId,
         quotedText: correction.quotedText,
         explanation: 'This validated correction identifies a specific improvement.',
         suggestion: correction.suggestedText

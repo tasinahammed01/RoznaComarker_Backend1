@@ -19,10 +19,25 @@ function compactAssignment(assignment = {}) {
   };
 }
 
-function relevantCorrections(corrections = []) {
-  return (Array.isArray(corrections) ? corrections : []).filter((item) => SEMANTIC_CATEGORIES.includes(item?.category))
-    .map((item) => ({ id: String(item.id || ''), category: item.category, symbol: item.symbol,
-      quotedText: clean(item.quotedText, 220), message: clean(item.message, 220), suggestedText: clean(item.suggestedText, 220) }));
+function correctionCatalog(corrections = []) {
+  return Object.freeze((Array.isArray(corrections) ? corrections : [])
+    .filter((item) => item?.id && SEMANTIC_CATEGORIES.includes(item?.category))
+    .map((item) => Object.freeze({
+      correctionId: String(item.id),
+      category: item.category,
+      symbol: item.symbol,
+      quotedText: clean(item.quotedText, 220),
+      suggestedText: clean(item.suggestedText, 220),
+      page: Number.isFinite(Number(item.page)) ? Number(item.page) : null,
+      fileId: item.fileId ? String(item.fileId) : null
+    })));
+}
+
+function allowedCorrectionIdsByCategory(catalog = []) {
+  return Object.freeze(Object.fromEntries(SEMANTIC_CATEGORIES.map((category) => [
+    category,
+    Object.freeze(catalog.filter((item) => item.category === category).map((item) => item.correctionId))
+  ])));
 }
 
 function compactPageManifest(pages = []) {
@@ -33,11 +48,16 @@ function compactPageManifest(pages = []) {
 function buildRequest(input) {
   const assignment = compactAssignment(input.assignment || {});
   const contextStatus = assignment.instructions ? 'instructions' : assignment.title ? 'title_only' : 'none';
+  const catalog = correctionCatalog(input.corrections);
+  const allowedCorrectionIds = allowedCorrectionIdsByCategory(catalog);
   const response = { sourceHash: input.sourceHash, categories: Object.fromEntries(SEMANTIC_CATEGORIES.map((category) => [category, {
     score: 0, maxScore: 20, comment: 'Concise category judgment', strengthEvidence: [
       { quotedText: 'exact transcript quote', explanation: 'why this is positive evidence' }
     ], improvementEvidence: [
-      { correctionId: 'existing correction id', quotedText: 'exact transcript quote', explanation: 'what is weak', suggestion: 'specific improvement' }
+      { evidenceType: 'correction', correctionId: 'exact ID copied from correctionCatalog for this category',
+        quotedText: 'exact transcript quote', explanation: 'what is weak', suggestion: 'specific improvement' },
+      { evidenceType: 'transcript', correctionId: null, quotedText: 'exact transcript quote',
+        explanation: 'transcript-grounded weakness when this category has no applicable correction', suggestion: 'specific improvement' }
     ]
   }])) };
   const prompt = [
@@ -47,9 +67,10 @@ function buildRequest(input) {
     `assignment=${JSON.stringify(assignment)}`,
     `statistics=${JSON.stringify(input.statistics || {})}`,
     `pageManifest=${JSON.stringify(compactPageManifest(input.pageManifest || []))}`,
-    `validatedCorrections=${JSON.stringify(relevantCorrections(input.corrections || []))}`,
+    `correctionCatalog=${JSON.stringify(catalog)}`,
+    `allowedCorrectionIdsByCategory=${JSON.stringify(allowedCorrectionIds)}`,
     `response=${JSON.stringify(response)}`,
-    'Assess only the explicitly named CONTENT, ORGANIZATION, and VOCABULARY properties. Do not reorder, rename, alias, or add categories. Return strict JSON only with no Markdown or explanatory prose. Repeat sourceHash exactly. Every score and maxScore must be a JSON number, never a string, fraction, percentage, label, or explanatory value. CONTENT.score, ORGANIZATION.score, and VOCABULARY.score must each be between 0 and 20 inclusive, and each maxScore must be exactly 20. Do not score Grammar, Mechanics, Presentation, or overall; the backend calculates those values. Do not invent issue counts. Every quote must be copied exactly from the transcript. Improvement evidence may reference only supplied correction IDs from the same category. If detailed instructions are unavailable but a title exists, Content must state it was evaluated against the assignment title because detailed instructions were unavailable. If neither title nor instructions exist, make Content provisional and explain that task achievement cannot be confidently finalized.',
+    'Assess only the explicitly named CONTENT, ORGANIZATION, and VOCABULARY properties. Do not reorder, rename, alias, or add categories. Return strict JSON only with no Markdown or explanatory prose. Repeat sourceHash exactly. Every score and maxScore must be a JSON number, never a string, fraction, percentage, label, or explanatory value. CONTENT.score, ORGANIZATION.score, and VOCABULARY.score must each be between 0 and 20 inclusive, and each maxScore must be exactly 20. Do not score Grammar, Mechanics, Presentation, or overall; the backend calculates those values. Do not invent issue counts. Every quote must be copied exactly from the transcript. For correction evidence, copy correctionId exactly from correctionCatalog and only from the same category; never generate, shorten, translate, infer, or substitute an array index or display marker number. For a category whose allowedCorrectionIdsByCategory list is empty, do not return correction evidence. Use transcript evidence with evidenceType="transcript", correctionId=null, an exact transcript quote, explanation, and suggestion. Strength evidence is always grounded by an exact transcript quote. Forbidden example: evidenceType="correction" with correctionId="1" or any ID absent from that category catalog. If detailed instructions are unavailable but a title exists, Content must state it was evaluated against the assignment title because detailed instructions were unavailable. If neither title nor instructions exist, make Content provisional and explain that task achievement cannot be confidently finalized.',
     `transcript=${input.transcript}`
   ].join('\n');
   const messages = [
@@ -57,7 +78,8 @@ function buildRequest(input) {
     { role: 'user', content: prompt }
   ];
   const length = JSON.stringify(messages).length;
-  return { messages, promptCharacters: length, promptInputTokenEstimate: Math.ceil(length / 4), contextStatus };
+  return { messages, promptCharacters: length, promptInputTokenEstimate: Math.ceil(length / 4), contextStatus,
+    correctionCatalog: catalog, allowedCorrectionIds };
 }
 
 function semanticRubricError(code, message, validationStage = 'schema_validation', path = null, details = null) {
@@ -142,21 +164,47 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
     }
     const improvementEvidence = [];
     for (const ev of Array.isArray(item.improvementEvidence) ? item.improvementEvidence : []) {
-      const correctionId = String(ev?.correctionId || '').trim();
-      const correction = correctionMap.get(correctionId);
-      if (!correction || correction.category !== category)
-        throw semanticRubricError('SEMANTIC_RUBRIC_CORRECTION_INVALID',
-          'Semantic rubric referenced an invalid correction ID', 'evidence_validation',
+      const rawCorrectionId = ev?.correctionId;
+      const correctionId = typeof rawCorrectionId === 'string' ? rawCorrectionId.trim() : '';
+      const evidenceType = ev?.evidenceType || (correctionId ? 'correction' : null);
+      let correction = null;
+      if (evidenceType === 'correction') {
+        if (!correctionId) throw semanticRubricError('SEMANTIC_RUBRIC_CORRECTION_INVALID',
+          'Semantic rubric correction evidence is missing a correction ID', 'evidence_validation',
           `categories.${category}.improvementEvidence.correctionId`);
-      const quotedText = assertQuote(transcript, ev?.quotedText || correction.quotedText,
+        correction = correctionMap.get(correctionId);
+        if (!correction || correction.category !== category)
+          throw semanticRubricError('SEMANTIC_RUBRIC_CORRECTION_INVALID',
+            'Semantic rubric referenced an invalid correction ID', 'evidence_validation',
+            `categories.${category}.improvementEvidence.correctionId`);
+      } else if (evidenceType === 'transcript') {
+        if (rawCorrectionId !== null && rawCorrectionId !== undefined)
+          throw semanticRubricError('SEMANTIC_RUBRIC_CORRECTION_INVALID',
+            'Transcript evidence must not contain a correction ID', 'evidence_validation',
+            `categories.${category}.improvementEvidence.correctionId`);
+      } else {
+        throw semanticRubricError('SEMANTIC_RUBRIC_SCHEMA_INVALID',
+          'Semantic rubric improvement evidence type is invalid', 'schema_validation',
+          `categories.${category}.improvementEvidence.evidenceType`);
+      }
+      const quotedText = assertQuote(transcript, ev?.quotedText || correction?.quotedText,
         `categories.${category}.improvementEvidence.quotedText`);
       const explanation = clean(ev?.explanation, MAX_EXPLANATION);
       const suggestion = clean(ev?.suggestion, MAX_SUGGESTION);
       if (!explanation || !suggestion) throw semanticRubricError('SEMANTIC_RUBRIC_SCHEMA_INVALID',
         'Semantic rubric improvement evidence is incomplete', 'schema_validation',
         `categories.${category}.improvementEvidence`);
-      const key = `${category}:improve:${correctionId}:${quotedText}`;
-      if (!seenEvidence.has(key)) { seenEvidence.add(key); improvementEvidence.push({ correctionId, quotedText, explanation, suggestion }); }
+      const key = `${category}:improve:${evidenceType}:${correctionId}:${quotedText}`;
+      if (!seenEvidence.has(key)) {
+        seenEvidence.add(key);
+        improvementEvidence.push({
+          evidenceType,
+          correctionId: evidenceType === 'correction' ? correctionId : null,
+          quotedText,
+          explanation,
+          suggestion
+        });
+      }
     }
     validated[category] = { score, maxScore: 20, comment, issueCount: (corrections || []).filter((c) => c.category === category).length,
       strengthEvidence, improvementEvidence };
@@ -166,10 +214,11 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
 
 const REPAIRABLE_VALIDATION_CODES = new Set([
   'SEMANTIC_RUBRIC_SCORE_INVALID',
-  'SEMANTIC_RUBRIC_SCHEMA_INVALID'
+  'SEMANTIC_RUBRIC_SCHEMA_INVALID',
+  'SEMANTIC_RUBRIC_CORRECTION_INVALID'
 ]);
 
-function buildRepairMessages(originalMessages, validationIssues = []) {
+function buildRepairMessages(originalMessages, validationIssues = [], allowedCorrectionIds = {}) {
   const issues = (Array.isArray(validationIssues) ? validationIssues : []).map((issue) => ({
     path: String(issue?.path || ''),
     code: String(issue?.code || ''),
@@ -181,7 +230,7 @@ function buildRepairMessages(originalMessages, validationIssues = []) {
     ...originalMessages,
     {
       role: 'user',
-      content: `The prior JSON failed authoritative validation: ${JSON.stringify(issues)}. Return one complete corrected JSON object for the original rubric context. Preserve the exact named CONTENT, ORGANIZATION, and VOCABULARY structure and sourceHash. Scores/maxScore must be JSON numbers; each score must be 0 through 20 and maxScore exactly 20. Return no Markdown, total, aliases, or explanatory prose outside the JSON.`
+      content: `The prior JSON failed authoritative validation: ${JSON.stringify(issues)}. Allowed correction IDs grouped by category are immutable: ${JSON.stringify(allowedCorrectionIds)}. An empty category list means correction evidence is forbidden for that category. Use evidenceType="transcript", correctionId=null, and an exact canonical transcript quote for transcript-grounded improvement evidence. Never invent, shorten, infer, translate, cross categories, use array indexes, or use display marker numbers as correction IDs. Return one complete corrected JSON object for the original rubric context. Preserve the exact named CONTENT, ORGANIZATION, and VOCABULARY structure and sourceHash. Scores/maxScore must be JSON numbers; each score must be 0 through 20 and maxScore exactly 20. Return no Markdown, total, aliases, or explanatory prose outside the JSON.`
     }
   ];
 }
@@ -201,6 +250,7 @@ function attachCompletionMetadata(error, completion, startedAt) {
   error.usage = completion.usage || null;
   error.markdownFenceDetected = error.markdownFenceDetected === true
     || /^```json\b/iu.test(String(completion.content || '').trim());
+  error.attempts = Array.isArray(completion.metrics?.attempts) ? completion.metrics.attempts : [];
   return error;
 }
 
@@ -235,7 +285,7 @@ async function assess(input, dependencies = {}) {
     };
     try {
       finalCompletion = await runCompletion({
-        messages: buildRepairMessages(request.messages, error.validationIssues),
+        messages: buildRepairMessages(request.messages, error.validationIssues, request.allowedCorrectionIds),
         config: repairConfig,
         env: dependencies.env || process.env,
         fetchImpl: dependencies.fetchImpl || global.fetch
@@ -248,7 +298,15 @@ async function assess(input, dependencies = {}) {
       });
     } catch (repairError) {
       repairError.repairAttempted = true;
-      if (finalCompletion !== completion) attachCompletionMetadata(repairError, finalCompletion, startedAt);
+      const firstAttempts = Array.isArray(completion.metrics?.attempts) ? completion.metrics.attempts : [];
+      if (finalCompletion !== completion) {
+        attachCompletionMetadata(repairError, finalCompletion, startedAt);
+        const repairAttempts = Array.isArray(finalCompletion.metrics?.attempts)
+          ? finalCompletion.metrics.attempts.map((attempt) => ({ ...attempt, validationRepair: true })) : [];
+        repairError.attempts = [...firstAttempts, ...repairAttempts];
+      } else if (!Array.isArray(repairError.attempts)) {
+        repairError.attempts = firstAttempts;
+      }
       throw repairError;
     }
   }
@@ -263,5 +321,5 @@ async function assess(input, dependencies = {}) {
       promptCharacters: request.promptCharacters, promptInputTokenEstimate: request.promptInputTokenEstimate } };
 }
 
-module.exports = { PROMPT_VERSION, SCHEMA_VERSION, SEMANTIC_CATEGORIES, buildRequest, buildRepairMessages,
-  parseJson, validateAssessment, assess };
+module.exports = { PROMPT_VERSION, SCHEMA_VERSION, SEMANTIC_CATEGORIES, correctionCatalog,
+  allowedCorrectionIdsByCategory, buildRequest, buildRepairMessages, parseJson, validateAssessment, assess };

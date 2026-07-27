@@ -41,6 +41,47 @@ describe('semantic rubric assessment validation', () => {
       .toThrow(/correction ID/i);
   });
 
+  test('accepts transcript-grounded Content and Organization improvement evidence with zero corrections', () => {
+    const payload = valid();
+    payload.categories.CONTENT.improvementEvidence = [{
+      evidenceType: 'transcript', correctionId: null, quotedText: 'clear idea',
+      explanation: 'The idea needs more development.', suggestion: 'Add a specific supporting example.'
+    }];
+    payload.categories.ORGANIZATION.improvementEvidence = [{
+      evidenceType: 'transcript', correctionId: null, quotedText: 'The ending repeats',
+      explanation: 'The conclusion repeats rather than synthesizes.', suggestion: 'Synthesize the main point.'
+    }];
+    const result = validateAssessment(payload, {
+      sourceHash: 'hash',
+      transcript,
+      corrections: corrections.filter((item) => !['CONTENT', 'ORGANIZATION'].includes(item.category))
+    });
+    expect(result.categories.CONTENT.improvementEvidence[0]).toMatchObject({
+      evidenceType: 'transcript', correctionId: null, quotedText: 'clear idea'
+    });
+    expect(result.categories.ORGANIZATION.improvementEvidence[0]).toMatchObject({
+      evidenceType: 'transcript', correctionId: null, quotedText: 'The ending repeats'
+    });
+  });
+
+  test('rejects a Grammar correction ID used as Content evidence', () => {
+    const payload = valid();
+    payload.categories.CONTENT.improvementEvidence[0].correctionId = 'g1';
+    expect(() => validateAssessment(payload, {
+      sourceHash: 'hash', transcript, corrections: [...corrections, { id: 'g1', category: 'GRAMMAR', quotedText: 'clear idea' }]
+    })).toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_CORRECTION_INVALID' }));
+  });
+
+  test('rejects an ungrounded transcript-evidence quotation', () => {
+    const payload = valid();
+    payload.categories.CONTENT.improvementEvidence = [{
+      evidenceType: 'transcript', correctionId: null, quotedText: 'invented passage',
+      explanation: 'Needs support.', suggestion: 'Add support.'
+    }];
+    expect(() => validateAssessment(payload, { sourceHash: 'hash', transcript, corrections: [] }))
+      .toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_EVIDENCE_UNGROUNDED' }));
+  });
+
   test.each([99, -1, '18'])('rejects incorrect score type or range: %p', (score) => {
     const payload = valid();
     payload.categories.CONTENT.score = score;
@@ -142,5 +183,45 @@ describe('semantic rubric assessment validation', () => {
       }
     })).rejects.toMatchObject({ code: 'SEMANTIC_RUBRIC_SCORE_INVALID', repairAttempted: true });
     expect(runCompletion).toHaveBeenCalledTimes(2);
+  });
+
+  test('repairs one invented Content correction ID using transcript evidence and reports both provider attempts', async () => {
+    const invalid = valid();
+    invalid.categories.CONTENT.improvementEvidence[0].correctionId = 'invented-content-id';
+    const repaired = valid();
+    repaired.categories.CONTENT.improvementEvidence = [{
+      evidenceType: 'transcript', correctionId: null, quotedText: 'clear idea',
+      explanation: 'The idea needs more development.', suggestion: 'Add a specific supporting example.'
+    }];
+    const completion = (payload) => ({
+      content: JSON.stringify(payload), provider: 'google', model: 'gemini-3.6-flash',
+      httpStatus: 200, finishReason: 'STOP', candidateCount: 1, hasContent: true, hasText: true,
+      responseTextLength: 100, metrics: { attempts: [{ attempt: 1, status: 'completed' }] }
+    });
+    const runCompletion = jest.fn()
+      .mockResolvedValueOnce(completion(invalid))
+      .mockResolvedValueOnce(completion(repaired));
+    const result = await assess({
+      transcript,
+      corrections: corrections.filter((item) => item.category !== 'CONTENT'),
+      sourceHash: 'hash',
+      assignment: { title: 'Essay' },
+      statistics: {},
+      pageManifest: []
+    }, {
+      runCompletion,
+      env: { GEMINI_API_KEY: 'test' },
+      config: {
+        provider: 'google', model: 'gemini-3.6-flash', totalBudgetMs: 90000, attemptTimeoutMs: 45000,
+        minAttemptBudgetMs: 1000, maxRetries: 1, maxOutputTokens: 4000, approvedModels: []
+      }
+    });
+    expect(runCompletion).toHaveBeenCalledTimes(2);
+    expect(runCompletion.mock.calls[1][0].messages.at(-1).content).toContain('"CONTENT":[]');
+    expect(result.categories.CONTENT.improvementEvidence[0]).toMatchObject({
+      evidenceType: 'transcript', correctionId: null
+    });
+    expect(result.metrics.attempts).toHaveLength(2);
+    expect(result.metrics.attempts[1]).toMatchObject({ validationRepair: true });
   });
 });
