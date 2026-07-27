@@ -11,10 +11,11 @@ const { normalizePublicUploadsUrlForDev } = require('../src/controllers/submissi
 describe('production URL and CORS configuration', () => {
   const previous = {};
   beforeAll(() => {
-    for (const key of ['NODE_ENV', 'FRONTEND_URL', 'CORS_ORIGINS', 'PUBLIC_API_URL', 'BASE_URL']) previous[key] = process.env[key];
+    for (const key of ['NODE_ENV', 'FRONTEND_URL', 'CORS_ALLOWED_ORIGINS', 'CORS_ORIGINS', 'PUBLIC_API_URL', 'BASE_URL']) previous[key] = process.env[key];
     process.env.NODE_ENV = 'production';
     process.env.FRONTEND_URL = 'https://comarkers.roznahub.com';
-    process.env.CORS_ORIGINS = 'https://comarkers.roznahub.com';
+    process.env.CORS_ALLOWED_ORIGINS = 'https://comarkers.roznahub.com';
+    delete process.env.CORS_ORIGINS;
     process.env.PUBLIC_API_URL = 'https://comarkerback.roznahub.com';
     process.env.BASE_URL = 'https://comarkerback.roznahub.com';
   });

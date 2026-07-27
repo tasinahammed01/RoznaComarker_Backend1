@@ -1,4 +1,4 @@
-const { parseJson, validateAssessment } = require('../src/services/semanticRubricAssessment.service');
+const { parseJson, validateAssessment, assess } = require('../src/services/semanticRubricAssessment.service');
 
 const transcript = 'This essay has a clear idea. The ending repeats the same point.';
 const corrections = [
@@ -47,7 +47,29 @@ describe('semantic rubric assessment validation', () => {
     expect(() => validateAssessment(payload, { sourceHash: 'hash', transcript, corrections }))
       .toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_SCORE_INVALID',
         validationStage: 'score_validation',
-        validationIssues: [{ path: 'categories.CONTENT.score', code: 'SEMANTIC_RUBRIC_SCORE_INVALID' }] }));
+        validationIssues: [expect.objectContaining({
+          path: 'categories.CONTENT.score',
+          code: 'SEMANTIC_RUBRIC_SCORE_INVALID',
+          category: 'CONTENT',
+          expectedType: 'number',
+          expectedMinimum: 0,
+          expectedMaximum: 20
+        })] }));
+  });
+
+  test('reports only safe primitive score diagnostics and never clamps an over-range score', () => {
+    const payload = valid();
+    payload.categories.CONTENT.score = 25;
+    expect(() => validateAssessment(payload, { sourceHash: 'hash', transcript, corrections }))
+      .toThrow(expect.objectContaining({
+        validationIssues: [expect.objectContaining({
+          actualType: 'number',
+          finite: true,
+          actualNumericValue: 25,
+          expectedMaximum: 20
+        })]
+      }));
+    expect(payload.categories.CONTENT.score).toBe(25);
   });
 
   test('accepts exactly one surrounding Markdown JSON fence', () => {
@@ -68,5 +90,57 @@ describe('semantic rubric assessment validation', () => {
     expect(result.categories.CONTENT.score).toBe(18);
     expect(result.categories.ORGANIZATION.score).toBe(16);
     expect(result.categories.VOCABULARY.score).toBe(15);
+  });
+
+  test('performs at most one bounded repair and validates the complete replacement response', async () => {
+    const invalid = valid();
+    invalid.categories.CONTENT.score = 25;
+    const runCompletion = jest.fn()
+      .mockResolvedValueOnce({
+        content: JSON.stringify(invalid), provider: 'google', model: 'gemini-3.6-flash',
+        httpStatus: 200, finishReason: 'STOP', candidateCount: 1, hasContent: true, hasText: true,
+        responseTextLength: 100, metrics: { attempts: [{ attempt: 1, status: 'completed' }] }
+      })
+      .mockResolvedValueOnce({
+        content: JSON.stringify(valid()), provider: 'google', model: 'gemini-3.6-flash',
+        httpStatus: 200, finishReason: 'STOP', candidateCount: 1, hasContent: true, hasText: true,
+        responseTextLength: 100, metrics: { attempts: [{ attempt: 1, status: 'completed' }] }
+      });
+    const result = await assess({
+      transcript, corrections, sourceHash: 'hash', assignment: { title: 'Essay' }, statistics: {}, pageManifest: []
+    }, {
+      runCompletion,
+      env: { GEMINI_API_KEY: 'test' },
+      config: {
+        provider: 'google', model: 'gemini-3.6-flash', totalBudgetMs: 90000, attemptTimeoutMs: 45000,
+        minAttemptBudgetMs: 1000, maxRetries: 1, maxOutputTokens: 4000, approvedModels: []
+      }
+    });
+    expect(runCompletion).toHaveBeenCalledTimes(2);
+    expect(runCompletion.mock.calls[1][0].config).toMatchObject({ maxRetries: 0 });
+    expect(runCompletion.mock.calls[1][0].messages.at(-1).content).toContain('categories.CONTENT.score');
+    expect(result.categories.CONTENT.score).toBe(18);
+    expect(result.metrics.validationRepairAttempted).toBe(true);
+  });
+
+  test('fails truthfully after one invalid repair response', async () => {
+    const invalid = valid();
+    invalid.categories.CONTENT.score = 25;
+    const runCompletion = jest.fn().mockResolvedValue({
+      content: JSON.stringify(invalid), provider: 'google', model: 'gemini-3.6-flash',
+      httpStatus: 200, finishReason: 'STOP', candidateCount: 1, hasContent: true, hasText: true,
+      responseTextLength: 100, metrics: { attempts: [] }
+    });
+    await expect(assess({
+      transcript, corrections, sourceHash: 'hash', assignment: { title: 'Essay' }, statistics: {}, pageManifest: []
+    }, {
+      runCompletion,
+      env: { GEMINI_API_KEY: 'test' },
+      config: {
+        provider: 'google', model: 'gemini-3.6-flash', totalBudgetMs: 90000, attemptTimeoutMs: 45000,
+        minAttemptBudgetMs: 1000, maxRetries: 1, maxOutputTokens: 4000, approvedModels: []
+      }
+    })).rejects.toMatchObject({ code: 'SEMANTIC_RUBRIC_SCORE_INVALID', repairAttempted: true });
+    expect(runCompletion).toHaveBeenCalledTimes(2);
   });
 });

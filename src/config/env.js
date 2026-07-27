@@ -20,7 +20,10 @@ const required = [
 ];
 
 if (process.env.NODE_ENV === 'production') {
-  required.push('FRONTEND_URL', 'CORS_ORIGINS', 'PUBLIC_API_URL', 'BASE_URL');
+  required.push('FRONTEND_URL', 'PUBLIC_API_URL', 'BASE_URL');
+  if (!String(process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGINS || '').trim()) {
+    throw new Error('Missing required env var: CORS_ALLOWED_ORIGINS');
+  }
 }
 
 // Validate each required variable with a clear, individual error message
@@ -37,6 +40,7 @@ const env = {
   NODE_ENV: process.env.NODE_ENV,
   JWT_SECRET: process.env.JWT_SECRET,
   FRONTEND_URL: process.env.FRONTEND_URL,
+  CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGINS,
   CORS_ORIGINS: process.env.CORS_ORIGINS,
   PUBLIC_API_URL: process.env.PUBLIC_API_URL,
   BASE_URL: process.env.BASE_URL,

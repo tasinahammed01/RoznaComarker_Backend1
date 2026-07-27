@@ -19,6 +19,26 @@ describe('canonical evaluation contract', () => {
     expect([7, 9, 11, 14, 5.5, 4.5].reduce((sum, score) => sum + score, 0)).toBe(51);
   });
 
+  test('preserves asymmetric category identities through named-property synchronization', () => {
+    const asymmetric = synchronizedRubricScores({
+      GRAMMAR: { score: 5, maxScore: 25 },
+      VOCABULARY: { score: 9, maxScore: 20 },
+      ORGANIZATION: { score: 11, maxScore: 20 },
+      CONTENT: { score: 14, maxScore: 20 },
+      MECHANICS: { score: 5.5, maxScore: 10 },
+      PRESENTATION: { score: 4.5, maxScore: 5 }
+    }, {});
+    expect(Object.fromEntries(Object.entries(asymmetric).map(([key, item]) => [key, item.score]))).toEqual({
+      GRAMMAR: 5,
+      VOCABULARY: 9,
+      ORGANIZATION: 11,
+      CONTENT: 14,
+      MECHANICS: 5.5,
+      PRESENTATION: 4.5
+    });
+    expect(Object.values(asymmetric).reduce((sum, item) => sum + item.score, 0)).toBe(49);
+  });
+
   test('copies canonical issue counts into every category and preserves score bounds', () => {
     const result = synchronizedRubricScores(scores, stats);
     expect(result.GRAMMAR.issueCount).toBe(9);

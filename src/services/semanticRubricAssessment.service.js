@@ -49,7 +49,7 @@ function buildRequest(input) {
     `pageManifest=${JSON.stringify(compactPageManifest(input.pageManifest || []))}`,
     `validatedCorrections=${JSON.stringify(relevantCorrections(input.corrections || []))}`,
     `response=${JSON.stringify(response)}`,
-    'Assess only CONTENT, ORGANIZATION, and VOCABULARY. Return strict JSON only. Repeat sourceHash exactly. Do not score Grammar, Mechanics, Presentation, or overall. Do not invent issue counts. Every quote must be copied exactly from the transcript. Improvement evidence may reference only supplied correction IDs from the same category. If detailed instructions are unavailable but a title exists, Content must state it was evaluated against the assignment title because detailed instructions were unavailable. If neither title nor instructions exist, make Content provisional and explain that task achievement cannot be confidently finalized.',
+    'Assess only the explicitly named CONTENT, ORGANIZATION, and VOCABULARY properties. Do not reorder, rename, alias, or add categories. Return strict JSON only with no Markdown or explanatory prose. Repeat sourceHash exactly. Every score and maxScore must be a JSON number, never a string, fraction, percentage, label, or explanatory value. CONTENT.score, ORGANIZATION.score, and VOCABULARY.score must each be between 0 and 20 inclusive, and each maxScore must be exactly 20. Do not score Grammar, Mechanics, Presentation, or overall; the backend calculates those values. Do not invent issue counts. Every quote must be copied exactly from the transcript. Improvement evidence may reference only supplied correction IDs from the same category. If detailed instructions are unavailable but a title exists, Content must state it was evaluated against the assignment title because detailed instructions were unavailable. If neither title nor instructions exist, make Content provisional and explain that task achievement cannot be confidently finalized.',
     `transcript=${input.transcript}`
   ].join('\n');
   const messages = [
@@ -60,11 +60,11 @@ function buildRequest(input) {
   return { messages, promptCharacters: length, promptInputTokenEstimate: Math.ceil(length / 4), contextStatus };
 }
 
-function semanticRubricError(code, message, validationStage = 'schema_validation', path = null) {
+function semanticRubricError(code, message, validationStage = 'schema_validation', path = null, details = null) {
   const error = new Error(message);
   error.code = code;
   error.validationStage = validationStage;
-  error.validationIssues = path ? [{ path, code }] : [];
+  error.validationIssues = path ? [{ path, code, ...(details || {}) }] : [];
   return error;
 }
 
@@ -113,7 +113,15 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
     if (typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > 20
       || typeof maxScore !== 'number' || maxScore !== 20) {
       throw semanticRubricError('SEMANTIC_RUBRIC_SCORE_INVALID', 'Semantic rubric score is invalid',
-        'score_validation', `categories.${category}.score`);
+        'score_validation', `categories.${category}.score`, {
+          category,
+          expectedType: 'number',
+          actualType: score === null ? 'null' : typeof score,
+          expectedMinimum: 0,
+          expectedMaximum: 20,
+          finite: typeof score === 'number' ? Number.isFinite(score) : false,
+          ...(typeof score === 'number' && Number.isFinite(score) ? { actualNumericValue: score } : {})
+        });
     }
     let comment = clean(item.comment);
     if (!comment) throw semanticRubricError('SEMANTIC_RUBRIC_SCHEMA_INVALID', 'Semantic rubric comment is missing',
@@ -156,6 +164,46 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
   return { sourceHash, categories: validated, status: contextStatus === 'none' ? 'partial' : 'completed' };
 }
 
+const REPAIRABLE_VALIDATION_CODES = new Set([
+  'SEMANTIC_RUBRIC_SCORE_INVALID',
+  'SEMANTIC_RUBRIC_SCHEMA_INVALID'
+]);
+
+function buildRepairMessages(originalMessages, validationIssues = []) {
+  const issues = (Array.isArray(validationIssues) ? validationIssues : []).map((issue) => ({
+    path: String(issue?.path || ''),
+    code: String(issue?.code || ''),
+    ...(issue?.expectedType ? { expectedType: issue.expectedType } : {}),
+    ...(Number.isFinite(issue?.expectedMinimum) ? { expectedMinimum: issue.expectedMinimum } : {}),
+    ...(Number.isFinite(issue?.expectedMaximum) ? { expectedMaximum: issue.expectedMaximum } : {})
+  }));
+  return [
+    ...originalMessages,
+    {
+      role: 'user',
+      content: `The prior JSON failed authoritative validation: ${JSON.stringify(issues)}. Return one complete corrected JSON object for the original rubric context. Preserve the exact named CONTENT, ORGANIZATION, and VOCABULARY structure and sourceHash. Scores/maxScore must be JSON numbers; each score must be 0 through 20 and maxScore exactly 20. Return no Markdown, total, aliases, or explanatory prose outside the JSON.`
+    }
+  ];
+}
+
+function attachCompletionMetadata(error, completion, startedAt) {
+  error.provider = completion.provider;
+  error.model = completion.model;
+  error.httpStatus = completion.httpStatus;
+  error.finishReason = completion.finishReason;
+  error.candidateCount = completion.candidateCount;
+  error.hasContent = completion.hasContent;
+  error.hasText = completion.hasText;
+  error.contentType = completion.contentType;
+  error.responseTextLength = completion.responseTextLength;
+  error.requestId = completion.requestId;
+  error.durationMs = Date.now() - startedAt;
+  error.usage = completion.usage || null;
+  error.markdownFenceDetected = error.markdownFenceDetected === true
+    || /^```json\b/iu.test(String(completion.content || '').trim());
+  return error;
+}
+
 async function assess(input, dependencies = {}) {
   const config = dependencies.config || getSemanticAIConfig();
   if (!getSemanticAIConfigStatus(config, dependencies.env || process.env).configured) {
@@ -163,32 +211,57 @@ async function assess(input, dependencies = {}) {
   }
   const request = buildRequest(input);
   const startedAt = Date.now();
-  const completion = await (dependencies.runCompletion || runSemanticCompletion)({ messages: request.messages, config,
+  const runCompletion = dependencies.runCompletion || runSemanticCompletion;
+  const completion = await runCompletion({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch });
   let assessment;
+  let finalCompletion = completion;
+  let repairAttempted = false;
   try {
     assessment = validateAssessment(parseJson(completion.content), { sourceHash: input.sourceHash,
       transcript: input.transcript, corrections: input.corrections, contextStatus: request.contextStatus });
   } catch (error) {
-    error.provider = completion.provider;
-    error.model = completion.model;
-    error.httpStatus = completion.httpStatus;
-    error.finishReason = completion.finishReason;
-    error.candidateCount = completion.candidateCount;
-    error.hasContent = completion.hasContent;
-    error.hasText = completion.hasText;
-    error.contentType = completion.contentType;
-    error.responseTextLength = completion.responseTextLength;
-    error.requestId = completion.requestId;
-    error.durationMs = Date.now() - startedAt;
-    error.usage = completion.usage || null;
-    error.markdownFenceDetected = error.markdownFenceDetected === true
-      || /^```json\b/iu.test(String(completion.content || '').trim());
-    throw error;
+    attachCompletionMetadata(error, completion, startedAt);
+    if (!REPAIRABLE_VALIDATION_CODES.has(error?.code)) throw error;
+    const elapsedMs = Date.now() - startedAt;
+    const remainingBudgetMs = Number(config.totalBudgetMs) - elapsedMs;
+    if (remainingBudgetMs < Number(config.minAttemptBudgetMs)) throw error;
+    repairAttempted = true;
+    const repairConfig = {
+      ...config,
+      maxRetries: 0,
+      totalBudgetMs: remainingBudgetMs,
+      attemptTimeoutMs: Math.min(Number(config.attemptTimeoutMs), remainingBudgetMs)
+    };
+    try {
+      finalCompletion = await runCompletion({
+        messages: buildRepairMessages(request.messages, error.validationIssues),
+        config: repairConfig,
+        env: dependencies.env || process.env,
+        fetchImpl: dependencies.fetchImpl || global.fetch
+      });
+      assessment = validateAssessment(parseJson(finalCompletion.content), {
+        sourceHash: input.sourceHash,
+        transcript: input.transcript,
+        corrections: input.corrections,
+        contextStatus: request.contextStatus
+      });
+    } catch (repairError) {
+      repairError.repairAttempted = true;
+      if (finalCompletion !== completion) attachCompletionMetadata(repairError, finalCompletion, startedAt);
+      throw repairError;
+    }
   }
-  return { ...assessment, provider: completion.provider, model: completion.model, usage: completion.usage,
-    metrics: { ...completion.metrics, semanticRubricAssessmentMs: Date.now() - startedAt,
+  const attempts = [
+    ...(Array.isArray(completion.metrics?.attempts) ? completion.metrics.attempts : []),
+    ...(repairAttempted && Array.isArray(finalCompletion.metrics?.attempts)
+      ? finalCompletion.metrics.attempts.map((attempt) => ({ ...attempt, validationRepair: true })) : [])
+  ];
+  return { ...assessment, provider: finalCompletion.provider, model: finalCompletion.model, usage: finalCompletion.usage,
+    metrics: { ...finalCompletion.metrics, attempts, validationRepairAttempted: repairAttempted,
+      semanticRubricAssessmentMs: Date.now() - startedAt,
       promptCharacters: request.promptCharacters, promptInputTokenEstimate: request.promptInputTokenEstimate } };
 }
 
-module.exports = { PROMPT_VERSION, SCHEMA_VERSION, SEMANTIC_CATEGORIES, buildRequest, parseJson, validateAssessment, assess };
+module.exports = { PROMPT_VERSION, SCHEMA_VERSION, SEMANTIC_CATEGORIES, buildRequest, buildRepairMessages,
+  parseJson, validateAssessment, assess };
