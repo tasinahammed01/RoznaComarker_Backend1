@@ -148,6 +148,28 @@ describe('adaptive practice', () => {
     expect(after).toBe(before);
   });
 
+  it('persists sanitized terminal gateway attempt metadata on chain exhaustion', async () => {
+    const { studentId, submission } = await seed({ CONTENT: { score: 10, maxScore: 20 } });
+    const failure = Object.assign(new Error('sanitized chain failure'), {
+      code: 'AI_CHAIN_EXHAUSTED',
+      attemptCount: 2,
+      timeoutCount: 1,
+      finalFailureCode: 'AI_ATTEMPT_TIMEOUT',
+      attempts: [
+        { provider: 'google', model: 'gemini-3.6-flash', code: 'AI_RESPONSE_TRUNCATED' },
+        { provider: 'openrouter', model: 'fallback-model', code: 'AI_ATTEMPT_TIMEOUT' }
+      ]
+    });
+    jest.spyOn(generationAI, 'generate').mockRejectedValue(failure);
+    await expect(service.generateSession(submission._id, studentId)).rejects.toMatchObject({ status: 502 });
+    const failed = await AdaptivePracticeSession.findOne().lean();
+    expect(failed.generation).toMatchObject({ provider: 'openrouter', model: 'fallback-model' });
+    expect(failed.generation.metrics).toMatchObject({
+      providerAttemptCount: 2, timeoutCount: 1, finalFailureCode: 'AI_ATTEMPT_TIMEOUT',
+      attempts: expect.arrayContaining([expect.objectContaining({ code: 'AI_RESPONSE_TRUNCATED' })])
+    });
+  });
+
   it('successful generation does not mutate submission or feedback grading/source fields', async () => {
     const { studentId, submission, feedback } = await seed({ CONTENT: { score: 10, maxScore: 20 } });
     const submissionBefore = await Submission.findById(submission._id).lean();

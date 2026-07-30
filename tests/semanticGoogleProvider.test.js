@@ -48,6 +48,24 @@ describe('Google adapter through the global semantic facade', () => {
       .rejects.toMatchObject({ code });
   });
 
+  test('preserves safe MAX_TOKENS usage and thinking metadata', async () => {
+    const payload = {
+      candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [
+        { thought: true, text: 'private reasoning' }, { text: '{"partial":true' }
+      ] } }],
+      usageMetadata: { promptTokenCount: 1200, candidatesTokenCount: 7000,
+        thoughtsTokenCount: 900, totalTokenCount: 8200 }
+    };
+    await expect(client.providerAttempt({ messages: [], provider: 'google',
+      model: 'any-google-model', maxOutputTokens: 8000, attemptTimeoutMs: 1000,
+      fetchImpl: async () => response(200, payload), env: env(), now: Date.now }))
+      .rejects.toMatchObject({
+        code: 'AI_RESPONSE_TRUNCATED', finishReason: 'MAX_TOKENS',
+        promptTokenCount: 1200, candidatesTokenCount: 7000, thoughtsTokenCount: 900,
+        totalTokenCount: 8200, maxOutputTokens: 8000, responseTextLength: 15, candidateCount: 1
+      });
+  });
+
   test.each([
     [401, 'AI_PROVIDER_AUTH_ERROR'], [402, 'AI_PROVIDER_PAYMENT_REQUIRED'],
     [429, 'AI_PROVIDER_RATE_LIMIT'], [500, 'AI_PROVIDER_UNAVAILABLE']

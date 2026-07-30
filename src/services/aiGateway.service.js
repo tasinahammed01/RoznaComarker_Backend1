@@ -112,32 +112,67 @@ function retryAfterMs(response, now = Date.now()) {
   return Number.isFinite(date) ? Math.max(0, date - now) : null;
 }
 
-function extractGoogle(payload) {
+function googleUsage(payload) {
+  const usage = payload?.usageMetadata;
+  return usage ? {
+    prompt_tokens: usage.promptTokenCount,
+    completion_tokens: usage.candidatesTokenCount,
+    thoughts_tokens: usage.thoughtsTokenCount,
+    total_tokens: usage.totalTokenCount
+  } : null;
+}
+
+function safeFailureMetadata(error) {
+  const allowed = ['finishReason', 'promptTokenCount', 'candidatesTokenCount', 'thoughtsTokenCount',
+    'totalTokenCount', 'maxOutputTokens', 'responseTextLength', 'candidateCount', 'validationCode'];
+  return Object.fromEntries(allowed.filter((key) => error?.[key] !== undefined && error?.[key] !== null)
+    .map((key) => [key, error[key]]));
+}
+
+function extractGoogle(payload, { maxOutputTokens } = {}) {
   const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
   const candidate = candidates[0];
   const finishReason = text(candidate?.finishReason).toUpperCase();
   const blockReason = text(payload?.promptFeedback?.blockReason);
+  const content = Array.isArray(candidate?.content?.parts) ? candidate.content.parts
+    .filter((part) => part && part.thought !== true && typeof part.text === 'string')
+    .map((part) => part.text).join('') : '';
+  const usage = googleUsage(payload);
+  const metadata = {
+    finishReason: finishReason || null,
+    promptTokenCount: usage?.prompt_tokens,
+    candidatesTokenCount: usage?.completion_tokens,
+    thoughtsTokenCount: usage?.thoughts_tokens,
+    totalTokenCount: usage?.total_tokens,
+    maxOutputTokens,
+    responseTextLength: content.length,
+    candidateCount: candidates.length
+  };
   if (blockReason || finishReason === 'SAFETY') throw attemptError('AI_RESPONSE_BLOCKED', 'AI response was blocked.');
-  if (['MAX_TOKENS', 'LENGTH'].includes(finishReason)) throw attemptError('AI_RESPONSE_TRUNCATED', 'AI response was truncated.');
+  if (['MAX_TOKENS', 'LENGTH'].includes(finishReason))
+    throw attemptError('AI_RESPONSE_TRUNCATED', 'AI response was truncated.', metadata);
   if (!candidates.length) throw attemptError('AI_RESPONSE_EMPTY', 'AI provider returned no candidates.');
   if (!Array.isArray(candidate?.content?.parts)) throw attemptError('AI_RESPONSE_INVALID', 'AI provider response structure is invalid.');
-  const content = candidate.content.parts
-    .filter((part) => part && part.thought !== true && typeof part.text === 'string')
-    .map((part) => part.text).join('');
   if (!content.trim()) throw attemptError('AI_RESPONSE_EMPTY', 'AI provider returned no text.');
-  return { content, finishReason: finishReason || null };
+  return { content, finishReason: finishReason || null, usage, ...metadata };
 }
 
-function extractOpenRouter(payload) {
+function extractOpenRouter(payload, { maxOutputTokens } = {}) {
   const choice = payload?.choices?.[0];
   const finishReason = text(choice?.finish_reason).toLowerCase();
-  if (['length', 'max_tokens'].includes(finishReason)) throw attemptError('AI_RESPONSE_TRUNCATED', 'AI response was truncated.');
   const content = choice?.message?.content;
+  const metadata = { finishReason: finishReason || null, maxOutputTokens,
+    responseTextLength: typeof content === 'string' ? content.length : 0,
+    candidateCount: Array.isArray(payload?.choices) ? payload.choices.length : 0 };
+  if (['length', 'max_tokens'].includes(finishReason))
+    throw attemptError('AI_RESPONSE_TRUNCATED', 'AI response was truncated.', metadata);
   if (typeof content !== 'string' || !content.trim()) throw attemptError('AI_RESPONSE_EMPTY', 'AI provider returned no text.');
-  return { content, finishReason: finishReason || null };
+  return { content, finishReason: finishReason || null, ...metadata };
 }
 
-function googleBody(messages, maxOutputTokens, temperature, responseFormat) {
+function googleBody(messages, maxOutputTokens, temperature, responseFormat, thinkingLevel, model) {
+  const supportedThinkingLevel = /^gemini-3(?:\.|[-])/iu.test(String(model || ''))
+    && ['minimal', 'low', 'medium', 'high'].includes(thinkingLevel);
   const system = messages.filter((m) => m?.role === 'system').map((m) => String(m.content || '')).join('\n');
   return {
     ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
@@ -154,13 +189,14 @@ function googleBody(messages, maxOutputTokens, temperature, responseFormat) {
     generationConfig: {
       temperature,
       maxOutputTokens,
+      ...(supportedThinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
       ...(responseFormat === 'json' ? { responseMimeType: 'application/json' } : {})
     }
   };
 }
 
 async function providerAttempt({ entry, messages, maxOutputTokens, temperature, responseFormat,
-  attemptTimeoutMs, fetchImpl, env, now }) {
+  attemptTimeoutMs, fetchImpl, env, now, googleThinkingLevel }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
   const started = now();
@@ -170,7 +206,8 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
     const url = google
       ? `${base}/models/${encodeURIComponent(entry.model)}:generateContent`
       : `${base}/chat/completions`;
-    const body = google ? googleBody(messages, maxOutputTokens, temperature, responseFormat) : {
+    const body = google ? googleBody(messages, maxOutputTokens, temperature, responseFormat,
+      googleThinkingLevel, entry.model) : {
       model: entry.model, messages, temperature, max_tokens: maxOutputTokens
       // JSON is enforced by the prompt and validator; free OpenRouter models do not
       // consistently implement response_format.
@@ -197,12 +234,12 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
     let payload;
     try { payload = JSON.parse(await response.text()); }
     catch { throw attemptError('AI_RESPONSE_INVALID', 'AI provider returned invalid JSON transport.'); }
-    const extracted = google ? extractGoogle(payload) : extractOpenRouter(payload);
-    const usage = google ? (payload.usageMetadata ? {
-      prompt_tokens: payload.usageMetadata.promptTokenCount,
-      completion_tokens: payload.usageMetadata.candidatesTokenCount,
-      total_tokens: payload.usageMetadata.totalTokenCount
-    } : null) : payload.usage || null;
+    const extracted = google ? extractGoogle(payload, { maxOutputTokens })
+      : extractOpenRouter(payload, { maxOutputTokens });
+    const usage = google ? extracted.usage : (payload.usage ? {
+      ...payload.usage,
+      thoughts_tokens: payload.usage?.completion_tokens_details?.reasoning_tokens
+    } : null);
     return { ...extracted, usage, durationMs: now() - started };
   } catch (error) {
     if (controller.signal.aborted) throw attemptError('AI_ATTEMPT_TIMEOUT', 'AI provider attempt timed out.');
@@ -213,7 +250,7 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
 }
 
 async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4000, temperature = 0.1,
-  responseFormat = 'text', validate, metadata = {}, env = process.env, fetchImpl = global.fetch,
+  responseFormat = 'text', validate, metadata = {}, googleThinkingLevel, env = process.env, fetchImpl = global.fetch,
   now = Date.now, sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   config = getAIConfig(env), onAttempt, onRetry } = {}) {
   if (!Array.isArray(messages) || typeof fetchImpl !== 'function') {
@@ -222,6 +259,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
   const started = now();
   const deadline = started + config.totalBudgetMs;
   const attempts = [];
+  const maxAttempts = config.chain.length * (config.retriesPerModel + 1);
   let attemptCount = 0;
   let lastError;
   for (const entry of config.chain) {
@@ -242,11 +280,12 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
       attemptCount += 1;
       const attemptStarted = now();
       if (typeof onAttempt === 'function') await onAttempt({ attempt: attemptCount,
+        maxAttempts,
         provider: entry.provider, model: entry.model, fallbackIndex: entry.fallbackIndex,
-        attemptTimeoutMs: timeout, remainingBudgetMs: remaining });
+        attemptTimeoutMs: timeout, remainingBudgetMs: remaining, maxOutputTokens });
       try {
         const result = await providerAttempt({ entry, messages, maxOutputTokens, temperature,
-          responseFormat, attemptTimeoutMs: timeout, fetchImpl, env, now });
+          responseFormat, attemptTimeoutMs: timeout, fetchImpl, env, now, googleThinkingLevel });
         let value = result.content;
         if (typeof validate === 'function') {
           try { value = await validate(result.content, { provider: entry.provider, model: entry.model }); }
@@ -257,7 +296,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
           }
         }
         attempts.push({ provider: entry.provider, model: entry.model, status: 'success',
-          code: null, durationMs: now() - attemptStarted, timeoutMs: timeout });
+          code: null, durationMs: now() - attemptStarted, timeoutMs: timeout, maxOutputTokens });
         const gatewayMetadata = { provider: entry.provider, model: entry.model, attemptCount,
           fallbackIndex: entry.fallbackIndex, fallbackUsed: entry.fallbackIndex > 0,
           durationMs: now() - started, usage: result.usage || null, attempts };
@@ -267,11 +306,13 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
       } catch (error) {
         lastError = error;
         const code = safeCode(error);
+        const failureMetadata = safeFailureMetadata(error);
         attempts.push({ provider: entry.provider, model: entry.model, status: 'failed',
-          code, durationMs: now() - attemptStarted, timeoutMs: timeout });
+          code, durationMs: now() - attemptStarted, timeoutMs: timeout, maxOutputTokens, ...failureMetadata });
         logger.warn({ message: 'AI gateway attempt failed', feature, attemptNumber: attemptCount,
           provider: entry.provider, model: entry.model, fallbackIndex: entry.fallbackIndex,
-          durationMs: now() - attemptStarted, attemptTimeoutMs: timeout, code });
+          durationMs: now() - attemptStarted, attemptTimeoutMs: timeout, maxOutputTokens, code,
+          ...failureMetadata });
         const status = Number(error?.status);
         const retryableSameModel = retry < config.retriesPerModel
           && (RETRYABLE_HTTP.has(status) || ['AI_ATTEMPT_TIMEOUT', 'AI_PROVIDER_UNAVAILABLE'].includes(code));
@@ -312,5 +353,6 @@ function validateAIConfig(env = process.env) {
 
 module.exports = {
   SUPPORTED_PROVIDERS, DEFAULTS, credentialFor, endpointFor, getAIConfig, validateAIConfig,
-  retryAfterMs, safeCode, extractGoogle, extractOpenRouter, providerAttempt, generate
+  retryAfterMs, safeCode, extractGoogle, extractOpenRouter, googleUsage, safeFailureMetadata,
+  providerAttempt, generate
 };

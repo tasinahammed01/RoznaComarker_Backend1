@@ -123,6 +123,6 @@ describe('semantic single-flight job lock', () => {
     expect(state).toMatchObject({ correctionStatus: 'partial', languageToolStatus: 'failed', languageToolSourceHash: null,
       semanticStatus: 'completed' });
     expect(state.writingCorrections.filter((item) => item.source === 'LANGUAGETOOL')).toEqual([]);
-    expect(state.correctionStatistics).toMatchObject({ grammar: null, mechanics: null });
+    expect(state.correctionStatistics).toMatchObject({ grammar: 0, mechanics: 0 });
   });
 });

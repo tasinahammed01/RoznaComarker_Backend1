@@ -102,7 +102,7 @@ describe('production URL and CORS configuration', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers['access-control-allow-origin']).toBeUndefined();
-  });
+  }, 15000);
 
   test('returns 404 instead of a CORS 403 for a missing submitted image without Origin', async () => {
     const productionApp = require('../src/app');

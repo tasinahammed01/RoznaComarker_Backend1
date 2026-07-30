@@ -8,6 +8,7 @@ const Assignment = require('../models/assignment.model');
 const AdaptivePracticeSession = require('../models/AdaptivePracticeSession');
 const { getNormalizedSubmissionTranscript, normalizeOcrTranscript } = require('../utils/ocrTranscriptNormalizer');
 const generationAI = require('./adaptivePracticeGenerationAI.service');
+const { DEFINITIONS } = require('./writingCategoryDefinitions.service');
 const logger = require('../utils/logger');
 
 const {
@@ -171,6 +172,10 @@ function validateAiResponse(raw, weakSkills, transcript) {
   });
 }
 
+if (ADAPTIVE_SKILLS.some((skill) => !DEFINITIONS[skill.id])) {
+  throw new Error('Adaptive skill definitions are out of sync with the canonical writing categories');
+}
+
 function buildMessages(source) {
   const targets = source.weakSkills.map((skill) => ({ id: skill.id, category: skill.category, percentage: skill.percentage, status: skill.status }));
   const transcript = source.transcript.slice(0, ADAPTIVE_PRACTICE_MAX_TRANSCRIPT_CHARS);
@@ -267,6 +272,11 @@ async function generateSession(submissionId, studentId, options = {}) {
     logger.metric({ event: 'adaptive_practice_generation_timing', feature: 'adaptive_practice_generation', outcome: 'ready', submissionId: String(source.submission._id), provider: session.generation.provider, model: session.generation.model, ...session.generation.metrics });
     return sessionResponseWithProgress('ready', session.toObject());
   } catch (error) {
+    const attempts = Array.isArray(error?.attempts) ? error.attempts : [];
+    providerAttemptCount = Number(error?.attemptCount) || attempts.length || providerAttemptCount;
+    const terminalAttempt = attempts[attempts.length - 1];
+    if (terminalAttempt?.provider) session.generation.provider = terminalAttempt.provider;
+    if (terminalAttempt?.model) session.generation.model = terminalAttempt.model;
     session.status = 'failed';
     session.activities = [];
     session.generation.completedAt = new Date();
@@ -275,6 +285,9 @@ async function generateSession(submissionId, studentId, options = {}) {
     session.generation.metrics = { ...(session.generation.metrics || {}), ...timings, attemptCount: providerAttemptCount,
       providerAttemptCount, repairAttemptCount, totalAttemptCount: providerAttemptCount,
       retryCount, retryDelayMs, finalErrorCode: error.code || 'AI_GENERATION_FAILED',
+      finalFailureCode: error.finalFailureCode || terminalAttempt?.code || null,
+      timeoutCount: Number(error.timeoutCount) || 0,
+      attempts,
       persisted: false, totalMs: Date.now() - totalStarted };
     await session.save();
     logger.metric({ event: 'adaptive_practice_generation_timing', feature: 'adaptive_practice_generation', outcome: 'failed', submissionId: String(source.submission._id), provider: session.generation.provider, model: session.generation.model, errorCode: session.generation.errorCode, ...session.generation.metrics });

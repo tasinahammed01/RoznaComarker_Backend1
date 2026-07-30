@@ -1,8 +1,11 @@
 'use strict';
 
+const {
+  ASSESSMENT_VERSION: CURRENT_ASSESSMENT_VERSION,
+  EVALUATION_VERSION: CURRENT_EVALUATION_VERSION
+} = require('../../services/rubricLanguageScoring.service');
+
 const CATEGORIES = ['CONTENT', 'GRAMMAR', 'ORGANIZATION', 'VOCABULARY', 'MECHANICS'];
-const CURRENT_ASSESSMENT_VERSION = 'writing-rubric-100-v2';
-const CURRENT_EVALUATION_VERSION = 'canonical-evaluation-2';
 const COLORS = { CONTENT: '#e89b3c', GRAMMAR: '#39956b', ORGANIZATION: '#3b82a0', VOCABULARY: '#8958b8', MECHANICS: '#c59a15' };
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const id = (value) => String(value?._id || value || '');
@@ -71,9 +74,10 @@ function buildSubmissionFeedbackReportViewModel(input = {}) {
   });
   const rubric = evaluationCurrent ? evaluation.rubricScores || {} : {};
   const categoryScores = Object.entries(rubric).map(([category, item]) => { const maxScore = Math.max(0, Number(item?.maxScore || 0)); const score = clamp(Number(item?.score || 0), 0, maxScore); return { category, score, maxScore, percentage: maxScore ? Math.round(score / maxScore * 100) : 0, issueCount: CATEGORIES.includes(category) ? statistics[category.toLowerCase()] : null, feedback: String(item?.comment || '') }; });
-  const boundedOverall = categoryScores.reduce((sum, item) => sum + item.score, 0); const maximumScore = categoryScores.reduce((sum, item) => sum + item.maxScore, 0) || 100;
+  const rubricTotal = categoryScores.reduce((sum, item) => sum + item.score, 0); const maximumScore = categoryScores.reduce((sum, item) => sum + item.maxScore, 0) || 100;
+  const persistedOverall = finite(evaluation.overallScore) ? Number(evaluation.overallScore) : null;
   const completeLegend = legend; const activeLegendItems = completeLegend.filter((item) => corrections.some((c) => c.symbol === item.symbol)).map((item) => ({ ...item, count: corrections.filter((c) => c.symbol === item.symbol).length }));
-  return { report: { generatedAt: input.generatedAt || new Date().toISOString(), reportVersion: 'submission-feedback-2.0' }, submission: { ...(input.identity || {}), submissionId: id(submission._id) || 'submission', wordCount: String(submission.canonicalText || '').trim().split(/\s+/).filter(Boolean).length, uploadedPageCount: submittedPages.length }, result: { overallScore: evaluationCurrent && categoryScores.length ? boundedOverall : null, maximumScore, grade: evaluationCurrent ? evaluation.grade || null : null, evaluationStatus: evaluationCurrent ? evaluation.status || 'completed' : 'stale', correctionStatus: submission.correctionStatus, correctionSourceHash: submission.correctionSourceHash || null, evaluationSourceHash: evaluationCurrent ? evaluation.evaluationSourceHash || submission.correctionSourceHash : null, teacherAdjusted: teacherOverride }, statistics, categoryScores, submittedPages, detailedFeedback: detailedCurrent ? feedback.detailedFeedback || { areasForImprovement: [], strengths: [], actionSteps: [] } : { status: 'stale', areasForImprovement: [], strengths: [], actionSteps: [] }, teacherComments: String(feedback.teacherComments || input.teacherComments || ''), activeLegendItems, completeLegend, diagnostics: { persistedStatisticsMismatch: CATEGORIES.some((category) => Number(submission.correctionStatistics?.[category.toLowerCase()] || 0) !== statistics[category.toLowerCase()]), rejectedCorrections: rawCorrections.length - corrections.length }, esc };
+  return { report: { generatedAt: input.generatedAt || new Date().toISOString(), reportVersion: 'submission-feedback-2.0' }, submission: { ...(input.identity || {}), submissionId: id(submission._id) || 'submission', wordCount: String(submission.canonicalText || '').trim().split(/\s+/).filter(Boolean).length, uploadedPageCount: submittedPages.length }, result: { overallScore: evaluationCurrent && categoryScores.length && persistedOverall !== null ? persistedOverall : null, maximumScore, grade: evaluationCurrent ? evaluation.grade || null : null, evaluationStatus: evaluationCurrent ? evaluation.status || 'completed' : 'stale', correctionStatus: submission.correctionStatus, correctionSourceHash: submission.correctionSourceHash || null, evaluationSourceHash: evaluationCurrent ? evaluation.evaluationSourceHash || submission.correctionSourceHash : null, teacherAdjusted: teacherOverride }, statistics, categoryScores, submittedPages, detailedFeedback: detailedCurrent ? feedback.detailedFeedback || { areasForImprovement: [], strengths: [], actionSteps: [] } : { status: 'stale', areasForImprovement: [], strengths: [], actionSteps: [] }, teacherComments: String(feedback.teacherComments || input.teacherComments || ''), activeLegendItems, completeLegend, diagnostics: { persistedStatisticsMismatch: CATEGORIES.some((category) => Number(submission.correctionStatistics?.[category.toLowerCase()] || 0) !== statistics[category.toLowerCase()]), persistedScoreMismatch: persistedOverall !== null && Math.abs(persistedOverall - rubricTotal) > 0.001, rejectedCorrections: rawCorrections.length - corrections.length }, esc };
 }
 
 module.exports = { CATEGORIES, COLORS, esc, normalizeBoxes, highlightedSegments, buildSubmissionFeedbackReportViewModel };

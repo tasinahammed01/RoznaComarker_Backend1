@@ -26,7 +26,7 @@ function buildCorrectionSourceHash({ transcript, assignment = {}, transcriptLayo
     version: canonical.VERSION, transcriptLayoutVersion }))).digest('hex');
 }
 
-async function generateAndPersist(doc, { assignment = {}, force = false } = {}) {
+async function generateAndPersist(doc, { assignment = {}, force = false, reuseLanguageTool = false } = {}) {
   const totalStartedAt = Date.now();
   const canonicalTranscript = buildCanonicalSubmissionTranscript(doc);
   if (!canonicalTranscript.isComplete) {
@@ -52,6 +52,11 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     && doc.correctionVersion === canonical.VERSION
     && doc.correctionTranscriptLayoutVersion === CANONICAL_TRANSCRIPT_LAYOUT_VERSION
     ? (doc.writingCorrections || []).filter((item) => String(item?.source || '').toUpperCase() === 'LANGUAGETOOL') : [];
+  const canReuseLanguageTool = reuseLanguageTool && doc.correctionSourceHash === hash
+    && doc.languageToolStatus === 'completed' && doc.languageToolSourceHash === hash
+    && doc.languageToolVersion === canonical.VERSION
+    && doc.languageToolMappingVersion === writing.LANGUAGE_TOOL_MAPPING_VERSION
+    && doc.languageToolTranscriptLayoutVersion === CANONICAL_TRANSCRIPT_LAYOUT_VERSION;
   if (!force && doc.correctionSourceHash === hash && doc.correctionVersion === canonical.VERSION
     && doc.correctionTranscriptLayoutVersion === CANONICAL_TRANSCRIPT_LAYOUT_VERSION && doc.correctionStatus === 'completed'
     && doc.semanticSourceKey === semanticSourceKey) {
@@ -78,19 +83,24 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const legend = await writing.getLegend();
   let ltRaw = null; let languageToolError = null; let languageToolDiagnostics = null;
   const languageToolStartedAt = Date.now();
-  try {
-    const languageToolResult = await writing.check({ text: transcript, language: 'en-US' });
-    ltRaw = languageToolResult.issues || [];
-    languageToolDiagnostics = languageToolResult.diagnostics || null;
+  if (canReuseLanguageTool) {
+    languageToolDiagnostics = doc.semanticMetrics?.languageToolDiagnostics || null;
+  } else {
+    try {
+      const languageToolResult = await writing.check({ text: transcript, language: 'en-US' });
+      ltRaw = languageToolResult.issues || [];
+      languageToolDiagnostics = languageToolResult.diagnostics || null;
+    }
+    catch (error) { languageToolError = error; }
   }
-  catch (error) { languageToolError = error; }
   const generatedLt = (ltRaw || []).map((issue) => canonical.normalizeCorrection({ category: issue.groupKey, symbol: issue.symbol,
     quotedText: transcript.slice(issue.start, issue.end), message: issue.message || issue.description,
     suggestedText: issue.suggestion, startChar: issue.start, endChar: issue.end, confidence: 1,
     classificationReason: issue.classificationReason, languageToolRuleId: issue.languageToolRuleId,
     languageToolCategoryId: issue.languageToolCategoryId, languageToolIssueType: issue.languageToolIssueType,
     languageToolMappingVersion: issue.languageToolMappingVersion }, transcript, spans, legend, 'LANGUAGETOOL')).filter(Boolean);
-  const lt = languageToolError ? previousLanguageCorrections : generatedLt;
+  const lt = canReuseLanguageTool ? previousLanguageCorrections
+    : (languageToolError ? previousLanguageCorrections : generatedLt);
   const languageToolAvailable = !languageToolError || previousLanguageCorrections.length > 0;
   const languageToolMs = Date.now() - languageToolStartedAt;
   const languageStatistics = languageToolAvailable ? canonical.statistics(lt) : null;
@@ -112,20 +122,21 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   await SubmissionFeedback.updateOne({ submissionId: doc._id, overriddenByTeacher: { $ne: true } },
     { $unset: { evaluationSourceHash: 1 } }).catch(() => {});
   let ai = []; let semanticError = null; let semanticReturnedCount = 0; let semanticRun = null; let failedSemanticAttempt = 0;
-  const rejectionReasons = { lowConfidence: 0, invalidCategoryOrSymbol: 0, invalidQuotation: 0, duplicate: 0 };
+  const rejectionReasons = {};
   let semanticValidationMs = 0; let semanticMappingMs = 0;
   const semanticStartedAt = Date.now();
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'semanticStarted', languageToolCount: lt.length, durationMs: languageToolMs });
   try {
-    semanticRun = await semantic.analyze({ transcript, assignment, languageToolCorrections: lt, transcriptHash: hash,
+    semanticRun = await semantic.analyze({ transcript, assignment, languageToolCorrections: lt, transcriptHash: hash, spans,
       pageManifest: canonicalTranscript.pages.map((page) => ({ fileId: page.fileId, pageNumber: page.pageNumber, startChar: page.startChar, endChar: page.endChar })),
-      onAttempt: async ({ attempt, maxAttempts, provider, model, attemptTimeoutMs, remainingBudgetMs }) => {
+      onAttempt: async ({ attempt, maxAttempts, provider, model, attemptTimeoutMs, remainingBudgetMs, maxOutputTokens }) => {
         failedSemanticAttempt = attempt;
         await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
           semanticStatus: 'processing', semanticAttempt: attempt, semanticMaxAttempts: maxAttempts, semanticNextRetryAt: null
         }});
-        logger.info({ message: 'Semantic analysis attempt', submissionId: String(doc._id), provider, model, attempt, maxAttempts,
-          attemptTimeoutMs, remainingBudgetMs, jobIdPresent: true, sourceHashMatch: true });
+        logger.info({ message: 'Semantic analysis attempt', feature: 'semantic_corrections',
+          submissionId: String(doc._id), provider, model, attempt, maxAttempts,
+          maxOutputTokens, attemptTimeoutMs, remainingBudgetMs, jobIdPresent: true, sourceHashMatch: true });
       },
       onRetry: async ({ attempt, maxAttempts, delayMs, code, remainingBudgetMs, nextProvider, nextModel }) => {
         const nextRetryAt = new Date(Date.now() + delayMs);
@@ -135,25 +146,14 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
         logger.info({ message: 'Semantic analysis retry scheduled', submissionId: String(doc._id), attempt, maxAttempts, retryDelayMs: delayMs,
           timeoutClassification: code, remainingBudgetMs, nextProvider, nextModel, jobIdPresent: true, sourceHashMatch: true });
       } });
-    const raw = semanticRun.corrections;
-    semanticReturnedCount = raw.length;
-    const legendItems = canonical.legendIndex(legend);
-    for (const item of raw) {
-      if (Number(item?.confidence) < 0.65) { rejectionReasons.lowConfidence += 1; continue; }
-      const validationStartedAt = Date.now();
-      const meta = legendItems.get(String(item?.symbol || '').toUpperCase());
-      if (!meta || meta.category !== item?.category || !['CONTENT', 'ORGANIZATION', 'VOCABULARY'].includes(item?.category)) {
-        semanticValidationMs += Date.now() - validationStartedAt; rejectionReasons.invalidCategoryOrSymbol += 1; continue;
-      }
-      const quote = String(item?.quotedText || '');
-      const range = canonical.locateQuote(transcript, quote, item?.occurrence);
-      semanticValidationMs += Date.now() - validationStartedAt;
-      if (!range) { rejectionReasons.invalidQuotation += 1; continue; }
-      const mappingStartedAt = Date.now();
-      const normalized = canonical.normalizeCorrection({ ...item, startChar: range.start, endChar: range.end }, transcript, spans, legend, 'AI');
-      semanticMappingMs += Date.now() - mappingStartedAt;
-      if (normalized) ai.push(normalized); else rejectionReasons.invalidQuotation += 1;
-    }
+    const raw = semanticRun.corrections || [];
+    semanticReturnedCount = semanticRun.diagnostics?.rawCorrectionCount ?? raw.length;
+    Object.assign(rejectionReasons, semanticRun.diagnostics?.rejectionReasons || {});
+    semanticValidationMs = Number(semanticRun.metrics?.semanticValidationMs || 0);
+    const mappingStartedAt = Date.now();
+    ai = raw.map((item) => item?.id && item?.source === 'AI' ? item
+      : canonical.normalizeCorrection(item, transcript, spans, legend, 'AI')).filter(Boolean);
+    semanticMappingMs = Date.now() - mappingStartedAt;
   } catch (err) {
     semanticError = err;
     // Safe diagnostic logging for semantic failures (without exposing secrets)
@@ -175,12 +175,12 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   }
   const semanticAiMs = Date.now() - semanticStartedAt;
   const mergeStartedAt = Date.now();
-  const corrections = canonical.mergeCorrections([...lt, ...ai]);
+  const merged = canonical.mergeCanonicalCorrections({ languageToolCorrections: lt, aiCorrections: ai });
+  const corrections = merged.corrections;
   const combinedStatistics = canonical.statistics(corrections);
-  if (!languageToolAvailable) { combinedStatistics.grammar = null; combinedStatistics.mechanics = null; }
   const canonicalMergeMs = Date.now() - mergeStartedAt;
   const retainedAiIds = new Set(corrections.filter((item) => item.source === 'AI').map((item) => item.id));
-  rejectionReasons.duplicate = ai.filter((item) => !retainedAiIds.has(item.id)).length;
+  rejectionReasons.DUPLICATE_OR_CONFLICT = ai.filter((item) => !retainedAiIds.has(item.id)).length;
   const failedStage = languageToolError ? 'LANGUAGE_TOOL_ANALYSIS_FAILED' : safeErrorCode(semanticError);
   const anyAnalysisStageAvailable = languageToolAvailable || !semanticError;
   const terminalAttempts = semanticRun?.metrics?.attempts || semanticError?.attempts || [];
@@ -194,8 +194,9 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     finalFailureCode: semanticError.finalFailureCode || terminalAttempt?.code || safeErrorCode(semanticError)
   } : {});
   const persistedSemanticMetrics = { ...gatewayMetrics, semanticQueueWaitMs: null, semanticValidationMs, semanticMappingMs,
-    languageToolDiagnostics,
-    canonicalMergeMs, rawCorrectionCount: semanticReturnedCount, acceptedCorrectionCount: ai.length - rejectionReasons.duplicate,
+    languageToolDiagnostics, validationDiagnostics: semanticRun?.diagnostics || null,
+    canonicalMergeMs, mergeDiagnostics: merged.diagnostics,
+    rawCorrectionCount: semanticReturnedCount, acceptedCorrectionCount: ai.length - rejectionReasons.DUPLICATE_OR_CONFLICT,
     rejectedCorrectionCount: Object.values(rejectionReasons).reduce((sum, count) => sum + count, 0), rejectionReasons };
   const finalWrite = await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
     writingCorrections: corrections, correctionStatistics: combinedStatistics, correctionSourceHash: hash,

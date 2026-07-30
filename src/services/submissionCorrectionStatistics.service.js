@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const logger = require('../utils/logger');
 const { buildOcrCorrections, normalizeOcrWordsFromStored } = require('./ocrCorrections.service');
 const { getNormalizedSubmissionTranscript } = require('../utils/ocrTranscriptNormalizer');
+const { statistics: computeCanonicalCorrectionStatistics } = require('./correctionCanonical.service');
 
 const EMPTY_STATISTICS = Object.freeze({
   content: 0,
@@ -58,11 +59,16 @@ function correctionKey(correction, context = {}) {
 }
 
 function countSubmissionCorrections(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  const canonicalCategories = new Set(['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS']);
+  if (list.every((entry) => entry && !entry.correction && canonicalCategories.has(entry.category))) {
+    return { statistics: computeCanonicalCorrectionStatistics(list), beforeDedupe: list.length, afterDedupe: list.length };
+  }
   const statistics = { ...EMPTY_STATISTICS };
   const seen = new Set();
   let beforeDedupe = 0;
 
-  for (const entry of Array.isArray(entries) ? entries : []) {
+  for (const entry of list) {
     const correction = entry?.correction || entry;
     if (!correction || typeof correction !== 'object' || correction.deleted === true || correction.isDeleted === true) continue;
     const category = correctionCategory(correction);

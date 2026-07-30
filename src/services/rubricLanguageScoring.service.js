@@ -9,19 +9,20 @@ const RUBRIC_MAX = Object.freeze({
   PRESENTATION: 5
 });
 
-const ASSESSMENT_VERSION = 'writing-rubric-100-v2';
-const EVALUATION_VERSION = 'canonical-evaluation-2';
+const ASSESSMENT_VERSION = 'writing-rubric-100-v3';
+const EVALUATION_VERSION = 'canonical-evaluation-3';
 
 // Symbol severities are intentionally conservative. Unknown symbols get the
 // default penalty so newly-added correction symbols cannot be treated as free.
 const SYMBOL_SEVERITY = Object.freeze({
   GRAMMAR: Object.freeze({
-    AGR: 1.35, SVA: 1.35, TENSE: 1.25, VERB: 1.2, FRAG: 1.25, RUNON: 1.25,
+    AGR: 1.35, SVA: 1.35, T: 1.25, TENSE: 1.25, VF: 1.2, VERB: 1.2,
+    FRAG: 1.25, RO: 1.25, RUNON: 1.25,
     WO: 1.05, PREP: 0.95, ART: 0.8, PRON: 1.0, DEFAULT: 1.0
   }),
   MECHANICS: Object.freeze({
     SP: 1.15, SPELLING: 1.15, P: 1.0, PUNCT: 1.0, CAP: 0.9, TYP: 0.7,
-    SPACE: 0.65, DEFAULT: 0.85
+    SPC: 0.65, SPACE: 0.65, FMT: 0.7, DEFAULT: 0.85
   })
 });
 
@@ -43,15 +44,38 @@ function weightedIssuePenalty(corrections, category) {
   let total = 0;
   for (const correction of categoryCorrections(corrections, category)) {
     const symbol = String(correction?.symbol || 'DEFAULT').toUpperCase();
-    const key = `${symbol}:${String(correction?.quotedText || '').toLowerCase()}`;
+    const rule = String(correction?.languageToolRuleId || '').trim().toUpperCase();
+    const key = `${symbol}:${rule || 'CANONICAL_PATTERN'}`;
     const seen = occurrences.get(key) || 0;
     occurrences.set(key, seen + 1);
-    const repeatedFactor = seen === 0 ? 1 : Math.pow(0.72, seen);
-    const confidence = Number(correction?.confidence);
-    const confidenceFactor = Number.isFinite(confidence) ? Math.max(0.65, Math.min(1.1, confidence)) : 0.9;
-    total += (severity[symbol] || severity.DEFAULT || 1) * repeatedFactor * confidenceFactor;
+    const repeatedFactor = seen === 0 ? 1 : Math.max(0.25, Math.pow(0.78, seen));
+    total += (severity[symbol] || severity.DEFAULT || 1) * repeatedFactor;
   }
   return total;
+}
+
+function scoringAudit({ corrections, category, maxScore, wordCount }) {
+  const severity = SYMBOL_SEVERITY[category] || {};
+  const groups = new Map();
+  for (const correction of categoryCorrections(corrections, category)) {
+    const symbol = String(correction?.symbol || 'DEFAULT').toUpperCase();
+    const rule = String(correction?.languageToolRuleId || '').trim().toUpperCase();
+    const key = `${symbol}:${rule || 'CANONICAL_PATTERN'}`;
+    const group = groups.get(key) || { key, symbol, ruleId: rule || null, count: 0,
+      severityWeight: severity[symbol] || severity.DEFAULT || 1, weightedPenalty: 0 };
+    const factor = group.count === 0 ? 1 : Math.max(0.25, Math.pow(0.78, group.count));
+    group.count += 1;
+    group.weightedPenalty += group.severityWeight * factor;
+    groups.set(key, group);
+  }
+  const weightedPenalty = [...groups.values()].reduce((sum, group) => sum + group.weightedPenalty, 0);
+  const density = wordCount ? weightedPenalty / Math.max(120, wordCount) : 0;
+  const baseDeduction = weightedPenalty * (maxScore === 25 ? 0.78 : 0.46);
+  const densityDeduction = density * maxScore * 3.25;
+  const unclampedScore = maxScore - baseDeduction - densityDeduction;
+  return { category, wordCount, issueCount: categoryCorrections(corrections, category).length,
+    groups: [...groups.values()], weightedPenalty, density, baseDeduction, densityDeduction,
+    unclampedScore, score: scoreFromWeightedIssues({ corrections, category, maxScore, wordCount }).score };
 }
 
 function scoreFromWeightedIssues({ corrections, category, maxScore, wordCount }) {
@@ -95,7 +119,7 @@ function scorePresentation(submission) {
   const ratio = pageCount ? readableCount / pageCount : 0;
   const score = pageCount ? roundToHalf(clamp(RUBRIC_MAX.PRESENTATION * (ratio >= 0.95 ? 0.9 : ratio >= 0.67 ? 0.75 : 0.5), RUBRIC_MAX.PRESENTATION)) : 0;
   return { score, maxScore: RUBRIC_MAX.PRESENTATION, issueCount: 0,
-    comment: `Presentation score is provisional pending teacher review. Automated evidence only confirms page completeness/OCR readability (${readableCount}/${pageCount} pages readable); handwriting neatness was not evaluated.` };
+    comment: `Automated Presentation & Submission Quality score included in the overall result: page completeness/OCR readability only (${readableCount}/${pageCount} pages readable). Handwriting neatness was not scored and requires teacher review.` };
 }
 
 function gradeFromOverallScore(overallScore) {
@@ -117,5 +141,8 @@ module.exports = {
   scoreGrammar,
   scoreMechanics,
   scorePresentation,
+  weightedIssuePenalty,
+  scoreFromWeightedIssues,
+  scoringAudit,
   gradeFromOverallScore
 };

@@ -1,5 +1,7 @@
+const { DEFINITIONS } = require('./writingCategoryDefinitions.service');
+
 const VERSION = 'canonical-detailed-feedback-2';
-const CATEGORIES = ['CONTENT', 'ORGANIZATION', 'GRAMMAR', 'VOCABULARY', 'MECHANICS'];
+const CATEGORIES = Object.freeze(Object.keys(DEFINITIONS));
 
 const clean = (value, max = 240) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
 

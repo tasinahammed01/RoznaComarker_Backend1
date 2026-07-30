@@ -134,7 +134,10 @@ app.use(hpp());
 
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
-// app.use(createGlobalRateLimiter()); // Global rate limiter disabled
+// Ordinary reads, health checks, polling, static assets, and SSE are intentionally
+// not globally limited. Expensive/mutating routes use createSensitiveRateLimiter.
+// The default memory store is process-local; production clusters should use a
+// shared express-rate-limit store at the reverse proxy or application layer.
 
 // Serve legacy static files with CORS support
 app.use(

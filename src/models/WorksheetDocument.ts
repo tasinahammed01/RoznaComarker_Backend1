@@ -49,8 +49,6 @@ const WorksheetDocumentSchema = new Schema(
 
 // Compound index for teacher dashboard list queries
 WorksheetDocumentSchema.index({ createdBy: 1, createdAt: -1 });
-WorksheetDocumentSchema.index({ "meta.subject": 1 });
-
 export const WorksheetDocumentModel = mongoose.model(
   "WorksheetDocument",
   WorksheetDocumentSchema,

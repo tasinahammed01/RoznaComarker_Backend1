@@ -24,10 +24,14 @@ const router = (content) => response(200, {
 });
 
 describe('semantic global-chain facade', () => {
-  test('uses a bounded 5000-token semantic default', () => {
+  test('uses a bounded 8000-token semantic default', () => {
     const withoutFeatureLimit = env();
     delete withoutFeatureLimit.SEMANTIC_AI_MAX_OUTPUT_TOKENS;
-    expect(getSemanticAIConfig(withoutFeatureLimit).maxOutputTokens).toBe(5000);
+    expect(getSemanticAIConfig(withoutFeatureLimit).maxOutputTokens).toBe(8000);
+  });
+
+  test('does not clamp an explicit 8000-token semantic limit', () => {
+    expect(getSemanticAIConfig(env({ SEMANTIC_AI_MAX_OUTPUT_TOKENS: '8000' })).maxOutputTokens).toBe(8000);
   });
 
   test('reads the global chain and semantic token limit only', () => {

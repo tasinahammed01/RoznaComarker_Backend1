@@ -101,13 +101,29 @@ describe('global AI gateway', () => {
 
   test('truncated Gemini output is discarded and selects fallback', async () => {
     const truncated = response(200, {
-      candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"partial":' }] } }]
+      candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"partial":' }] } }],
+      usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 8000,
+        thoughtsTokenCount: 500, totalTokenCount: 9000 }
     });
     const fetchImpl = jest.fn().mockResolvedValueOnce(truncated).mockResolvedValueOnce(router('{"valid":true}'));
     const result = await gateway.generate({ messages: [{ role: 'user', content: 'x' }],
       responseFormat: 'json', validate: (content) => JSON.parse(content), env: env(), fetchImpl });
     expect(result.value).toEqual({ valid: true });
-    expect(result.attempts[0]).toMatchObject({ provider: 'google', code: 'AI_RESPONSE_TRUNCATED' });
+    expect(result.attempts[0]).toMatchObject({ provider: 'google', code: 'AI_RESPONSE_TRUNCATED',
+      finishReason: 'MAX_TOKENS', promptTokenCount: 1000, candidatesTokenCount: 8000,
+      thoughtsTokenCount: 500, totalTokenCount: 9000 });
+  });
+
+  test('passes an 8000-token limit to Google and OpenRouter unchanged', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(response(503, {}))
+      .mockResolvedValueOnce(router('ok'));
+    await gateway.generate({ messages: [{ role: 'user', content: 'x' }],
+      maxOutputTokens: 8000, env: env(), fetchImpl });
+    const googleBody = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    const routerBody = JSON.parse(fetchImpl.mock.calls[1][1].body);
+    expect(googleBody.generationConfig.maxOutputTokens).toBe(8000);
+    expect(routerBody.max_tokens).toBe(8000);
   });
 
   test('walks through all fallbacks and reports the actual successful model', async () => {
@@ -121,6 +137,16 @@ describe('global AI gateway', () => {
     expect(result.model).toBe('fallback-three');
     expect(result.attemptCount).toBe(4);
     expect(result.fallbackIndex).toBe(3);
+  });
+
+  test('allocates a meaningful bounded window to every fallback under the 200s policy', async () => {
+    const allocated = [];
+    await expect(gateway.generate({ messages: [{ role: 'user', content: 'x' }],
+      env: env({ AI_ATTEMPT_TIMEOUT_MS: '45000', AI_TOTAL_BUDGET_MS: '200000' }),
+      fetchImpl: async () => response(503, {}),
+      onAttempt: (attempt) => allocated.push(attempt.attemptTimeoutMs) }))
+      .rejects.toHaveProperty('code', 'AI_CHAIN_EXHAUSTED');
+    expect(allocated).toEqual([45000, 45000, 45000, 45000]);
   });
 
   test('reports fallback two when primary and fallback one fail', async () => {

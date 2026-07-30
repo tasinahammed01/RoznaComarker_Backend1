@@ -862,7 +862,8 @@ async function getOcrCorrections(req, res) {
 
     if (!doc) return sendError(res, 404, 'Submission not found');
 
-    const requestedFileId = req.body && typeof req.body.fileId === 'string' ? String(req.body.fileId).trim() : '';
+    const requestFileId = req.method === 'GET' ? req.query?.fileId : req.body?.fileId;
+    const requestedFileId = typeof requestFileId === 'string' ? requestFileId.trim() : '';
     logContext = {
       submissionId: String(submissionId),
       userId: String(user._id),
@@ -1032,13 +1033,14 @@ async function regenerateCanonicalCorrections(req, res) {
     const assignment = await Assignment.findById(submission.assignment).lean();
     const accepted = await Submission.updateOne({ _id: submission._id, correctionStatus: { $ne: 'processing' } }, { $set: {
       correctionStatus: 'processing', correctionError: null, semanticStatus: 'pending', semanticAttempt: 0,
-      semanticNextRetryAt: null, semanticErrorCode: null
+      semanticNextRetryAt: null, semanticErrorCode: null, evaluationStatus: 'stale',
+      evaluationErrorCode: null, evaluationError: null, evaluationSourceHash: null
     }});
     if (!accepted.modifiedCount) return res.status(409).json({ success: false, message: 'Correction generation is already processing', data: {
       correctionStatus: 'processing', processingActive: true, automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false
     }});
     submission.correctionStatus = 'processing';
-    setImmediate(() => canonicalCorrectionsPipeline.generateAndPersist(submission, { force: true, assignment: assignment ? {
+    setImmediate(() => canonicalCorrectionsPipeline.generateAndPersist(submission, { force: true, reuseLanguageTool: true, assignment: assignment ? {
       title: assignment.title || '', description: assignment.description || assignment.instructions || '',
       rubric: assignment.rubric || assignment.rubrics || null
     } : {} }).catch((error) => logger.error({ message: 'Authorized correction regeneration failed', submissionId: String(submission._id), error: error?.message || error })));

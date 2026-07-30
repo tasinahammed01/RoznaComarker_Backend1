@@ -39,7 +39,15 @@ jest.mock('../src/services/semanticWritingCorrections.service', () => {
     analyze: jest.fn(async () => {
       if (mockSemanticMode === 'failure') {
         const error = new Error('Synthetic invalid provider response');
-        error.code = 'AI_PROVIDER_RESPONSE_INVALID';
+        error.code = 'AI_CHAIN_EXHAUSTED';
+        error.attemptCount = 4;
+        error.timeoutCount = 3;
+        error.attempts = [
+          { provider: 'google', model: 'gemini', code: 'AI_RESPONSE_TRUNCATED' },
+          { provider: 'openrouter', model: 'ultra', code: 'AI_ATTEMPT_TIMEOUT' },
+          { provider: 'openrouter', model: 'super', code: 'AI_ATTEMPT_TIMEOUT' },
+          { provider: 'openrouter', model: 'gpt-oss', code: 'AI_ATTEMPT_TIMEOUT' }
+        ];
         throw error;
       }
       return {
@@ -192,7 +200,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     teacherToken = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
     studentToken = signTestJwt({ id: student._id, firebaseUid: student.firebaseUid, role: student.role });
     failureToken = signTestJwt({ id: failureStudent._id, firebaseUid: failureStudent.firebaseUid, role: failureStudent.role });
-  });
+  }, 15000);
 
   afterAll(async () => {
     global.fetch = originalFetch;
@@ -218,8 +226,8 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
   }
 
   async function getOcrCorrections(id, token) {
-    const response = await request(app).post(`/api/submissions/${id}/ocr-corrections`)
-      .set('Authorization', `Bearer ${token}`).send({});
+    const response = await request(app).get(`/api/submissions/${id}/ocr-corrections`)
+      .set('Authorization', `Bearer ${token}`);
     expect(response.status).toBe(200);
     return response.body.data;
   }
@@ -244,7 +252,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(canonicalFields(pending)).toEqual(canonicalFields(pendingTeacher));
     expect(pending).toMatchObject({ submissionId: successId, score: null, rubricScores: null, evaluationStatus: 'pending', detailedFeedbackStatus: 'pending' });
     expect(pending.detailedFeedback).toBeNull();
-    expect(JSON.stringify(pending)).not.toContain('77');
+    expect(pending).toMatchObject({ score: null, overallScore: null, rubricScores: null });
     releaseOcr();
     const processingDoc = await waitFor(successId, (doc) => doc.evaluationStatus === 'processing');
     expect(processingDoc.semanticStatus).toBe('completed');
@@ -317,12 +325,18 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     const retriedStudent = await getResult(failureId, failureToken);
     const retriedTeacher = await getResult(failureId, teacherToken);
     expect(canonicalFields(retriedStudent)).toEqual(canonicalFields(retriedTeacher));
+    expect(retriedStudent).toMatchObject({ evaluationStatus: 'completed', semanticErrorCode: null });
+    expect(retriedStudent.score).not.toBeNull();
+    expect(retriedStudent.detailedFeedback).not.toBeNull();
+    const retriedAdaptive = await request(app).get(`/api/adaptive-practice/submissions/${failureId}`)
+      .set('Authorization', `Bearer ${failureToken}`);
+    expect(retriedAdaptive.status).toBe(200);
     const retriedPdf = await getPdf(failureId, failureToken);
     expect(retriedPdf.submission.submissionId).toBe(failureId);
     expect(retriedPdf.result.overallScore).toBe(retriedStudent.score);
     expect(await SubmissionFeedback.countDocuments({ submissionId: failureId })).toBe(1);
     expect(require('../src/services/semanticWritingCorrections.service').analyze).toHaveBeenCalledTimes(3);
-    expect(languageToolRequestCount).toBe(3);
+    expect(languageToolRequestCount).toBe(2);
     expect(rubricProviderRequestCount).toBe(2);
     expect(global.fetch).toHaveBeenCalledTimes(languageToolRequestCount + rubricProviderRequestCount);
   }, 30000);

@@ -54,28 +54,28 @@ describe('Security & Production Hardening', () => {
     expect(typeof res.body.message).toBe('string');
   });
 
-  test('Rate limiter triggers on repeated requests', async () => {
-    const prevWindow = process.env.RATE_LIMIT_WINDOW;
-    const prevMax = process.env.RATE_LIMIT_MAX;
+  test('health and ordinary polling reads are not consumed by a global limiter', async () => {
+    for (let index = 0; index < 5; index += 1) {
+      expect((await request(app).get('/api/health')).status).toBe(200);
+    }
+  });
 
-    process.env.RATE_LIMIT_WINDOW = '60000';
-    process.env.RATE_LIMIT_MAX = '3';
-
-    jest.resetModules();
-    const limitedApp = require('../src/app');
-
-    const r1 = await request(limitedApp).get('/api/health');
-    const r2 = await request(limitedApp).get('/api/health');
-    const r3 = await request(limitedApp).get('/api/health');
-    const r4 = await request(limitedApp).get('/api/health');
-
-    expect(r1.status).toBe(200);
-    expect(r2.status).toBe(200);
-    expect(r3.status).toBe(200);
-    expect(r4.status).toBe(429);
-    expect(r4.body).toHaveProperty('success', false);
-
-    process.env.RATE_LIMIT_WINDOW = prevWindow;
-    process.env.RATE_LIMIT_MAX = prevMax;
+  test('sensitive routes are deterministically limited', async () => {
+    const express = require('express');
+    const { createSensitiveRateLimiter } = require('../src/middlewares/rateLimit.middleware');
+    const prevWindow = process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS;
+    const prevMax = process.env.SENSITIVE_RATE_LIMIT_MAX;
+    process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS = '60000';
+    process.env.SENSITIVE_RATE_LIMIT_MAX = '3';
+    const limitedApp = express();
+    limitedApp.post('/expensive', createSensitiveRateLimiter(), (_req, res) => res.json({ success: true }));
+    const responses = [];
+    for (let index = 0; index < 4; index += 1) responses.push(await request(limitedApp).post('/expensive'));
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 429]);
+    expect(responses[3].body).toHaveProperty('success', false);
+    if (prevWindow === undefined) delete process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS;
+    else process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS = prevWindow;
+    if (prevMax === undefined) delete process.env.SENSITIVE_RATE_LIMIT_MAX;
+    else process.env.SENSITIVE_RATE_LIMIT_MAX = prevMax;
   });
 });

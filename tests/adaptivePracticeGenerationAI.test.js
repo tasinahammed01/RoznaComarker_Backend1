@@ -4,7 +4,7 @@ const service = require('../src/services/adaptivePracticeGenerationAI.service');
 
 const env = {
   AI_PRIMARY_PROVIDER: 'google',
-  AI_PRIMARY_MODEL: 'global-adaptive-model',
+  AI_PRIMARY_MODEL: 'gemini-3.6-flash',
   AI_ATTEMPT_TIMEOUT_MS: '60000',
   AI_TOTAL_BUDGET_MS: '120000',
   AI_RETRIES_PER_MODEL: '0',
@@ -27,9 +27,17 @@ describe('Adaptive Practice generation Gemini transport', () => {
     const result = await service.generate([], { env, fetchImpl });
     expect(result.content).toBe('{"activities":[]}');
     const [url, options] = fetchImpl.mock.calls[0];
-    expect(url).toContain('gemini.test/v1beta/models/global-adaptive-model:generateContent');
+    expect(url).toContain('gemini.test/v1beta/models/gemini-3.6-flash:generateContent');
     expect(url).not.toContain('openrouter');
-    expect(JSON.parse(options.body).generationConfig.responseMimeType).toBe('application/json');
+    const generationConfig = JSON.parse(options.body).generationConfig;
+    expect(generationConfig.responseMimeType).toBe('application/json');
+    expect(generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'minimal' });
+  });
+
+  it('uses a bounded 6000-token default when the feature limit is absent', () => {
+    const withoutLimit = { ...env };
+    delete withoutLimit.ADAPTIVE_PRACTICE_AI_MAX_OUTPUT_TOKENS;
+    expect(service.config(withoutLimit).maxOutputTokens).toBe(6000);
   });
 
   it.each([

@@ -3,10 +3,13 @@
 const crypto = require('crypto');
 const { defaultLegend } = require('./writingCorrections.service');
 const { getSemanticAIConfig, getSemanticAIConfigStatus, runSemanticCompletion } = require('./semanticAIClient.service');
+const canonical = require('./correctionCanonical.service');
+const policy = require('./aiCorrectionPolicy.service');
+const { promptDefinitions } = require('./writingCategoryDefinitions.service');
 
-const SEMANTIC_PROMPT_VERSION = 'semantic-compact-v2';
-const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v1';
-const SEMANTIC_CATEGORIES = new Set(['CONTENT', 'ORGANIZATION', 'VOCABULARY']);
+const SEMANTIC_PROMPT_VERSION = 'semantic-hybrid-reliability-v4';
+const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v2';
+const SEMANTIC_CATEGORIES = new Set(Object.keys(policy.CATEGORY_POLICY));
 const OMIT_CONTEXT_KEYS = new Set(['_id', '__v', 'createdAt', 'updatedAt', 'student', 'teacher', 'class', 'files', 'fileUrls', 'images']);
 
 const clean = (value, maximum = 4000) => String(value || '').replace(/\s+/gu, ' ').trim().slice(0, maximum);
@@ -29,8 +32,12 @@ function compactSemanticLegend(legend = defaultLegend()) {
 }
 
 function compactLanguageToolExclusions(corrections = []) {
-  return corrections.map((item) => ({ symbol: item?.symbol, startChar: Number(item?.startChar), endChar: Number(item?.endChar) }))
-    .filter((item) => item.symbol && Number.isFinite(item.startChar) && Number.isFinite(item.endChar) && item.endChar > item.startChar);
+  return corrections.map((item) => ({ category: item?.category, symbol: item?.symbol,
+    startChar: Number(item?.startChar), endChar: Number(item?.endChar),
+    quotedText: clean(item?.quotedText, 160),
+    suggestedText: clean(item?.suggestedText, 160) }))
+    .filter((item) => item.category && item.symbol && Number.isFinite(item.startChar)
+      && Number.isFinite(item.endChar) && item.endChar > item.startChar);
 }
 
 function compactPageManifest(pages = []) {
@@ -45,7 +52,9 @@ function buildSemanticRequest({ transcript, assignment = {}, languageToolCorrect
   const context = compactAssignment(assignment);
   const pages = compactPageManifest(pageManifest);
   const responseShape = { transcriptHash: '<exact supplied hash>', corrections: [{ category: 'CONTENT', symbol: 'DEV',
-    quotedText: '<exact transcript quotation>', occurrence: 0, message: '<concise evidence>', suggestedText: '<concise revision>', confidence: 0.86 }] };
+    correctionKind: 'localized|global',
+    quotedText: '<exact quote>', occurrence: 0, message: '<explanation>',
+    suggestedText: '<replacement>', confidence: 0.86 }] };
   const prompt = [
     `schema=${SEMANTIC_SCHEMA_VERSION};prompt=${SEMANTIC_PROMPT_VERSION}`,
     `transcriptHash=${transcriptHash}`,
@@ -54,11 +63,15 @@ function buildSemanticRequest({ transcript, assignment = {}, languageToolCorrect
     `legend=${JSON.stringify(legend)}`,
     `languageToolExclusions=${JSON.stringify(exclusions)}`,
     `response=${JSON.stringify(responseShape)}`,
-    'Analyze only Content, Organization, and Vocabulary. Return strict JSON only. Copy every quotedText exactly from the transcript and repeat the supplied transcriptHash exactly. Use only listed category/symbol pairs. Keep messages and suggestions concise. Use occurrence for repeated quotations. Do not invent text, correct OCR, add praise, report grammar/mechanics, duplicate exclusions, or manufacture issues. Subject-verb agreement is not Content. A strong essay may return zero corrections.',
+    'Review all five categories. Return JSON with the exact transcriptHash; zero findings is valid.',
+    'Only genuine errors. Quote minimum exact evidence; occurrence is zero-based; message<=240. No rewrites, duplicates, praise, styles, or OCR guesses.',
+    promptDefinitions(),
+    'global is only grounded CONTENT/ORGANIZATION absence/structure. Anchor existing relevant evidence (final passage for missing conclusion); invent nothing; suggestedText may be empty.',
+    'Use legend pairs; avoid equivalent LT targets. Be concise.',
     `transcript=${transcript}`
   ].join('\n');
   const messages = [
-    { role: 'system', content: 'You are a precise evidence-based academic writing analyst. Output one compact JSON object only.' },
+    { role: 'system', content: 'Analyze writing evidence. Output one JSON object only.' },
     { role: 'user', content: prompt }
   ];
   const serializedLength = JSON.stringify(messages).length;
@@ -83,7 +96,9 @@ function parseJson(value, expectedHash) {
     throw semanticError('SEMANTIC_SOURCE_MISMATCH', 'source_hash', 'Semantic analysis did not confirm the complete transcript hash');
   if (!Array.isArray(parsed?.corrections))
     throw semanticError('SEMANTIC_SCHEMA_INVALID', 'schema_validation', 'Semantic analysis corrections must be an array');
-  return parsed.corrections.slice(0, 40);
+  if (parsed.corrections.length > policy.MAX_AI_CORRECTIONS)
+    throw semanticError('SEMANTIC_SCHEMA_INVALID', 'correction_limit', 'Semantic analysis returned too many corrections');
+  return parsed.corrections;
 }
 
 function semanticError(code, stage, message) {
@@ -93,29 +108,69 @@ function semanticError(code, stage, message) {
   return error;
 }
 
-function validateCorrections(corrections, { transcript, legend }) {
+function validateCorrections(corrections, { transcript, legend, spans = [], env = process.env }) {
   const allowed = new Set((legend || []).flatMap((group) => (group.symbols || [])
     .map((item) => `${group.category}:${item.symbol}`)));
+  const thresholds = policy.confidenceThresholds(env);
+  const accepted = [];
+  const rejectionReasons = {};
+  const perCategory = {};
+  const reject = (reason) => { rejectionReasons[reason] = (rejectionReasons[reason] || 0) + 1; };
   for (const item of corrections) {
     if (!item || typeof item !== 'object' || !SEMANTIC_CATEGORIES.has(item.category)
       || !allowed.has(`${item.category}:${item.symbol}`) || typeof item.quotedText !== 'string' || !item.quotedText
-      || typeof item.message !== 'string' || !item.message.trim() || typeof item.suggestedText !== 'string'
+      || item.quotedText.length > 500
+      || typeof item.message !== 'string' || !item.message.trim() || item.message.length > 240
+      || typeof item.suggestedText !== 'string' || item.suggestedText.length > 300
+      || item.quotedText.includes('\uFFFD')
       || !Number.isFinite(Number(item.confidence)) || Number(item.confidence) < 0 || Number(item.confidence) > 1
       || !Number.isInteger(Number(item.occurrence)) || Number(item.occurrence) < 0) {
-      throw semanticError('SEMANTIC_SCHEMA_INVALID', 'schema_validation', 'Semantic analysis returned an incomplete correction');
+      reject('INVALID_SCHEMA'); continue;
     }
-    let offset = -1;
-    for (let occurrence = 0; occurrence <= Number(item.occurrence); occurrence += 1) {
-      offset = transcript.indexOf(item.quotedText, offset + 1);
-      if (offset < 0) throw semanticError('SEMANTIC_EVIDENCE_UNGROUNDED', 'evidence_grounding', 'Semantic analysis returned non-verbatim evidence');
+    if (item.stylePreference === true) { reject('STYLE_PREFERENCE'); continue; }
+    const correctionKind = item.correctionKind || 'localized';
+    if (!['localized', 'global'].includes(correctionKind)
+      || (correctionKind === 'global' && !['CONTENT', 'ORGANIZATION'].includes(item.category))
+      || (correctionKind === 'localized' && !item.suggestedText.trim())) {
+      reject('UNSUPPORTED_CORRECTION_KIND'); continue;
     }
+    if (item.category === 'VOCABULARY' && item.symbol === 'WC'
+      && /\bmore\s+\p{L}+er\b/iu.test(item.quotedText)
+      && !/\bmore\b/iu.test(item.suggestedText)) {
+      reject('CATEGORY_MISMATCH'); continue;
+    }
+    if (item.severity != null && !policy.SEVERITIES.has(String(item.severity).toLowerCase())) {
+      reject('INVALID_SEVERITY'); continue;
+    }
+    if (Number(item.confidence) < thresholds[item.category]) { reject('LOW_CONFIDENCE'); continue; }
+    if ((perCategory[item.category] || 0) >= policy.MAX_AI_CORRECTIONS_PER_CATEGORY) {
+      reject('CATEGORY_LIMIT'); continue;
+    }
+    const range = canonical.locateQuote(transcript, item.quotedText, Number(item.occurrence));
+    if (!range) { reject('UNGROUNDED_EVIDENCE'); continue; }
+    const normalized = canonical.normalizeCorrection({ ...item, startChar: range.start, endChar: range.end },
+      transcript, spans, defaultLegend(), 'AI');
+    if (!normalized || (spans.length && !normalized.wordIds.length)) { reject('INVALID_LOCATION'); continue; }
+    accepted.push(normalized);
+    perCategory[item.category] = (perCategory[item.category] || 0) + 1;
   }
-  return corrections;
+  if (corrections.length && !accepted.length) {
+    const error = semanticError('SEMANTIC_SCHEMA_INVALID', 'canonical_validation',
+      'Semantic analysis returned no acceptable grounded corrections');
+    error.rejectionReasons = rejectionReasons;
+    throw error;
+  }
+  return { corrections: accepted, diagnostics: {
+    responseJsonParsed: true, transcriptHashMatch: true, schemaValidated: true, groundingValidated: true,
+    rawCorrectionCount: corrections.length, acceptedCorrectionCount: accepted.length,
+    rejectedCorrectionCount: corrections.length - accepted.length, rejectionReasons, thresholds
+  }};
 }
 
 function semanticSourceKey({ correctionSourceHash, config = getSemanticAIConfig(), legendVersion = defaultLegend().version }) {
   return crypto.createHash('sha256').update(JSON.stringify({ correctionSourceHash, provider: config.provider, model: config.model,
-    fallback: config.fallback, promptVersion: SEMANTIC_PROMPT_VERSION, schemaVersion: SEMANTIC_SCHEMA_VERSION, legendVersion })).digest('hex');
+    fallback: config.fallback, promptVersion: SEMANTIC_PROMPT_VERSION, schemaVersion: SEMANTIC_SCHEMA_VERSION,
+    policyVersion: policy.POLICY_VERSION, confidenceThresholds: policy.confidenceThresholds(), legendVersion })).digest('hex');
 }
 
 async function analyze(input, dependencies = {}) {
@@ -126,16 +181,22 @@ async function analyze(input, dependencies = {}) {
   const buildStartedAt = Date.now();
   const request = buildSemanticRequest(input);
   const semanticRequestBuildMs = Date.now() - buildStartedAt;
-  const validate = (content) => validateCorrections(parseJson(content, input.transcriptHash), {
-    transcript: input.transcript, legend: request.legend
-  });
+  let semanticValidationMs = 0;
+  const validate = (content) => {
+    const startedAt = Date.now();
+    try {
+      return validateCorrections(parseJson(content, input.transcriptHash), {
+        transcript: input.transcript, legend: request.legend, spans: input.spans || [], env: dependencies.env || process.env
+      });
+    } finally { semanticValidationMs += Date.now() - startedAt; }
+  };
   const completion = await (dependencies.runCompletion || runSemanticCompletion)({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
     onAttempt: input.onAttempt, onRetry: input.onRetry, validate, feature: 'semantic_corrections' });
   const parseStartedAt = Date.now();
-  let corrections;
+  let validated;
   try {
-    corrections = completion.value || validate(completion.content);
+    validated = completion.value || validate(completion.content);
   } catch (error) {
     if (completion.finishReason === 'MAX_TOKENS' && error?.code === 'SEMANTIC_RESPONSE_INVALID') {
       error.code = 'GOOGLE_OUTPUT_TRUNCATED'; error.validationStage = 'json_parse';
@@ -146,9 +207,11 @@ async function analyze(input, dependencies = {}) {
     throw error;
   }
   const semanticParseMs = Date.now() - parseStartedAt;
-  return { corrections, provider: completion.provider, model: completion.model,
+  return { corrections: validated.corrections, diagnostics: validated.diagnostics,
+    provider: completion.provider, model: completion.model,
     usage: completion.usage, sourceKey: semanticSourceKey({ correctionSourceHash: input.transcriptHash, config }),
     metrics: { ...completion.metrics, semanticRequestBuildMs, semanticParseMs,
+      semanticValidationMs,
       promptCharacters: request.promptCharacters, promptInputTokenEstimate: request.promptInputTokenEstimate } };
 }
 

@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { defaultLegend } = require('./writingCorrections.service');
 
-const VERSION = 'canonical-2';
+const VERSION = 'canonical-3-hybrid';
 
 function legendIndex(legend = defaultLegend()) {
   const index = new Map();
@@ -52,19 +52,108 @@ function normalizeCorrection(raw, text, spans, legend, source) {
       languageToolMappingVersion: String(raw.languageToolMappingVersion || '')
     } : {}),
     startChar: range.start, endChar: range.end, ...mapped,
-    confidence: Math.max(0, Math.min(1, Number(raw.confidence) || 0)), editable: false };
+    confidence: Math.max(0, Math.min(1, Number(raw.confidence) || 0)),
+    ...(raw.correctionKind ? { correctionKind: raw.correctionKind } : {}),
+    ...(source === 'AI' && raw.severity ? { severity: String(raw.severity).toLowerCase() } : {}),
+    editable: false };
+}
+
+const normalizedText = (value) => String(value || '').normalize('NFKC').replace(/\s+/gu, ' ').trim().toLowerCase();
+const correctedText = (item) => normalizedText(item?.suggestedText || item?.quotedText);
+const canonicalSort = (a, b) => String(a.fileId || '').localeCompare(String(b.fileId || ''))
+  || Number(a.page || 0) - Number(b.page || 0) || Number(a.startChar) - Number(b.startChar)
+  || Number(a.endChar) - Number(b.endChar) || String(a.category).localeCompare(String(b.category))
+  || String(a.symbol).localeCompare(String(b.symbol)) || String(a.id).localeCompare(String(b.id));
+
+function sameLocation(a, b) {
+  return String(a.fileId || '') === String(b.fileId || '') && Number(a.page || 0) === Number(b.page || 0);
+}
+
+function equivalentCorrection(a, b) {
+  return a.category === b.category && a.symbol === b.symbol && correctedText(a) === correctedText(b);
+}
+
+function substantiallyOverlaps(a, b) {
+  const overlap = Math.min(a.endChar, b.endChar) - Math.max(a.startChar, b.startChar);
+  if (overlap <= 0) return false;
+  const shorter = Math.min(a.endChar - a.startChar, b.endChar - b.startChar);
+  return shorter > 0 && overlap / shorter >= 0.8;
+}
+
+function preferredCorrection(a, b) {
+  const category = a.category;
+  if (['GRAMMAR', 'VOCABULARY', 'MECHANICS'].includes(category)) {
+    if (a.source === 'LANGUAGETOOL') return a;
+    if (b.source === 'LANGUAGETOOL') return b;
+  }
+  if (['CONTENT', 'ORGANIZATION'].includes(category)) {
+    if (a.source === 'AI') return a;
+    if (b.source === 'AI') return b;
+  }
+  return Number(b.confidence || 0) > Number(a.confidence || 0) ? b : a;
+}
+
+function mergeCanonicalCorrections({ languageToolCorrections = [], aiCorrections = [] } = {}) {
+  const sorted = [...languageToolCorrections, ...aiCorrections].filter(Boolean).sort(canonicalSort);
+  const result = [];
+  const diagnostics = { exactDuplicates: 0, overlapDuplicates: 0, conflicts: 0, rejectedIds: [] };
+  const exact = new Map();
+  const spanSymbols = new Map();
+  const buckets = new Map();
+  for (const item of sorted) {
+    const exactKey = [item.fileId || '', item.page || 0, item.startChar, item.endChar, item.category, item.symbol, correctedText(item)].join('|');
+    const exactIndex = exact.get(exactKey);
+    if (exactIndex != null) {
+      const winner = preferredCorrection(result[exactIndex], item);
+      const loser = winner === item ? result[exactIndex] : item;
+      result[exactIndex] = winner;
+      diagnostics.exactDuplicates += 1;
+      diagnostics.rejectedIds.push(loser.id);
+      continue;
+    }
+    const bucketKey = [item.fileId || '', item.page || 0, item.category, item.symbol].join('|');
+    const candidates = buckets.get(bucketKey) || [];
+    let duplicateIndex = null;
+    for (let i = candidates.length - 1; i >= 0; i -= 1) {
+      const index = candidates[i];
+      const old = result[index];
+      if (!old || old.endChar <= item.startChar) break;
+      if (sameLocation(old, item) && substantiallyOverlaps(old, item) && equivalentCorrection(old, item)) {
+        duplicateIndex = index; break;
+      }
+    }
+    if (duplicateIndex != null) {
+      const winner = preferredCorrection(result[duplicateIndex], item);
+      const loser = winner === item ? result[duplicateIndex] : item;
+      result[duplicateIndex] = winner;
+      diagnostics.overlapDuplicates += 1;
+      diagnostics.rejectedIds.push(loser.id);
+      continue;
+    }
+    const conflictKey = [item.fileId || '', item.page || 0, item.startChar, item.endChar, item.category, item.symbol].join('|');
+    const conflictIndex = spanSymbols.get(conflictKey);
+    if (conflictIndex != null) {
+      const winner = preferredCorrection(result[conflictIndex], item);
+      const loser = winner === item ? result[conflictIndex] : item;
+      result[conflictIndex] = winner;
+      diagnostics.conflicts += 1;
+      diagnostics.rejectedIds.push(loser.id);
+      continue;
+    }
+    const index = result.length;
+    result.push(item);
+    exact.set(exactKey, index);
+    spanSymbols.set(conflictKey, index);
+    candidates.push(index);
+    buckets.set(bucketKey, candidates);
+  }
+  return { corrections: result.filter(Boolean).sort(canonicalSort), diagnostics };
 }
 
 function mergeCorrections(items) {
-  const sorted = [...(items || [])].sort((a, b) => String(a.fileId).localeCompare(String(b.fileId)) || a.page - b.page || a.startChar - b.startChar || a.id.localeCompare(b.id));
-  const result = [];
-  for (const item of sorted) {
-    const duplicate = result.find((old) => old.category === item.category && old.symbol === item.symbol && old.quotedText === item.quotedText
-      && Math.max(old.startChar, item.startChar) < Math.min(old.endChar, item.endChar));
-    if (!duplicate) result.push(item);
-    else if (item.source === 'LANGUAGETOOL' && ['GRAMMAR', 'MECHANICS'].includes(item.category)) Object.assign(duplicate, item);
-  }
-  return result;
+  const languageToolCorrections = (items || []).filter((item) => item?.source === 'LANGUAGETOOL');
+  const aiCorrections = (items || []).filter((item) => item?.source !== 'LANGUAGETOOL');
+  return mergeCanonicalCorrections({ languageToolCorrections, aiCorrections }).corrections;
 }
 
 function statistics(items) {
@@ -76,4 +165,5 @@ function statistics(items) {
 
 const computeCanonicalCorrectionStatistics = statistics;
 
-module.exports = { VERSION, legendIndex, locateQuote, mapOffsetsToWords, normalizeCorrection, mergeCorrections, statistics, computeCanonicalCorrectionStatistics };
+module.exports = { VERSION, legendIndex, locateQuote, mapOffsetsToWords, normalizeCorrection, mergeCanonicalCorrections,
+  mergeCorrections, statistics, computeCanonicalCorrectionStatistics };

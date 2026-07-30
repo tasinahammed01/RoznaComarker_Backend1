@@ -33,9 +33,9 @@ function createGlobalRateLimiter() {
 }
 
 function createSensitiveRateLimiter() {
-  const windowMs = toPositiveInt(process.env.RATE_LIMIT_WINDOW, 15 * 60 * 1000);
-  const globalLimit = toPositiveInt(process.env.RATE_LIMIT_MAX, 100);
-  const limit = Math.max(1, Math.min(globalLimit, 20));
+  const windowMs = toPositiveInt(process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS,
+    toPositiveInt(process.env.RATE_LIMIT_WINDOW, 15 * 60 * 1000));
+  const limit = toPositiveInt(process.env.SENSITIVE_RATE_LIMIT_MAX, 20);
 
   return rateLimit(
     buildRateLimitConfig({

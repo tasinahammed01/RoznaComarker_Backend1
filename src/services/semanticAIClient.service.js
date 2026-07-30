@@ -27,7 +27,7 @@ function getSemanticAIConfig(env = process.env) {
     retriesPerModel: global.retriesPerModel,
     retryDelayMs: global.retryDelayMs,
     minAttemptBudgetMs: 1,
-    maxOutputTokens: integer(env.SEMANTIC_AI_MAX_OUTPUT_TOKENS, 5000, 256, MAX_SEMANTIC_OUTPUT_TOKENS),
+    maxOutputTokens: integer(env.SEMANTIC_AI_MAX_OUTPUT_TOKENS, 8000, 256, MAX_SEMANTIC_OUTPUT_TOKENS),
     fallback: global.chain[1] || null,
     approvedModels: global.chain.map((entry) => entry.model)
   };
@@ -86,7 +86,12 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
       semanticProviderConnectMs: null },
     metrics: { attemptCount: result.attemptCount, attempts: result.attempts,
       timeoutCount: result.attempts.filter((attempt) => attempt.code === 'AI_ATTEMPT_TIMEOUT').length,
-      semanticProviderMs: result.durationMs, totalBudgetMs: config.totalBudgetMs } };
+      semanticProviderMs: result.durationMs, totalBudgetMs: config.totalBudgetMs,
+      maxOutputTokens: config.maxOutputTokens,
+      promptTokenCount: result.usage?.prompt_tokens ?? null,
+      outputTokenCount: result.usage?.completion_tokens ?? null,
+      totalTokenCount: result.usage?.total_tokens ?? null,
+      thoughtsTokenCount: result.usage?.thoughts_tokens ?? null } };
 }
 
 module.exports = { SEMANTIC_TRANSIENT_STATUSES, GOOGLE_SEMANTIC_MODELS, GOOGLE_THINKING_LEVELS,

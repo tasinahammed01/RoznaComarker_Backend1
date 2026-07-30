@@ -1,6 +1,7 @@
 'use strict';
 
 const { getSemanticAIConfig, getSemanticAIConfigStatus, runSemanticCompletion } = require('./semanticAIClient.service');
+const { promptDefinitions } = require('./writingCategoryDefinitions.service');
 
 const PROMPT_VERSION = 'semantic-rubric-assessment-v1';
 const SCHEMA_VERSION = 'semantic-rubric-assessment-json-v1';
@@ -70,7 +71,8 @@ function buildRequest(input) {
     `correctionCatalog=${JSON.stringify(catalog)}`,
     `allowedCorrectionIdsByCategory=${JSON.stringify(allowedCorrectionIds)}`,
     `response=${JSON.stringify(response)}`,
-    'Assess only the explicitly named CONTENT, ORGANIZATION, and VOCABULARY properties. Do not reorder, rename, alias, or add categories. Return strict JSON only with no Markdown or explanatory prose. Repeat sourceHash exactly. Every score and maxScore must be a JSON number, never a string, fraction, percentage, label, or explanatory value. CONTENT.score, ORGANIZATION.score, and VOCABULARY.score must each be between 0 and 20 inclusive, and each maxScore must be exactly 20. Do not score Grammar, Mechanics, Presentation, or overall; the backend calculates those values. Do not invent issue counts. Every quote must be copied exactly from the transcript. For correction evidence, copy correctionId exactly from correctionCatalog and only from the same category; never generate, shorten, translate, infer, or substitute an array index or display marker number. For a category whose allowedCorrectionIdsByCategory list is empty, do not return correction evidence. Use transcript evidence with evidenceType="transcript", correctionId=null, an exact transcript quote, explanation, and suggestion. Strength evidence is always grounded by an exact transcript quote. Forbidden example: evidenceType="correction" with correctionId="1" or any ID absent from that category catalog. If detailed instructions are unavailable but a title exists, Content must state it was evaluated against the assignment title because detailed instructions were unavailable. If neither title nor instructions exist, make Content provisional and explain that task achievement cannot be confidently finalized.',
+    `categoryDefinitions=${promptDefinitions()}`,
+    'Assess only CONTENT, ORGANIZATION, and VOCABULARY. Do not reorder, rename, alias, or add categories. Return strict JSON only. Repeat sourceHash exactly. Scores must be numbers from 0 to 20 and maxScore exactly 20. Do not score Grammar, Mechanics, Presentation, or overall. Do not invent issue counts. Every asserted weakness or strength must have exact transcript evidence; absence-based claims such as a missing conclusion must anchor to the final existing passage and explicitly say the judgment is holistic. Never claim page or paragraph order beyond the supplied canonical order. Correction evidence must copy an ID from the same category catalog. With no allowed correction ID, use transcript evidence and correctionId=null. A zero correction count may still receive a holistic deduction, but the comment must not say issues were detected. If detailed instructions are unavailable, follow the existing title-only/provisional rules.',
     `transcript=${input.transcript}`
   ].join('\n');
   const messages = [
@@ -206,7 +208,23 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
         });
       }
     }
-    validated[category] = { score, maxScore: 20, comment, issueCount: (corrections || []).filter((c) => c.category === category).length,
+    const issueCount = (corrections || []).filter((c) => c.category === category).length;
+    if (issueCount === 0 && /\b\d+\s+\w+\s+issues?\s+detected\b/iu.test(comment))
+      throw semanticRubricError('SEMANTIC_RUBRIC_STATISTICS_CONTRADICTION',
+        'Semantic rubric comment contradicts canonical correction statistics',
+        'consistency_validation', `categories.${category}.comment`);
+    if (score < 20 && !improvementEvidence.length)
+      throw semanticRubricError('SEMANTIC_RUBRIC_EVIDENCE_REQUIRED',
+        'A rubric deduction requires grounded improvement evidence',
+        'consistency_validation', `categories.${category}.improvementEvidence`);
+    if (/lacks?(?:\s+a)?\s+(?:clear\s+)?conclusion|conclusion\s+is\s+missing/iu.test(comment)) {
+      const finalQuarter = Math.floor(transcript.length * 0.75);
+      if (!improvementEvidence.some((ev) => transcript.indexOf(ev.quotedText) >= finalQuarter))
+        throw semanticRubricError('SEMANTIC_RUBRIC_ABSENCE_EVIDENCE_INVALID',
+          'A missing-conclusion claim must be anchored to the final passage',
+          'consistency_validation', `categories.${category}.improvementEvidence`);
+    }
+    validated[category] = { score, maxScore: 20, comment, issueCount,
       strengthEvidence, improvementEvidence };
   }
   return { sourceHash, categories: validated, status: contextStatus === 'none' ? 'partial' : 'completed' };

@@ -260,16 +260,26 @@ router.get(
  */
 router.get('/my', verifyJwtToken, requireRole('student'), submissionController.getMySubmissions);
 
-router.post(
-  '/:submissionId/ocr-corrections',
+const getOcrCorrectionsMiddleware = [
   verifyJwtToken,
   requireRole(['student', 'teacher']),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
   submissionController.getOcrCorrections
+];
+
+router.get(
+  '/:submissionId/ocr-corrections',
+  ...getOcrCorrectionsMiddleware
 );
 
-router.post('/:submissionId/ocr-corrections/regenerate', verifyJwtToken, requireRole(['student', 'teacher']),
+// Kept temporarily for backward compatibility with older clients.
+router.post(
+  '/:submissionId/ocr-corrections',
+  ...getOcrCorrectionsMiddleware
+);
+
+router.post('/:submissionId/ocr-corrections/regenerate', createSensitiveRateLimiter(), verifyJwtToken, requireRole(['student', 'teacher']),
   param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult,
   submissionController.regenerateCanonicalCorrections);
 
