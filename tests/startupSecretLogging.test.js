@@ -45,7 +45,7 @@ describe('startup logging credential safety', () => {
       expect(output).not.toContain(configuredSecret.slice(0, 8));
       expect(output).not.toContain(configuredSecret.slice(-8));
     });
-    expect(output).toContain('[GROQ] configured:');
+    expect(output).toBe('');
   });
 
   test('backend source contains no API-key prefix logging pattern', () => {

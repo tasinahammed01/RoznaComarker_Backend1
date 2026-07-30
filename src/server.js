@@ -60,14 +60,17 @@ async function start() {
   }
 
   // ─── AI API Key Health Check ────────────────────────────────────────
-  // Warn on startup if Gemini or Groq keys are missing
-  if (!process.env.GEMINI_API_KEY) {
-    logger.warn(
-      "⚠️  WARNING: GEMINI_API_KEY is not set. Worksheet AI generation will fail.",
-    );
-  } else {
-    logger.info("Gemini API key configured: true");
-  }
+  logger.info(`Global AI chain configured: ${aiConfigValidation.isValid}`);
+  logger.info({
+    message: "Resolved global AI chain",
+    configured: aiConfigValidation.isValid,
+    models: aiConfigValidation.chain.map((entry, index) => ({
+      index,
+      role: index === 0 ? "primary" : `fallback_${index}`,
+      provider: entry.provider,
+      model: entry.model,
+    })),
+  });
 
   if (!process.env.GROQ_API_KEY) {
     logger.warn(

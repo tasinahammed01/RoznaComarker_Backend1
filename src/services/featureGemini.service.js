@@ -1,15 +1,11 @@
 'use strict';
 
 const logger = require('../utils/logger');
-const {
-  GOOGLE_SEMANTIC_MODELS,
-  classifyTransient,
-  providerAttempt
-} = require('./semanticAIClient.service');
+const aiGateway = require('./aiGateway.service');
 
 const FEATURE_DEFAULTS = Object.freeze({
-  flashcard: { timeoutMs: 60000, maxOutputTokens: 4000, maxRetries: 1 },
-  worksheet: { timeoutMs: 60000, maxOutputTokens: 6000, maxRetries: 1 }
+  flashcard: { maxOutputTokens: 4000 },
+  worksheet: { maxOutputTokens: 6000 }
 });
 
 function positiveInteger(value, fallback, { minimum = 1, maximum = Number.MAX_SAFE_INTEGER } = {}) {
@@ -23,15 +19,12 @@ function getFeatureGeminiConfig(feature, env = process.env) {
   const defaults = FEATURE_DEFAULTS[key];
   if (!defaults) throw Object.assign(new Error('Unknown AI feature configuration.'), { code: 'GEMINI_NOT_CONFIGURED' });
   const prefix = key.toUpperCase();
-  const provider = String(env[`${prefix}_AI_PROVIDER`] || '').trim().toLowerCase();
-  const model = String(env[`${prefix}_AI_MODEL`] || '').trim();
-  const timeoutMs = positiveInteger(env[`${prefix}_AI_TIMEOUT_MS`], defaults.timeoutMs, { minimum: 1000, maximum: 300000 });
+  let global;
+  try { global = aiGateway.getAIConfig(env); } catch { global = null; }
   const maxOutputTokens = positiveInteger(env[`${prefix}_AI_MAX_OUTPUT_TOKENS`], defaults.maxOutputTokens, { minimum: 256, maximum: 65536 });
-  const maxRetries = positiveInteger(env[`${prefix}_AI_MAX_RETRIES`], defaults.maxRetries, { minimum: 0, maximum: 5 });
-  const apiKey = String(env.GEMINI_API_KEY || '').trim();
-  const configured = provider === 'google' && GOOGLE_SEMANTIC_MODELS.has(model)
-    && timeoutMs !== null && maxOutputTokens !== null && maxRetries !== null && Boolean(apiKey);
-  return { feature: key, provider, model, timeoutMs, maxOutputTokens, maxRetries, configured };
+  const primary = global?.chain?.[0] || {};
+  return { feature: key, provider: primary.provider || '', model: primary.model || '',
+    maxOutputTokens, configured: Boolean(global && maxOutputTokens !== null), global };
 }
 
 function configurationError(config) {
@@ -62,10 +55,11 @@ function mapGeminiError(error) {
   if (String(error?.code || '').startsWith('GEMINI_')) return error;
   const status = Number(error?.status || error?.httpStatus);
   let code;
-  if (error?.code === 'AI_PROVIDER_TIMEOUT' || ['AbortError', 'TimeoutError'].includes(error?.name)) code = 'GEMINI_TIMEOUT';
-  else if (['GOOGLE_RESPONSE_BLOCKED'].includes(error?.code)) code = 'GEMINI_SAFETY_BLOCKED';
-  else if (['GOOGLE_OUTPUT_TRUNCATED'].includes(error?.code)) code = 'GEMINI_RESPONSE_TRUNCATED';
-  else if (['GOOGLE_CANDIDATES_EMPTY', 'GOOGLE_RESPONSE_TEXT_MISSING'].includes(error?.code)) code = 'GEMINI_RESPONSE_EMPTY';
+  if (['AI_PROVIDER_TIMEOUT', 'AI_ATTEMPT_TIMEOUT', 'AI_TOTAL_BUDGET_EXHAUSTED'].includes(error?.code)
+    || ['AbortError', 'TimeoutError'].includes(error?.name)) code = 'GEMINI_TIMEOUT';
+  else if (['GOOGLE_RESPONSE_BLOCKED', 'AI_RESPONSE_BLOCKED'].includes(error?.code)) code = 'GEMINI_SAFETY_BLOCKED';
+  else if (['GOOGLE_OUTPUT_TRUNCATED', 'AI_RESPONSE_TRUNCATED'].includes(error?.code)) code = 'GEMINI_RESPONSE_TRUNCATED';
+  else if (['GOOGLE_CANDIDATES_EMPTY', 'GOOGLE_RESPONSE_TEXT_MISSING', 'AI_RESPONSE_EMPTY'].includes(error?.code)) code = 'GEMINI_RESPONSE_EMPTY';
   else if (status === 401 || status === 403) code = 'GEMINI_AUTHENTICATION_FAILED';
   else if (status === 429) code = Number.isFinite(error?.retryAfterMs) ? 'GEMINI_RATE_LIMITED' : 'GEMINI_QUOTA_EXCEEDED';
   else code = 'GEMINI_RESPONSE_INVALID';
@@ -82,42 +76,36 @@ async function generateFeatureJson(feature, messages, {
   env = process.env,
   fetchImpl = global.fetch,
   now = Date.now,
-  sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  validateValue
 } = {}) {
   const config = getFeatureGeminiConfig(feature, env);
   if (!config.configured) throw configurationError(config);
-  let lastError;
   const startedAt = now();
-  for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
-    try {
-      const result = await providerAttempt({
-        messages, provider: 'google', model: config.model,
-        maxOutputTokens: config.maxOutputTokens, googleThinkingLevel: 'low',
-        attemptTimeoutMs: config.timeoutMs, fetchImpl, env, now
+  try {
+      const result = await aiGateway.generate({
+        feature: config.feature, messages, maxOutputTokens: config.maxOutputTokens,
+        responseFormat: 'json', validate: (content) => {
+          const parsed = strictJson(content);
+          return typeof validateValue === 'function' ? validateValue(parsed) : parsed;
+        }, fetchImpl, env, now, sleepFn,
+        config: config.global
       });
-      const value = strictJson(result.content);
+      const value = result.value;
       logger.info({
         message: 'Feature Gemini generation completed',
-        feature: config.feature, provider: 'google', model: config.model,
-        attempt, durationMs: now() - startedAt,
-        finishReason: result.finishReason || null,
-        candidateCount: result.candidateCount ?? null,
+        feature: config.feature, provider: result.provider, model: result.model,
+        attempt: result.attemptCount, durationMs: now() - startedAt,
         outputTokenCount: Number(result.usage?.completion_tokens) || null
       });
       return { value, metadata: {
-        provider: 'google', model: config.model, attemptCount: attempt,
-        durationMs: now() - startedAt, usage: result.usage || null
+        provider: result.provider, model: result.model, attemptCount: result.attemptCount,
+        fallbackIndex: result.fallbackIndex, fallbackUsed: result.fallbackUsed,
+        durationMs: now() - startedAt, usage: result.usage || null, attempts: result.attempts
       } };
-    } catch (rawError) {
-      const error = mapGeminiError(rawError);
-      lastError = error;
-      const retryable = classifyTransient(rawError)
-        && !['GEMINI_AUTHENTICATION_FAILED', 'GEMINI_SAFETY_BLOCKED', 'GEMINI_RESPONSE_INVALID'].includes(error.code);
-      if (!retryable || attempt > config.maxRetries) throw error;
-      await sleepFn(0);
-    }
+  } catch (rawError) {
+    throw mapGeminiError(rawError);
   }
-  throw lastError || Object.assign(new Error('Gemini generation failed.'), { code: 'GEMINI_RESPONSE_INVALID' });
 }
 
 function containsExecutableHtml(value) {

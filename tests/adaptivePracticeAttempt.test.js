@@ -26,8 +26,8 @@ async function seed() {
 
 describe('adaptive practice attempts', () => {
   beforeAll(async () => {
-    process.env.ADAPTIVE_PRACTICE_AI_PROVIDER = 'google';
-    process.env.ADAPTIVE_PRACTICE_AI_MODEL = 'gemini-3.6-flash';
+    process.env.AI_PRIMARY_PROVIDER = 'google';
+    process.env.AI_PRIMARY_MODEL = 'global-check-model';
     process.env.GEMINI_API_KEY = 'test-gemini-key';
     await connectInMemoryMongo();
   });
@@ -107,11 +107,12 @@ describe('adaptive practice attempts', () => {
     expect(second.progress.activities[0]).toMatchObject({ attemptCount: 2, bestScore: 79, latestScore: 79 });
   });
 
-  it('retries malformed provider output once and validates checklist order', async () => {
+  it('uses one gateway transaction and validates checklist order', async () => {
     const { session, studentId, activityId } = await seed();
-    const spy = jest.spyOn(checkAI, 'generateCheckCompletion').mockResolvedValueOnce('{bad').mockResolvedValueOnce(result());
+    const spy = jest.spyOn(checkAI, 'generateCheckCompletion').mockImplementation(async (_messages, options) =>
+      options.validate(result()));
     const checked = await service.checkResponse(session._id, activityId, studentId, { response: 'However, these ideas now connect more clearly.' });
-    expect(checked.state).toBe('ready'); expect(spy).toHaveBeenCalledTimes(2);
+    expect(checked.state).toBe('ready'); expect(spy).toHaveBeenCalledTimes(1);
     expect(() => service.validateCheckResult(result({ checklist: [...checklist].reverse().map((item) => ({ item, met: true, feedback: 'Present.' })) }), session.activities[0])).toThrow(expect.objectContaining({ code: 'ADAPTIVE_CHECK_VALIDATION_FAILED' }));
   });
 
@@ -133,14 +134,12 @@ describe('adaptive practice attempts', () => {
     await expect(service.listAttempts(session._id, other, activityId)).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
-  it('uses dedicated Gemini and never calls the global OpenRouter path', async () => {
-    process.env.PRIMARY_AI_PROVIDER = 'openrouter';
-    process.env.PRIMARY_AI_MODEL = 'openai/gpt-oss-120b';
+  it('records the globally configured primary model', async () => {
     const { session, studentId, activityId } = await seed();
     const globalSpy = jest.spyOn(aiGeneration, 'generateChatCompletion');
     const geminiSpy = jest.spyOn(checkAI, 'generateCheckCompletion').mockResolvedValue(result());
     const checked = await service.checkResponse(session._id, activityId, studentId, { response: 'However, these ideas now connect clearly.' });
-    expect(checked.attempt.checking).toMatchObject({ provider: 'google', model: 'gemini-3.6-flash' });
+    expect(checked.attempt.checking).toMatchObject({ provider: 'google', model: 'global-check-model' });
     expect(geminiSpy).toHaveBeenCalledTimes(1);
     expect(globalSpy).not.toHaveBeenCalled();
   });

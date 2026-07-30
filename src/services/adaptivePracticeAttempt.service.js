@@ -140,15 +140,10 @@ async function checkResponse(sessionId, activityId, studentId, body = {}) {
   if (attempt.status !== 'checking' || String(attempt.responseFingerprint) !== fingerprint) return { state: attempt.status, attempt, progress: await getProgressSummary(session), reused: true };
 
   try {
-    let result;
-    let lastError;
-    for (let validationTry = 0; validationTry < 2; validationTry++) {
-      try {
-        const raw = await checkAI.generateCheckCompletion(buildCheckMessages(activity, response));
-        result = validateCheckResult(raw, activity); break;
-      } catch (error) { lastError = error; if (error.code !== 'ADAPTIVE_CHECK_AI_RESPONSE_INVALID') throw error; }
-    }
-    if (!result) throw lastError;
+    const checked = await checkAI.generateCheckCompletion(buildCheckMessages(activity, response), {
+      validate: (raw) => validateCheckResult(raw, activity)
+    });
+    const result = typeof checked === 'string' ? validateCheckResult(checked, activity) : checked;
     attempt.status = 'ready'; attempt.result = result; attempt.checking.completedAt = new Date(); await attempt.save();
     return { state: 'ready', attempt, progress: await getProgressSummary(session), reused };
   } catch (error) {

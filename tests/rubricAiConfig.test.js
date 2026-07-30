@@ -7,6 +7,13 @@ const { getRubricAiConfig } = require('../src/services/rubricAiConfig.service');
 const { completeRubric, validateRubric } = require('../src/services/rubricCompletion.service');
 const logger = require('../src/utils/logger');
 
+const env = (overrides = {}) => ({
+  AI_PRIMARY_PROVIDER: 'google', AI_PRIMARY_MODEL: 'global-rubric-model',
+  AI_ATTEMPT_TIMEOUT_MS: '30000', AI_TOTAL_BUDGET_MS: '120000',
+  AI_RETRIES_PER_MODEL: '0', AI_RETRY_DELAY_MS: '0',
+  GEMINI_API_KEY: 'google-key', RUBRIC_AI_MAX_OUTPUT_TOKENS: '4000',
+  ...overrides
+});
 const valid = { title: 'Writing Rubric', levels: [
   { title: 'Strong', maxPoints: 3 }, { title: 'Developing', maxPoints: 2 }, { title: 'Beginning', maxPoints: 1 }
 ], criteria: [
@@ -14,48 +21,34 @@ const valid = { title: 'Writing Rubric', levels: [
   { title: 'Language', cells: ['a', 'b', 'c'] }
 ] };
 
-describe('rubric AI configuration and completion', () => {
-  test('defaults to semantic provider/model and permits explicit rubric overrides', () => {
-    expect(getRubricAiConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'gemini-3.6-flash' }))
-      .toMatchObject({ provider: 'google', model: 'gemini-3.6-flash', attemptTimeoutMs: 60000, maxOutputTokens: 4000 });
-    expect(getRubricAiConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'gemini-3.6-flash',
-      RUBRIC_AI_PROVIDER: 'openrouter', RUBRIC_AI_MODEL: 'approved/model' }))
-      .toMatchObject({ provider: 'openrouter', model: 'approved/model' });
+describe('rubric global AI configuration and completion', () => {
+  test('uses the global provider/model and retains the rubric token limit', () => {
+    expect(getRubricAiConfig(env())).toMatchObject({
+      provider: 'google', model: 'global-rubric-model',
+      attemptTimeoutMs: 30000, maxOutputTokens: 4000
+    });
+    expect(getRubricAiConfig(env({
+      RUBRIC_AI_PROVIDER: 'openrouter', RUBRIC_AI_MODEL: 'ignored'
+    }))).toMatchObject({ provider: 'google', model: 'global-rubric-model' });
   });
 
-  test('accepts direct Gemini identifier and rejects the routed identifier', async () => {
-    const runCompletion = jest.fn(async () => ({ content: JSON.stringify(valid), provider: 'google', model: 'gemini-3.6-flash', metrics: { attemptCount: 1 } }));
-    await expect(completeRubric({ systemInstruction: 'system', userPrompt: 'prompt' }, { runCompletion,
-      config: { ...getRubricAiConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'gemini-3.6-flash' }), maxRetries: 0 },
-      env: { GEMINI_API_KEY: 'key' } })).resolves.toEqual(valid);
-    await expect(completeRubric({ systemInstruction: 'system', userPrompt: 'prompt' }, { runCompletion,
-      config: { ...getRubricAiConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'google/gemini-3.6-flash' }), maxRetries: 0 },
-      env: { GEMINI_API_KEY: 'key' } })).rejects.toMatchObject({ code: 'AI_PROVIDER_NOT_CONFIGURED' });
-  });
-
-  test('missing Google key fails before transport', async () => {
-    const runCompletion = jest.fn();
-    await expect(completeRubric({ systemInstruction: 'system', userPrompt: 'prompt' }, { runCompletion,
-      config: getRubricAiConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'gemini-3.6-flash' }), env: {} }))
-      .rejects.toMatchObject({ code: 'AI_PROVIDER_NOT_CONFIGURED' });
-    expect(runCompletion).not.toHaveBeenCalled();
-  });
-
-  test('rubric completion uses the direct Google endpoint and never uses OpenRouter credentials', async () => {
-    const fetchImpl = jest.fn(async () => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({
-      candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(valid).slice(0, 100) },
-        { thought: true, text: 'internal' }, { inlineData: {} }, { text: JSON.stringify(valid).slice(100) }] } }]
-    }) }));
+  test('changing the global primary model changes rubric transport', async () => {
+    const fetchImpl = jest.fn(async () => ({ ok: true, status: 200,
+      headers: { get: () => null }, text: async () => JSON.stringify({
+        candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(valid) }] } }]
+      }) }));
     await expect(completeRubric({ systemInstruction: 'system', userPrompt: 'prompt' }, {
-      config: { ...getRubricAiConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'gemini-3.6-flash' }), maxRetries: 0 },
-      env: { GEMINI_API_KEY: 'google-key', OPENROUTER_API_KEY: 'router-key', GEMINI_BASE_URL: 'https://generativelanguage.googleapis.com/v1beta' },
-      fetchImpl
+      config: getRubricAiConfig(env({ AI_PRIMARY_MODEL: 'changed-rubric-model' })),
+      env: env({ AI_PRIMARY_MODEL: 'changed-rubric-model' }), fetchImpl
     })).resolves.toEqual(valid);
-    const [url, options] = fetchImpl.mock.calls[0];
-    expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent');
-    expect(options.headers).toMatchObject({ 'x-goog-api-key': 'google-key' });
-    expect(options.headers).not.toHaveProperty('Authorization');
-    expect(JSON.stringify(options)).not.toContain('router-key');
+    expect(fetchImpl.mock.calls[0][0]).toContain('/models/changed-rubric-model:generateContent');
+  });
+
+  test('missing primary credential fails before transport', async () => {
+    const runCompletion = jest.fn();
+    const missing = env({ GEMINI_API_KEY: '' });
+    expect(() => getRubricAiConfig(missing)).toThrow(expect.objectContaining({ code: 'AI_CHAIN_NOT_CONFIGURED' }));
+    expect(runCompletion).not.toHaveBeenCalled();
   });
 
   test('strict rubric validation rejects malformed levels, cells, and points', () => {
@@ -65,16 +58,22 @@ describe('rubric AI configuration and completion', () => {
     expect(validateRubric({ ...valid, criteria: valid.criteria.map((x, i) => i ? x : { ...x, cells: ['a'] }) })).toBeNull();
   });
 
-  test('malformed provider output is rejected without retries in the validation layer', async () => {
+  test('malformed output is rejected without logging prompts or credentials', async () => {
     const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
     const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
-    const runCompletion = jest.fn(async () => ({ content: '{bad', provider: 'google', model: 'gemini-3.6-flash', metrics: { attemptCount: 1 } }));
-    await expect(completeRubric({ systemInstruction: 'secret-system', userPrompt: 'secret-prompt' }, { runCompletion,
-      config: getRubricAiConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'gemini-3.6-flash' }), env: { GEMINI_API_KEY: 'secret-key' } }))
-      .rejects.toMatchObject({ code: 'RUBRIC_RESPONSE_INVALID', statusCode: 422 });
+    const runCompletion = jest.fn(async ({ validate }) => {
+      validate('{bad');
+      return null;
+    });
+    await expect(completeRubric({ systemInstruction: 'secret-system', userPrompt: 'secret-prompt' }, {
+      runCompletion, config: getRubricAiConfig(env()), env: env()
+    })).rejects.toMatchObject({ code: 'RUBRIC_RESPONSE_INVALID', statusCode: 422 });
     expect(runCompletion).toHaveBeenCalledTimes(1);
     const logs = JSON.stringify([...info.mock.calls, ...warn.mock.calls]);
-    for (const privateValue of ['secret-system', 'secret-prompt', '{bad', 'secret-key']) expect(logs).not.toContain(privateValue);
-    info.mockRestore(); warn.mockRestore();
+    for (const privateValue of ['secret-system', 'secret-prompt', '{bad', 'google-key']) {
+      expect(logs).not.toContain(privateValue);
+    }
+    info.mockRestore();
+    warn.mockRestore();
   });
 });

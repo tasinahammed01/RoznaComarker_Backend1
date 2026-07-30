@@ -395,8 +395,9 @@ No text before [. No text after ].`,
           content: userPrompt,
         },
       ],
+      { validateValue: (value) => validateFlashcardOutput(value, count) },
     );
-    let cards = validateFlashcardOutput(generated.value, count);
+    let cards = generated.value;
 
     // Add images if requested
     if (shouldAddImages) {

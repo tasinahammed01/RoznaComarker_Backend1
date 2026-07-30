@@ -162,37 +162,39 @@ describe('adaptive practice', () => {
     for (const field of feedbackFields) expect(feedbackAfter[field]).toEqual(feedbackBefore[field]);
   });
 
-  it('repairs malformed JSON once and persists only the valid complete result', async () => {
+  it('persists a gateway-validated fallback result without a feature retry', async () => {
     const { studentId, submission } = await seed({ CONTENT: { score: 10, maxScore: 20 } });
-    const spy = jest.spyOn(generationAI, 'generate')
-      .mockResolvedValueOnce({ content: '{bad' })
-      .mockResolvedValueOnce({ content: aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]) });
+    const content = aiPayload([{ id: 'CONTENT', category: 'Task Achievement' }]);
+    const spy = jest.spyOn(generationAI, 'generate').mockImplementation(async (_messages, options) => ({
+      content, value: options.validate(content),
+      metadata: { attemptCount: 2, fallbackIndex: 1 }, provider: 'openrouter', model: 'fallback-model'
+    }));
     const result = await service.generateSession(submission._id, studentId);
     expect(result.state).toBe('ready');
-    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenCalledTimes(1);
     expect(await AdaptivePracticeSession.countDocuments({ status: 'ready' })).toBe(1);
-    expect(result.session.generation.metrics).toMatchObject({ providerAttemptCount: 2, repairAttemptCount: 1, persisted: true });
+    expect(result.session.generation.metrics).toMatchObject({ providerAttemptCount: 2, repairAttemptCount: 0, persisted: true });
   });
 
-  it('repairs a wrong count with a complete exact-count request', async () => {
+  it('accepts the exact-count result returned after gateway validation', async () => {
     const { studentId, submission } = await seed({ CONTENT: { score: 10, maxScore: 20 }, ORGANIZATION: { score: 10, maxScore: 20 } });
     const targets = [{ id: 'CONTENT', category: 'Task Achievement' }, { id: 'ORGANIZATION', category: 'Coherence & Flow' }];
-    const spy = jest.spyOn(generationAI, 'generate')
-      .mockResolvedValueOnce({ content: aiPayload(targets.slice(0, 1)) })
-      .mockResolvedValueOnce({ content: aiPayload(targets) });
+    const content = aiPayload(targets);
+    const spy = jest.spyOn(generationAI, 'generate').mockImplementation(async (_messages, options) => ({
+      content, value: options.validate(content), metadata: { attemptCount: 2, fallbackIndex: 1 }
+    }));
     expect((await service.generateSession(submission._id, studentId)).state).toBe('ready');
-    expect(spy).toHaveBeenCalledTimes(2);
-    expect(spy.mock.calls[1][0].at(-1).content).toContain('complete array with exactly 2 activities');
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it('stops after one failed repair and persists no partial activities', async () => {
+  it('persists no partial activities after gateway validation fails', async () => {
     const { studentId, submission } = await seed({ CONTENT: { score: 10, maxScore: 20 } });
     const spy = jest.spyOn(generationAI, 'generate').mockResolvedValue({ content: '{bad' });
     await expect(service.generateSession(submission._id, studentId)).rejects.toMatchObject({ code: 'INVALID_AI_JSON' });
-    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenCalledTimes(1);
     const failed = await AdaptivePracticeSession.findOne().lean();
     expect(failed.status).toBe('failed');
     expect(failed.activities).toEqual([]);
-    expect(failed.generation.metrics).toMatchObject({ persisted: false, repairAttemptCount: 1 });
+    expect(failed.generation.metrics).toMatchObject({ persisted: false, repairAttemptCount: 0 });
   });
 });

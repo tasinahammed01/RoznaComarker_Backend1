@@ -24,11 +24,23 @@ npm install
 - Copy `.env.example` -> `.env`
 - Fill in required variables (`MONGO_URI`, `JWT_SECRET`, Firebase service account values)
 
-OpenRouter + LLaMA (Rubric generation from teacher prompt):
-- `OPENROUTER_API_KEY` (required)
-- `LLAMA_MODEL` (default: `meta-llama/llama-3-8b-instruct`)
-- `OPENROUTER_BASE_URL` (default: `https://openrouter.ai/api/v1`)
-- `OPENROUTER_TIMEOUT_MS` (default/max used: `30000`)
+All AI-backed features use one global gateway configuration:
+
+- `AI_PRIMARY_PROVIDER` / `AI_PRIMARY_MODEL`
+- `AI_FALLBACK_1_PROVIDER` / `AI_FALLBACK_1_MODEL` (optional)
+- `AI_FALLBACK_2_PROVIDER` / `AI_FALLBACK_2_MODEL` (optional)
+- `AI_FALLBACK_3_PROVIDER` / `AI_FALLBACK_3_MODEL` (optional)
+- `AI_RETRIES_PER_MODEL`
+- `AI_ATTEMPT_TIMEOUT_MS`
+- `AI_TOTAL_BUDGET_MS`
+- `AI_RETRY_DELAY_MS`
+- Provider credentials and base URLs, such as `GEMINI_API_KEY`,
+  `OPENROUTER_API_KEY`, `GEMINI_BASE_URL`, and `OPENROUTER_BASE_URL`
+
+Changing the global provider/model chain affects rubric, semantic analysis,
+adaptive practice, flashcard, and worksheet generation consistently. See
+`.env.example` for the complete canonical configuration and supported provider
+names. Legacy feature-specific provider/model variables are not used.
 
 Notes:
 - `NODE_ENV=production` requires `FRONTEND_URL`.

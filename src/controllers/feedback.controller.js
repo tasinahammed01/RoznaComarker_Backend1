@@ -25,8 +25,7 @@ const { buildSubmissionCorrectionStatistics, countSubmissionCorrections } = requ
 const { buildCanonicalResultState } = require("../services/canonicalResultState.service");
 const { resolveTeacherComments } = require("../services/teacherComments.service");
 const { TEACHER_COMMENTS_MAX_LENGTH } = require("../models/SubmissionFeedback");
-const { getRubricAiConfig } = require("../services/rubricAiConfig.service");
-const { credentialFor } = require("../services/semanticAIClient.service");
+const aiGateway = require("../services/aiGateway.service");
 const { completeRubric } = require("../services/rubricCompletion.service");
 const {
   normalizeOcrTranscript,
@@ -41,11 +40,6 @@ const {
 const {
   buildWritingAssessment,
 } = require("../services/writingAssessment.service");
-
-const {
-  fetchCompat,
-  buildTimeoutSignal,
-} = require("../services/httpClient.service");
 
 const {
   bytesToMB,
@@ -2141,36 +2135,7 @@ async function generateAiSubmissionFeedback(req, res) {
 
     let structured = fallbackStructured;
     try {
-      const openRouterKey = safeString(process.env.OPENROUTER_API_KEY).trim();
-      const openAiKey = safeString(process.env.OPENAI_API_KEY).trim();
-
-      const provider = openRouterKey
-        ? "openrouter"
-        : openAiKey
-          ? "openai"
-          : "none";
-      const apiKey =
-        provider === "openrouter"
-          ? openRouterKey
-          : provider === "openai"
-            ? openAiKey
-            : "";
-
-      const baseUrl =
-        provider === "openai"
-          ? safeString(process.env.OPENAI_BASE_URL).trim() ||
-            "https://api.openai.com/v1"
-          : safeString(process.env.OPENROUTER_BASE_URL).trim() ||
-            "https://openrouter.ai/api/v1";
-
-      const model =
-        provider === "openai"
-          ? safeString(process.env.OPENAI_MODEL).trim() || "gpt-4o-mini"
-          : safeString(
-              process.env.OPENROUTER_MODEL || process.env.PRIMARY_AI_MODEL,
-            ).trim() || "openai/gpt-oss-120b";
-
-      if (apiKey) {
+      if (aiGateway.validateAIConfig().isValid) {
         const systemInstruction =
           "You are a grading assistant. Return ONLY JSON. Do not include markdown or code fences.";
         const userPrompt = [
@@ -2186,60 +2151,24 @@ async function generateAiSubmissionFeedback(req, res) {
           correctedText,
         ].join("\n");
 
-        const timeoutMs = Math.min(
-          60000,
-          Math.max(1, Number(process.env.OPENROUTER_TIMEOUT_MS) || 45000),
-        );
-        const { signal, cancel } = buildTimeoutSignal(timeoutMs);
-        const endpoint = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
-
-        let resp;
-        try {
-          resp = await fetchCompat(endpoint, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model,
-              messages: [
-                { role: "system", content: systemInstruction },
-                { role: "user", content: userPrompt },
-              ],
-              temperature: 0.2,
-            }),
-            signal,
-          });
-        } finally {
-          cancel();
-        }
-
-        if (resp && resp.ok) {
-          const json = await resp.json();
-          const contentRaw = safeString(
-            json &&
-              json.choices &&
-              json.choices[0] &&
-              json.choices[0].message &&
-              json.choices[0].message.content,
-          ).trim();
-          const cleaned = stripMarkdownCodeFences(contentRaw);
+        const generated = await aiGateway.generate({
+          feature: "submission_feedback",
+          messages: [
+            { role: "system", content: systemInstruction },
+            { role: "user", content: userPrompt },
+          ],
+          responseFormat: "json",
+          maxOutputTokens: Number(process.env.SEMANTIC_AI_MAX_OUTPUT_TOKENS) || 1800,
+          validate: (contentRaw) => {
+          const cleaned = stripMarkdownCodeFences(safeString(contentRaw).trim());
           const parsed =
             safeJsonParse(cleaned) || extractFirstJsonObject(cleaned);
           const validated = validateStructured(parsed);
-          if (validated) {
-            structured = validated;
-          } else {
-            logger.warn(
-              "[generateAiSubmissionFeedback] Invalid AI JSON shape; using fallback",
-            );
+          if (!validated) throw Object.assign(new Error("Invalid feedback shape"), { code: "FEEDBACK_SCHEMA_INVALID" });
+          return validated;
           }
-        } else {
-          logger.warn(
-            `[generateAiSubmissionFeedback] AI provider failed; using fallback status=${resp && resp.status} statusText=${resp && resp.statusText}`,
-          );
-        }
+        });
+        structured = generated.value;
       }
     } catch (e) {
       logger.warn(
@@ -2701,14 +2630,6 @@ function isAllowedRubricUploadMime(mime) {
   ].includes(m);
 }
 
-function buildGeminiBaseUrlCandidates(baseUrl) {
-  const raw =
-    safeString(baseUrl).trim() ||
-    "https://generativelanguage.googleapis.com/v1beta";
-  const normalized = raw.replace(/\/$/, "");
-  return [normalized];
-}
-
 async function updateTeacherComments(req, res) {
   try {
     const { submissionId } = req.params;
@@ -2781,181 +2702,46 @@ async function updateTeacherComments(req, res) {
   }
 }
 
-function buildGeminiModelCandidates(model) {
-  const m = safeString(model).trim();
-  const list = [m]
-    .map((x) => safeString(x).trim())
-    .filter(Boolean);
-
-  return list.filter((x, i, a) => a.indexOf(x) === i);
-}
-
-function isGeminiModelNotSupportedError(statusCode, message) {
-  const msg = safeString(message).toLowerCase();
-  if (statusCode === 404) return true;
-  if (msg.includes("model") && msg.includes("not found")) return true;
-  if (msg.includes("not supported") && msg.includes("generatecontent"))
-    return true;
-  if (msg.includes("api version") && msg.includes("not found")) return true;
-  return false;
-}
-
-async function geminiGenerateContentWithFallback({
-  apiKey,
-  baseUrl,
-  model,
-  contents,
-  timeoutMs,
-}) {
-  const baseUrls = buildGeminiBaseUrlCandidates(baseUrl);
-  const models = buildGeminiModelCandidates(model);
-
-  let lastErr = { statusCode: 502, message: "Failed to contact Gemini" };
-
-  for (const b of baseUrls) {
-    for (const m of models) {
-      const { signal, cancel } = buildTimeoutSignal(timeoutMs);
-      const endpoint = `${b.replace(/\/$/, "")}/models/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-
-      let resp;
-      try {
-        resp = await fetchCompat(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contents }),
-          signal,
-        });
-      } catch (err) {
-        const name = err && typeof err === "object" ? safeString(err.name) : "";
-        const msg =
-          err && typeof err === "object" ? safeString(err.message) : "";
-        cancel();
-        if (name === "AbortError" || /aborted/i.test(msg)) {
-          return {
-            error: {
-              statusCode: 504,
-              message: "Gemini request timed out. Please try again.",
-            },
-          };
-        }
-        lastErr = { statusCode: 502, message: msg || "Gemini request failed" };
-        continue;
-      } finally {
-        cancel();
-      }
-
-      if (resp && resp.ok) {
-        const json = await resp.json();
-        return { json };
-      }
-
-      let status = resp && typeof resp.status === "number" ? resp.status : 502;
-      if (resp) await resp.text().catch(() => "");
-
-      if (status === 429) {
-        return {
-          error: {
-            statusCode: 429,
-            message: "Gemini quota exceeded. Please try again later.",
-          },
-        };
-      }
-
-      lastErr = { statusCode: status >= 400 && status < 500 ? 502 : 502, message: "Gemini request failed" };
-      return { error: lastErr };
-    }
-  }
-
-  return { error: lastErr };
-}
-
 async function callGeminiGenerateRubricFromFile({
   promptText,
   fileMime,
   fileBuffer,
 }) {
-  const aiConfig = getRubricAiConfig();
-  if (aiConfig.provider !== "google") {
-    return { error: { statusCode: 501, message: "Configured rubric AI provider does not support file input" } };
-  }
-  const apiKey = credentialFor(aiConfig.provider);
-  const baseUrl =
-    safeString(process.env.GEMINI_BASE_URL).trim() ||
-    "https://generativelanguage.googleapis.com/v1beta";
-  const model = aiConfig.model;
-
-  if (!apiKey) {
-    return { error: { statusCode: 501, message: "Gemini not configured" } };
-  }
-
   const systemInstruction =
     "You are an academic rubric generator.\n" +
     "You will be given a document file that contains a rubric or rubric-like guidance.\n" +
-    "Return ONLY valid JSON.\n" +
-    "Do not include explanation text.\n" +
-    "Do not include markdown.\n" +
-    "Do not include code blocks.\n" +
+    "Return ONLY valid JSON. Do not include explanation, markdown, or code blocks.\n" +
     "Output must match this exact structure:\n" +
     '{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}.\n' +
     "Rules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. " +
-    "Keep criteria 3-10 rows. Keep maxPoints as integers.\n";
-
-  const fullPrompt = `${systemInstruction}\nTeacher context/instructions:\n${safeString(promptText).trim() || "Convert the attached file into the required rubric JSON."}`;
-
-  const timeoutMs = aiConfig.attemptTimeoutMs;
-  const resp = await geminiGenerateContentWithFallback({
-    apiKey,
-    baseUrl,
-    model,
-    timeoutMs,
-    contents: [
-      {
-        parts: [
-          { text: fullPrompt },
-          {
-            inlineData: {
-              mimeType: safeString(fileMime).toLowerCase(),
-              data: Buffer.isBuffer(fileBuffer)
-                ? fileBuffer.toString("base64")
-                : "",
-            },
-          },
-        ],
-      },
-    ],
+    "Keep criteria 3-10 rows. Keep maxPoints as integers.";
+  const fullPrompt = `${systemInstruction}\nTeacher context/instructions:\n${
+    safeString(promptText).trim() || "Convert the attached file into the required rubric JSON."}`;
+  const generated = await aiGateway.generate({
+    feature: "rubric_from_file",
+    messages: [{ role: "user", content: [
+      { type: "text", text: fullPrompt },
+      { type: "image_url", image_url: {
+        url: `data:${safeString(fileMime).toLowerCase()};base64,${Buffer.isBuffer(fileBuffer) ? fileBuffer.toString("base64") : ""}`,
+      } },
+    ] }],
+    maxOutputTokens: Number(process.env.RUBRIC_AI_MAX_OUTPUT_TOKENS) || 4000,
+    responseFormat: "json",
+    validate: (content) => {
+      const parsed = extractFirstJsonObject(stripMarkdownCodeFences(content));
+      if (!parsed || typeof parsed !== "object") {
+        throw Object.assign(new Error("Invalid rubric JSON"), { code: "RUBRIC_SCHEMA_INVALID" });
+      }
+      const normalized = normalizeRubricDesignerPayload(parsed);
+      if (normalized.error || !normalized.value) {
+        throw Object.assign(new Error(normalized.error || "Invalid rubric JSON"), {
+          code: "RUBRIC_SCHEMA_INVALID",
+        });
+      }
+      return content;
+    },
   });
-
-  if (resp.error) {
-    return { error: resp.error };
-  }
-
-  const json = resp.json;
-  const finishReason = safeString(json?.candidates?.[0]?.finishReason).trim();
-  const blockReason = safeString(json?.promptFeedback?.blockReason).trim();
-  if (blockReason || finishReason === "SAFETY") {
-    return { error: { statusCode: 422, message: "Gemini blocked the rubric response" } };
-  }
-  const parts =
-    json &&
-    json.candidates &&
-    json.candidates[0] &&
-    json.candidates[0].content &&
-    Array.isArray(json.candidates[0].content.parts)
-      ? json.candidates[0].content.parts
-      : [];
-
-  const content = parts
-    .filter((p) => p && p.thought !== true && typeof p.text === "string")
-    .map((p) => safeString(p.text))
-    .join("\n")
-    .trim();
-  if (!content) {
-    return {
-      error: { statusCode: 422, message: finishReason === "MAX_TOKENS" ? "Gemini returned truncated output" : "Gemini returned an empty response" },
-    };
-  }
-
-  return { content };
+  return { content: generated.content };
 }
 
 function extractFirstJsonObject(text) {

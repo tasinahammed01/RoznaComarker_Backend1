@@ -2,7 +2,7 @@
 // Method 1 — Topic name → WorksheetDocument JSON
 // Flow: prompt → Gemini 2.0 Flash → parse JSON → fetch image → assemble document
 
-import { GoogleGenerativeAI, GenerativeModel } from "@google/generative-ai";
+import aiGateway = require("./aiGateway.service");
 import { v4 as uuidv4 } from "uuid";
 import { fetchTopicImage } from "./imageService";
 import { buildColorScheme } from "../utils/colorUtils";
@@ -14,8 +14,6 @@ import {
   DiagramLabel,
   Question,
 } from "../types/worksheet";
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
 // ─────────────────────────────────────────────
 // PUBLIC ENTRY POINT
@@ -36,10 +34,8 @@ export async function generateWorksheetFromText(params: {
   customSelection?: boolean;
   teacherId: string;
 }): Promise<WorksheetDocument> {
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
   // Step 1: Generate raw AI content
-  const aiContent = await generateAiContent(model, params);
+  const aiContent = await generateAiContent(params);
 
   // Step 2: Fetch illustration
   const imageUrl = await fetchTopicImage(
@@ -78,7 +74,6 @@ export async function generateWorksheetFromText(params: {
 // ─────────────────────────────────────────────
 
 async function generateAiContent(
-  model: GenerativeModel,
   params: {
     topic: string;
     description?: string;
@@ -95,21 +90,15 @@ async function generateAiContent(
 ): Promise<Record<string, unknown>> {
   const prompt = buildContentPrompt(params);
 
-  const result = await model.generateContent(prompt);
-  const rawText = result.response.text();
-
-  // First parse attempt
-  try {
-    return parseJsonSafely(rawText);
-  } catch {
-    console.warn("[worksheetTextService] First JSON parse failed. Retrying...");
-    const retryPrompt = `Your previous response was not valid JSON.
-Return ONLY the JSON object below with no markdown fences, no explanation, no extra text.
-${prompt}`;
-    const retryResult = await model.generateContent(retryPrompt);
-    const retryText = retryResult.response.text();
-    return parseJsonSafely(retryText);
-  }
+  const result = await aiGateway.generate({
+    feature: "worksheet_from_text",
+    messages: [{ role: "system", content: "Return only valid worksheet JSON." },
+      { role: "user", content: prompt }],
+    maxOutputTokens: Number(process.env.WORKSHEET_AI_MAX_OUTPUT_TOKENS) || 6000,
+    responseFormat: "json",
+    validate: parseJsonSafely,
+  });
+  return result.value as Record<string, unknown>;
 }
 
 // ─────────────────────────────────────────────

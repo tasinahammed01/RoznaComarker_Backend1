@@ -45,11 +45,6 @@ async function main() {
     return;
   }
   const config = getSemanticAIConfig();
-  if (config.provider !== 'google') {
-    throw Object.assign(new Error('The live Gemini smoke requires SEMANTIC_AI_PROVIDER=google.'), {
-      code: 'LIVE_SMOKE_GOOGLE_NOT_CONFIGURED'
-    });
-  }
   const transcript = 'Public transport can reduce traffic. Clear schedules help people choose buses.';
   const sourceHash = crypto.createHash('sha256').update(transcript).digest('hex');
   let startedAt = Date.now();

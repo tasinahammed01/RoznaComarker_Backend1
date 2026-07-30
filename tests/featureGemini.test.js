@@ -12,16 +12,15 @@ const {
 } = require('../src/services/featureGemini.service');
 
 const envFor = (feature) => ({
-  PRIMARY_AI_PROVIDER: 'openrouter',
-  PRIMARY_AI_MODEL: 'must-not-be-used',
-  OPENROUTER_API_KEY: 'must-not-be-used',
+  AI_PRIMARY_PROVIDER: 'google',
+  AI_PRIMARY_MODEL: 'global-test-model',
   GEMINI_API_KEY: 'test-gemini-key',
   GEMINI_BASE_URL: 'https://gemini.test/v1beta',
-  [`${feature}_AI_PROVIDER`]: ' google ',
-  [`${feature}_AI_MODEL`]: ' gemini-3.6-flash ',
-  [`${feature}_AI_TIMEOUT_MS`]: '60000',
+  AI_ATTEMPT_TIMEOUT_MS: '60000',
+  AI_TOTAL_BUDGET_MS: '120000',
+  AI_RETRIES_PER_MODEL: '0',
+  AI_RETRY_DELAY_MS: '0',
   [`${feature}_AI_MAX_OUTPUT_TOKENS`]: feature === 'FLASHCARD' ? '4000' : '6000',
-  [`${feature}_AI_MAX_RETRIES`]: '1'
 });
 
 const googleResponse = (text, overrides = {}) => ({
@@ -50,35 +49,33 @@ const worksheet = (types = ['ordering', 'classification', 'multipleChoice', 'fil
   })
 });
 
-describe('dedicated feature Gemini configuration', () => {
+describe('global feature AI configuration', () => {
   test.each([
     ['FLASHCARD', 'flashcard', 4000],
     ['WORKSHEET', 'worksheet', 6000]
-  ])('%s selects Google without inheriting primary OpenRouter settings', (prefix, feature, tokens) => {
+  ])('%s uses the global chain and retains only its token limit', (prefix, feature, tokens) => {
     expect(getFeatureGeminiConfig(feature, envFor(prefix))).toMatchObject({
-      provider: 'google', model: 'gemini-3.6-flash', timeoutMs: 60000,
-      maxOutputTokens: tokens, maxRetries: 1, configured: true
+      provider: 'google', model: 'global-test-model',
+      maxOutputTokens: tokens, configured: true
     });
   });
 
-  test('missing or invalid dedicated settings never fall back to PRIMARY_AI_PROVIDER', () => {
-    expect(getFeatureGeminiConfig('flashcard', {
-      PRIMARY_AI_PROVIDER: 'openrouter', PRIMARY_AI_MODEL: 'paid/model', GEMINI_API_KEY: 'key'
-    })).toMatchObject({ provider: '', model: '', configured: false });
+  test('deprecated feature selectors are ignored', () => {
     expect(getFeatureGeminiConfig('worksheet', {
-      ...envFor('WORKSHEET'), WORKSHEET_AI_PROVIDER: 'openrouter'
-    }).configured).toBe(false);
+      ...envFor('WORKSHEET'), WORKSHEET_AI_PROVIDER: 'openrouter',
+      WORKSHEET_AI_MODEL: 'ignored-model'
+    })).toMatchObject({ provider: 'google', model: 'global-test-model', configured: true });
   });
 
-  test('uses the Google endpoint once and never the OpenRouter URL', async () => {
+  test('uses the global primary endpoint once when it succeeds', async () => {
     const fetchImpl = jest.fn(async (url) => {
-      expect(url).toBe('https://gemini.test/v1beta/models/gemini-3.6-flash:generateContent');
+      expect(url).toBe('https://gemini.test/v1beta/models/global-test-model:generateContent');
       expect(url).not.toContain('openrouter');
       return googleResponse('[{"front":"Root","back":"Absorbs water."}]');
     });
     const result = await generateFeatureJson('flashcard', [{ role: 'user', content: 'synthetic' }],
       { env: envFor('FLASHCARD'), fetchImpl });
-    expect(result.metadata).toMatchObject({ provider: 'google', model: 'gemini-3.6-flash', attemptCount: 1 });
+    expect(result.metadata).toMatchObject({ provider: 'google', model: 'global-test-model', attemptCount: 1 });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

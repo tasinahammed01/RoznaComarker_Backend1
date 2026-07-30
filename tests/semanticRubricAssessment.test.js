@@ -133,59 +133,48 @@ describe('semantic rubric assessment validation', () => {
     expect(result.categories.VOCABULARY.score).toBe(15);
   });
 
-  test('performs at most one bounded repair and validates the complete replacement response', async () => {
+  test('accepts a gateway-validated fallback replacement in one transaction', async () => {
     const invalid = valid();
     invalid.categories.CONTENT.score = 25;
-    const runCompletion = jest.fn()
-      .mockResolvedValueOnce({
-        content: JSON.stringify(invalid), provider: 'google', model: 'gemini-3.6-flash',
-        httpStatus: 200, finishReason: 'STOP', candidateCount: 1, hasContent: true, hasText: true,
-        responseTextLength: 100, metrics: { attempts: [{ attempt: 1, status: 'completed' }] }
-      })
-      .mockResolvedValueOnce({
-        content: JSON.stringify(valid()), provider: 'google', model: 'gemini-3.6-flash',
-        httpStatus: 200, finishReason: 'STOP', candidateCount: 1, hasContent: true, hasText: true,
-        responseTextLength: 100, metrics: { attempts: [{ attempt: 1, status: 'completed' }] }
-      });
+    const runCompletion = jest.fn(async ({ validate }) => ({
+      content: JSON.stringify(valid()), value: validate(JSON.stringify(valid())),
+      provider: 'openrouter', model: 'fallback-model',
+      metrics: { attempts: [{ status: 'failed', code: 'AI_OUTPUT_VALIDATION_FAILED' },
+        { status: 'success', code: null }] }
+    }));
     const result = await assess({
       transcript, corrections, sourceHash: 'hash', assignment: { title: 'Essay' }, statistics: {}, pageManifest: []
     }, {
       runCompletion,
-      env: { GEMINI_API_KEY: 'test' },
       config: {
-        provider: 'google', model: 'gemini-3.6-flash', totalBudgetMs: 90000, attemptTimeoutMs: 45000,
-        minAttemptBudgetMs: 1000, maxRetries: 1, maxOutputTokens: 4000, approvedModels: []
+        provider: 'google', model: 'primary-model',
+        chain: [{ provider: 'google', model: 'primary-model' }, { provider: 'openrouter', model: 'fallback-model' }],
+        totalBudgetMs: 90000, attemptTimeoutMs: 45000, maxRetries: 0, maxOutputTokens: 4000
       }
     });
-    expect(runCompletion).toHaveBeenCalledTimes(2);
-    expect(runCompletion.mock.calls[1][0].config).toMatchObject({ maxRetries: 0 });
-    expect(runCompletion.mock.calls[1][0].messages.at(-1).content).toContain('categories.CONTENT.score');
+    expect(runCompletion).toHaveBeenCalledTimes(1);
     expect(result.categories.CONTENT.score).toBe(18);
-    expect(result.metrics.validationRepairAttempted).toBe(true);
+    expect(result.metrics.validationRepairAttempted).toBe(false);
+    expect(result.metrics.attempts).toHaveLength(2);
   });
 
-  test('fails truthfully after one invalid repair response', async () => {
+  test('fails truthfully when gateway validation rejects the chain', async () => {
     const invalid = valid();
     invalid.categories.CONTENT.score = 25;
-    const runCompletion = jest.fn().mockResolvedValue({
-      content: JSON.stringify(invalid), provider: 'google', model: 'gemini-3.6-flash',
-      httpStatus: 200, finishReason: 'STOP', candidateCount: 1, hasContent: true, hasText: true,
-      responseTextLength: 100, metrics: { attempts: [] }
-    });
+    const runCompletion = jest.fn(async ({ validate }) => validate(JSON.stringify(invalid)));
     await expect(assess({
       transcript, corrections, sourceHash: 'hash', assignment: { title: 'Essay' }, statistics: {}, pageManifest: []
     }, {
       runCompletion,
-      env: { GEMINI_API_KEY: 'test' },
       config: {
-        provider: 'google', model: 'gemini-3.6-flash', totalBudgetMs: 90000, attemptTimeoutMs: 45000,
-        minAttemptBudgetMs: 1000, maxRetries: 1, maxOutputTokens: 4000, approvedModels: []
+        provider: 'google', model: 'primary-model', chain: [{ provider: 'google', model: 'primary-model' }],
+        totalBudgetMs: 90000, attemptTimeoutMs: 45000, maxRetries: 0, maxOutputTokens: 4000
       }
-    })).rejects.toMatchObject({ code: 'SEMANTIC_RUBRIC_SCORE_INVALID', repairAttempted: true });
-    expect(runCompletion).toHaveBeenCalledTimes(2);
+    })).rejects.toMatchObject({ code: 'SEMANTIC_RUBRIC_SCORE_INVALID' });
+    expect(runCompletion).toHaveBeenCalledTimes(1);
   });
 
-  test('repairs one invented Content correction ID using transcript evidence and reports both provider attempts', async () => {
+  test('validates transcript evidence returned by a gateway fallback', async () => {
     const invalid = valid();
     invalid.categories.CONTENT.improvementEvidence[0].correctionId = 'invented-content-id';
     const repaired = valid();
@@ -193,14 +182,12 @@ describe('semantic rubric assessment validation', () => {
       evidenceType: 'transcript', correctionId: null, quotedText: 'clear idea',
       explanation: 'The idea needs more development.', suggestion: 'Add a specific supporting example.'
     }];
-    const completion = (payload) => ({
-      content: JSON.stringify(payload), provider: 'google', model: 'gemini-3.6-flash',
-      httpStatus: 200, finishReason: 'STOP', candidateCount: 1, hasContent: true, hasText: true,
-      responseTextLength: 100, metrics: { attempts: [{ attempt: 1, status: 'completed' }] }
-    });
-    const runCompletion = jest.fn()
-      .mockResolvedValueOnce(completion(invalid))
-      .mockResolvedValueOnce(completion(repaired));
+    const runCompletion = jest.fn(async ({ validate }) => ({
+      content: JSON.stringify(repaired), value: validate(JSON.stringify(repaired)),
+      provider: 'openrouter', model: 'fallback-model',
+      metrics: { attempts: [{ status: 'failed', code: 'AI_OUTPUT_VALIDATION_FAILED' },
+        { status: 'success', code: null }] }
+    }));
     const result = await assess({
       transcript,
       corrections: corrections.filter((item) => item.category !== 'CONTENT'),
@@ -210,18 +197,17 @@ describe('semantic rubric assessment validation', () => {
       pageManifest: []
     }, {
       runCompletion,
-      env: { GEMINI_API_KEY: 'test' },
       config: {
-        provider: 'google', model: 'gemini-3.6-flash', totalBudgetMs: 90000, attemptTimeoutMs: 45000,
-        minAttemptBudgetMs: 1000, maxRetries: 1, maxOutputTokens: 4000, approvedModels: []
+        provider: 'google', model: 'primary-model',
+        chain: [{ provider: 'google', model: 'primary-model' }, { provider: 'openrouter', model: 'fallback-model' }],
+        totalBudgetMs: 90000, attemptTimeoutMs: 45000, maxRetries: 0, maxOutputTokens: 4000
       }
     });
-    expect(runCompletion).toHaveBeenCalledTimes(2);
-    expect(runCompletion.mock.calls[1][0].messages.at(-1).content).toContain('"CONTENT":[]');
+    expect(runCompletion).toHaveBeenCalledTimes(1);
     expect(result.categories.CONTENT.improvementEvidence[0]).toMatchObject({
       evidenceType: 'transcript', correctionId: null
     });
     expect(result.metrics.attempts).toHaveLength(2);
-    expect(result.metrics.attempts[1]).toMatchObject({ validationRepair: true });
+    expect(result.metrics.attempts[1]).toMatchObject({ status: 'success' });
   });
 });

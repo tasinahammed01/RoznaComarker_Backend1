@@ -49,23 +49,14 @@ async function main() {
       beforeTokenEstimate: before.promptInputTokenEstimate, afterTokenEstimate: after.promptInputTokenEstimate };
   });
   const report = { mode: process.argv.includes('--live') ? 'live' : 'local-structural',
-    current: { provider: process.env.PRIMARY_AI_PROVIDER || 'openrouter', model: process.env.PRIMARY_AI_MODEL || null,
-      attemptTimeoutMs: Number(process.env.OPENROUTER_TIMEOUT_MS) || 60000, attempts: Number(process.env.AI_MAX_RETRIES) || 3,
-      outputTokenBudget: Number(process.env.OPENROUTER_MAX_TOKENS) || 4000,
-      calculatedWorstCaseMs: (Number(process.env.OPENROUTER_TIMEOUT_MS) || 60000) * (Number(process.env.AI_MAX_RETRIES) || 3)
-        + Math.max(0, (Number(process.env.AI_MAX_RETRIES) || 3) - 1) * (Number(process.env.AI_RETRY_DELAY_MS) || 1000) },
+    current: { chain: config.chain, provider: config.provider, model: config.model,
+      attemptTimeoutMs: config.attemptTimeoutMs, attemptsPerModel: config.maxRetries + 1,
+      outputTokenBudget: config.maxOutputTokens, calculatedWorstCaseMs: config.totalBudgetMs },
     optimized: { provider: config.provider, model: config.model, attemptTimeoutMs: config.attemptTimeoutMs,
       totalBudgetMs: config.totalBudgetMs, maxRetries: config.maxRetries, outputTokenBudget: config.maxOutputTokens,
       fallback: config.fallback }, promptMeasurements, accuracyFixtureCount: fixtures.length, liveCandidates: [] };
   if (process.argv.includes('--live')) {
-    const explicitlyApproved = new Set(config.approvedModels);
-    let candidates = [
-      { provider: process.env.PRIMARY_AI_PROVIDER || 'openrouter', model: process.env.PRIMARY_AI_MODEL, source: 'current_primary' },
-      { provider: config.provider, model: config.model, source: 'semantic_config' },
-      { provider: process.env.FALLBACK_AI_PROVIDER, model: process.env.FALLBACK_AI_MODEL, source: 'existing_project_fallback' }
-    ].filter((item) => item.provider && item.model)
-      .filter((item) => ['current_primary', 'existing_project_fallback'].includes(item.source) || explicitlyApproved.has(item.model))
-      .filter((item, index, list) => list.findIndex((candidate) => candidate.provider === item.provider && candidate.model === item.model) === index);
+    let candidates = [{ provider: config.provider, model: config.model, source: 'global_chain' }];
     const onlyArgument = process.argv.find((item) => item.startsWith('--only='));
     const only = String(onlyArgument ? onlyArgument.slice('--only='.length) : process.env.SEMANTIC_BENCHMARK_ONLY || '').trim();
     if (only) candidates = candidates.filter((item) => `${item.provider}:${item.model}` === only);
@@ -81,7 +72,7 @@ async function main() {
         try {
           const result = await semantic.analyze({ transcript: fixture.text, transcriptHash, assignment: { title: 'Sanitized fixture' },
             pageManifest: pagesFor(fixture.text, fixture.pageBreaks?.length ? 2 : 1), languageToolCorrections: [] },
-          { config: { ...config, provider, model, fallback: null } });
+          { config });
           latencies.push(performance.now() - startedAt); valid += 1;
           rawCorrectionCount += result.corrections.length;
           const normalized = result.corrections.map((item) => canonical.normalizeCorrection(item, fixture.text, [], defaultLegend(), 'AI')).filter(Boolean);

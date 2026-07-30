@@ -10,16 +10,6 @@ const { getNormalizedSubmissionTranscript, normalizeOcrTranscript } = require('.
 const generationAI = require('./adaptivePracticeGenerationAI.service');
 const logger = require('../utils/logger');
 
-const ADAPTIVE_PRACTICE_PROVIDER = String(
-  process.env.ADAPTIVE_PRACTICE_AI_PROVIDER || 'google'
-).trim().toLowerCase();
-
-const ADAPTIVE_PRACTICE_MODEL = String(
-  process.env.ADAPTIVE_PRACTICE_AI_MODEL || 'gemini-3.6-flash'
-).trim();
-
-const ADAPTIVE_PRACTICE_MAX_OUTPUT_TOKENS =
-  Number(process.env.ADAPTIVE_PRACTICE_AI_MAX_OUTPUT_TOKENS) || 4000;
 const {
   ADAPTIVE_PRACTICE_THRESHOLD,
   ADAPTIVE_PRACTICE_PROMPT_VERSION,
@@ -181,24 +171,6 @@ function validateAiResponse(raw, weakSkills, transcript) {
   });
 }
 
-const REPAIRABLE_GENERATION_CODES = new Set([
-  'INVALID_AI_JSON', 'INVALID_AI_SCHEMA', 'INVALID_ACTIVITY_COUNT', 'INVALID_ACTIVITY_FIELDS',
-  'INVALID_ACTIVITY_TARGET', 'INVALID_ACTIVITY_FIELD_LENGTH', 'UNGROUNDED_EVIDENCE',
-  'INVALID_ACTIVITY_CHECKLIST', 'INVALID_ACTIVITY_DIFFICULTY'
-]);
-
-function buildRepairMessages(source, validationError, previousOutput) {
-  const expectedCount = source.weakSkills.length;
-  const issue = validationError.code === 'INVALID_ACTIVITY_COUNT'
-    ? `The previous response had the wrong activity count. Return the complete array with exactly ${expectedCount} activities.`
-    : `The previous response failed validation with code ${validationError.code}.`;
-  return [
-    ...buildMessages(source),
-    { role: 'assistant', content: String(previousOutput || '') },
-    { role: 'user', content: `${issue}\nRepair the complete response. Return JSON only using exactly the previously specified schema, with one activity for every supplied target and no partial array.` }
-  ];
-}
-
 function buildMessages(source) {
   const targets = source.weakSkills.map((skill) => ({ id: skill.id, category: skill.category, percentage: skill.percentage, status: skill.status }));
   const transcript = source.transcript.slice(0, ADAPTIVE_PRACTICE_MAX_TRANSCRIPT_CHARS);
@@ -224,6 +196,7 @@ async function generateSession(submissionId, studentId, options = {}) {
 
   const promptStarted = Date.now();
   const messages = buildMessages(source);
+  const aiConfig = generationAI.config();
   timings.promptBuildingMs = Date.now() - promptStarted;
   const promptCharacters = messages.reduce((sum, message) => sum + String(message.content || '').length, 0);
   const inputTokenEstimate = Math.ceil(promptCharacters / 4);
@@ -235,7 +208,7 @@ async function generateSession(submissionId, studentId, options = {}) {
     sourceSnapshot: { transcriptFingerprint: source.transcriptFingerprint, feedbackId: source.feedback._id, feedbackUpdatedAt: source.feedback.updatedAt, skills: source.assessedSkills },
     targetSkills: source.weakSkills.map((skill) => skill.id),
     activities: [],
-    generation: { provider: ADAPTIVE_PRACTICE_PROVIDER, model: ADAPTIVE_PRACTICE_MODEL, promptVersion: ADAPTIVE_PRACTICE_PROMPT_VERSION, startedAt: new Date(), metrics: { ...timings, promptCharacters, inputTokenEstimate, retryCount: 0, retryDelayMs: 0 } }
+    generation: { provider: aiConfig.provider, model: aiConfig.model, promptVersion: ADAPTIVE_PRACTICE_PROMPT_VERSION, startedAt: new Date(), metrics: { ...timings, promptCharacters, inputTokenEstimate, retryCount: 0, retryDelayMs: 0 } }
   };
   try {
     session = await AdaptivePracticeSession.findOneAndUpdate(
@@ -256,35 +229,17 @@ async function generateSession(submissionId, studentId, options = {}) {
   let usage = null;
   try {
     const providerStarted = Date.now();
-    const deadline = providerStarted + (Number(process.env.ADAPTIVE_PRACTICE_AI_TIMEOUT_MS) || 60000);
-    let activities;
-    let previousOutput = '';
-    let validationError;
-    for (let generationAttempt = 0; generationAttempt < 2; generationAttempt += 1) {
-      const remainingMs = deadline - Date.now();
-      if (remainingMs < 1000) throw new AdaptivePracticeError(504, 'AI_PROVIDER_TIMEOUT', 'Adaptive practice generation timed out.');
-      const attemptMessages = generationAttempt === 0 ? messages : buildRepairMessages(source, validationError, previousOutput);
-      const result = await generationAI.generate(attemptMessages, { timeoutMs: remainingMs });
-      providerAttemptCount += 1;
-      if (generationAttempt === 1) repairAttemptCount = 1;
-      usage = result.usage || usage;
-      previousOutput = result.content;
-      const validationStarted = Date.now();
-      try {
-        activities = validateAiResponse(previousOutput, source.weakSkills, source.transcript);
-        timings.responseParsingMs = (timings.responseParsingMs || 0) + Date.now() - validationStarted;
-        break;
-      } catch (error) {
-        timings.responseParsingMs = (timings.responseParsingMs || 0) + Date.now() - validationStarted;
-        validationError = error;
-        logger.metric({ feature: 'adaptive_practice_generation', provider: ADAPTIVE_PRACTICE_PROVIDER,
-          model: ADAPTIVE_PRACTICE_MODEL, submissionId: String(source.submission._id),
-          attemptNumber: generationAttempt + 1, phase: generationAttempt ? 'repair' : 'initial',
-          expectedActivityCount: source.weakSkills.length, validationErrorCode: error.code,
-          markdownFencePresent: /^```/u.test(String(previousOutput).trim()), extractedTextLength: String(previousOutput).length });
-        if (!REPAIRABLE_GENERATION_CODES.has(error.code) || generationAttempt === 1) throw error;
-      }
-    }
+    const validationStarted = Date.now();
+    const result = await generationAI.generate(messages, {
+      validate: (content) => validateAiResponse(content, source.weakSkills, source.transcript)
+    });
+    const activities = result.value || validateAiResponse(result.content, source.weakSkills, source.transcript);
+    timings.responseParsingMs = Date.now() - validationStarted;
+    providerAttemptCount = result.metadata?.attemptCount || 1;
+    retryCount = Math.max(0, providerAttemptCount - (result.metadata?.fallbackIndex || 0) - 1);
+    usage = result.usage || usage;
+    session.generation.provider = result.provider;
+    session.generation.model = result.model;
     timings.providerRequestMs = Date.now() - providerStarted;
     session.status = 'ready';
     session.activities = activities;
@@ -328,4 +283,4 @@ async function generateSession(submissionId, studentId, options = {}) {
   }
 }
 
-module.exports = { AdaptivePracticeError, calculateSkills, buildGenerationSourceFingerprint, loadOwnedSource, getCurrentSession, generateSession, validateAiResponse, buildMessages, buildRepairMessages };
+module.exports = { AdaptivePracticeError, calculateSkills, buildGenerationSourceFingerprint, loadOwnedSource, getCurrentSession, generateSession, validateAiResponse, buildMessages };

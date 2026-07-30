@@ -212,48 +212,6 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
   return { sourceHash, categories: validated, status: contextStatus === 'none' ? 'partial' : 'completed' };
 }
 
-const REPAIRABLE_VALIDATION_CODES = new Set([
-  'SEMANTIC_RUBRIC_SCORE_INVALID',
-  'SEMANTIC_RUBRIC_SCHEMA_INVALID',
-  'SEMANTIC_RUBRIC_CORRECTION_INVALID'
-]);
-
-function buildRepairMessages(originalMessages, validationIssues = [], allowedCorrectionIds = {}) {
-  const issues = (Array.isArray(validationIssues) ? validationIssues : []).map((issue) => ({
-    path: String(issue?.path || ''),
-    code: String(issue?.code || ''),
-    ...(issue?.expectedType ? { expectedType: issue.expectedType } : {}),
-    ...(Number.isFinite(issue?.expectedMinimum) ? { expectedMinimum: issue.expectedMinimum } : {}),
-    ...(Number.isFinite(issue?.expectedMaximum) ? { expectedMaximum: issue.expectedMaximum } : {})
-  }));
-  return [
-    ...originalMessages,
-    {
-      role: 'user',
-      content: `The prior JSON failed authoritative validation: ${JSON.stringify(issues)}. Allowed correction IDs grouped by category are immutable: ${JSON.stringify(allowedCorrectionIds)}. An empty category list means correction evidence is forbidden for that category. Use evidenceType="transcript", correctionId=null, and an exact canonical transcript quote for transcript-grounded improvement evidence. Never invent, shorten, infer, translate, cross categories, use array indexes, or use display marker numbers as correction IDs. Return one complete corrected JSON object for the original rubric context. Preserve the exact named CONTENT, ORGANIZATION, and VOCABULARY structure and sourceHash. Scores/maxScore must be JSON numbers; each score must be 0 through 20 and maxScore exactly 20. Return no Markdown, total, aliases, or explanatory prose outside the JSON.`
-    }
-  ];
-}
-
-function attachCompletionMetadata(error, completion, startedAt) {
-  error.provider = completion.provider;
-  error.model = completion.model;
-  error.httpStatus = completion.httpStatus;
-  error.finishReason = completion.finishReason;
-  error.candidateCount = completion.candidateCount;
-  error.hasContent = completion.hasContent;
-  error.hasText = completion.hasText;
-  error.contentType = completion.contentType;
-  error.responseTextLength = completion.responseTextLength;
-  error.requestId = completion.requestId;
-  error.durationMs = Date.now() - startedAt;
-  error.usage = completion.usage || null;
-  error.markdownFenceDetected = error.markdownFenceDetected === true
-    || /^```json\b/iu.test(String(completion.content || '').trim());
-  error.attempts = Array.isArray(completion.metrics?.attempts) ? completion.metrics.attempts : [];
-  return error;
-}
-
 async function assess(input, dependencies = {}) {
   const config = dependencies.config || getSemanticAIConfig();
   if (!getSemanticAIConfigStatus(config, dependencies.env || process.env).configured) {
@@ -262,64 +220,20 @@ async function assess(input, dependencies = {}) {
   const request = buildRequest(input);
   const startedAt = Date.now();
   const runCompletion = dependencies.runCompletion || runSemanticCompletion;
+  const validate = (content) => validateAssessment(parseJson(content), {
+    sourceHash: input.sourceHash, transcript: input.transcript,
+    corrections: input.corrections, contextStatus: request.contextStatus
+  });
   const completion = await runCompletion({ messages: request.messages, config,
-    env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch });
-  let assessment;
-  let finalCompletion = completion;
-  let repairAttempted = false;
-  try {
-    assessment = validateAssessment(parseJson(completion.content), { sourceHash: input.sourceHash,
-      transcript: input.transcript, corrections: input.corrections, contextStatus: request.contextStatus });
-  } catch (error) {
-    attachCompletionMetadata(error, completion, startedAt);
-    if (!REPAIRABLE_VALIDATION_CODES.has(error?.code)) throw error;
-    const elapsedMs = Date.now() - startedAt;
-    const remainingBudgetMs = Number(config.totalBudgetMs) - elapsedMs;
-    if (remainingBudgetMs < Number(config.minAttemptBudgetMs)) throw error;
-    repairAttempted = true;
-    const repairConfig = {
-      ...config,
-      maxRetries: 0,
-      totalBudgetMs: remainingBudgetMs,
-      attemptTimeoutMs: Math.min(Number(config.attemptTimeoutMs), remainingBudgetMs)
-    };
-    try {
-      finalCompletion = await runCompletion({
-        messages: buildRepairMessages(request.messages, error.validationIssues, request.allowedCorrectionIds),
-        config: repairConfig,
-        env: dependencies.env || process.env,
-        fetchImpl: dependencies.fetchImpl || global.fetch
-      });
-      assessment = validateAssessment(parseJson(finalCompletion.content), {
-        sourceHash: input.sourceHash,
-        transcript: input.transcript,
-        corrections: input.corrections,
-        contextStatus: request.contextStatus
-      });
-    } catch (repairError) {
-      repairError.repairAttempted = true;
-      const firstAttempts = Array.isArray(completion.metrics?.attempts) ? completion.metrics.attempts : [];
-      if (finalCompletion !== completion) {
-        attachCompletionMetadata(repairError, finalCompletion, startedAt);
-        const repairAttempts = Array.isArray(finalCompletion.metrics?.attempts)
-          ? finalCompletion.metrics.attempts.map((attempt) => ({ ...attempt, validationRepair: true })) : [];
-        repairError.attempts = [...firstAttempts, ...repairAttempts];
-      } else if (!Array.isArray(repairError.attempts)) {
-        repairError.attempts = firstAttempts;
-      }
-      throw repairError;
-    }
-  }
-  const attempts = [
-    ...(Array.isArray(completion.metrics?.attempts) ? completion.metrics.attempts : []),
-    ...(repairAttempted && Array.isArray(finalCompletion.metrics?.attempts)
-      ? finalCompletion.metrics.attempts.map((attempt) => ({ ...attempt, validationRepair: true })) : [])
-  ];
-  return { ...assessment, provider: finalCompletion.provider, model: finalCompletion.model, usage: finalCompletion.usage,
-    metrics: { ...finalCompletion.metrics, attempts, validationRepairAttempted: repairAttempted,
+    env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
+    validate, feature: 'semantic_rubric_assessment' });
+  const assessment = completion.value || validate(completion.content);
+  const attempts = Array.isArray(completion.metrics?.attempts) ? completion.metrics.attempts : [];
+  return { ...assessment, provider: completion.provider, model: completion.model, usage: completion.usage,
+    metrics: { ...completion.metrics, attempts, validationRepairAttempted: false,
       semanticRubricAssessmentMs: Date.now() - startedAt,
       promptCharacters: request.promptCharacters, promptInputTokenEstimate: request.promptInputTokenEstimate } };
 }
 
 module.exports = { PROMPT_VERSION, SCHEMA_VERSION, SEMANTIC_CATEGORIES, correctionCatalog,
-  allowedCorrectionIdsByCategory, buildRequest, buildRepairMessages, parseJson, validateAssessment, assess };
+  allowedCorrectionIdsByCategory, buildRequest, parseJson, validateAssessment, assess };

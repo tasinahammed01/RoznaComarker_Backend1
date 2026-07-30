@@ -55,7 +55,7 @@ const {
 const {
   extractWorksheetStructure,
 } = require("../services/worksheetExtractor.service");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const aiGateway = require("../services/aiGateway.service");
 const vision = require('@google-cloud/vision');
 const fs = require("fs");
 const path = require("path");
@@ -649,8 +649,9 @@ async function generateWorksheet(req, res) {
         },
         { role: "user", content: prompt },
       ],
+      { validateValue: (value) => validateWorksheetOutput(value, resolvedTypes) },
     );
-    const parsed = validateWorksheetOutput(generated.value, resolvedTypes);
+    const parsed = generated.value;
 
     console.log(
       "[GENERATE] Success — activities:",
@@ -972,9 +973,7 @@ async function generateFromFile(req, res) {
     return sendError(res, 400, "No file uploaded");
   }
 
-  // Check if GEMINI_API_KEY is configured
-  if (!process.env.GEMINI_API_KEY) {
-    console.error("[GENERATE FROM FILE] GEMINI_API_KEY not configured");
+  if (!aiGateway.validateAIConfig().isValid) {
     return sendError(
       res,
       500,
@@ -1027,11 +1026,6 @@ async function generateFromFile(req, res) {
       return sendError(res, 400, "Topic is required");
     }
 
-    // Initialize Gemini
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
-    // Build content array for Gemini
     let contentParts = [];
 
     // For images and PDFs, send as base64
@@ -1040,16 +1034,14 @@ async function generateFromFile(req, res) {
       req.file.mimetype === "application/pdf"
     ) {
       const base64Data = req.file.buffer.toString("base64");
-      contentParts.push({
-        inlineData: {
-          mimeType: req.file.mimetype,
-          data: base64Data,
-        },
-      });
+      contentParts.push({ type: "image_url", image_url: {
+        url: `data:${req.file.mimetype};base64,${base64Data}`,
+      } });
     }
 
     // Add text content
     contentParts.push({
+      type: "text",
       text: buildGeminiPrompt(
         topic,
         subject,
@@ -1066,54 +1058,28 @@ async function generateFromFile(req, res) {
       "parts"
     );
 
-    // Call Gemini
-    const result = await model.generateContent(contentParts);
-    const responseText = result.response.text();
-
-    console.log("[GENERATE FROM FILE] Gemini response length:", responseText.length);
-
-    // Clean and parse JSON response
-    const cleaned = responseText.replace(/```json|```/g, "").trim();
-    let parsed;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch (parseError) {
-      console.error("[GENERATE FROM FILE] JSON parse error:", parseError.message);
-      // Try jsonrepair
-      try {
-        const repaired = require("jsonrepair")(cleaned);
-        parsed = JSON.parse(repaired);
-      } catch (repairError) {
-        console.error("[GENERATE FROM FILE] JSON repair failed:", repairError.message);
-        return res.status(500).json({
-          success: false,
-          message: "Invalid response format from AI",
-          error: "Could not parse generated worksheet structure",
-        });
-      }
-    }
-
-    // Validate parsed result
-    if (!parsed || typeof parsed !== "object") {
-      return res.status(500).json({
-        success: false,
-        message: "Invalid worksheet structure",
-        error: "Generated result is not a valid object",
-      });
-    }
+    const result = await aiGateway.generate({
+      feature: "worksheet_generate_from_file",
+      messages: [{ role: "user", content: contentParts }],
+      maxOutputTokens: Number(process.env.WORKSHEET_AI_MAX_OUTPUT_TOKENS) || 6000,
+      responseFormat: "json",
+      validate: (responseText) => {
+        const cleaned = responseText.replace(/```json|```/g, "").trim();
+        let value;
+        try { value = JSON.parse(cleaned); }
+        catch { value = JSON.parse(jsonrepair(cleaned)); }
+        if (!value || typeof value !== "object" || !Array.isArray(value.activities)
+          || value.activities.length === 0) {
+          throw Object.assign(new Error("Invalid worksheet structure"), { code: "WORKSHEET_SCHEMA_INVALID" });
+        }
+        return value;
+      },
+    });
+    const parsed = result.value;
 
     // Ensure title exists
     if (!parsed.title || typeof parsed.title !== "string") {
       parsed.title = `${topic.slice(0, 50)} Worksheet`;
-    }
-
-    // Ensure activities array exists
-    if (!Array.isArray(parsed.activities) || parsed.activities.length === 0) {
-      return res.status(500).json({
-        success: false,
-        message: "Invalid worksheet structure",
-        error: "No activities in generated worksheet",
-      });
     }
 
     console.log(

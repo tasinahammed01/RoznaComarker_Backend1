@@ -1,95 +1,95 @@
-const { runSemanticCompletion, classifyProviderFailure } = require('../src/services/semanticAIClient.service');
+'use strict';
 
-const response = (status, body) => ({
+const { getSemanticAIConfig, runSemanticCompletion } =
+  require('../src/services/semanticAIClient.service');
+
+const env = (overrides = {}) => ({
+  AI_PRIMARY_PROVIDER: 'google', AI_PRIMARY_MODEL: 'semantic-primary',
+  AI_FALLBACK_1_PROVIDER: 'openrouter', AI_FALLBACK_1_MODEL: 'semantic-fallback',
+  AI_ATTEMPT_TIMEOUT_MS: '30000', AI_TOTAL_BUDGET_MS: '120000',
+  AI_RETRIES_PER_MODEL: '0', AI_RETRY_DELAY_MS: '0',
+  GEMINI_API_KEY: 'google-key', OPENROUTER_API_KEY: 'router-key',
+  GEMINI_BASE_URL: 'https://google.test/v1', OPENROUTER_BASE_URL: 'https://router.test/v1',
+  SEMANTIC_AI_MAX_OUTPUT_TOKENS: '1800', ...overrides
+});
+const response = (status, payload) => ({
   ok: status >= 200 && status < 300, status,
-  headers: { get: () => null },
-  text: async () => typeof body === 'string' ? body : JSON.stringify(body)
+  headers: { get: () => null }, text: async () => JSON.stringify(payload)
+});
+const google = (content) => response(200, {
+  candidates: [{ finishReason: 'STOP', content: { parts: [{ text: content }] } }]
+});
+const router = (content) => response(200, {
+  choices: [{ finish_reason: 'stop', message: { content } }]
 });
 
-const config = {
-  provider: 'google', model: 'gemini-3.6-flash',
-  fallback: { provider: 'openrouter', model: 'openai/gpt-oss-20b' },
-  approvedModels: ['gemini-3.6-flash', 'openai/gpt-oss-20b'],
-  maxRetries: 1, retryDelayMs: 0, attemptTimeoutMs: 5000,
-  totalBudgetMs: 20000, minAttemptBudgetMs: 1000, maxOutputTokens: 512, googleThinkingLevel: 'low'
-};
-const env = { GEMINI_API_KEY: 'google-secret', OPENROUTER_API_KEY: 'router-secret',
-  OPENROUTER_BASE_URL: 'https://openrouter.test/api/v1' };
+describe('semantic global-chain facade', () => {
+  test('uses a bounded 5000-token semantic default', () => {
+    const withoutFeatureLimit = env();
+    delete withoutFeatureLimit.SEMANTIC_AI_MAX_OUTPUT_TOKENS;
+    expect(getSemanticAIConfig(withoutFeatureLimit).maxOutputTokens).toBe(5000);
+  });
 
-describe('semantic provider failover policy', () => {
-  test('classifies payment rejection as fallback-only', () => {
-    expect(classifyProviderFailure({ status: 402, code: 'HTTP_402' }, {
-      isPrimary: true, fallbackConfigured: true
-    })).toEqual({ retrySameProvider: false, tryFallbackProvider: true,
-      terminalCode: 'PRIMARY_PROVIDER_PAYMENT_REQUIRED' });
+  test('reads the global chain and semantic token limit only', () => {
+    expect(getSemanticAIConfig(env())).toMatchObject({
+      provider: 'google', model: 'semantic-primary', maxOutputTokens: 1800,
+      chain: [
+        { provider: 'google', model: 'semantic-primary', fallbackIndex: 0 },
+        { provider: 'openrouter', model: 'semantic-fallback', fallbackIndex: 1 }
+      ]
+    });
   });
 
   test('primary success performs no fallback', async () => {
-    const fetchImpl = jest.fn().mockResolvedValue(response(200, {
-      candidates: [{ content: { parts: [{ text: '{"ok":true}' }] }, finishReason: 'STOP' }]
-    }));
-    const result = await runSemanticCompletion({ messages: [{ role: 'user', content: 'safe fixture' }],
-      config, env, fetchImpl });
+    const fetchImpl = jest.fn(async () => google('{"ok":true}'));
+    const result = await runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
+      config: getSemanticAIConfig(env()), env: env(), fetchImpl });
+    expect(result.content).toBe('{"ok":true}');
     expect(result.provider).toBe('google');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test('primary 402 skips same-provider retry and uses approved fallback credential once', async () => {
+  test('payment failure selects the configured fallback', async () => {
+    const attempts = [];
     const fetchImpl = jest.fn()
-      .mockResolvedValueOnce(response(402, { error: { status: 'PAYMENT_REQUIRED', code: 402 } }))
-      .mockResolvedValueOnce(response(200, { choices: [{ message: { content: '{"ok":true}' } }],
-        usage: { prompt_tokens: 2, completion_tokens: 3 } }));
-    const result = await runSemanticCompletion({ messages: [{ role: 'user', content: 'safe fixture' }],
-      config, env, fetchImpl });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(fetchImpl.mock.calls[0][0]).toContain('google');
-    expect(fetchImpl.mock.calls[1][0]).toContain('openrouter.test');
-    expect(fetchImpl.mock.calls[1][1].headers.Authorization).toBe('Bearer router-secret');
-    expect(result).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-oss-20b' });
-    expect(result.metrics.attempts.map((item) => item.status)).toEqual(['provider_refusal', 'completed']);
+      .mockResolvedValueOnce(response(402, {}))
+      .mockResolvedValueOnce(router('{"ok":true}'));
+    const result = await runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
+      config: getSemanticAIConfig(env()), env: env(), fetchImpl,
+      onAttempt: (attempt) => attempts.push(attempt) });
+    expect(result).toMatchObject({ provider: 'openrouter', model: 'semantic-fallback' });
+    expect(result.metrics.attempts).toHaveLength(2);
+    expect(attempts).toHaveLength(2);
+    expect(attempts.map((attempt) => attempt.provider)).toEqual(['google', 'openrouter']);
   });
 
-  test('no approved fallback leaves 402 terminal after one request', async () => {
-    const fetchImpl = jest.fn().mockResolvedValue(response(402, 'payment required'));
-    await expect(runSemanticCompletion({ messages: [{ role: 'user', content: 'safe fixture' }],
-      config: { ...config, fallback: null, maxRetries: 1 }, env, fetchImpl })).rejects.toMatchObject({ code: 'HTTP_402' });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  test('an unapproved fallback model is never attempted', async () => {
-    const fetchImpl = jest.fn().mockResolvedValue(response(402, 'payment required'));
-    await expect(runSemanticCompletion({ messages: [{ role: 'user', content: 'safe fixture' }],
-      config: { ...config, approvedModels: ['gemini-3.6-flash'] }, env, fetchImpl }))
-      .rejects.toMatchObject({ code: 'HTTP_402' });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  test('insufficient remaining budget prevents fallback safely', async () => {
-    let clock = 0;
-    const fetchImpl = jest.fn().mockImplementation(async () => {
-      clock = 700;
-      return response(402, 'payment required');
+  test('configured chain exhaustion preserves complete terminal metadata', async () => {
+    const fetchImpl = jest.fn(async () => response(503, {}));
+    await expect(runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
+      config: getSemanticAIConfig(env()), env: env(), fetchImpl })).rejects.toMatchObject({
+      code: 'AI_CHAIN_EXHAUSTED',
+      attemptCount: 2,
+      timeoutCount: 0,
+      finalFailureCode: 'AI_PROVIDER_UNAVAILABLE',
+      attempts: [
+        expect.objectContaining({ provider: 'google', model: 'semantic-primary' }),
+        expect.objectContaining({ provider: 'openrouter', model: 'semantic-fallback' })
+      ]
     });
-    await expect(runSemanticCompletion({ messages: [{ role: 'user', content: 'safe fixture' }],
-      config: { ...config, totalBudgetMs: 1500, minAttemptBudgetMs: 1000 }, env, fetchImpl, now: () => clock }))
-      .rejects.toMatchObject({ code: 'SEMANTIC_BUDGET_EXHAUSTED' });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test('failed fallback preserves safe summaries for both attempts', async () => {
-    const fetchImpl = jest.fn().mockResolvedValueOnce(response(402, 'payment required'))
-      .mockResolvedValueOnce(response(503, 'provider unavailable'));
-    let failure;
-    try {
-      await runSemanticCompletion({ messages: [{ role: 'user', content: 'safe fixture' }],
-        config, env, fetchImpl, sleepFn: async () => {} });
-    } catch (error) {
-      failure = error;
-    }
-    expect(failure).toMatchObject({ code: 'HTTP_503' });
-    expect(failure.attempts).toHaveLength(2);
-    expect(failure.attempts[0]).toMatchObject({ provider: 'google', code: 'HTTP_402' });
-    expect(failure.attempts[1]).toMatchObject({ provider: 'openrouter', code: 'HTTP_503' });
-    expect(JSON.stringify(failure.attempts)).not.toContain('secret');
+  test('feature validation failure selects fallback', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(google('{"ok":false}'))
+      .mockResolvedValueOnce(router('{"ok":true}'));
+    const result = await runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
+      config: getSemanticAIConfig(env()), env: env(), fetchImpl,
+      validate: (content) => {
+        const parsed = JSON.parse(content);
+        if (!parsed.ok) throw new Error('schema');
+        return parsed;
+      } });
+    expect(result.value).toEqual({ ok: true });
+    expect(result.model).toBe('semantic-fallback');
   });
 });

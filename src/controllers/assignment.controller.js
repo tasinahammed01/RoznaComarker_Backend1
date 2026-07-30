@@ -20,7 +20,6 @@ const {
   parseRubricDesignerFromDocxTemplate
 } = require('../services/docxRubricTemplateParser.service');
 
-const { fetchCompat, buildTimeoutSignal } = require('../services/httpClient.service');
 
 const { incrementUsage } = require('../middlewares/usage.middleware');
 const logger = require('../utils/logger');

@@ -15,9 +15,12 @@ function parseAllowedOrigins(value) {
 
 function createCorsMiddleware() {
   const isProd = process.env.NODE_ENV === 'production';
-  const allowedOrigins = parseAllowedOrigins(
+  const configuredOrigins = parseAllowedOrigins(
     process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGINS || process.env.FRONTEND_URL
   );
+  const allowedOrigins = configuredOrigins.length
+    ? configuredOrigins
+    : (isProd ? [] : ['http://localhost:4200']);
 
   if (isProd && !allowedOrigins.length) {
     throw new Error('CORS_ALLOWED_ORIGINS, CORS_ORIGINS, or FRONTEND_URL must be set in production');
@@ -25,10 +28,6 @@ function createCorsMiddleware() {
 
   return cors({
     origin(origin, callback) {
-      if (!isProd) {
-        return callback(null, true); // Allow any origin in development for flexibility
-      }
-
       if (!origin) {
         return callback(null, true);
       }

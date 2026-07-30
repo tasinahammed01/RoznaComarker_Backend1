@@ -38,16 +38,20 @@ async function completeRubric({ systemInstruction, userPrompt, assignmentId, sub
   if (!getSemanticAIConfigStatus(config, env).configured) throw new RubricCompletionError('AI_PROVIDER_NOT_CONFIGURED', 501, 'AI provider not configured');
   const startedAt = Date.now();
   try {
+    const validate = (content) => {
+      let parsed = null;
+      try { parsed = JSON.parse(String(content || '').trim()); } catch { /* repaired below */ }
+      const rubric = validateRubric(repairAiRubric(parsed) || parsed);
+      if (!rubric) throw new RubricCompletionError('RUBRIC_RESPONSE_INVALID', 422,
+        'Invalid or incomplete JSON rubric returned from AI');
+      return rubric;
+    };
     const completion = await (dependencies.runCompletion || runSemanticCompletion)({
       messages: [{ role: 'system', content: systemInstruction }, { role: 'user', content: userPrompt }], config, env,
-      fetchImpl: dependencies.fetchImpl || global.fetch, sleepFn: dependencies.sleepFn
+      fetchImpl: dependencies.fetchImpl || global.fetch, sleepFn: dependencies.sleepFn,
+      validate, feature: 'rubric_completion'
     });
-    let parsed = null;
-    try { parsed = JSON.parse(String(completion.content || '').trim()); } catch { /* normalized below without content logging */ }
-    const rubric = validateRubric(repairAiRubric(parsed) || parsed);
-    if (!rubric) throw new RubricCompletionError('RUBRIC_RESPONSE_INVALID', 422, 'Invalid or incomplete JSON rubric returned from AI', {
-      finishReason: completion.finishReason, candidateCount: completion.candidateCount, responseTextLength: completion.responseTextLength
-    });
+    const rubric = completion.value || validate(completion.content);
     logger.info({ message: 'Rubric AI completion', provider: completion.provider, model: completion.model,
       attempt: completion.metrics?.attemptCount || 1, durationMs: Date.now() - startedAt, httpStatus: 200,
       finishReason: completion.finishReason || null, candidateCount: completion.candidateCount ?? null,

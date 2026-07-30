@@ -2,7 +2,7 @@
 // Method 2 — PDF/image upload → WorksheetDocument JSON
 // Flow: normalize → Vision OCR → Gemini structure analysis → Gemini content gen → assemble
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import aiGateway = require("./aiGateway.service");
 import vision from "@google-cloud/vision";
 import sharp from "sharp";
 import { v4 as uuidv4 } from "uuid";
@@ -19,7 +19,6 @@ import {
   LayoutType,
 } from "../types/worksheet";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 const visionClient = new vision.ImageAnnotatorClient();
 
 // ─────────────────────────────────────────────
@@ -153,8 +152,6 @@ async function analyzeWorksheetStructure(
   imageBase64: string,
   extractedText: string,
 ): Promise<Record<string, unknown>> {
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
   const prompt = `
 You are an expert at analyzing educational worksheets.
 You are given:
@@ -217,26 +214,17 @@ PRECISION RULES:
 - The label tab style matters: is it a pill shape? A rectangle? Positioned on top or to the side?
 `.trim();
 
-  const result = await model.generateContent([
-    { inlineData: { data: imageBase64, mimeType: "image/jpeg" } },
-    { text: prompt },
-  ]);
-
-  const raw = result.response.text();
-  try {
-    return parseJsonSafely(raw);
-  } catch {
-    console.warn(
-      "[worksheetFileService] Structure analysis JSON parse failed. Retrying...",
-    );
-    const retryResult = await model.generateContent([
-      { inlineData: { data: imageBase64, mimeType: "image/jpeg" } },
-      {
-        text: `Return ONLY a valid JSON object. No markdown. No explanation.\n${prompt}`,
-      },
-    ]);
-    return parseJsonSafely(retryResult.response.text());
-  }
+  const result = await aiGateway.generate({
+    feature: "worksheet_file_structure",
+    messages: [{ role: "user", content: [
+      { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
+      { type: "text", text: prompt },
+    ] }],
+    maxOutputTokens: Number(process.env.WORKSHEET_AI_MAX_OUTPUT_TOKENS) || 6000,
+    responseFormat: "json",
+    validate: parseJsonSafely,
+  });
+  return result.value as Record<string, unknown>;
 }
 
 // ─────────────────────────────────────────────
@@ -249,8 +237,6 @@ async function generateMatchingContent(
   newSubject: string,
   gradeLevel: string,
 ): Promise<Record<string, unknown>> {
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
   const prompt = `
 You are an expert educational content creator.
 Generate a new worksheet that EXACTLY matches the structure below, but for a different topic.
@@ -304,19 +290,15 @@ RESPOND WITH ONLY A VALID JSON OBJECT. No markdown. No backticks.
 }
 `.trim();
 
-  const result = await model.generateContent(prompt);
-  const raw = result.response.text();
-  try {
-    return parseJsonSafely(raw);
-  } catch {
-    console.warn(
-      "[worksheetFileService] Content generation JSON parse failed. Retrying...",
-    );
-    const retryResult = await model.generateContent(
-      `Return ONLY a valid JSON object. No markdown.\n${prompt}`,
-    );
-    return parseJsonSafely(retryResult.response.text());
-  }
+  const result = await aiGateway.generate({
+    feature: "worksheet_file_content",
+    messages: [{ role: "system", content: "Return only valid worksheet JSON." },
+      { role: "user", content: prompt }],
+    maxOutputTokens: Number(process.env.WORKSHEET_AI_MAX_OUTPUT_TOKENS) || 6000,
+    responseFormat: "json",
+    validate: parseJsonSafely,
+  });
+  return result.value as Record<string, unknown>;
 }
 
 // ─────────────────────────────────────────────

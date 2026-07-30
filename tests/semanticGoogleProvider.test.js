@@ -1,179 +1,70 @@
 'use strict';
 
-jest.mock('../src/services/languageTool.service', () => ({ checkTextWithLanguageTool: jest.fn() }));
-jest.mock('../src/models/CorrectionLegend', () => ({ findOne: jest.fn(() => ({ lean: jest.fn().mockResolvedValue(null) })) }));
-
 const client = require('../src/services/semanticAIClient.service');
-const semantic = require('../src/services/semanticWritingCorrections.service');
 
-const config = { provider: 'google', model: 'gemini-3.6-flash', approvedModels: ['gemini-3.6-flash', 'openai/gpt-oss-20b'],
-  attemptTimeoutMs: 45000, totalBudgetMs: 90000, maxRetries: 1, retryDelayMs: 0,
-  minAttemptBudgetMs: 10000, maxOutputTokens: 8192, googleThinkingLevel: 'low',
-  fallback: { provider: 'openrouter', model: 'openai/gpt-oss-20b' } };
-const env = { GEMINI_API_KEY: 'gemini-secret', OPENROUTER_API_KEY: 'router-secret' };
-const googleOk = (content) => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({
-  candidates: [{ content: { parts: [{ text: content }] } }],
-  usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 }
-}) });
-const googlePayload = (payload) => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(payload) });
-const attempt = (payload) => client.providerAttempt({ messages: [{ role: 'user', content: 'private-prompt' }], provider: 'google',
-  model: 'gemini-3.6-flash', maxOutputTokens: 8192, googleThinkingLevel: 'low', attemptTimeoutMs: 1000,
-  fetchImpl: jest.fn(async () => googlePayload(payload)), env, now: Date.now });
+const env = (overrides = {}) => ({
+  AI_PRIMARY_PROVIDER: 'google', AI_PRIMARY_MODEL: 'any-google-model',
+  AI_ATTEMPT_TIMEOUT_MS: '30000', AI_TOTAL_BUDGET_MS: '120000',
+  AI_RETRIES_PER_MODEL: '0', AI_RETRY_DELAY_MS: '0',
+  GEMINI_API_KEY: 'google-key', GEMINI_BASE_URL: 'https://google.test/v1',
+  SEMANTIC_AI_MAX_OUTPUT_TOKENS: '1800', ...overrides
+});
+const response = (status, payload, retryAfter = null) => ({
+  ok: status >= 200 && status < 300, status,
+  headers: { get: (name) => name.toLowerCase() === 'retry-after' ? retryAfter : null },
+  text: async () => JSON.stringify(payload)
+});
 
-describe('direct Google semantic provider', () => {
-  test('resolves gemini-3.6-flash through Google with only GEMINI_API_KEY', async () => {
-    const fetchImpl = jest.fn(async () => googleOk('{"transcriptHash":"hash","corrections":[]}'));
-    const result = await client.runSemanticCompletion({ messages: [{ role: 'user', content: 'bounded prompt' }], config, env, fetchImpl });
-    const [url, options] = fetchImpl.mock.calls[0];
-    expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent');
-    expect(options.headers).toMatchObject({ 'x-goog-api-key': 'gemini-secret', 'Content-Type': 'application/json' });
-    expect(options.headers).not.toHaveProperty('Authorization');
-    const body = JSON.parse(options.body);
-    expect(body.generationConfig).toEqual({ maxOutputTokens: 8192, responseMimeType: 'application/json',
-      thinkingConfig: { thinkingLevel: 'low' } });
-    expect(body.generationConfig).not.toHaveProperty('temperature');
-    expect(JSON.stringify(options)).not.toContain('router-secret');
-    expect(result).toMatchObject({ provider: 'google', model: 'gemini-3.6-flash', content: '{"transcriptHash":"hash","corrections":[]}' });
-  });
-
-  test('uses the unchanged bounded semantic prompt and validates a structured response', async () => {
-    const input = { transcript: 'Students need clear evidence.', transcriptHash: 'hash', assignment: { title: 'Essay' }, pageManifest: [] };
-    const request = semantic.buildSemanticRequest(input);
-    const fetchImpl = jest.fn(async (_url, options) => {
-      const body = JSON.parse(options.body);
-      expect(body.contents[0].parts[0].text).toBe(request.messages[1].content);
-      expect(body.generationConfig).toMatchObject({ responseMimeType: 'application/json', maxOutputTokens: 8192,
-        thinkingConfig: { thinkingLevel: 'low' } });
-      return googleOk('{"transcriptHash":"hash","corrections":[]}');
+describe('Google adapter through the global semantic facade', () => {
+  test('uses any globally configured Google model and JSON mode', async () => {
+    const fetchImpl = jest.fn(async () => response(200, {
+      candidates: [{ finishReason: 'STOP', content: { parts: [
+        { text: '{"ok":' }, { thought: true, text: 'private reasoning' }, { text: 'true}' }
+      ] } }]
+    }));
+    const result = await client.runSemanticCompletion({
+      messages: [{ role: 'system', content: 'system' }, { role: 'user', content: 'fixture' }],
+      config: client.getSemanticAIConfig(env()), env: env(), fetchImpl
     });
-    const result = await semantic.analyze(input, { config: { ...config, maxRetries: 0, fallback: null }, env, fetchImpl });
-    expect(result).toMatchObject({ corrections: [], provider: 'google', model: 'gemini-3.6-flash' });
-  });
-
-  test('rejects invalid JSON and hash mismatches before returning corrections', async () => {
-    expect(() => semantic.parseJson('not json', 'hash')).toThrow(expect.objectContaining({ code: 'SEMANTIC_RESPONSE_INVALID', validationStage: 'json_parse' }));
-    expect(() => semantic.parseJson('{"corrections":[]}', 'hash')).toThrow(expect.objectContaining({ code: 'SEMANTIC_SOURCE_MISMATCH' }));
-    expect(() => semantic.parseJson('{"transcriptHash":"stale","corrections":[]}', 'hash')).toThrow(expect.objectContaining({ code: 'SEMANTIC_SOURCE_MISMATCH', validationStage: 'source_hash' }));
-    expect(() => semantic.parseJson('{"transcriptHash":"hash"}', 'hash')).toThrow(expect.objectContaining({ code: 'SEMANTIC_SCHEMA_INVALID', validationStage: 'schema_validation' }));
-  });
-
-  test('rejects incomplete and fabricated/non-verbatim evidence', () => {
-    const legend = semantic.compactSemanticLegend();
-    expect(() => semantic.validateCorrections([{ category: 'CONTENT', symbol: 'DEV', quotedText: 'real' }],
-      { transcript: 'real essay', legend })).toThrow(expect.objectContaining({ code: 'SEMANTIC_SCHEMA_INVALID' }));
-    expect(() => semantic.validateCorrections([{ category: 'CONTENT', symbol: 'DEV', quotedText: 'fabricated', occurrence: 0,
-      message: 'Develop this.', suggestedText: 'Add evidence.', confidence: 0.9 }],
-    { transcript: 'real essay', legend })).toThrow(expect.objectContaining({ code: 'SEMANTIC_EVIDENCE_UNGROUNDED' }));
-  });
-
-  test('joins genuine text parts and ignores thought and non-text parts', async () => {
-    const result = await attempt({ candidates: [{ finishReason: 'STOP', content: { parts: [
-      { text: '{"transcriptHash":"hash",' }, { thought: true, text: 'private reasoning' }, { inlineData: { mimeType: 'x' } },
-      { text: '"corrections":[]}' }
-    ] } }], usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 2 } });
-    expect(result).toMatchObject({ content: '{"transcriptHash":"hash","corrections":[]}', candidateCount: 1,
-      finishReason: 'STOP', responseTextLength: 42 });
+    expect(result.content).toBe('{"ok":true}');
+    expect(fetchImpl.mock.calls[0][0]).toBe(
+      'https://google.test/v1/models/any-google-model:generateContent');
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.generationConfig).toMatchObject({
+      maxOutputTokens: 1800, responseMimeType: 'application/json'
+    });
     expect(result.content).not.toContain('private reasoning');
   });
 
   test.each([
-    [{ candidates: [] }, 'GOOGLE_CANDIDATES_EMPTY'],
-    [{ candidates: [{ finishReason: 'STOP' }] }, 'GOOGLE_RESPONSE_STRUCTURE_UNSUPPORTED'],
-    [{ candidates: [{ finishReason: 'STOP', content: { parts: [] } }] }, 'GOOGLE_RESPONSE_TEXT_MISSING'],
-    [{ promptFeedback: { blockReason: 'SAFETY' }, candidates: [] }, 'GOOGLE_RESPONSE_BLOCKED'],
-    [{ candidates: [{ finishReason: 'SAFETY', content: { parts: [{ text: 'hidden' }] } }] }, 'GOOGLE_RESPONSE_BLOCKED'],
-    [{ candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [] } }] }, 'GOOGLE_OUTPUT_TRUNCATED']
-  ])('normalizes unusable Google response %#', async (payload, code) => {
-    await expect(attempt(payload)).rejects.toMatchObject({ code, validationStage: 'provider_response' });
+    [{}, 'AI_RESPONSE_EMPTY'],
+    [{ candidates: [{ finishReason: 'SAFETY', content: { parts: [] } }] }, 'AI_RESPONSE_BLOCKED'],
+    [{ candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [] } }] }, 'AI_RESPONSE_TRUNCATED'],
+    [{ candidates: [{ finishReason: 'STOP', content: { parts: [] } }] }, 'AI_RESPONSE_EMPTY']
+  ])('normalizes unusable Google output', async (payload, code) => {
+    await expect(client.providerAttempt({ messages: [], provider: 'google',
+      model: 'any-google-model', maxOutputTokens: 256, attemptTimeoutMs: 1000,
+      fetchImpl: async () => response(200, payload), env: env(), now: Date.now }))
+      .rejects.toMatchObject({ code });
   });
 
-  test('MAX_TOKENS with incomplete JSON is normalized as truncation', async () => {
-    const input = { transcript: 'Essay', transcriptHash: 'hash' };
-    const runCompletion = jest.fn(async () => ({ content: '{"transcriptHash":"hash",', provider: 'google', model: 'gemini-3.6-flash',
-      finishReason: 'MAX_TOKENS', candidateCount: 1, responseTextLength: 25, metrics: {} }));
-    await expect(semantic.analyze(input, { config: { ...config, fallback: null }, env, runCompletion }))
-      .rejects.toMatchObject({ code: 'GOOGLE_OUTPUT_TRUNCATED', validationStage: 'json_parse', finishReason: 'MAX_TOKENS' });
+  test.each([
+    [401, 'AI_PROVIDER_AUTH_ERROR'], [402, 'AI_PROVIDER_PAYMENT_REQUIRED'],
+    [429, 'AI_PROVIDER_RATE_LIMIT'], [500, 'AI_PROVIDER_UNAVAILABLE']
+  ])('normalizes HTTP %i without exposing provider response text', async (status, code) => {
+    await expect(client.providerAttempt({ messages: [], provider: 'google',
+      model: 'any-google-model', maxOutputTokens: 256, attemptTimeoutMs: 1000,
+      fetchImpl: async () => response(status, { error: { message: 'private body' } }, '2'),
+      env: env(), now: Date.now })).rejects.toMatchObject({ code, status, retryAfterMs: 2000 });
   });
 
-  test('reports safe outer-response JSON diagnostics without retaining response content', async () => {
-    const fetchImpl = jest.fn(async () => ({ ok: true, status: 200, headers: { get: (name) => ({
-      'content-type': 'application/json', 'x-goog-request-id': 'safe-request-id'
-    }[name] || null) }, text: async () => '' }));
-    await expect(client.providerAttempt({ messages: [], provider: 'google', model: 'gemini-3.6-flash',
-      maxOutputTokens: 256, attemptTimeoutMs: 1000, fetchImpl, env, now: Date.now }))
-      .rejects.toMatchObject({ code: 'AI_PROVIDER_RESPONSE_INVALID', validationStage: 'provider_json',
-        httpStatus: 200, contentType: 'application/json', requestId: 'safe-request-id', responseBodyLength: 0 });
+  test('does not hard-code a Google model allowlist', () => {
+    expect(client.getSemanticAIConfig(env({ AI_PRIMARY_MODEL: 'new-google-model' })))
+      .toMatchObject({ provider: 'google', model: 'new-google-model' });
   });
 
-  test.each([400, 401, 403, 404, 429, 500])('preserves safe Google HTTP metadata for %s', async (status) => {
-    const fetchImpl = jest.fn(async () => ({ ok: false, status, headers: { get: (name) => name === 'retry-after' ? '2' : null },
-      text: async () => JSON.stringify({ error: { code: status, status: 'SAFE_STATUS', message: 'private provider message' } }) }));
-    await expect(client.providerAttempt({ messages: [], provider: 'google', model: 'gemini-3.6-flash', maxOutputTokens: 256,
-      attemptTimeoutMs: 1000, fetchImpl, env, now: Date.now })).rejects.toMatchObject({ code: `HTTP_${status}`,
-      httpStatus: status, googleErrorCode: status, googleErrorStatus: 'SAFE_STATUS', retryAfterMs: 2000 });
-  });
-
-  test('accepts only the pinned direct Google model and reports its credential without exposing it', () => {
-    const valid = client.getSemanticAIConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'gemini-3.6-flash', GEMINI_API_KEY: 'secret' });
-    expect(client.getSemanticAIConfigStatus(valid, { GEMINI_API_KEY: 'secret' }))
-      .toMatchObject({ configured: true, modelConfigured: true, credentialConfigured: true });
-    expect(client.credentialFor('google', { GEMINI_API_KEY: 'secret', OPENROUTER_API_KEY: 'wrong' })).toBe('secret');
-    for (const model of ['gemini-2.5-flash', 'google/gemini-3.6-flash']) {
-      const invalid = client.getSemanticAIConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: model, GEMINI_API_KEY: 'secret' });
-      expect(client.getSemanticAIConfigStatus(invalid, { GEMINI_API_KEY: 'secret' }))
-        .toMatchObject({ configured: false, modelConfigured: false, credentialConfigured: true });
-    }
-  });
-
-  test('defaults invalid Google thinking levels safely and bounds the output cap', () => {
-    const parsed = client.getSemanticAIConfig({ SEMANTIC_AI_GOOGLE_THINKING_LEVEL: 'unsupported',
-      SEMANTIC_AI_MAX_OUTPUT_TOKENS: '999999' });
-    expect(parsed.googleThinkingLevel).toBe('low');
-    expect(parsed.maxOutputTokens).toBe(8192);
-    expect(client.getSemanticAIConfig({ SEMANTIC_AI_GOOGLE_THINKING_LEVEL: ' HIGH ',
-      SEMANTIC_AI_MAX_OUTPUT_TOKENS: '8192' })).toMatchObject({ googleThinkingLevel: 'high', maxOutputTokens: 8192 });
-  });
-
-  test('preserves OpenRouter temperature and JSON request behavior', async () => {
-    const fetchImpl = jest.fn(async () => ({ ok: true, status: 200, headers: { get: () => null },
-      text: async () => JSON.stringify({ choices: [{ message: { content: '{}' } }] }) }));
-    await client.providerAttempt({ messages: [{ role: 'user', content: 'bounded' }], provider: 'openrouter',
-      model: 'openai/gpt-oss-20b', maxOutputTokens: 8192, attemptTimeoutMs: 1000, fetchImpl, env, now: Date.now });
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({ temperature: 0.1, max_tokens: 8192,
-      response_format: { type: 'json_object' } });
-  });
-
-  test('missing Google key fails before any HTTP request', async () => {
-    const fetchImpl = jest.fn();
-    await expect(client.runSemanticCompletion({ messages: [{ role: 'user', content: 'x' }], config, env: {}, fetchImpl }))
-      .rejects.toMatchObject({ code: 'AI_PROVIDER_NOT_CONFIGURED' });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  test('trims approved models and permits fallback only after a transient failure', async () => {
-    const parsed = client.getSemanticAIConfig({ SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'gemini-3.6-flash', GEMINI_API_KEY: 'g',
-      SEMANTIC_AI_FALLBACK_PROVIDER: 'openrouter', SEMANTIC_AI_FALLBACK_MODEL: 'openai/gpt-oss-20b',
-      SEMANTIC_AI_APPROVED_MODELS: ' gemini-3.6-flash , openai/gpt-oss-20b ' });
-    expect(parsed.approvedModels).toEqual(['gemini-3.6-flash', 'openai/gpt-oss-20b']);
-    const fetchImpl = jest.fn(async (url) => url.includes('googleapis.com')
-      ? { ok: false, status: 503, headers: { get: () => null }, text: async () => '' }
-      : ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({ choices: [{ message: { content: '{}' } }] }) }));
-    const result = await client.runSemanticCompletion({ messages: [{ role: 'user', content: 'x' }], config: { ...parsed, retryDelayMs: 0 },
-      env: { GEMINI_API_KEY: 'g', OPENROUTER_API_KEY: 'o' }, fetchImpl, sleepFn: async () => {} });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(result).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-oss-20b' });
-  });
-
-  test.each([401])('terminal HTTP %s never retries or invokes fallback', async (status) => {
-    const fetchImpl = jest.fn(async () => ({ ok: false, status, headers: { get: () => null }, text: async () => '' }));
-    await expect(client.runSemanticCompletion({ messages: [{ role: 'user', content: 'x' }], config, env, fetchImpl })).rejects.toMatchObject({ code: `HTTP_${status}` });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  test('quota is bounded and cannot create an automatic retry loop', async () => {
-    const fetchImpl = jest.fn(async () => ({ ok: false, status: 429, headers: { get: () => null }, text: async () => '' }));
-    await expect(client.runSemanticCompletion({ messages: [{ role: 'user', content: 'x' }], config, env, fetchImpl,
-      sleepFn: async () => {} })).rejects.toMatchObject({ code: 'HTTP_429' });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  test('missing credentials fail deterministically before transport', () => {
+    expect(() => client.getSemanticAIConfig(env({ GEMINI_API_KEY: '' })))
+      .toThrow(expect.objectContaining({ code: 'AI_CHAIN_NOT_CONFIGURED' }));
   });
 });

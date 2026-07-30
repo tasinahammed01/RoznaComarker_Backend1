@@ -14,8 +14,9 @@ async function seed() {
   const student = await User.create({ firebaseUid: `student-${new mongoose.Types.ObjectId()}`, email: 'student@test.invalid', role: 'student' });
   const cls = await Class.create({ name: 'Test class', teacher: teacher._id, joinCode: new mongoose.Types.ObjectId().toString().slice(-8) });
   const assignment = await Assignment.create({ title: 'Essay', deadline: new Date(Date.now() + 10000), class: cls._id, teacher: teacher._id });
-  const submission = await Submission.create({ student: student._id, assignment: assignment._id, class: cls._id, status: 'submitted', submittedAt: new Date(), transcriptText: 'This is a synthetic student paragraph for practice.' });
-  const feedback = await Feedback.create({ submissionId: submission._id, classId: cls._id, studentId: student._id, teacherId: teacher._id, assessmentVersion: 'v1', rubricScores: { CONTENT: { score: 10, maxScore: 20 }, ORGANIZATION: { score: 11, maxScore: 20 }, VOCABULARY: { score: 15, maxScore: 20 }, GRAMMAR: { score: 19, maxScore: 25 }, MECHANICS: { score: 8, maxScore: 10 } } });
+  const sourceHash = `canonical-${new mongoose.Types.ObjectId()}`;
+  const submission = await Submission.create({ student: student._id, assignment: assignment._id, class: cls._id, status: 'submitted', submittedAt: new Date(), transcriptText: 'This is a synthetic student paragraph for practice.', correctionStatus: 'completed', semanticStatus: 'completed', evaluationStatus: 'completed', correctionSourceHash: sourceHash, evaluationSourceHash: sourceHash });
+  const feedback = await Feedback.create({ submissionId: submission._id, classId: cls._id, studentId: student._id, teacherId: teacher._id, assessmentVersion: 'v1', evaluationSourceHash: sourceHash, rubricScores: { CONTENT: { score: 10, maxScore: 20 }, ORGANIZATION: { score: 11, maxScore: 20 }, VOCABULARY: { score: 15, maxScore: 20 }, GRAMMAR: { score: 19, maxScore: 25 }, MECHANICS: { score: 8, maxScore: 10 } } });
   return { teacher, otherTeacher, student, cls, assignment, submission, feedback };
 }
 async function createSession(data, fingerprint, createdAt = new Date()) {

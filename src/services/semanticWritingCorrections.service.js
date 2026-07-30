@@ -126,15 +126,16 @@ async function analyze(input, dependencies = {}) {
   const buildStartedAt = Date.now();
   const request = buildSemanticRequest(input);
   const semanticRequestBuildMs = Date.now() - buildStartedAt;
+  const validate = (content) => validateCorrections(parseJson(content, input.transcriptHash), {
+    transcript: input.transcript, legend: request.legend
+  });
   const completion = await (dependencies.runCompletion || runSemanticCompletion)({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
-    onAttempt: input.onAttempt, onRetry: input.onRetry });
+    onAttempt: input.onAttempt, onRetry: input.onRetry, validate, feature: 'semantic_corrections' });
   const parseStartedAt = Date.now();
   let corrections;
   try {
-    corrections = validateCorrections(parseJson(completion.content, input.transcriptHash), {
-      transcript: input.transcript, legend: request.legend
-    });
+    corrections = completion.value || validate(completion.content);
   } catch (error) {
     if (completion.finishReason === 'MAX_TOKENS' && error?.code === 'SEMANTIC_RESPONSE_INVALID') {
       error.code = 'GOOGLE_OUTPUT_TRUNCATED'; error.validationStage = 'json_parse';

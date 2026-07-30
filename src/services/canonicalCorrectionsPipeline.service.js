@@ -59,7 +59,10 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     return { reused: true, semanticSourceKey };
   }
   const jobId = crypto.randomUUID();
-  const semanticMaxAttempts = semanticConfig.maxRetries + 1;
+  const configuredModelCount = Array.isArray(semanticConfig.chain)
+    ? semanticConfig.chain.length
+    : (semanticConfig.fallback ? 2 : 1);
+  const semanticMaxAttempts = configuredModelCount * (semanticConfig.maxRetries + 1);
   const locked = await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId,
     semanticStatus: { $nin: ['processing', 'retry_wait'] } }, { $set: { correctionStatus: 'processing', correctionJobId: jobId, correctionError: null,
     semanticStatus: 'processing', languageToolStatus: 'processing', semanticAttempt: 0, semanticMaxAttempts,
@@ -180,7 +183,17 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   rejectionReasons.duplicate = ai.filter((item) => !retainedAiIds.has(item.id)).length;
   const failedStage = languageToolError ? 'LANGUAGE_TOOL_ANALYSIS_FAILED' : safeErrorCode(semanticError);
   const anyAnalysisStageAvailable = languageToolAvailable || !semanticError;
-  const persistedSemanticMetrics = { ...(semanticRun?.metrics || {}), semanticQueueWaitMs: null, semanticValidationMs, semanticMappingMs,
+  const terminalAttempts = semanticRun?.metrics?.attempts || semanticError?.attempts || [];
+  const terminalAttempt = terminalAttempts[terminalAttempts.length - 1] || null;
+  const gatewayMetrics = semanticRun?.metrics || (semanticError ? {
+    attemptCount: semanticError.attemptCount || terminalAttempts.length,
+    timeoutCount: semanticError.timeoutCount
+      ?? terminalAttempts.filter((attempt) => attempt.code === 'AI_ATTEMPT_TIMEOUT').length,
+    attempts: terminalAttempts,
+    semanticProviderMs: semanticError.totalDurationMs || semanticError.durationMs || semanticAiMs,
+    finalFailureCode: semanticError.finalFailureCode || terminalAttempt?.code || safeErrorCode(semanticError)
+  } : {});
+  const persistedSemanticMetrics = { ...gatewayMetrics, semanticQueueWaitMs: null, semanticValidationMs, semanticMappingMs,
     languageToolDiagnostics,
     canonicalMergeMs, rawCorrectionCount: semanticReturnedCount, acceptedCorrectionCount: ai.length - rejectionReasons.duplicate,
     rejectedCorrectionCount: Object.values(rejectionReasons).reduce((sum, count) => sum + count, 0), rejectionReasons };
@@ -190,7 +203,8 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     correctionStatus: failedStage ? (anyAnalysisStageAvailable ? 'partial' : 'failed') : 'completed',
     correctionError: failedStage, correctionUpdatedAt: new Date(), semanticStatus: semanticError ? 'failed' : 'completed',
     semanticNextRetryAt: null, semanticErrorCode: safeErrorCode(semanticError) || null,
-    semanticProvider: semanticRun?.provider || semanticConfig.provider, semanticModel: semanticRun?.model || semanticConfig.model,
+    semanticProvider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
+    semanticModel: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
     semanticPromptVersion: semantic.SEMANTIC_PROMPT_VERSION,
     semanticMetrics: persistedSemanticMetrics
   }});
@@ -202,8 +216,9 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const totalCorrectionsMs = Date.now() - totalStartedAt;
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id),
     stage: semanticError ? 'semanticFailed' : 'semanticCompleted', durationMs: semanticAiMs,
-    semanticProvider: semanticRun?.provider || semanticConfig.provider, semanticModel: semanticRun?.model || semanticConfig.model,
-    attemptCount: semanticRun?.metrics?.attemptCount || 0, timeoutCount: semanticRun?.metrics?.timeoutCount || 0,
+    semanticProvider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
+    semanticModel: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
+    attemptCount: gatewayMetrics.attemptCount || 0, timeoutCount: gatewayMetrics.timeoutCount || 0,
     promptInputTokenEstimate: semanticRun?.metrics?.promptInputTokenEstimate || null,
     outputTokenCount: semanticRun?.metrics?.outputTokenCount || null,
     semanticReturnedCount, semanticAcceptedCount: persistedSemanticMetrics.acceptedCorrectionCount,

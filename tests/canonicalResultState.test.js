@@ -33,6 +33,11 @@ const completedSubmission = (overrides = {}) => ({
 });
 
 describe('canonical result state contract', () => {
+  test('preserves configured-chain exhaustion instead of labeling it missing configuration', () => {
+    expect(safeErrorCode({ code: 'AI_CHAIN_EXHAUSTED', attempts: [{ code: 'AI_ATTEMPT_TIMEOUT' }] }))
+      .toBe('AI_CHAIN_EXHAUSTED');
+  });
+
   test('LanguageTool-only corrections are partial and semantic categories are pending', () => {
     const state = buildCanonicalResultState({ submission: { correctionStatus: 'processing', writingCorrections: [
       { source: 'LANGUAGETOOL', category: 'GRAMMAR' }, { source: 'LANGUAGETOOL', category: 'MECHANICS' }
