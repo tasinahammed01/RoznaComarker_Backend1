@@ -7,7 +7,7 @@ const CATEGORY_POLICY = Object.freeze({
   GRAMMAR: Object.freeze({ minimumConfidence: 0.85, primarySource: 'LANGUAGETOOL' }),
   MECHANICS: Object.freeze({ minimumConfidence: 0.90, primarySource: 'LANGUAGETOOL' })
 });
-const POLICY_VERSION = 'ai-correction-policy-v1';
+const POLICY_VERSION = 'ai-correction-policy-v2';
 
 const ENV_KEYS = Object.freeze({
   CONTENT: 'AI_CORRECTION_CONTENT_MIN_CONFIDENCE',
@@ -17,8 +17,14 @@ const ENV_KEYS = Object.freeze({
   MECHANICS: 'AI_CORRECTION_MECHANICS_MIN_CONFIDENCE'
 });
 
-const MAX_AI_CORRECTIONS = 40;
-const MAX_AI_CORRECTIONS_PER_CATEGORY = 12;
+const MAX_AI_CORRECTIONS = 80;
+const MAX_AI_CORRECTIONS_PER_CATEGORY = Object.freeze({
+  CONTENT: 10,
+  ORGANIZATION: 10,
+  VOCABULARY: 20,
+  GRAMMAR: 40,
+  MECHANICS: 20
+});
 const SEVERITIES = new Set(['low', 'medium', 'high']);
 
 function boundedConfidence(value, fallback) {

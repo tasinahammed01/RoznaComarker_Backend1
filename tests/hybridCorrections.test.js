@@ -73,6 +73,55 @@ describe('safe hybrid correction policy', () => {
       rejectionReasonsByCategory: { CONTENT: { LOW_CONFIDENCE: 1, UNGROUNDED_EVIDENCE: 1 } } });
   });
 
+  test('accepts individually grounded learner-English second-pass corrections across the taxonomy', () => {
+    const transcript = [
+      'It have many advantages.',
+      'They may planned to use social media.',
+      'Yesterday students study online.',
+      'She bought book.',
+      'They discussed about the problem.',
+      'Because the lesson was difficult.',
+      'Students were tired they continued working.',
+      'This approach is success.',
+      'The result was very big for learning.',
+      'Learning helps learning because learning matters.',
+      'This idea somehow changes everything.',
+      'First the essay discusses study habits. Finally it introduces an unrelated claim.'
+    ].join(' ');
+    const expected = [
+      finding({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'It have', suggestedText: 'It has' }),
+      finding({ category: 'GRAMMAR', symbol: 'VF', quotedText: 'may planned', suggestedText: 'may plan' }),
+      finding({ category: 'GRAMMAR', symbol: 'T', quotedText: 'Yesterday students study', suggestedText: 'Yesterday students studied' }),
+      finding({ category: 'GRAMMAR', symbol: 'ART', quotedText: 'bought book', suggestedText: 'bought a book' }),
+      finding({ category: 'GRAMMAR', symbol: 'PREP', quotedText: 'discussed about', suggestedText: 'discussed' }),
+      finding({ category: 'GRAMMAR', symbol: 'FRAG', quotedText: 'Because the lesson was difficult.', suggestedText: 'The lesson was difficult.' }),
+      finding({ category: 'GRAMMAR', symbol: 'RO', quotedText: 'Students were tired they continued working.', suggestedText: 'Students were tired, but they continued working.' }),
+      finding({ category: 'VOCABULARY', symbol: 'WF', quotedText: 'is success', suggestedText: 'is successful' }),
+      finding({ category: 'VOCABULARY', symbol: 'WC', quotedText: 'very big for learning', suggestedText: 'highly beneficial for learning' }),
+      finding({ category: 'VOCABULARY', symbol: 'REP', quotedText: 'Learning helps learning because learning matters.', suggestedText: 'Education helps students because it matters.' }),
+      finding({ category: 'CONTENT', symbol: 'CL', correctionKind: 'global', quotedText: 'This idea somehow changes everything.', suggestedText: '' }),
+      finding({ category: 'ORGANIZATION', symbol: 'COH', correctionKind: 'global', quotedText: 'Finally it introduces an unrelated claim.', suggestedText: '' }),
+      finding({ category: 'ORGANIZATION', symbol: 'CONC', correctionKind: 'global', quotedText: 'Finally it introduces an unrelated claim.', suggestedText: '' })
+    ];
+    const result = semantic.validateCorrections(expected, { transcript, legend });
+    expect(result.corrections).toHaveLength(expected.length);
+    for (const item of expected) expect(result.corrections).toEqual(expect.arrayContaining([expect.objectContaining({
+      category: item.category, symbol: item.symbol, quotedText: item.quotedText,
+      suggestedText: item.suggestedText, ...(item.correctionKind ? { correctionKind: item.correctionKind } : {})
+    })]));
+  });
+
+  test('uses category-specific capacity without lowering confidence thresholds', () => {
+    const transcript = Array.from({ length: 13 }, (_, index) => `students${index} learns`).join(' ');
+    const findings = Array.from({ length: 13 }, (_, index) => finding({ category: 'GRAMMAR', symbol: 'AGR',
+      quotedText: `students${index} learns`, suggestedText: `students${index} learn`, confidence: 0.90 }));
+    const result = semantic.validateCorrections(findings, { transcript, legend });
+    expect(result.corrections).toHaveLength(13);
+    expect(result.diagnostics.rejectionReasons.CATEGORY_LIMIT).toBeUndefined();
+    expect(result.diagnostics.thresholds).toMatchObject({ CONTENT: 0.75, ORGANIZATION: 0.75,
+      VOCABULARY: 0.80, GRAMMAR: 0.85, MECHANICS: 0.90 });
+  });
+
   test('AI accepts grounded findings in all five canonical categories', () => {
     const transcript = 'claim transition students is teh word';
     const raw = [
@@ -225,5 +274,40 @@ describe('deterministic canonical hybrid merge', () => {
 
   test('displayed semantic attempt count matches primary and fallback retry plans', () => {
     expect(pipeline.plannedSemanticAttempts({ chain: [{}, {}, {}], primaryRetries: 1, fallbackRetries: 0 })).toBe(4);
+  });
+
+  test('produces auditable LT, AI, merge, and final statistics for a synthetic learner fixture', () => {
+    const text = 'It have benefits. They may planned carefully. Because the lesson was difficult. This idea changes everything. No conclusion is provided.';
+    const matches = [
+      { offset: text.indexOf('It have'), length: 7, message: 'Agreement.', replacements: [{ value: 'It has' }],
+        rule: { id: 'HE_VERB_AGR', category: { id: 'GRAMMAR' }, issueType: 'grammar' } },
+      { offset: text.indexOf('may planned'), length: 11, message: 'Verb form.', replacements: [{ value: 'may plan' }],
+        rule: { id: 'MD_BASEFORM', category: { id: 'GRAMMAR' }, issueType: 'grammar' } },
+      { offset: text.indexOf('Because the lesson was difficult.'), length: 33, message: 'Fragment.',
+        replacements: [{ value: 'The lesson was difficult.' }],
+        rule: { id: 'SENTENCE_FRAGMENT_ERROR', category: { id: 'GRAMMAR' }, issueType: 'grammar' } }
+    ];
+    const ltDiagnostics = writing.languageToolDiagnostics(text, { matches }, writing.defaultLegend());
+    const lt = writing.toIssuesFromLanguageTool(text, { matches }, writing.defaultLegend()).map((issue) =>
+      canonical.normalizeCorrection({ category: issue.groupKey, symbol: issue.symbol, quotedText: issue.wrongText,
+        message: issue.message, suggestedText: issue.suggestion, startChar: issue.start, endChar: issue.end,
+        confidence: 1 }, text, [], writing.defaultLegend(), 'LANGUAGETOOL'));
+    const rawAi = [
+      finding({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'It have', suggestedText: 'It has' }),
+      finding({ category: 'GRAMMAR', symbol: 'VF', quotedText: 'may planned', suggestedText: 'may plan' }),
+      finding({ category: 'GRAMMAR', symbol: 'FRAG', quotedText: 'Because the lesson was difficult.', suggestedText: 'The lesson was difficult.' }),
+      finding({ category: 'CONTENT', symbol: 'CL', correctionKind: 'global', quotedText: 'This idea changes everything.', suggestedText: '' }),
+      finding({ category: 'ORGANIZATION', symbol: 'CONC', correctionKind: 'global', quotedText: 'No conclusion is provided.', suggestedText: '' })
+    ];
+    const validated = semantic.validateCorrections(rawAi, { transcript: text,
+      legend: semantic.compactSemanticLegend(writing.defaultLegend()) });
+    const merged = canonical.mergeCanonicalCorrections({ languageToolCorrections: lt, aiCorrections: validated.corrections });
+    expect(ltDiagnostics).toMatchObject({ rawMatches: 3, accepted: 3, dropped: 0,
+      droppedGrammarRuleIds: [], byFinalClassification: { 'GRAMMAR/AGR': 1, 'GRAMMAR/VF': 1, 'GRAMMAR/FRAG': 1 } });
+    expect(validated.diagnostics).toMatchObject({ rawCorrectionCount: 5, acceptedCorrectionCount: 5,
+      rejectedCorrectionCount: 0, returnedByCategory: { CONTENT: 1, ORGANIZATION: 1, GRAMMAR: 3 } });
+    expect(merged.diagnostics).toMatchObject({ exactDuplicates: 3, overlapDuplicates: 0, conflicts: 0 });
+    expect(canonical.statistics(merged.corrections)).toEqual({ content: 1, organization: 1,
+      grammar: 3, vocabulary: 0, mechanics: 0, total: 5 });
   });
 });

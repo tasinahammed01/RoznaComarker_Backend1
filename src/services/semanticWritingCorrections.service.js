@@ -8,8 +8,8 @@ const policy = require('./aiCorrectionPolicy.service');
 const { promptDefinitions } = require('./writingCategoryDefinitions.service');
 const { semanticCorrectionsSchema } = require('./structuredOutputSchemas.service');
 
-const SEMANTIC_PROMPT_VERSION = 'semantic-category-review-v5';
-const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v3';
+const SEMANTIC_PROMPT_VERSION = 'semantic-learner-english-second-pass-v6';
+const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v4';
 const CATEGORY_REVIEW_POLICY_VERSION = 'all-categories-reviewed-v1';
 const SEMANTIC_CATEGORIES = new Set(Object.keys(policy.CATEGORY_POLICY));
 const OMIT_CONTEXT_KEYS = new Set(['_id', '__v', 'createdAt', 'updatedAt', 'student', 'teacher', 'class', 'files', 'fileUrls', 'images']);
@@ -74,6 +74,13 @@ function buildSemanticRequest({ transcript, assignment = {}, languageToolCorrect
     'CONTENT: review assignment relevance, task achievement, controlling claim/thesis clarity or absence, claim development, support specificity, and repetitive development that adds no substance.',
     'ORGANIZATION: review logical paragraph order, coherence, transitions, topic sentences, and introduction/conclusion structure.',
     'VOCABULARY, GRAMMAR, MECHANICS: review fully but do not duplicate equivalent LanguageTool findings.',
+    'Use only these boundaries: CONTENT REL=relevance, DEV=underdeveloped relevant idea, TA=task achievement only when assignment context supports it, CL=unclear underlying idea (not grammar), SD=important unsupported claim.',
+    'ORGANIZATION COH=understandable ideas with poor logical progression, CO=cohesive device/transition, PU=paragraph unity, TS=topic sentence, CONC=genuinely weak/missing conclusion across the full canonical submission anchored to exact final text.',
+    'GRAMMAR T=tense, VF=verb form, AGR=subject-verb agreement, FRAG=fragment, RO=run-on, WO=word order, ART=article, PREP=preposition.',
+    'VOCABULARY WC=word choice, WF=word form, REP=harmful repetition, FORM=register/formality, COL=collocation. MECHANICS SP=spelling, P=punctuation, CAP=capitalization, SPC=spacing, FMT=provable formatting.',
+    'Act as a second-pass learner-English reviewer. Examples: "It have many advantages." AGR -> "It has many advantages."; "Students sometimes spends many hours." AGR -> "Students sometimes spend many hours."; "They may planned to use social media." VF -> "They may plan to use social media."; "they cannot finished their assignments" VF -> "they cannot finish their assignments".',
+    'Also detect defensible patterns like "This problem are becoming more serious" AGR, "students sees other people" AGR, "they may compares themselves" one VF/AGR correction only, "People usually posts" AGR, "they has not studied" AGR, "Students shares" AGR, "they does not realize" AGR, and "who can seeing" VF. Never match these phrases mechanically.',
+    'Poor grammar alone is not CONTENT/CL. Do not infer COH when the underlying ideas are not understandable. Do not fill categories or limits.',
     'Only genuine errors. Quote minimum exact evidence; occurrence is zero-based; message<=240. No rewrites, duplicates, praise, styles, or OCR guesses.',
     promptDefinitions(),
     'localized means a specific passage has an identifiable replacement and suggestedText is required.',
@@ -186,7 +193,7 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
       reject('INVALID_SEVERITY', category); continue;
     }
     if (Number(item.confidence) < thresholds[item.category]) { reject('LOW_CONFIDENCE', category); continue; }
-    if ((perCategory[item.category] || 0) >= policy.MAX_AI_CORRECTIONS_PER_CATEGORY) {
+    if ((perCategory[item.category] || 0) >= policy.MAX_AI_CORRECTIONS_PER_CATEGORY[item.category]) {
       reject('CATEGORY_LIMIT', category); continue;
     }
     const range = canonical.locateQuote(transcript, item.quotedText, Number(item.occurrence));

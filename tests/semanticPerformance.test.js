@@ -57,8 +57,9 @@ describe('semantic performance contract', () => {
     const audited = semantic.buildSemanticRequest(input).promptCharacters;
     const legacy = semantic.buildLegacySemanticRequestForBenchmark(input).promptCharacters;
     // The strict contract now proves all five categories were reviewed and includes
-    // both correction kinds; that required evidence did not exist in the legacy prompt.
-    expect(audited - legacy).toBeLessThanOrEqual(2500);
+    // both correction kinds and the learner-English taxonomy/examples; that
+    // required evidence did not exist in the legacy prompt.
+    expect(audited - legacy).toBeLessThanOrEqual(4000);
     expect(audited).toBeLessThan(12000);
   });
 });

@@ -24,7 +24,8 @@ function semanticCorrectionsSchema(transcriptHash) {
     categoryReviews: { type: 'array', minItems: 5, maxItems: 5, items: closedObject({
       category: { type: 'string', enum: ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'] },
       reviewed: { type: 'boolean', const: true },
-      findingCount: { type: 'integer', minimum: 0, maximum: policy.MAX_AI_CORRECTIONS_PER_CATEGORY },
+      findingCount: { type: 'integer', minimum: 0,
+        maximum: Math.max(...Object.values(policy.MAX_AI_CORRECTIONS_PER_CATEGORY)) },
       noFindingReason: string(320)
     }) },
     corrections: { type: 'array', maxItems: policy.MAX_AI_CORRECTIONS, items: closedObject({
