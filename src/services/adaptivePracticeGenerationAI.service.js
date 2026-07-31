@@ -37,6 +37,8 @@ async function generate(messages, { timeoutMs, env = process.env, fetchImpl = gl
       attemptTimeoutMs: Math.min(current.attemptTimeoutMs, timeoutMs || current.attemptTimeoutMs),
       totalBudgetMs: current.totalBudgetMs,
       retriesPerModel: current.retriesPerModel,
+      primaryRetries: current.primaryRetries,
+      fallbackRetries: current.fallbackRetries,
       retryDelayMs: current.retryDelayMs
     } });
   return { content: result.content, value: result.value, usage: result.usage, provider: result.provider, model: result.model,

@@ -25,6 +25,8 @@ function getSemanticAIConfig(env = process.env) {
     totalBudgetMs: global.totalBudgetMs,
     maxRetries: global.retriesPerModel,
     retriesPerModel: global.retriesPerModel,
+    primaryRetries: global.primaryRetries,
+    fallbackRetries: global.fallbackRetries,
     retryDelayMs: global.retryDelayMs,
     minAttemptBudgetMs: 1,
     maxOutputTokens: integer(env.SEMANTIC_AI_MAX_OUTPUT_TOKENS, 8000, 256, MAX_SEMANTIC_OUTPUT_TOKENS),
@@ -72,12 +74,15 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
   env = process.env, now = Date.now, sleepFn, validate, feature = 'semantic', onAttempt, onRetry } = {}) {
   const chain = config.chain || gateway.getAIConfig(env).chain;
   const result = await gateway.generate({ feature, messages, maxOutputTokens: config.maxOutputTokens,
-    responseFormat: 'json', validate, fetchImpl, env, now, sleepFn, onAttempt, onRetry,
+    responseFormat: 'json', googleThinkingLevel: 'minimal',
+    validate, fetchImpl, env, now, sleepFn, onAttempt, onRetry,
     config: {
       chain,
       attemptTimeoutMs: config.attemptTimeoutMs,
       totalBudgetMs: config.totalBudgetMs,
       retriesPerModel: Number.isInteger(config.retriesPerModel) ? config.retriesPerModel : (config.maxRetries || 0),
+      primaryRetries: config.primaryRetries,
+      fallbackRetries: config.fallbackRetries,
       retryDelayMs: config.retryDelayMs
     } });
   return { content: result.content, value: result.value, usage: result.usage,

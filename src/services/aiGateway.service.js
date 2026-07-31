@@ -11,6 +11,10 @@ const DEFAULTS = Object.freeze({
   retryDelayMs: 1000
 });
 const FINALIZATION_RESERVE_MS = 1000;
+const MAX_RETRIES = 2;
+const MAX_RETRY_DELAY_MS = 30000;
+const finalizationReserve = (remainingMs) =>
+  Math.min(FINALIZATION_RESERVE_MS, Math.max(1, Math.floor(remainingMs / 10)));
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
 const integer = (value, fallback, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) => {
@@ -73,13 +77,17 @@ function getAIConfig(env = process.env, { requireCredentials = true } = {}) {
   });
   const attemptTimeoutMs = integer(env.AI_ATTEMPT_TIMEOUT_MS, DEFAULTS.attemptTimeoutMs, 1);
   const totalBudgetMs = integer(env.AI_TOTAL_BUDGET_MS, DEFAULTS.totalBudgetMs, 1);
-  const retriesPerModel = integer(env.AI_RETRIES_PER_MODEL, DEFAULTS.retriesPerModel, 0, 10);
+  const retriesPerModel = integer(env.AI_RETRIES_PER_MODEL, DEFAULTS.retriesPerModel, 0, MAX_RETRIES);
+  const primaryRetries = integer(env.AI_PRIMARY_RETRIES, retriesPerModel, 0, MAX_RETRIES);
+  const fallbackRetries = integer(env.AI_FALLBACK_RETRIES, retriesPerModel, 0, MAX_RETRIES);
   const retryDelayMs = integer(env.AI_RETRY_DELAY_MS, DEFAULTS.retryDelayMs, 0);
-  if ([attemptTimeoutMs, totalBudgetMs, retriesPerModel, retryDelayMs].includes(null)) {
+  if ([attemptTimeoutMs, totalBudgetMs, retriesPerModel, primaryRetries, fallbackRetries,
+    retryDelayMs].includes(null)) {
     issues.push('One or more global AI timeout/retry values are invalid.');
   }
   if (issues.length) throw configurationError(issues);
-  return { chain, attemptTimeoutMs, totalBudgetMs, retriesPerModel, retryDelayMs };
+  return { chain, attemptTimeoutMs, totalBudgetMs, retriesPerModel, primaryRetries,
+    fallbackRetries, retryDelayMs };
 }
 
 function safeCode(error) {
@@ -123,8 +131,9 @@ function googleUsage(payload) {
 }
 
 function safeFailureMetadata(error) {
-  const allowed = ['finishReason', 'promptTokenCount', 'candidatesTokenCount', 'thoughtsTokenCount',
-    'totalTokenCount', 'maxOutputTokens', 'responseTextLength', 'candidateCount', 'validationCode'];
+  const allowed = ['httpStatus', 'finishReason', 'promptTokenCount', 'candidateTokenCount',
+    'candidatesTokenCount', 'thoughtsTokenCount', 'totalTokenCount', 'maxOutputTokens',
+    'responseTextLength', 'candidateCount', 'validationCode'];
   return Object.fromEntries(allowed.filter((key) => error?.[key] !== undefined && error?.[key] !== null)
     .map((key) => [key, error[key]]));
 }
@@ -141,6 +150,7 @@ function extractGoogle(payload, { maxOutputTokens } = {}) {
   const metadata = {
     finishReason: finishReason || null,
     promptTokenCount: usage?.prompt_tokens,
+    candidateTokenCount: usage?.completion_tokens,
     candidatesTokenCount: usage?.completion_tokens,
     thoughtsTokenCount: usage?.thoughts_tokens,
     totalTokenCount: usage?.total_tokens,
@@ -252,37 +262,43 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
 async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4000, temperature = 0.1,
   responseFormat = 'text', validate, metadata = {}, googleThinkingLevel, env = process.env, fetchImpl = global.fetch,
   now = Date.now, sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  config = getAIConfig(env), onAttempt, onRetry } = {}) {
+  randomFn = Math.random, config = getAIConfig(env), onAttempt, onRetry } = {}) {
   if (!Array.isArray(messages) || typeof fetchImpl !== 'function') {
     throw new TypeError('AI gateway requires messages and fetch.');
   }
   const started = now();
   const deadline = started + config.totalBudgetMs;
   const attempts = [];
-  const maxAttempts = config.chain.length * (config.retriesPerModel + 1);
+  const legacyRetries = Number.isInteger(config.retriesPerModel) ? config.retriesPerModel : 0;
+  const retriesFor = (entry) => entry.fallbackIndex === 0
+    ? (Number.isInteger(config.primaryRetries) ? config.primaryRetries : legacyRetries)
+    : (Number.isInteger(config.fallbackRetries) ? config.fallbackRetries : legacyRetries);
+  const maxAttempts = config.chain.reduce((sum, entry) => sum + retriesFor(entry) + 1, 0);
   let attemptCount = 0;
   let lastError;
-  for (const entry of config.chain) {
-    for (let retry = 0; retry <= config.retriesPerModel; retry += 1) {
+  for (let chainIndex = 0; chainIndex < config.chain.length; chainIndex += 1) {
+    const entry = config.chain[chainIndex];
+      const entryRetries = retriesFor(entry);
+    for (let retry = 0; retry <= entryRetries; retry += 1) {
       const remaining = deadline - now();
-      if (remaining <= 0) {
+      const reserve = finalizationReserve(remaining);
+      if (remaining <= reserve) {
         lastError = attemptError('AI_TOTAL_BUDGET_EXHAUSTED', 'AI total budget was exhausted.');
         break;
       }
-      const chainIndex = config.chain.indexOf(entry);
-      const currentModelAttempts = config.retriesPerModel - retry + 1;
-      const laterModelAttempts = Math.max(0, config.chain.length - chainIndex - 1)
-        * (config.retriesPerModel + 1);
+      const currentModelAttempts = entryRetries - retry + 1;
+      const laterModelAttempts = config.chain.slice(chainIndex + 1)
+        .reduce((sum, laterEntry) => sum + retriesFor(laterEntry) + 1, 0);
       const attemptsRemaining = currentModelAttempts + laterModelAttempts;
-      const reserve = Math.min(FINALIZATION_RESERVE_MS, Math.floor(remaining / 10));
       const fairShare = Math.max(1, Math.floor((remaining - reserve) / attemptsRemaining));
       const timeout = Math.min(config.attemptTimeoutMs, fairShare);
       attemptCount += 1;
       const attemptStarted = now();
       if (typeof onAttempt === 'function') await onAttempt({ attempt: attemptCount,
-        maxAttempts,
+        attemptNumber: attemptCount, maxAttempts,
         provider: entry.provider, model: entry.model, fallbackIndex: entry.fallbackIndex,
-        attemptTimeoutMs: timeout, remainingBudgetMs: remaining, maxOutputTokens });
+        retryIndex: retry, attemptTimeoutMs: timeout, remainingBudgetMs: remaining,
+        maxOutputTokens });
       try {
         const result = await providerAttempt({ entry, messages, maxOutputTokens, temperature,
           responseFormat, attemptTimeoutMs: timeout, fetchImpl, env, now, googleThinkingLevel });
@@ -295,8 +311,17 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
             });
           }
         }
-        attempts.push({ provider: entry.provider, model: entry.model, status: 'success',
-          code: null, durationMs: now() - attemptStarted, timeoutMs: timeout, maxOutputTokens });
+        attempts.push({ attemptNumber: attemptCount, maxAttempts, provider: entry.provider,
+          model: entry.model, fallbackIndex: entry.fallbackIndex, retryIndex: retry,
+          status: 'success', code: null, httpStatus: 200, durationMs: now() - attemptStarted,
+          attemptTimeoutMs: timeout, remainingBudgetMs: Math.max(0, deadline - now()),
+          maxOutputTokens, finishReason: result.finishReason || null,
+          promptTokenCount: result.usage?.prompt_tokens ?? null,
+          candidateTokenCount: result.usage?.completion_tokens ?? null,
+          thoughtsTokenCount: result.usage?.thoughts_tokens ?? null,
+          totalTokenCount: result.usage?.total_tokens ?? null,
+          responseTextLength: result.responseTextLength ?? result.content.length,
+          validationCode: null, retryDelayMs: null });
         const gatewayMetadata = { provider: entry.provider, model: entry.model, attemptCount,
           fallbackIndex: entry.fallbackIndex, fallbackUsed: entry.fallbackIndex > 0,
           durationMs: now() - started, usage: result.usage || null, attempts };
@@ -307,21 +332,56 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
         lastError = error;
         const code = safeCode(error);
         const failureMetadata = safeFailureMetadata(error);
-        attempts.push({ provider: entry.provider, model: entry.model, status: 'failed',
-          code, durationMs: now() - attemptStarted, timeoutMs: timeout, maxOutputTokens, ...failureMetadata });
-        logger.warn({ message: 'AI gateway attempt failed', feature, attemptNumber: attemptCount,
+        const httpStatus = Number(error?.status || error?.httpStatus) || null;
+        const attemptRecord = { attemptNumber: attemptCount, maxAttempts,
           provider: entry.provider, model: entry.model, fallbackIndex: entry.fallbackIndex,
-          durationMs: now() - attemptStarted, attemptTimeoutMs: timeout, maxOutputTokens, code,
+          retryIndex: retry, status: 'failed', code, httpStatus,
+          durationMs: now() - attemptStarted, attemptTimeoutMs: timeout,
+          remainingBudgetMs: Math.max(0, deadline - now()), maxOutputTokens,
+          retryDelayMs: null, ...failureMetadata };
+        attempts.push(attemptRecord);
+        logger.warn({ message: 'AI gateway attempt failed', feature, attemptNumber: attemptCount,
+          maxAttempts,
+          provider: entry.provider, model: entry.model, fallbackIndex: entry.fallbackIndex,
+          retryIndex: retry, durationMs: now() - attemptStarted, attemptTimeoutMs: timeout,
+          remainingBudgetMs: Math.max(0, deadline - now()), maxOutputTokens, code, httpStatus,
+          retryDelayMs: null,
           ...failureMetadata });
-        const status = Number(error?.status);
-        const retryableSameModel = retry < config.retriesPerModel
+        const status = Number(error?.status || error?.httpStatus);
+        const retryableSameModel = retry < entryRetries
           && (RETRYABLE_HTTP.has(status) || ['AI_ATTEMPT_TIMEOUT', 'AI_PROVIDER_UNAVAILABLE'].includes(code));
         if (retryableSameModel) {
-          const requested = Number.isFinite(error?.retryAfterMs) ? error.retryAfterMs : config.retryDelayMs;
-          if (typeof onRetry === 'function') await onRetry({ attempt: attemptCount, delayMs: requested,
-            code, provider: entry.provider, model: entry.model });
-          if (requested < deadline - now()) await sleepFn(requested);
-          else break;
+          const baseDelay = Math.min(MAX_RETRY_DELAY_MS,
+            Math.max(0, config.retryDelayMs) * (2 ** retry));
+          const jitter = 0.5 + Math.max(0, Math.min(1, Number(randomFn()) || 0)) * 0.5;
+          const calculated = Math.round(baseDelay * jitter);
+          const requested = Number.isFinite(error?.retryAfterMs)
+            ? Math.min(MAX_RETRY_DELAY_MS, Math.max(0, error.retryAfterMs)) : calculated;
+          const beforeSleepRemaining = deadline - now();
+          const sleepBudget = beforeSleepRemaining - finalizationReserve(beforeSleepRemaining);
+          if (requested > sleepBudget) {
+            lastError = attemptError('AI_TOTAL_BUDGET_EXHAUSTED', 'AI total budget was exhausted.');
+            break;
+          }
+          attemptRecord.retryDelayMs = requested;
+          logger.info({ message: 'AI gateway retry scheduled', feature,
+            attemptNumber: attemptCount, maxAttempts, provider: entry.provider,
+            model: entry.model, fallbackIndex: entry.fallbackIndex, retryIndex: retry,
+            durationMs: attemptRecord.durationMs, attemptTimeoutMs: timeout,
+            remainingBudgetMs: Math.max(0, deadline - now()), maxOutputTokens, code,
+            httpStatus, finishReason: attemptRecord.finishReason || null,
+            promptTokenCount: attemptRecord.promptTokenCount ?? null,
+            candidateTokenCount: attemptRecord.candidateTokenCount
+              ?? attemptRecord.candidatesTokenCount ?? null,
+            thoughtsTokenCount: attemptRecord.thoughtsTokenCount ?? null,
+            totalTokenCount: attemptRecord.totalTokenCount ?? null,
+            responseTextLength: attemptRecord.responseTextLength ?? null,
+            validationCode: attemptRecord.validationCode ?? null, retryDelayMs: requested });
+          if (typeof onRetry === 'function') await onRetry({ attempt: attemptCount,
+            attemptNumber: attemptCount, maxAttempts, delayMs: requested, retryDelayMs: requested,
+            code, provider: entry.provider, model: entry.model, fallbackIndex: entry.fallbackIndex,
+            retryIndex: retry, remainingBudgetMs: deadline - now() });
+          if (requested > 0) await sleepFn(requested);
         } else break;
       }
     }
@@ -352,7 +412,8 @@ function validateAIConfig(env = process.env) {
 }
 
 module.exports = {
-  SUPPORTED_PROVIDERS, DEFAULTS, credentialFor, endpointFor, getAIConfig, validateAIConfig,
+  SUPPORTED_PROVIDERS, DEFAULTS, MAX_RETRIES, MAX_RETRY_DELAY_MS, credentialFor, endpointFor,
+  getAIConfig, validateAIConfig,
   retryAfterMs, safeCode, extractGoogle, extractOpenRouter, googleUsage, safeFailureMetadata,
   providerAttempt, generate
 };

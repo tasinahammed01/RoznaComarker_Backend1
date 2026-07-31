@@ -74,6 +74,79 @@ describe('global AI gateway', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  test('new retry variables override the legacy policy by chain position', () => {
+    expect(gateway.getAIConfig(env({ AI_RETRIES_PER_MODEL: '2', AI_PRIMARY_RETRIES: '1',
+      AI_FALLBACK_RETRIES: '0' }))).toMatchObject({
+      retriesPerModel: 2, primaryRetries: 1, fallbackRetries: 0
+    });
+    expect(() => gateway.getAIConfig(env({ AI_PRIMARY_RETRIES: '3' }))).toThrow(/invalid/i);
+  });
+
+  test('primary 503 retries once then succeeds without fallback', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(response(503, {}))
+      .mockResolvedValueOnce(google('primary recovered'));
+    const sleepFn = jest.fn(async () => {});
+    const result = await gateway.generate({ messages: [{ role: 'user', content: 'x' }],
+      env: env({ AI_PRIMARY_RETRIES: '1', AI_FALLBACK_RETRIES: '0',
+        AI_RETRY_DELAY_MS: '100' }), fetchImpl, sleepFn, randomFn: () => 0 });
+    expect(result).toMatchObject({ content: 'primary recovered', fallbackUsed: false, attemptCount: 2 });
+    expect(sleepFn).toHaveBeenCalledWith(50);
+  });
+
+  test('failed primary retry proceeds to fallback without retrying fallback', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(response(503, {}))
+      .mockResolvedValueOnce(response(503, {})).mockResolvedValueOnce(router('fallback'));
+    const result = await gateway.generate({ messages: [{ role: 'user', content: 'x' }],
+      env: env({ AI_PRIMARY_RETRIES: '1', AI_FALLBACK_RETRIES: '0',
+        AI_RETRY_DELAY_MS: '0' }), fetchImpl });
+    expect(result).toMatchObject({ model: 'fallback-one', attemptCount: 3 });
+  });
+
+  test('schema-invalid and truncated primary responses are never retried on the same model', async () => {
+    const configuredEnv = env({ AI_PRIMARY_RETRIES: '1', AI_FALLBACK_RETRIES: '0' });
+    const invalidFetch = jest.fn().mockResolvedValueOnce(google('{"ok":false}'))
+      .mockResolvedValueOnce(router('{"ok":true}'));
+    await gateway.generate({ messages: [{ role: 'user', content: 'x' }], env: configuredEnv,
+      fetchImpl: invalidFetch, validate: (content) => {
+        const value = JSON.parse(content); if (!value.ok) throw new Error('schema'); return value;
+      } });
+    expect(invalidFetch).toHaveBeenCalledTimes(2);
+    const truncatedFetch = jest.fn().mockResolvedValueOnce(response(200, {
+      candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{}' }] } }]
+    })).mockResolvedValueOnce(router('{"ok":true}'));
+    await gateway.generate({ messages: [{ role: 'user', content: 'x' }], env: configuredEnv,
+      fetchImpl: truncatedFetch, validate: JSON.parse });
+    expect(truncatedFetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('Retry-After and bounded deterministic jitter are honored', async () => {
+    const delays = [];
+    const retryAfterFetch = jest.fn().mockResolvedValueOnce(response(503, {}, { 'retry-after': '2' }))
+      .mockResolvedValueOnce(google('ok'));
+    await gateway.generate({ messages: [{ role: 'user', content: 'x' }],
+      env: env({ AI_PRIMARY_RETRIES: '1', AI_RETRY_DELAY_MS: '100' }),
+      fetchImpl: retryAfterFetch, sleepFn: async (ms) => delays.push(ms), randomFn: () => 1 });
+    expect(delays).toEqual([2000]);
+    const jitterFetch = jest.fn().mockResolvedValueOnce(response(503, {}))
+      .mockResolvedValueOnce(google('ok'));
+    await gateway.generate({ messages: [{ role: 'user', content: 'x' }],
+      env: env({ AI_PRIMARY_RETRIES: '1', AI_RETRY_DELAY_MS: '100' }),
+      fetchImpl: jitterFetch, sleepFn: async (ms) => delays.push(ms), randomFn: () => 1 });
+    expect(delays[1]).toBe(100);
+  });
+
+  test('fair-share planning counts primary retries but not fallback retries', async () => {
+    const allocations = [];
+    await expect(gateway.generate({ messages: [{ role: 'user', content: 'x' }],
+      env: env({ AI_PRIMARY_RETRIES: '1', AI_FALLBACK_RETRIES: '0',
+        AI_ATTEMPT_TIMEOUT_MS: '99999', AI_TOTAL_BUDGET_MS: '51000', AI_RETRY_DELAY_MS: '0' }),
+      fetchImpl: async () => response(503, {}), onAttempt: (value) => allocations.push(value) }))
+      .rejects.toHaveProperty('code', 'AI_CHAIN_EXHAUSTED');
+    expect(allocations[0]).toMatchObject({ maxAttempts: 5, retryIndex: 0,
+      attemptTimeoutMs: 10000 });
+    expect(allocations).toHaveLength(5);
+  });
+
   test.each([402, 408, 429, 500, 502, 503, 504])('HTTP %i selects fallback', async (status) => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(response(status, {}))

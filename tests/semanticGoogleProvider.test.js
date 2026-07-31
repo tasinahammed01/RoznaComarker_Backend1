@@ -36,6 +36,27 @@ describe('Google adapter through the global semantic facade', () => {
     expect(result.content).not.toContain('private reasoning');
   });
 
+  test('Gemini 3 semantic JSON requests use minimal thinking', async () => {
+    const configuredEnv = env({ AI_PRIMARY_MODEL: 'gemini-3.6-flash' });
+    const fetchImpl = jest.fn(async () => response(200, {
+      candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{"ok":true}' }] } }]
+    }));
+    await client.runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
+      config: client.getSemanticAIConfig(configuredEnv), env: configuredEnv, fetchImpl });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).generationConfig.thinkingConfig)
+      .toEqual({ thinkingLevel: 'minimal' });
+  });
+
+  test('unsupported Google models omit thinkingConfig safely', async () => {
+    const fetchImpl = jest.fn(async () => response(200, {
+      candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{"ok":true}' }] } }]
+    }));
+    await client.runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
+      config: client.getSemanticAIConfig(env()), env: env(), fetchImpl });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).generationConfig)
+      .not.toHaveProperty('thinkingConfig');
+  });
+
   test.each([
     [{}, 'AI_RESPONSE_EMPTY'],
     [{ candidates: [{ finishReason: 'SAFETY', content: { parts: [] } }] }, 'AI_RESPONSE_BLOCKED'],

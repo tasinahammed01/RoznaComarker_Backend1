@@ -34,6 +34,13 @@ describe('semantic global-chain facade', () => {
     expect(getSemanticAIConfig(env({ SEMANTIC_AI_MAX_OUTPUT_TOKENS: '8000' })).maxOutputTokens).toBe(8000);
   });
 
+  test('accepts 12000 and safely falls back for invalid, negative, or excessive limits', () => {
+    expect(getSemanticAIConfig(env({ SEMANTIC_AI_MAX_OUTPUT_TOKENS: '12000' })).maxOutputTokens).toBe(12000);
+    for (const invalid of ['nope', '-1', '999999999']) {
+      expect(getSemanticAIConfig(env({ SEMANTIC_AI_MAX_OUTPUT_TOKENS: invalid })).maxOutputTokens).toBe(8000);
+    }
+  });
+
   test('reads the global chain and semantic token limit only', () => {
     expect(getSemanticAIConfig(env())).toMatchObject({
       provider: 'google', model: 'semantic-primary', maxOutputTokens: 1800,
@@ -65,6 +72,18 @@ describe('semantic global-chain facade', () => {
     expect(result.metrics.attempts).toHaveLength(2);
     expect(attempts).toHaveLength(2);
     expect(attempts.map((attempt) => attempt.provider)).toEqual(['google', 'openrouter']);
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body)).not.toHaveProperty('thinkingConfig');
+  });
+
+  test('12000 reaches both Google and OpenRouter transports', async () => {
+    const configuredEnv = env({ AI_PRIMARY_MODEL: 'gemini-3.6-flash',
+      SEMANTIC_AI_MAX_OUTPUT_TOKENS: '12000' });
+    const fetchImpl = jest.fn().mockResolvedValueOnce(response(503, {}))
+      .mockResolvedValueOnce(router('{"ok":true}'));
+    await runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
+      config: getSemanticAIConfig(configuredEnv), env: configuredEnv, fetchImpl });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).generationConfig.maxOutputTokens).toBe(12000);
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).max_tokens).toBe(12000);
   });
 
   test('configured chain exhaustion preserves complete terminal metadata', async () => {

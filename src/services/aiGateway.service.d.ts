@@ -18,7 +18,16 @@ export function generate<T = unknown>(options: {
   maxOutputTokens?: number;
   temperature?: number;
   responseFormat?: "json" | "text";
-  validate?: (content: string) => T;
+  googleThinkingLevel?: "minimal" | "low" | "medium" | "high";
+  validate?: (content: string, provider: Record<string, string>) => T | Promise<T>;
+  env?: NodeJS.ProcessEnv;
+  fetchImpl?: typeof fetch;
+  now?: () => number;
+  sleepFn?: (milliseconds: number) => Promise<void>;
+  randomFn?: () => number;
+  config?: Record<string, unknown>;
+  onAttempt?: (attempt: Record<string, unknown>) => void | Promise<void>;
+  onRetry?: (retry: Record<string, unknown>) => void | Promise<void>;
 }): Promise<GatewayResult<T>>;
 
 export function getAIConfig(env?: NodeJS.ProcessEnv): Record<string, unknown>;
