@@ -94,19 +94,22 @@ function getAssessmentAIConfig(env = process.env, options = {}) {
   const configured = text(env.ASSESSMENT_AI_PRIMARY_PROVIDER)
     || text(env.ASSESSMENT_AI_PRIMARY_MODEL);
   if (!configured) return getAIConfig(env, options);
+  const assessmentOrGlobal = (assessmentKey, globalKey) =>
+    text(env[assessmentKey]) ? env[assessmentKey] : env[globalKey];
   const assessmentEnv = { ...env,
     AI_PRIMARY_PROVIDER: env.ASSESSMENT_AI_PRIMARY_PROVIDER,
     AI_PRIMARY_MODEL: env.ASSESSMENT_AI_PRIMARY_MODEL,
     AI_FALLBACK_1_PROVIDER: env.ASSESSMENT_AI_FALLBACK_1_PROVIDER,
     AI_FALLBACK_1_MODEL: env.ASSESSMENT_AI_FALLBACK_1_MODEL,
-    AI_FALLBACK_2_PROVIDER: '', AI_FALLBACK_2_MODEL: '',
-    AI_FALLBACK_3_PROVIDER: '', AI_FALLBACK_3_MODEL: '',
-    AI_ATTEMPT_TIMEOUT_MS: env.ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS,
-    AI_TOTAL_BUDGET_MS: env.ASSESSMENT_AI_TOTAL_BUDGET_MS,
-    AI_PRIMARY_RETRIES: env.ASSESSMENT_AI_PRIMARY_RETRIES,
-    AI_FALLBACK_RETRIES: env.ASSESSMENT_AI_FALLBACK_RETRIES,
-    AI_RETRY_DELAY_MS: env.ASSESSMENT_AI_RETRY_DELAY_MS,
-    AI_RETRIES_PER_MODEL: undefined
+    AI_FALLBACK_2_PROVIDER: env.ASSESSMENT_AI_FALLBACK_2_PROVIDER,
+    AI_FALLBACK_2_MODEL: env.ASSESSMENT_AI_FALLBACK_2_MODEL,
+    AI_FALLBACK_3_PROVIDER: env.ASSESSMENT_AI_FALLBACK_3_PROVIDER,
+    AI_FALLBACK_3_MODEL: env.ASSESSMENT_AI_FALLBACK_3_MODEL,
+    AI_ATTEMPT_TIMEOUT_MS: assessmentOrGlobal('ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS', 'AI_ATTEMPT_TIMEOUT_MS'),
+    AI_TOTAL_BUDGET_MS: assessmentOrGlobal('ASSESSMENT_AI_TOTAL_BUDGET_MS', 'AI_TOTAL_BUDGET_MS'),
+    AI_PRIMARY_RETRIES: assessmentOrGlobal('ASSESSMENT_AI_PRIMARY_RETRIES', 'AI_PRIMARY_RETRIES'),
+    AI_FALLBACK_RETRIES: assessmentOrGlobal('ASSESSMENT_AI_FALLBACK_RETRIES', 'AI_FALLBACK_RETRIES'),
+    AI_RETRY_DELAY_MS: assessmentOrGlobal('ASSESSMENT_AI_RETRY_DELAY_MS', 'AI_RETRY_DELAY_MS')
   };
   const config = getAIConfig(assessmentEnv, options);
   if (config.primaryRetries > 1 || config.fallbackRetries !== 0) {
@@ -442,6 +445,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
   error.durationMs = now() - started;
   error.totalDurationMs = error.durationMs;
   error.finalFailureCode = attempts[attempts.length - 1]?.code || lastError?.code || error.code;
+  error.validationDiagnostics = lastError?.cause?.diagnostics || lastError?.diagnostics || null;
   error.feature = feature;
   error.metadata = metadata && typeof metadata === 'object'
     ? Object.fromEntries(Object.entries(metadata).filter(([key]) => /^(?:submissionId|jobId|requestId)$/u.test(key)))

@@ -8,8 +8,9 @@ const policy = require('./aiCorrectionPolicy.service');
 const { promptDefinitions } = require('./writingCategoryDefinitions.service');
 const { semanticCorrectionsSchema } = require('./structuredOutputSchemas.service');
 
-const SEMANTIC_PROMPT_VERSION = 'semantic-hybrid-reliability-v4';
-const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v2';
+const SEMANTIC_PROMPT_VERSION = 'semantic-category-review-v5';
+const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v3';
+const CATEGORY_REVIEW_POLICY_VERSION = 'all-categories-reviewed-v1';
 const SEMANTIC_CATEGORIES = new Set(Object.keys(policy.CATEGORY_POLICY));
 const OMIT_CONTEXT_KEYS = new Set(['_id', '__v', 'createdAt', 'updatedAt', 'student', 'teacher', 'class', 'files', 'fileUrls', 'images']);
 
@@ -52,10 +53,15 @@ function buildSemanticRequest({ transcript, assignment = {}, languageToolCorrect
   const exclusions = compactLanguageToolExclusions(languageToolCorrections);
   const context = compactAssignment(assignment);
   const pages = compactPageManifest(pageManifest);
-  const responseShape = { transcriptHash, corrections: [{ category: 'CONTENT', symbol: 'DEV',
-    correctionKind: 'localized',
-    quotedText: '<exact quote>', occurrence: 0, message: '<explanation>',
-    suggestedText: '<replacement>', confidence: 0.86 }] };
+  const responseShape = { transcriptHash, categoryReviews: Object.keys(policy.CATEGORY_POLICY).map((category) => ({
+    category, reviewed: true, findingCount: category === 'CONTENT' ? 2 : 0,
+    noFindingReason: category === 'CONTENT' ? '' : '<meaningful reason no additional grounded finding exists>'
+  })), corrections: [
+    { category: 'CONTENT', symbol: 'DEV', correctionKind: 'localized', quotedText: '<exact quote>', occurrence: 0,
+      message: '<explanation>', suggestedText: '<replacement>', confidence: 0.86 },
+    { category: 'CONTENT', symbol: 'DEV', correctionKind: 'global', quotedText: '<exact existing anchor passage>', occurrence: 0,
+      message: '<holistic weakness>', suggestedText: '', confidence: 0.86 }
+  ] };
   const prompt = [
     `schema=${SEMANTIC_SCHEMA_VERSION};prompt=${SEMANTIC_PROMPT_VERSION}`,
     `transcriptHash=${transcriptHash}`,
@@ -64,10 +70,14 @@ function buildSemanticRequest({ transcript, assignment = {}, languageToolCorrect
     `legend=${JSON.stringify(legend)}`,
     `languageToolExclusions=${JSON.stringify(exclusions)}`,
     `response=${JSON.stringify(responseShape)}`,
-    'Review all five categories. Return JSON with the exact transcriptHash; zero findings is valid.',
+    'Review every category exactly once in categoryReviews. reviewed=true. findingCount must equal raw corrections in that category. When findingCount=0 give a meaningful non-empty noFindingReason; otherwise noFindingReason must be empty. Zero findings remains valid.',
+    'CONTENT: review assignment relevance, task achievement, controlling claim/thesis clarity or absence, claim development, support specificity, and repetitive development that adds no substance.',
+    'ORGANIZATION: review logical paragraph order, coherence, transitions, topic sentences, and introduction/conclusion structure.',
+    'VOCABULARY, GRAMMAR, MECHANICS: review fully but do not duplicate equivalent LanguageTool findings.',
     'Only genuine errors. Quote minimum exact evidence; occurrence is zero-based; message<=240. No rewrites, duplicates, praise, styles, or OCR guesses.',
     promptDefinitions(),
-    'global is only grounded CONTENT/ORGANIZATION absence/structure. Anchor existing relevant evidence (final passage for missing conclusion); invent nothing; suggestedText may be empty.',
+    'localized means a specific passage has an identifiable replacement and suggestedText is required.',
+    'global is only CONTENT/ORGANIZATION holistic, absence, or structure weakness. It must anchor an exact existing relevant passage (including the ending for a missing conclusion), never invent missing text, and suggestedText may be empty. Examples include a vague thesis, inadequately developed main claim, or missing conclusion.',
     'Use legend pairs; avoid equivalent LT targets. Be concise.',
     `transcript=${transcript}`
   ].join('\n');
@@ -99,7 +109,28 @@ function parseJson(value, expectedHash) {
     throw semanticError('SEMANTIC_SCHEMA_INVALID', 'schema_validation', 'Semantic analysis corrections must be an array');
   if (parsed.corrections.length > policy.MAX_AI_CORRECTIONS)
     throw semanticError('SEMANTIC_SCHEMA_INVALID', 'correction_limit', 'Semantic analysis returned too many corrections');
-  return parsed.corrections;
+  validateCategoryReviews(parsed.categoryReviews, parsed.corrections);
+  return parsed;
+}
+
+function validateCategoryReviews(reviews, corrections) {
+  const categories = Object.keys(policy.CATEGORY_POLICY);
+  if (!Array.isArray(reviews) || reviews.length !== categories.length)
+    throw semanticError('SEMANTIC_SCHEMA_INVALID', 'category_reviews', 'Every correction category must be reviewed');
+  const seen = new Set();
+  for (const review of reviews) {
+    const category = review?.category;
+    if (!categories.includes(category) || seen.has(category) || review.reviewed !== true)
+      throw semanticError('SEMANTIC_SCHEMA_INVALID', 'category_reviews', 'Category reviews must be unique and complete');
+    seen.add(category);
+    const actual = corrections.filter((item) => item?.category === category).length;
+    if (!Number.isInteger(review.findingCount) || review.findingCount !== actual)
+      throw semanticError('SEMANTIC_SCHEMA_INVALID', 'category_review_count', 'Category review count does not match findings');
+    const reason = String(review.noFindingReason || '').trim();
+    if ((actual === 0 && !reason) || (actual > 0 && reason))
+      throw semanticError('SEMANTIC_SCHEMA_INVALID', 'category_review_reason', 'Category review reason is inconsistent with findings');
+  }
+  return true;
 }
 
 function semanticError(code, stage, message) {
@@ -116,8 +147,19 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
   const accepted = [];
   const rejectionReasons = {};
   const perCategory = {};
-  const reject = (reason) => { rejectionReasons[reason] = (rejectionReasons[reason] || 0) + 1; };
+  const returnedByCategory = Object.fromEntries(Object.keys(policy.CATEGORY_POLICY).map((key) => [key, 0]));
+  const rejectedByCategory = Object.fromEntries(Object.keys(policy.CATEGORY_POLICY).map((key) => [key, 0]));
+  const rejectionReasonsByCategory = Object.fromEntries(Object.keys(policy.CATEGORY_POLICY).map((key) => [key, {}]));
+  const reject = (reason, category) => {
+    rejectionReasons[reason] = (rejectionReasons[reason] || 0) + 1;
+    if (rejectedByCategory[category] !== undefined) {
+      rejectedByCategory[category] += 1;
+      rejectionReasonsByCategory[category][reason] = (rejectionReasonsByCategory[category][reason] || 0) + 1;
+    }
+  };
   for (const item of corrections) {
+    const category = SEMANTIC_CATEGORIES.has(item?.category) ? item.category : null;
+    if (category) returnedByCategory[category] += 1;
     if (!item || typeof item !== 'object' || !SEMANTIC_CATEGORIES.has(item.category)
       || !allowed.has(`${item.category}:${item.symbol}`) || typeof item.quotedText !== 'string' || !item.quotedText
       || item.quotedText.length > 500
@@ -126,52 +168,57 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
       || item.quotedText.includes('\uFFFD')
       || !Number.isFinite(Number(item.confidence)) || Number(item.confidence) < 0 || Number(item.confidence) > 1
       || !Number.isInteger(Number(item.occurrence)) || Number(item.occurrence) < 0) {
-      reject('INVALID_SCHEMA'); continue;
+      reject('INVALID_SCHEMA', category); continue;
     }
-    if (item.stylePreference === true) { reject('STYLE_PREFERENCE'); continue; }
+    if (item.stylePreference === true) { reject('STYLE_PREFERENCE', category); continue; }
     const correctionKind = item.correctionKind || 'localized';
     if (!['localized', 'global'].includes(correctionKind)
       || (correctionKind === 'global' && !['CONTENT', 'ORGANIZATION'].includes(item.category))
       || (correctionKind === 'localized' && !item.suggestedText.trim())) {
-      reject('UNSUPPORTED_CORRECTION_KIND'); continue;
+      reject('UNSUPPORTED_CORRECTION_KIND', category); continue;
     }
     if (item.category === 'VOCABULARY' && item.symbol === 'WC'
       && /\bmore\s+\p{L}+er\b/iu.test(item.quotedText)
       && !/\bmore\b/iu.test(item.suggestedText)) {
-      reject('CATEGORY_MISMATCH'); continue;
+      reject('CATEGORY_MISMATCH', category); continue;
     }
     if (item.severity != null && !policy.SEVERITIES.has(String(item.severity).toLowerCase())) {
-      reject('INVALID_SEVERITY'); continue;
+      reject('INVALID_SEVERITY', category); continue;
     }
-    if (Number(item.confidence) < thresholds[item.category]) { reject('LOW_CONFIDENCE'); continue; }
+    if (Number(item.confidence) < thresholds[item.category]) { reject('LOW_CONFIDENCE', category); continue; }
     if ((perCategory[item.category] || 0) >= policy.MAX_AI_CORRECTIONS_PER_CATEGORY) {
-      reject('CATEGORY_LIMIT'); continue;
+      reject('CATEGORY_LIMIT', category); continue;
     }
     const range = canonical.locateQuote(transcript, item.quotedText, Number(item.occurrence));
-    if (!range) { reject('UNGROUNDED_EVIDENCE'); continue; }
+    if (!range) { reject('UNGROUNDED_EVIDENCE', category); continue; }
     const normalized = canonical.normalizeCorrection({ ...item, startChar: range.start, endChar: range.end },
       transcript, spans, defaultLegend(), 'AI');
-    if (!normalized || (spans.length && !normalized.wordIds.length)) { reject('INVALID_LOCATION'); continue; }
+    if (!normalized || (spans.length && !normalized.wordIds.length)) { reject('INVALID_LOCATION', category); continue; }
     accepted.push(normalized);
     perCategory[item.category] = (perCategory[item.category] || 0) + 1;
   }
+  const diagnostics = {
+    responseJsonParsed: true, transcriptHashMatch: true, schemaValidated: true, groundingValidated: true,
+    rawCorrectionCount: corrections.length, acceptedCorrectionCount: accepted.length,
+    rejectedCorrectionCount: corrections.length - accepted.length, rejectionReasons, thresholds,
+    returnedByCategory, acceptedByCategory: Object.fromEntries(Object.keys(returnedByCategory)
+      .map((key) => [key, perCategory[key] || 0])), rejectedByCategory, rejectionReasonsByCategory
+  };
   if (corrections.length && !accepted.length) {
     const error = semanticError('SEMANTIC_SCHEMA_INVALID', 'canonical_validation',
       'Semantic analysis returned no acceptable grounded corrections');
     error.rejectionReasons = rejectionReasons;
+    error.diagnostics = diagnostics;
     throw error;
   }
-  return { corrections: accepted, diagnostics: {
-    responseJsonParsed: true, transcriptHashMatch: true, schemaValidated: true, groundingValidated: true,
-    rawCorrectionCount: corrections.length, acceptedCorrectionCount: accepted.length,
-    rejectedCorrectionCount: corrections.length - accepted.length, rejectionReasons, thresholds
-  }};
+  return { corrections: accepted, diagnostics };
 }
 
 function semanticSourceKey({ correctionSourceHash, config = getSemanticAIConfig(), legendVersion = defaultLegend().version }) {
   return crypto.createHash('sha256').update(JSON.stringify({ correctionSourceHash, provider: config.provider, model: config.model,
     fallback: config.fallback, promptVersion: SEMANTIC_PROMPT_VERSION, schemaVersion: SEMANTIC_SCHEMA_VERSION,
-    policyVersion: policy.POLICY_VERSION, confidenceThresholds: policy.confidenceThresholds(), legendVersion })).digest('hex');
+    policyVersion: policy.POLICY_VERSION, categoryReviewPolicyVersion: CATEGORY_REVIEW_POLICY_VERSION,
+    confidenceThresholds: policy.confidenceThresholds(), legendVersion })).digest('hex');
 }
 
 async function analyze(input, dependencies = {}) {
@@ -186,9 +233,13 @@ async function analyze(input, dependencies = {}) {
   const validate = (content) => {
     const startedAt = Date.now();
     try {
-      return validateCorrections(parseJson(content, input.transcriptHash), {
+      const parsed = parseJson(content, input.transcriptHash);
+      const validated = validateCorrections(parsed.corrections, {
         transcript: input.transcript, legend: request.legend, spans: input.spans || [], env: dependencies.env || process.env
       });
+      validated.categoryReviews = parsed.categoryReviews;
+      validated.diagnostics.categoryReviews = parsed.categoryReviews;
+      return validated;
     } finally { semanticValidationMs += Date.now() - startedAt; }
   };
   const completion = await (dependencies.runCompletion || runSemanticCompletion)({ messages: request.messages, config,
@@ -217,6 +268,7 @@ async function analyze(input, dependencies = {}) {
       promptCharacters: request.promptCharacters, promptInputTokenEstimate: request.promptInputTokenEstimate } };
 }
 
-module.exports = { SEMANTIC_PROMPT_VERSION, SEMANTIC_SCHEMA_VERSION, compactAssignment, compactSemanticLegend,
+module.exports = { SEMANTIC_PROMPT_VERSION, SEMANTIC_SCHEMA_VERSION, CATEGORY_REVIEW_POLICY_VERSION,
+  compactAssignment, compactSemanticLegend,
   compactLanguageToolExclusions, compactPageManifest, buildSemanticRequest, buildLegacySemanticRequestForBenchmark,
-  parseJson, validateCorrections, semanticSourceKey, analyze };
+  parseJson, validateCategoryReviews, validateCorrections, semanticSourceKey, analyze };

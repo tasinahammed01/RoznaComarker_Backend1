@@ -50,11 +50,15 @@ describe('semantic performance contract', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test('compact prompt remains smaller than the legacy benchmark prompt', () => {
+  test('audited category-review prompt keeps bounded overhead over the incomplete legacy contract', () => {
     const input = { transcript: 'Evidence based writing '.repeat(100), transcriptHash: 'hash',
       assignment: { title: 'Synthetic assignment' }, pageManifest: [],
       languageToolCorrections: [] };
-    expect(semantic.buildSemanticRequest(input).promptCharacters)
-      .toBeLessThan(semantic.buildLegacySemanticRequestForBenchmark(input).promptCharacters);
+    const audited = semantic.buildSemanticRequest(input).promptCharacters;
+    const legacy = semantic.buildLegacySemanticRequestForBenchmark(input).promptCharacters;
+    // The strict contract now proves all five categories were reviewed and includes
+    // both correction kinds; that required evidence did not exist in the legacy prompt.
+    expect(audited - legacy).toBeLessThanOrEqual(2500);
+    expect(audited).toBeLessThan(12000);
   });
 });

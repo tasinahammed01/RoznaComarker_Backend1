@@ -150,6 +150,33 @@ describe('global AI gateway', () => {
     expect(() => gateway.getAssessmentAIConfig(configured)).toThrow(/invalid/i);
   });
 
+  test('assessment profile loads fallback 2 and preserves the configured paid chain order', () => {
+    const configured = env({ ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter',
+      ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1', ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter',
+      ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini', ASSESSMENT_AI_FALLBACK_2_PROVIDER: 'google',
+      ASSESSMENT_AI_FALLBACK_2_MODEL: 'gemini-3.6-flash', ASSESSMENT_AI_PRIMARY_RETRIES: '1',
+      ASSESSMENT_AI_FALLBACK_RETRIES: '0' });
+    expect(gateway.getAssessmentAIConfig(configured).chain).toEqual([
+      { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 0 },
+      { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 1 },
+      { provider: 'google', model: 'gemini-3.6-flash', fallbackIndex: 2 }
+    ]);
+  });
+
+  test('assessment execution settings inherit globals and assessment values override them', () => {
+    const base = env({ ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1',
+      ASSESSMENT_AI_FALLBACK_1_PROVIDER: '', ASSESSMENT_AI_FALLBACK_1_MODEL: '',
+      ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '', ASSESSMENT_AI_TOTAL_BUDGET_MS: '',
+      ASSESSMENT_AI_PRIMARY_RETRIES: '', ASSESSMENT_AI_FALLBACK_RETRIES: '', ASSESSMENT_AI_RETRY_DELAY_MS: '',
+      AI_ATTEMPT_TIMEOUT_MS: '41000', AI_TOTAL_BUDGET_MS: '111000', AI_PRIMARY_RETRIES: '1',
+      AI_FALLBACK_RETRIES: '0', AI_RETRY_DELAY_MS: '700' });
+    expect(gateway.getAssessmentAIConfig(base)).toMatchObject({ attemptTimeoutMs: 41000,
+      totalBudgetMs: 111000, primaryRetries: 1, fallbackRetries: 0, retryDelayMs: 700 });
+    expect(gateway.getAssessmentAIConfig({ ...base, ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '52000',
+      ASSESSMENT_AI_TOTAL_BUDGET_MS: '119000', ASSESSMENT_AI_RETRY_DELAY_MS: '900' }))
+      .toMatchObject({ attemptTimeoutMs: 52000, totalBudgetMs: 119000, retryDelayMs: 900 });
+  });
+
   test('rejects partial fallback and unsupported providers', () => {
     expect(() => gateway.getAIConfig(env({ AI_FALLBACK_1_MODEL: '' }))).toThrow(/invalid/i);
     expect(() => gateway.getAIConfig(env({ AI_PRIMARY_PROVIDER: 'openai' }))).toThrow(/invalid/i);

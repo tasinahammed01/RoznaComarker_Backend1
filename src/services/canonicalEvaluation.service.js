@@ -166,7 +166,7 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       sourceHashMatch: true, duration: detailedFeedbackMs });
     return { status: semantic.status === 'partial' ? 'partial' : 'completed', sourceHash, rubricHash, stats,
       provider: semantic.provider, model: semantic.model, overallScore, errorCode: null,
-      attempts: semantic.metrics?.attempts || [], timings: { detailedFeedbackMs } };
+      categoryScores: rubricScores, attempts: semantic.metrics?.attempts || [], timings: { detailedFeedbackMs } };
   } catch (error) {
     if (error?.code === 'ANALYSIS_JOB_SUPERSEDED') return { status: 'superseded', sourceHash };
     // A valid feedback write followed by an interrupted status update is

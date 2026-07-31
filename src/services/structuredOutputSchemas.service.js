@@ -1,5 +1,7 @@
 'use strict';
 
+const policy = require('./aiCorrectionPolicy.service');
+
 const string = (maxLength, extra = {}) => ({ type: 'string', maxLength, ...extra });
 const closedObject = (properties, required = Object.keys(properties)) => ({
   type: 'object', additionalProperties: false, properties, required
@@ -19,7 +21,13 @@ const RUBRIC_SCHEMA = closedObject({
 function semanticCorrectionsSchema(transcriptHash) {
   return closedObject({
     transcriptHash: { type: 'string', const: String(transcriptHash) },
-    corrections: { type: 'array', maxItems: 50, items: closedObject({
+    categoryReviews: { type: 'array', minItems: 5, maxItems: 5, items: closedObject({
+      category: { type: 'string', enum: ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'] },
+      reviewed: { type: 'boolean', const: true },
+      findingCount: { type: 'integer', minimum: 0, maximum: policy.MAX_AI_CORRECTIONS_PER_CATEGORY },
+      noFindingReason: string(320)
+    }) },
+    corrections: { type: 'array', maxItems: policy.MAX_AI_CORRECTIONS, items: closedObject({
       category: { type: 'string', enum: ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'] },
       symbol: string(32, { minLength: 1 }),
       correctionKind: { type: 'string', enum: ['localized', 'global'] },

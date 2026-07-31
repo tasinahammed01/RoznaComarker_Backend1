@@ -26,6 +26,16 @@ function buildCorrectionSourceHash({ transcript, assignment = {}, transcriptLayo
     version: canonical.VERSION, transcriptLayoutVersion }))).digest('hex');
 }
 
+function plannedSemanticAttempts(config = {}) {
+  const modelCount = Array.isArray(config.chain) ? config.chain.length : (config.fallback ? 2 : 1);
+  return (1 + Number(config.primaryRetries || 0))
+    + Math.max(0, modelCount - 1) * (1 + Number(config.fallbackRetries || 0));
+}
+
+function hasHolisticCoverageMismatch(categoryScores = {}, statistics = {}) {
+  return Number(categoryScores?.CONTENT?.score) < 20 && Number(statistics?.content || 0) === 0;
+}
+
 async function generateAndPersist(doc, { assignment = {}, force = false, reuseLanguageTool = false } = {}) {
   const totalStartedAt = Date.now();
   const canonicalTranscript = buildCanonicalSubmissionTranscript(doc);
@@ -64,10 +74,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false, reuseLa
     return { reused: true, semanticSourceKey };
   }
   const jobId = crypto.randomUUID();
-  const configuredModelCount = Array.isArray(semanticConfig.chain)
-    ? semanticConfig.chain.length
-    : (semanticConfig.fallback ? 2 : 1);
-  const semanticMaxAttempts = configuredModelCount * (semanticConfig.maxRetries + 1);
+  const semanticMaxAttempts = plannedSemanticAttempts(semanticConfig);
   const locked = await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId,
     semanticStatus: { $nin: ['processing', 'retry_wait'] } }, { $set: { correctionStatus: 'processing', correctionJobId: jobId, correctionError: null,
     semanticStatus: 'processing', languageToolStatus: 'processing', semanticAttempt: 0, semanticMaxAttempts,
@@ -156,6 +163,10 @@ async function generateAndPersist(doc, { assignment = {}, force = false, reuseLa
     semanticMappingMs = Date.now() - mappingStartedAt;
   } catch (err) {
     semanticError = err;
+    if (err?.validationDiagnostics) {
+      semanticReturnedCount = Number(err.validationDiagnostics.rawCorrectionCount || 0);
+      Object.assign(rejectionReasons, err.validationDiagnostics.rejectionReasons || {});
+    }
     // Safe diagnostic logging for semantic failures (without exposing secrets)
     const errorCode = safeErrorCode(err) || 'SEMANTIC_ANALYSIS_FAILED';
     logger.warn({
@@ -180,7 +191,19 @@ async function generateAndPersist(doc, { assignment = {}, force = false, reuseLa
   const combinedStatistics = canonical.statistics(corrections);
   const canonicalMergeMs = Date.now() - mergeStartedAt;
   const retainedAiIds = new Set(corrections.filter((item) => item.source === 'AI').map((item) => item.id));
-  rejectionReasons.DUPLICATE_OR_CONFLICT = ai.filter((item) => !retainedAiIds.has(item.id)).length;
+  const removedByMerge = ai.filter((item) => !retainedAiIds.has(item.id));
+  rejectionReasons.DUPLICATE_OR_CONFLICT = removedByMerge.length;
+  const categoryKeys = Object.keys(require('./aiCorrectionPolicy.service').CATEGORY_POLICY);
+  const zeroCategories = () => Object.fromEntries(categoryKeys.map((key) => [key, 0]));
+  const countByCategory = (items) => items.reduce((counts, item) => {
+    if (counts[item?.category] !== undefined) counts[item.category] += 1; return counts;
+  }, zeroCategories());
+  const terminalValidation = semanticRun?.diagnostics || semanticError?.validationDiagnostics || {};
+  const returnedByCategory = terminalValidation.returnedByCategory || zeroCategories();
+  const acceptedBeforeMergeByCategory = terminalValidation.acceptedByCategory || countByCategory(ai);
+  const rejectedByCategory = terminalValidation.rejectedByCategory || zeroCategories();
+  const retainedAfterMergeByCategory = countByCategory(corrections.filter((item) => item.source === 'AI'));
+  const removedDuringMergeByCategory = countByCategory(removedByMerge);
   const failedStage = languageToolError ? 'LANGUAGE_TOOL_ANALYSIS_FAILED' : safeErrorCode(semanticError);
   const anyAnalysisStageAvailable = languageToolAvailable || !semanticError;
   const terminalAttempts = semanticRun?.metrics?.attempts || semanticError?.attempts || [];
@@ -194,10 +217,13 @@ async function generateAndPersist(doc, { assignment = {}, force = false, reuseLa
     finalFailureCode: semanticError.finalFailureCode || terminalAttempt?.code || safeErrorCode(semanticError)
   } : {});
   const persistedSemanticMetrics = { ...gatewayMetrics, semanticQueueWaitMs: null, semanticValidationMs, semanticMappingMs,
-    languageToolDiagnostics, validationDiagnostics: semanticRun?.diagnostics || null,
+    languageToolDiagnostics, validationDiagnostics: semanticRun?.diagnostics || semanticError?.validationDiagnostics || null,
     canonicalMergeMs, mergeDiagnostics: merged.diagnostics,
     rawCorrectionCount: semanticReturnedCount, acceptedCorrectionCount: ai.length - rejectionReasons.DUPLICATE_OR_CONFLICT,
-    rejectedCorrectionCount: Object.values(rejectionReasons).reduce((sum, count) => sum + count, 0), rejectionReasons };
+    rejectedCorrectionCount: Object.values(rejectionReasons).reduce((sum, count) => sum + count, 0), rejectionReasons,
+    returnedByCategory, acceptedByCategory: acceptedBeforeMergeByCategory, rejectedByCategory,
+    rejectionReasonsByCategory: terminalValidation.rejectionReasonsByCategory || {},
+    retainedAfterMergeByCategory, removedDuringMergeByCategory };
   const finalWrite = await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
     writingCorrections: corrections, correctionStatistics: combinedStatistics, correctionSourceHash: hash,
     correctionVersion: canonical.VERSION, correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
@@ -224,11 +250,21 @@ async function generateAndPersist(doc, { assignment = {}, force = false, reuseLa
     outputTokenCount: semanticRun?.metrics?.outputTokenCount || null,
     semanticReturnedCount, semanticAcceptedCount: persistedSemanticMetrics.acceptedCorrectionCount,
     semanticRejectedCount: persistedSemanticMetrics.rejectedCorrectionCount, rejectionReasons, errorCode: failedStage });
+  logger.info({ message: 'Semantic correction completion summary', submissionId: String(doc._id),
+    provider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
+    model: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
+    attemptCount: gatewayMetrics.attemptCount || 0, rawCorrectionCount: semanticReturnedCount,
+    acceptedCorrectionCount: persistedSemanticMetrics.acceptedCorrectionCount,
+    rejectedCorrectionCount: persistedSemanticMetrics.rejectedCorrectionCount,
+    returnedByCategory, acceptedByCategory: acceptedBeforeMergeByCategory, rejectedByCategory,
+    rejectionReasonsByCategory: persistedSemanticMetrics.rejectionReasonsByCategory,
+    retainedAfterMergeByCategory, removedDuringMergeByCategory, mergeDiagnostics: merged.diagnostics,
+    durationMs: semanticAiMs });
   logger.info({ message: 'LanguageTool classification diagnostics', submissionId: String(doc._id),
     mappingVersion: writing.LANGUAGE_TOOL_MAPPING_VERSION, diagnostics: languageToolDiagnostics });
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'finalCorrectionsPersisted',
     languageToolCount: lt.length, semanticAiCount: ai.length, totalCount: corrections.length });
-  let evaluationMs = 0; let detailedFeedbackMs = 0;
+  let evaluationMs = 0; let detailedFeedbackMs = 0; let holisticCorrectionCoverageMismatch = false;
   // Allow evaluation to proceed if semantic analysis succeeded, even if LanguageTool failed.
   // Grammar/Mechanics scores will be degraded but Content/Organization/Vocabulary will be valid.
   if (!semanticError) {
@@ -239,6 +275,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false, reuseLa
     const evaluationResult = refreshed ? await canonicalEvaluation.generate({ submission: refreshed, assignment }) : null;
     evaluationMs = Date.now() - evaluationStartedAt;
     detailedFeedbackMs = Number(evaluationResult?.timings?.detailedFeedbackMs || 0);
+    holisticCorrectionCoverageMismatch = hasHolisticCoverageMismatch(evaluationResult?.categoryScores, combinedStatistics);
     const evaluationStage = ['completed', 'partial'].includes(evaluationResult?.status) ? 'evaluationSucceeded'
       : evaluationResult?.status === 'failed' ? 'evaluationFailed'
       : evaluationResult?.status === 'reused' ? 'evaluationReused' : 'evaluationSuperseded';
@@ -267,9 +304,10 @@ async function generateAndPersist(doc, { assignment = {}, force = false, reuseLa
   const totalResultReadyMs = Date.now() - totalStartedAt;
   await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
     semanticMetrics: { ...persistedSemanticMetrics, evaluationMs, detailedFeedbackMs,
-      totalCorrectionsMs, totalResultReadyMs }
+      totalCorrectionsMs, totalResultReadyMs, holisticCorrectionCoverageMismatch }
   }}).catch(() => {});
   return { reused: false, semanticSourceKey, semanticMetrics: semanticRun?.metrics || null };
 }
 
-module.exports = { wordsFromSubmission, buildCorrectionSourceHash, generateAndPersist };
+module.exports = { wordsFromSubmission, buildCorrectionSourceHash, plannedSemanticAttempts,
+  hasHolisticCoverageMismatch, generateAndPersist };

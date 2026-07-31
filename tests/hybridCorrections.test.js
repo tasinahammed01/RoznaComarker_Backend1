@@ -6,11 +6,17 @@ const semantic = require('../src/services/semanticWritingCorrections.service');
 const canonical = require('../src/services/correctionCanonical.service');
 const writing = require('../src/services/writingCorrections.service');
 const policy = require('../src/services/aiCorrectionPolicy.service');
+const pipeline = require('../src/services/canonicalCorrectionsPipeline.service');
 
 const finding = (overrides = {}) => ({
   category: 'CONTENT', symbol: 'DEV', quotedText: 'claim', occurrence: 0,
   message: 'Develop this claim with relevant evidence.', suggestedText: 'claim with evidence',
   confidence: 0.95, severity: 'medium', stylePreference: false, ...overrides
+});
+const reviewsFor = (corrections = []) => Object.keys(policy.CATEGORY_POLICY).map((category) => {
+  const findingCount = corrections.filter((item) => item.category === category).length;
+  return { category, reviewed: true, findingCount,
+    noFindingReason: findingCount ? '' : 'No additional grounded finding after complete review.' };
 });
 
 describe('safe hybrid correction policy', () => {
@@ -21,8 +27,50 @@ describe('safe hybrid correction policy', () => {
     const prompt = request.messages.map((message) => message.content).join('\n');
     expect(prompt).toContain('"transcriptHash":"hash-123"');
     expect(prompt).toContain('"correctionKind":"localized"');
+    expect(prompt).toContain('"correctionKind":"global"');
     expect(prompt).not.toContain('localized|global');
     expect(prompt).not.toContain('<exact supplied hash>');
+  });
+
+  test('requires one consistent review for every canonical category while allowing zero Content findings', () => {
+    const empty = { transcriptHash: 'hash', corrections: [] };
+    expect(semantic.parseJson(JSON.stringify({ ...empty, categoryReviews: reviewsFor([]) }), 'hash'))
+      .toMatchObject({ corrections: [] });
+    expect(() => semantic.parseJson(JSON.stringify(empty), 'hash')).toThrow(expect.objectContaining({
+      validationStage: 'category_reviews'
+    }));
+    const duplicate = reviewsFor([]); duplicate[4] = { ...duplicate[0] };
+    expect(() => semantic.parseJson(JSON.stringify({ ...empty, categoryReviews: duplicate }), 'hash'))
+      .toThrow(expect.objectContaining({ validationStage: 'category_reviews' }));
+    const mismatchFinding = finding();
+    expect(() => semantic.parseJson(JSON.stringify({ transcriptHash: 'hash', corrections: [mismatchFinding],
+      categoryReviews: reviewsFor([]) }), 'hash')).toThrow(expect.objectContaining({
+      validationStage: 'category_review_count'
+    }));
+  });
+
+  test('accepts grounded localized and global Content findings and rejects global Grammar', () => {
+    const transcript = 'The main claim is vague and needs evidence.';
+    const localized = semantic.validateCorrections([finding({ quotedText: 'needs evidence',
+      suggestedText: 'needs specific evidence from the source' })], { transcript, legend });
+    expect(localized.corrections).toHaveLength(1);
+    const global = semantic.validateCorrections([finding({ correctionKind: 'global', quotedText: 'The main claim is vague',
+      suggestedText: '' })], { transcript, legend });
+    expect(global.corrections[0]).toMatchObject({ category: 'CONTENT', correctionKind: 'global', suggestedText: '' });
+    expect(() => semantic.validateCorrections([finding({ category: 'GRAMMAR', symbol: 'AGR',
+      correctionKind: 'global', quotedText: 'main claim', suggestedText: '' })], { transcript, legend }))
+      .toThrow(expect.objectContaining({ validationStage: 'canonical_validation' }));
+  });
+
+  test('reports safe Content rejection diagnostics for confidence and grounding', () => {
+    const result = semantic.validateCorrections([
+      finding({ quotedText: 'claim', confidence: 0.70 }),
+      finding({ quotedText: 'missing quote', confidence: 0.95 }),
+      finding({ quotedText: 'claim', confidence: 0.95 })
+    ], { transcript: 'claim', legend });
+    expect(result.diagnostics).toMatchObject({ returnedByCategory: { CONTENT: 3 },
+      acceptedByCategory: { CONTENT: 1 }, rejectedByCategory: { CONTENT: 2 },
+      rejectionReasonsByCategory: { CONTENT: { LOW_CONFIDENCE: 1, UNGROUNDED_EVIDENCE: 1 } } });
   });
 
   test('AI accepts grounded findings in all five canonical categories', () => {
@@ -157,5 +205,25 @@ describe('deterministic canonical hybrid merge', () => {
     expect(canonical.statistics(merged.corrections)).toEqual({
       content: 0, organization: 0, grammar: 2, vocabulary: 0, mechanics: 0, total: 2
     });
+  });
+
+  test('retains a distinct Content correction and derives statistics only from the merged list', () => {
+    const text = 'The claim needs specific support.';
+    const ai = canonical.normalizeCorrection(finding({ quotedText: 'claim', startChar: 4, endChar: 9 }),
+      text, [], legend, 'AI');
+    const merged = canonical.mergeCanonicalCorrections({ aiCorrections: [ai] });
+    expect(merged.corrections).toHaveLength(1);
+    expect(canonical.statistics(merged.corrections)).toMatchObject({ content: 1, total: 1 });
+  });
+
+  test('rubric deductions never fabricate corrections and coverage mismatch is diagnostic only', () => {
+    const statistics = canonical.statistics([]);
+    expect(statistics.content).toBe(0);
+    expect(pipeline.hasHolisticCoverageMismatch({ CONTENT: { score: 13, maxScore: 20 } }, statistics)).toBe(true);
+    expect(statistics).toEqual({ content: 0, organization: 0, grammar: 0, vocabulary: 0, mechanics: 0, total: 0 });
+  });
+
+  test('displayed semantic attempt count matches primary and fallback retry plans', () => {
+    expect(pipeline.plannedSemanticAttempts({ chain: [{}, {}, {}], primaryRetries: 1, fallbackRetries: 0 })).toBe(4);
   });
 });

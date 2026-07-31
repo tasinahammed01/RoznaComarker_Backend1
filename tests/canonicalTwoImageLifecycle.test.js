@@ -2,6 +2,17 @@ process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
 process.env.ENABLE_TEST_PDF_HTTP = 'true';
 process.env.LANGUAGETOOL_URL = 'https://languagetool.test';
+process.env.ASSESSMENT_AI_PRIMARY_PROVIDER = 'openrouter';
+process.env.ASSESSMENT_AI_PRIMARY_MODEL = 'openai/gpt-4.1';
+process.env.ASSESSMENT_AI_FALLBACK_1_PROVIDER = 'openrouter';
+process.env.ASSESSMENT_AI_FALLBACK_1_MODEL = 'openai/gpt-4.1-mini';
+process.env.ASSESSMENT_AI_FALLBACK_2_PROVIDER = 'google';
+process.env.ASSESSMENT_AI_FALLBACK_2_MODEL = 'gemini-3.6-flash';
+process.env.ASSESSMENT_AI_FALLBACK_3_PROVIDER = '';
+process.env.ASSESSMENT_AI_FALLBACK_3_MODEL = '';
+process.env.ASSESSMENT_AI_PRIMARY_RETRIES = '1';
+process.env.ASSESSMENT_AI_FALLBACK_RETRIES = '0';
+process.env.ASSESSMENT_AI_RETRY_DELAY_MS = '0';
 
 let mockSemanticMode = 'success';
 let mockOcrGate = Promise.resolve();
@@ -344,7 +355,9 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(require('../src/services/semanticWritingCorrections.service').analyze).toHaveBeenCalledTimes(3);
     expect(languageToolRequestCount).toBe(2);
     expect(rubricProviderRequestCount).toBe(2);
-    expect(assessmentPrimaryRequestCount).toBe(4);
+    // Each of the two rubric evaluations exhausts GPT-4.1 (initial + one retry)
+    // and GPT-4.1-mini once before the deterministic Gemini response succeeds.
+    expect(assessmentPrimaryRequestCount).toBe(6);
     expect(global.fetch).toHaveBeenCalledTimes(languageToolRequestCount + rubricProviderRequestCount
       + assessmentPrimaryRequestCount);
   }, 30000);
