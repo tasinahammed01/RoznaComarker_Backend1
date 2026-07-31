@@ -15,7 +15,7 @@ const integer = (value, fallback, minimum = 0, maximum = Number.MAX_SAFE_INTEGER
 };
 
 function getSemanticAIConfig(env = process.env) {
-  const global = gateway.getAIConfig(env);
+  const global = gateway.getAssessmentAIConfig(env);
   const primary = global.chain[0];
   return {
     provider: primary.provider,
@@ -71,10 +71,11 @@ async function providerAttempt(options) {
 }
 
 async function runSemanticCompletion({ messages, config = getSemanticAIConfig(), fetchImpl = global.fetch,
-  env = process.env, now = Date.now, sleepFn, validate, feature = 'semantic', onAttempt, onRetry } = {}) {
-  const chain = config.chain || gateway.getAIConfig(env).chain;
+  env = process.env, now = Date.now, sleepFn, validate, feature = 'semantic', responseSchema,
+  schemaName, onAttempt, onRetry } = {}) {
+  const chain = config.chain || gateway.getAssessmentAIConfig(env).chain;
   const result = await gateway.generate({ feature, messages, maxOutputTokens: config.maxOutputTokens,
-    responseFormat: 'json', googleThinkingLevel: 'minimal',
+    responseFormat: 'json', responseSchema, schemaName, googleThinkingLevel: 'minimal',
     validate, fetchImpl, env, now, sleepFn, onAttempt, onRetry,
     config: {
       chain,

@@ -153,6 +153,9 @@ describe('semantic rubric assessment validation', () => {
       }
     });
     expect(runCompletion).toHaveBeenCalledTimes(1);
+    expect(runCompletion.mock.calls[0][0]).toMatchObject({ schemaName: 'semantic_rubric_assessment',
+      responseSchema: { type: 'object', additionalProperties: false,
+        properties: { sourceHash: { const: 'hash' } } } });
     expect(result.categories.CONTENT.score).toBe(18);
     expect(result.metrics.validationRepairAttempted).toBe(false);
     expect(result.metrics.attempts).toHaveLength(2);

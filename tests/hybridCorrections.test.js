@@ -16,6 +16,15 @@ const finding = (overrides = {}) => ({
 describe('safe hybrid correction policy', () => {
   const legend = semantic.compactSemanticLegend(writing.defaultLegend());
 
+  test('semantic prompt uses the real hash and a valid correctionKind example', () => {
+    const request = semantic.buildSemanticRequest({ transcript: 'Exact essay.', transcriptHash: 'hash-123' });
+    const prompt = request.messages.map((message) => message.content).join('\n');
+    expect(prompt).toContain('"transcriptHash":"hash-123"');
+    expect(prompt).toContain('"correctionKind":"localized"');
+    expect(prompt).not.toContain('localized|global');
+    expect(prompt).not.toContain('<exact supplied hash>');
+  });
+
   test('AI accepts grounded findings in all five canonical categories', () => {
     const transcript = 'claim transition students is teh word';
     const raw = [

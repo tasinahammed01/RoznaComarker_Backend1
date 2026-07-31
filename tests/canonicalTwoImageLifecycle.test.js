@@ -9,6 +9,7 @@ let mockRubricGate = Promise.resolve();
 let mockOcrCall = 0;
 let languageToolRequestCount = 0;
 let rubricProviderRequestCount = 0;
+let assessmentPrimaryRequestCount = 0;
 
 const pageResult = (text) => ({
   fullText: text,
@@ -182,6 +183,11 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
           })
         };
       }
+      if (String(url).includes('/chat/completions')) {
+        assessmentPrimaryRequestCount += 1;
+        return { ok: false, status: 503, headers: { get: () => null },
+          text: async () => JSON.stringify({ error: { code: 503 } }) };
+      }
       expect(String(url)).toBe(`${process.env.LANGUAGETOOL_URL}/v2/check`);
       languageToolRequestCount += 1;
       const transcript = String(options?.body?.get?.('text') || '');
@@ -338,6 +344,8 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(require('../src/services/semanticWritingCorrections.service').analyze).toHaveBeenCalledTimes(3);
     expect(languageToolRequestCount).toBe(2);
     expect(rubricProviderRequestCount).toBe(2);
-    expect(global.fetch).toHaveBeenCalledTimes(languageToolRequestCount + rubricProviderRequestCount);
+    expect(assessmentPrimaryRequestCount).toBe(4);
+    expect(global.fetch).toHaveBeenCalledTimes(languageToolRequestCount + rubricProviderRequestCount
+      + assessmentPrimaryRequestCount);
   }, 30000);
 });

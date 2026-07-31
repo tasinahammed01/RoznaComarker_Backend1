@@ -2,6 +2,7 @@
 
 const { getSemanticAIConfig, getSemanticAIConfigStatus, runSemanticCompletion } = require('./semanticAIClient.service');
 const { promptDefinitions } = require('./writingCategoryDefinitions.service');
+const { semanticRubricAssessmentSchema } = require('./structuredOutputSchemas.service');
 
 const PROMPT_VERSION = 'semantic-rubric-assessment-v1';
 const SCHEMA_VERSION = 'semantic-rubric-assessment-json-v1';
@@ -244,7 +245,9 @@ async function assess(input, dependencies = {}) {
   });
   const completion = await runCompletion({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
-    validate, feature: 'semantic_rubric_assessment' });
+    validate, feature: 'semantic_rubric_assessment',
+    responseSchema: semanticRubricAssessmentSchema(input.sourceHash),
+    schemaName: 'semantic_rubric_assessment' });
   const assessment = completion.value || validate(completion.content);
   const attempts = Array.isArray(completion.metrics?.attempts) ? completion.metrics.attempts : [];
   return { ...assessment, provider: completion.provider, model: completion.model, usage: completion.usage,

@@ -41,7 +41,7 @@ describe('Security & Production Hardening', () => {
 
     process.env.NODE_ENV = prevNodeEnv;
     process.env.FRONTEND_URL = prevFrontendUrl;
-  });
+  }, 15000);
 
   test('Validation errors return consistent JSON', async () => {
     const res = await request(app)

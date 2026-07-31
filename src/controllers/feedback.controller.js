@@ -26,6 +26,7 @@ const { buildCanonicalResultState } = require("../services/canonicalResultState.
 const { resolveTeacherComments } = require("../services/teacherComments.service");
 const { TEACHER_COMMENTS_MAX_LENGTH } = require("../models/SubmissionFeedback");
 const aiGateway = require("../services/aiGateway.service");
+const { RUBRIC_SCHEMA, DETAILED_FEEDBACK_SCHEMA } = require("../services/structuredOutputSchemas.service");
 const { completeRubric } = require("../services/rubricCompletion.service");
 const {
   normalizeOcrTranscript,
@@ -2158,6 +2159,9 @@ async function generateAiSubmissionFeedback(req, res) {
             { role: "user", content: userPrompt },
           ],
           responseFormat: "json",
+          responseSchema: DETAILED_FEEDBACK_SCHEMA,
+          schemaName: "detailed_feedback",
+          config: aiGateway.getAssessmentAIConfig(process.env),
           maxOutputTokens: Number(process.env.SEMANTIC_AI_MAX_OUTPUT_TOKENS) || 1800,
           validate: (contentRaw) => {
           const cleaned = stripMarkdownCodeFences(safeString(contentRaw).trim());
@@ -2727,6 +2731,9 @@ async function callGeminiGenerateRubricFromFile({
     ] }],
     maxOutputTokens: Number(process.env.RUBRIC_AI_MAX_OUTPUT_TOKENS) || 4000,
     responseFormat: "json",
+    responseSchema: RUBRIC_SCHEMA,
+    schemaName: "rubric_from_file",
+    config: aiGateway.getAssessmentAIConfig(process.env),
     validate: (content) => {
       const parsed = extractFirstJsonObject(stripMarkdownCodeFences(content));
       if (!parsed || typeof parsed !== "object") {

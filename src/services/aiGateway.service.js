@@ -90,11 +90,38 @@ function getAIConfig(env = process.env, { requireCredentials = true } = {}) {
     fallbackRetries, retryDelayMs };
 }
 
+function getAssessmentAIConfig(env = process.env, options = {}) {
+  const configured = text(env.ASSESSMENT_AI_PRIMARY_PROVIDER)
+    || text(env.ASSESSMENT_AI_PRIMARY_MODEL);
+  if (!configured) return getAIConfig(env, options);
+  const assessmentEnv = { ...env,
+    AI_PRIMARY_PROVIDER: env.ASSESSMENT_AI_PRIMARY_PROVIDER,
+    AI_PRIMARY_MODEL: env.ASSESSMENT_AI_PRIMARY_MODEL,
+    AI_FALLBACK_1_PROVIDER: env.ASSESSMENT_AI_FALLBACK_1_PROVIDER,
+    AI_FALLBACK_1_MODEL: env.ASSESSMENT_AI_FALLBACK_1_MODEL,
+    AI_FALLBACK_2_PROVIDER: '', AI_FALLBACK_2_MODEL: '',
+    AI_FALLBACK_3_PROVIDER: '', AI_FALLBACK_3_MODEL: '',
+    AI_ATTEMPT_TIMEOUT_MS: env.ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS,
+    AI_TOTAL_BUDGET_MS: env.ASSESSMENT_AI_TOTAL_BUDGET_MS,
+    AI_PRIMARY_RETRIES: env.ASSESSMENT_AI_PRIMARY_RETRIES,
+    AI_FALLBACK_RETRIES: env.ASSESSMENT_AI_FALLBACK_RETRIES,
+    AI_RETRY_DELAY_MS: env.ASSESSMENT_AI_RETRY_DELAY_MS,
+    AI_RETRIES_PER_MODEL: undefined
+  };
+  const config = getAIConfig(assessmentEnv, options);
+  if (config.primaryRetries > 1 || config.fallbackRetries !== 0) {
+    throw configurationError(['Assessment AI permits at most one primary retry and no fallback retries.']);
+  }
+  return config;
+}
+
 function safeCode(error) {
   const status = Number(error?.status || error?.httpStatus);
   if (error?.code && String(error.code).startsWith('AI_')) return error.code;
-  if (status === 401 || status === 403) return 'AI_PROVIDER_AUTH_ERROR';
+  if (status === 400) return 'AI_PROVIDER_INVALID_REQUEST';
+  if (status === 401) return 'AI_PROVIDER_AUTH_ERROR';
   if (status === 402) return 'AI_PROVIDER_PAYMENT_REQUIRED';
+  if (status === 403) return 'AI_PROVIDER_PERMISSION_DENIED';
   if (status === 408 || error?.name === 'AbortError' || error?.name === 'TimeoutError')
     return 'AI_ATTEMPT_TIMEOUT';
   if (status === 429) return 'AI_PROVIDER_RATE_LIMIT';
@@ -180,7 +207,14 @@ function extractOpenRouter(payload, { maxOutputTokens } = {}) {
   return { content, finishReason: finishReason || null, ...metadata };
 }
 
-function googleBody(messages, maxOutputTokens, temperature, responseFormat, thinkingLevel, model) {
+function safeSchemaName(value) {
+  const safe = String(value || 'structured_response').toLowerCase()
+    .replace(/[^a-z0-9_-]+/gu, '_').replace(/^_+|_+$/gu, '').slice(0, 64);
+  return safe || 'structured_response';
+}
+
+function googleBody(messages, maxOutputTokens, temperature, responseFormat, thinkingLevel, model,
+  responseSchema) {
   const supportedThinkingLevel = /^gemini-3(?:\.|[-])/iu.test(String(model || ''))
     && ['minimal', 'low', 'medium', 'high'].includes(thinkingLevel);
   const system = messages.filter((m) => m?.role === 'system').map((m) => String(m.content || '')).join('\n');
@@ -200,13 +234,14 @@ function googleBody(messages, maxOutputTokens, temperature, responseFormat, thin
       temperature,
       maxOutputTokens,
       ...(supportedThinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
-      ...(responseFormat === 'json' ? { responseMimeType: 'application/json' } : {})
+      ...(responseFormat === 'json' ? { responseMimeType: 'application/json' } : {}),
+      ...(responseFormat === 'json' && responseSchema ? { responseJsonSchema: responseSchema } : {})
     }
   };
 }
 
 async function providerAttempt({ entry, messages, maxOutputTokens, temperature, responseFormat,
-  attemptTimeoutMs, fetchImpl, env, now, googleThinkingLevel }) {
+  responseSchema, schemaName, attemptTimeoutMs, fetchImpl, env, now, googleThinkingLevel, feature }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
   const started = now();
@@ -217,10 +252,12 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
       ? `${base}/models/${encodeURIComponent(entry.model)}:generateContent`
       : `${base}/chat/completions`;
     const body = google ? googleBody(messages, maxOutputTokens, temperature, responseFormat,
-      googleThinkingLevel, entry.model) : {
-      model: entry.model, messages, temperature, max_tokens: maxOutputTokens
-      // JSON is enforced by the prompt and validator; free OpenRouter models do not
-      // consistently implement response_format.
+      googleThinkingLevel, entry.model, responseSchema) : {
+      model: entry.model, messages, temperature, max_tokens: maxOutputTokens,
+      ...(responseFormat === 'json' && responseSchema ? { response_format: {
+        type: 'json_schema', json_schema: { name: safeSchemaName(schemaName || feature), strict: true,
+          schema: responseSchema }
+      } } : responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {})
     };
     const response = await fetchImpl(url, {
       method: 'POST',
@@ -235,15 +272,23 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
       body: JSON.stringify(body),
       signal: controller.signal
     });
-    if (!response.ok) {
-      const error = attemptError(safeCode({ status: response.status }), `AI provider request failed (${response.status}).`, {
-        status: response.status, retryAfterMs: retryAfterMs(response, now())
-      });
-      throw error;
-    }
+    const responseText = await response.text();
     let payload;
-    try { payload = JSON.parse(await response.text()); }
-    catch { throw attemptError('AI_RESPONSE_INVALID', 'AI provider returned invalid JSON transport.'); }
+    try { payload = JSON.parse(responseText); }
+    catch {
+      if (!response.ok) throw attemptError(safeCode({ status: response.status }),
+        'AI provider request failed.', { status: response.status, retryAfterMs: retryAfterMs(response, now()) });
+      throw attemptError('AI_RESPONSE_INVALID', 'AI provider returned invalid JSON transport.');
+    }
+    const payloadError = payload && typeof payload.error === 'object' ? payload.error : null;
+    if (!response.ok || payloadError) {
+      const payloadStatus = Number(payloadError?.status || payloadError?.code);
+      const status = Number.isInteger(payloadStatus) && payloadStatus >= 400 && payloadStatus <= 599
+        ? payloadStatus : response.ok ? 500 : response.status;
+      throw attemptError(safeCode({ status }), 'AI provider request failed.', {
+        status, retryAfterMs: retryAfterMs(response, now())
+      });
+    }
     const extracted = google ? extractGoogle(payload, { maxOutputTokens })
       : extractOpenRouter(payload, { maxOutputTokens });
     const usage = google ? extracted.usage : (payload.usage ? {
@@ -260,7 +305,8 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
 }
 
 async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4000, temperature = 0.1,
-  responseFormat = 'text', validate, metadata = {}, googleThinkingLevel, env = process.env, fetchImpl = global.fetch,
+  responseFormat = 'text', responseSchema, schemaName, validate, metadata = {}, googleThinkingLevel,
+  env = process.env, fetchImpl = global.fetch,
   now = Date.now, sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   randomFn = Math.random, config = getAIConfig(env), onAttempt, onRetry } = {}) {
   if (!Array.isArray(messages) || typeof fetchImpl !== 'function') {
@@ -301,7 +347,8 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
         maxOutputTokens });
       try {
         const result = await providerAttempt({ entry, messages, maxOutputTokens, temperature,
-          responseFormat, attemptTimeoutMs: timeout, fetchImpl, env, now, googleThinkingLevel });
+          responseFormat, responseSchema, schemaName, attemptTimeoutMs: timeout, fetchImpl, env, now,
+          googleThinkingLevel, feature });
         let value = result.content;
         if (typeof validate === 'function') {
           try { value = await validate(result.content, { provider: entry.provider, model: entry.model }); }
@@ -413,7 +460,7 @@ function validateAIConfig(env = process.env) {
 
 module.exports = {
   SUPPORTED_PROVIDERS, DEFAULTS, MAX_RETRIES, MAX_RETRY_DELAY_MS, credentialFor, endpointFor,
-  getAIConfig, validateAIConfig,
+  getAIConfig, getAssessmentAIConfig, validateAIConfig,
   retryAfterMs, safeCode, extractGoogle, extractOpenRouter, googleUsage, safeFailureMetadata,
-  providerAttempt, generate
+  safeSchemaName, googleBody, providerAttempt, generate
 };

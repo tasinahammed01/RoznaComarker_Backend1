@@ -5,6 +5,7 @@ const { getRubricAiConfig } = require('./rubricAiConfig.service');
 const { repairAiRubric } = require('../utils/aiRubricRepair');
 const { normalizeRubricDesignerPayload } = require('../utils/rubricNormalizer');
 const logger = require('../utils/logger');
+const { RUBRIC_SCHEMA } = require('./structuredOutputSchemas.service');
 
 class RubricCompletionError extends Error {
   constructor(code, statusCode, message, metadata = {}) { super(message); this.code = code; this.statusCode = statusCode; Object.assign(this, metadata); }
@@ -49,7 +50,8 @@ async function completeRubric({ systemInstruction, userPrompt, assignmentId, sub
     const completion = await (dependencies.runCompletion || runSemanticCompletion)({
       messages: [{ role: 'system', content: systemInstruction }, { role: 'user', content: userPrompt }], config, env,
       fetchImpl: dependencies.fetchImpl || global.fetch, sleepFn: dependencies.sleepFn,
-      validate, feature: 'rubric_completion'
+      validate, feature: 'rubric_completion', responseSchema: RUBRIC_SCHEMA,
+      schemaName: 'rubric_generation'
     });
     const rubric = completion.value || validate(completion.content);
     logger.info({ message: 'Rubric AI completion', provider: completion.provider, model: completion.model,

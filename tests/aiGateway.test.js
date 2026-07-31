@@ -36,6 +36,72 @@ const router = (content) => response(200, {
 });
 
 describe('global AI gateway', () => {
+  const strictSchema = { type: 'object', additionalProperties: false,
+    properties: { ok: { type: 'boolean' } }, required: ['ok'] };
+
+  test('sends strict provider-native schemas with provider-field isolation', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(router('{"ok":true}'))
+      .mockResolvedValueOnce(google('{"ok":true}'));
+    await gateway.providerAttempt({ entry: { provider: 'openrouter', model: 'openai/gpt-4.1' },
+      messages: [{ role: 'user', content: 'x' }], maxOutputTokens: 100, temperature: 0,
+      responseFormat: 'json', responseSchema: strictSchema, schemaName: 'Semantic Corrections!',
+      attemptTimeoutMs: 1000, fetchImpl, env: env(), now: Date.now, feature: 'test' });
+    await gateway.providerAttempt({ entry: { provider: 'google', model: 'gemini-3.6-flash' },
+      messages: [{ role: 'user', content: 'x' }], maxOutputTokens: 100, temperature: 0,
+      responseFormat: 'json', responseSchema: strictSchema, schemaName: 'ignored',
+      attemptTimeoutMs: 1000, fetchImpl, env: env(), now: Date.now, feature: 'test' });
+    const openRouterBody = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    const googleBody = JSON.parse(fetchImpl.mock.calls[1][1].body);
+    expect(openRouterBody.response_format).toEqual({ type: 'json_schema', json_schema: {
+      name: 'semantic_corrections', strict: true, schema: strictSchema
+    } });
+    expect(openRouterBody.generationConfig).toBeUndefined();
+    expect(googleBody.generationConfig).toMatchObject({ responseMimeType: 'application/json',
+      responseJsonSchema: strictSchema });
+    expect(googleBody.response_format).toBeUndefined();
+  });
+
+  test('HTTP 200 OpenRouter payload error is a failed attempt and safely falls back', async () => {
+    const configured = env({ AI_PRIMARY_PROVIDER: 'openrouter', AI_PRIMARY_MODEL: 'openai/gpt-4.1',
+      AI_FALLBACK_1_PROVIDER: 'google', AI_FALLBACK_1_MODEL: 'gemini-3.6-flash',
+      AI_FALLBACK_2_PROVIDER: '', AI_FALLBACK_2_MODEL: '', AI_FALLBACK_3_PROVIDER: '',
+      AI_FALLBACK_3_MODEL: '' });
+    const fetchImpl = jest.fn().mockResolvedValueOnce(response(200, {
+      error: { code: 402, message: 'billing details must stay private', metadata: { secret: 'x' } }
+    })).mockResolvedValueOnce(google('{"ok":true}'));
+    const result = await gateway.generate({ messages: [{ role: 'user', content: 'private' }],
+      responseFormat: 'json', responseSchema: strictSchema, schemaName: 'test', validate: JSON.parse,
+      env: configured, fetchImpl });
+    expect(result.value).toEqual({ ok: true });
+    expect(result.attempts[0]).toMatchObject({ code: 'AI_PROVIDER_PAYMENT_REQUIRED', httpStatus: 402 });
+    expect(JSON.stringify(result.attempts)).not.toContain('billing');
+  });
+
+  test.each([429, 503])('HTTP %i retries the paid primary once before succeeding', async (status) => {
+    const configured = env({ AI_PRIMARY_PROVIDER: 'openrouter', AI_PRIMARY_MODEL: 'openai/gpt-4.1',
+      AI_FALLBACK_1_PROVIDER: 'google', AI_FALLBACK_1_MODEL: 'gemini-3.6-flash',
+      AI_FALLBACK_2_PROVIDER: '', AI_FALLBACK_2_MODEL: '', AI_FALLBACK_3_PROVIDER: '',
+      AI_FALLBACK_3_MODEL: '', AI_PRIMARY_RETRIES: '1', AI_FALLBACK_RETRIES: '0' });
+    const fetchImpl = jest.fn().mockResolvedValueOnce(response(status, {}))
+      .mockResolvedValueOnce(router('{"ok":true}'));
+    const result = await gateway.generate({ messages: [{ role: 'user', content: 'x' }],
+      responseFormat: 'json', responseSchema: strictSchema, validate: JSON.parse,
+      env: configured, fetchImpl, sleepFn: async () => {} });
+    expect(result).toMatchObject({ provider: 'openrouter', attemptCount: 2, fallbackUsed: false });
+  });
+
+  test('HTTP 402 never retries the paid primary and selects Gemini', async () => {
+    const configured = env({ AI_PRIMARY_PROVIDER: 'openrouter', AI_PRIMARY_MODEL: 'openai/gpt-4.1',
+      AI_FALLBACK_1_PROVIDER: 'google', AI_FALLBACK_1_MODEL: 'gemini-3.6-flash',
+      AI_FALLBACK_2_PROVIDER: '', AI_FALLBACK_2_MODEL: '', AI_FALLBACK_3_PROVIDER: '',
+      AI_FALLBACK_3_MODEL: '', AI_PRIMARY_RETRIES: '1', AI_FALLBACK_RETRIES: '0' });
+    const fetchImpl = jest.fn().mockResolvedValueOnce(response(402, { error: { code: 402 } }))
+      .mockResolvedValueOnce(google('{"ok":true}'));
+    const result = await gateway.generate({ messages: [{ role: 'user', content: 'x' }],
+      responseFormat: 'json', responseSchema: strictSchema, validate: JSON.parse,
+      env: configured, fetchImpl });
+    expect(result).toMatchObject({ provider: 'google', attemptCount: 2, fallbackUsed: true });
+  });
   test('constructs the exact configured chain order', () => {
     expect(gateway.getAIConfig(env()).chain).toEqual([
       { provider: 'google', model: 'primary-model', fallbackIndex: 0 },
@@ -58,6 +124,30 @@ describe('global AI gateway', () => {
       { provider: 'openrouter', model: 'nvidia/nemotron-3-super-120b-a12b:free', fallbackIndex: 2 },
       { provider: 'openrouter', model: 'openai/gpt-oss-20b:free', fallbackIndex: 3 }
     ]);
+  });
+
+  test('assessment profile uses paid GPT-4.1 then Gemini without changing the global chain', () => {
+    const configured = env({ ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter',
+      ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1', ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'google',
+      ASSESSMENT_AI_FALLBACK_1_MODEL: 'gemini-3.6-flash', ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '45000',
+      ASSESSMENT_AI_TOTAL_BUDGET_MS: '120000', ASSESSMENT_AI_PRIMARY_RETRIES: '1',
+      ASSESSMENT_AI_FALLBACK_RETRIES: '0', ASSESSMENT_AI_RETRY_DELAY_MS: '1500' });
+    expect(gateway.getAssessmentAIConfig(configured)).toMatchObject({ chain: [
+      { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 0 },
+      { provider: 'google', model: 'gemini-3.6-flash', fallbackIndex: 1 }
+    ], attemptTimeoutMs: 45000, totalBudgetMs: 120000, primaryRetries: 1,
+    fallbackRetries: 0, retryDelayMs: 1500 });
+    expect(gateway.getAIConfig(configured).chain[0]).toMatchObject({
+      provider: 'google', model: 'primary-model'
+    });
+  });
+
+  test('assessment profile enforces one primary retry and no fallback retry', () => {
+    const configured = env({ ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter',
+      ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1', ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'google',
+      ASSESSMENT_AI_FALLBACK_1_MODEL: 'gemini-3.6-flash', ASSESSMENT_AI_PRIMARY_RETRIES: '2',
+      ASSESSMENT_AI_FALLBACK_RETRIES: '0' });
+    expect(() => gateway.getAssessmentAIConfig(configured)).toThrow(/invalid/i);
   });
 
   test('rejects partial fallback and unsupported providers', () => {
@@ -140,7 +230,8 @@ describe('global AI gateway', () => {
     await expect(gateway.generate({ messages: [{ role: 'user', content: 'x' }],
       env: env({ AI_PRIMARY_RETRIES: '1', AI_FALLBACK_RETRIES: '0',
         AI_ATTEMPT_TIMEOUT_MS: '99999', AI_TOTAL_BUDGET_MS: '51000', AI_RETRY_DELAY_MS: '0' }),
-      fetchImpl: async () => response(503, {}), onAttempt: (value) => allocations.push(value) }))
+      fetchImpl: async () => response(503, {}), now: () => 0,
+      onAttempt: (value) => allocations.push(value) }))
       .rejects.toHaveProperty('code', 'AI_CHAIN_EXHAUSTED');
     expect(allocations[0]).toMatchObject({ maxAttempts: 5, retryIndex: 0,
       attemptTimeoutMs: 10000 });

@@ -6,6 +6,7 @@ const { getSemanticAIConfig, getSemanticAIConfigStatus, runSemanticCompletion } 
 const canonical = require('./correctionCanonical.service');
 const policy = require('./aiCorrectionPolicy.service');
 const { promptDefinitions } = require('./writingCategoryDefinitions.service');
+const { semanticCorrectionsSchema } = require('./structuredOutputSchemas.service');
 
 const SEMANTIC_PROMPT_VERSION = 'semantic-hybrid-reliability-v4';
 const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v2';
@@ -51,8 +52,8 @@ function buildSemanticRequest({ transcript, assignment = {}, languageToolCorrect
   const exclusions = compactLanguageToolExclusions(languageToolCorrections);
   const context = compactAssignment(assignment);
   const pages = compactPageManifest(pageManifest);
-  const responseShape = { transcriptHash: '<exact supplied hash>', corrections: [{ category: 'CONTENT', symbol: 'DEV',
-    correctionKind: 'localized|global',
+  const responseShape = { transcriptHash, corrections: [{ category: 'CONTENT', symbol: 'DEV',
+    correctionKind: 'localized',
     quotedText: '<exact quote>', occurrence: 0, message: '<explanation>',
     suggestedText: '<replacement>', confidence: 0.86 }] };
   const prompt = [
@@ -192,7 +193,8 @@ async function analyze(input, dependencies = {}) {
   };
   const completion = await (dependencies.runCompletion || runSemanticCompletion)({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
-    onAttempt: input.onAttempt, onRetry: input.onRetry, validate, feature: 'semantic_corrections' });
+    onAttempt: input.onAttempt, onRetry: input.onRetry, validate, feature: 'semantic_corrections',
+    responseSchema: semanticCorrectionsSchema(input.transcriptHash), schemaName: 'semantic_corrections' });
   const parseStartedAt = Date.now();
   let validated;
   try {

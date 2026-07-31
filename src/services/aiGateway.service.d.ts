@@ -18,6 +18,9 @@ export function generate<T = unknown>(options: {
   maxOutputTokens?: number;
   temperature?: number;
   responseFormat?: "json" | "text";
+  responseSchema?: Record<string, unknown>;
+  schemaName?: string;
+  metadata?: Record<string, unknown>;
   googleThinkingLevel?: "minimal" | "low" | "medium" | "high";
   validate?: (content: string, provider: Record<string, string>) => T | Promise<T>;
   env?: NodeJS.ProcessEnv;
@@ -31,6 +34,7 @@ export function generate<T = unknown>(options: {
 }): Promise<GatewayResult<T>>;
 
 export function getAIConfig(env?: NodeJS.ProcessEnv): Record<string, unknown>;
+export function getAssessmentAIConfig(env?: NodeJS.ProcessEnv): Record<string, unknown>;
 export function validateAIConfig(env?: NodeJS.ProcessEnv): {
   isValid: boolean;
   errors: string[];

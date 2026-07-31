@@ -4,7 +4,8 @@ function getPublicApiUrl(req) {
   const configured = String(process.env.PUBLIC_API_URL || process.env.BASE_URL || '').trim();
   if (configured) {
     const base = configured.replace(/\/+$/, '');
-    return process.env.NODE_ENV === 'production' ? base.replace(/^http:\/\//i, 'https://') : base;
+    const local = /^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?(?:\/|$)/i.test(base);
+    return process.env.NODE_ENV === 'production' && !local ? base.replace(/^http:\/\//i, 'https://') : base;
   }
 
   const protocol = process.env.NODE_ENV === 'production' ? 'https' : req.protocol;

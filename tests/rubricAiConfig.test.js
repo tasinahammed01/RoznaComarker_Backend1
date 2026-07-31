@@ -69,6 +69,8 @@ describe('rubric global AI configuration and completion', () => {
       runCompletion, config: getRubricAiConfig(env()), env: env()
     })).rejects.toMatchObject({ code: 'RUBRIC_RESPONSE_INVALID', statusCode: 422 });
     expect(runCompletion).toHaveBeenCalledTimes(1);
+    expect(runCompletion.mock.calls[0][0]).toMatchObject({ schemaName: 'rubric_generation',
+      responseSchema: { type: 'object', additionalProperties: false } });
     const logs = JSON.stringify([...info.mock.calls, ...warn.mock.calls]);
     for (const privateValue of ['secret-system', 'secret-prompt', '{bad', 'google-key']) {
       expect(logs).not.toContain(privateValue);
