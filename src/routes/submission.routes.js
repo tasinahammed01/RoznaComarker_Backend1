@@ -21,6 +21,12 @@ const {
 } = require('../middlewares/usage.middleware');
 
 const router = express.Router();
+const noStore = (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+};
 
 /**
  * @openapi
@@ -198,6 +204,7 @@ router.post(
 
 router.get(
   '/assignment/:assignmentId/my',
+  noStore,
   verifyJwtToken,
   requireRole('student'),
   param('assignmentId').isMongoId().withMessage('Invalid assignment id'),
@@ -234,6 +241,7 @@ router.get(
  */
 router.get(
   '/assignment/:assignmentId',
+  noStore,
   verifyJwtToken,
   requireRole('teacher'),
   param('assignmentId').isMongoId().withMessage('Invalid assignment id'),
@@ -258,9 +266,10 @@ router.get(
  *       403:
  *         description: Forbidden
  */
-router.get('/my', verifyJwtToken, requireRole('student'), submissionController.getMySubmissions);
+router.get('/my', noStore, verifyJwtToken, requireRole('student'), submissionController.getMySubmissions);
 
 const getOcrCorrectionsMiddleware = [
+  noStore,
   verifyJwtToken,
   requireRole(['student', 'teacher']),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),

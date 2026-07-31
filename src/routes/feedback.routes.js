@@ -20,6 +20,12 @@ const { createSensitiveRateLimiter } = require('../middlewares/rateLimit.middlew
 const multer = require('multer');
 
 const router = express.Router();
+const noStore = (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+};
 
 const rubricUpload = multer({
   storage: multer.memoryStorage(),
@@ -116,6 +122,7 @@ router.post(
 // Canonical submission feedback API (teacher + student read, teacher write)
 router.get(
   '/:submissionId',
+  noStore,
   verifyJwtToken,
   requireRole(['teacher', 'student']),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
