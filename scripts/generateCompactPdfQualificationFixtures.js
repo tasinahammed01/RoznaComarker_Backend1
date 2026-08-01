@@ -51,8 +51,8 @@ function fixtures() {
   one.submittedPages[0].corrections = one.submittedPages[0].corrections.slice(0, 3);
 
   const twoMany = clone(baseVm);
-  twoMany.submittedPages[0].corrections = expandedCorrections(twoMany.submittedPages[0], 23, 'b-p1');
-  twoMany.submittedPages[1].corrections = expandedCorrections(twoMany.submittedPages[1], 22, 'b-p2');
+  twoMany.submittedPages[0].corrections = expandedCorrections(twoMany.submittedPages[0], 27, 'b-p1');
+  twoMany.submittedPages[1].corrections = expandedCorrections(twoMany.submittedPages[1], 27, 'b-p2');
 
   const three = clone(baseVm); const third = clone(three.submittedPages[1]);
   third.fileId = 'file-3'; third.pageNumber = 1; third.displayPageNumber = 3;
@@ -70,7 +70,7 @@ function fixtures() {
   long.submittedPages[0].corrections = expandedCorrections(long.submittedPages[0], 14, 'e-long')
     .map((item) => ({ ...item, suggestedText: `${item.suggestedText} ${'Clarify the intended relationship while preserving the original meaning. '.repeat(3)}`.slice(0, 300) }));
 
-  return { A_one_image_few: renumber(one), B_two_images_45: renumber(twoMany),
+  return { A_one_image_few: renumber(one), B_two_images_54: renumber(twoMany),
     C_three_images: renumber(three), D_zero_corrections: renumber(zero), E_long_content: renumber(long) };
 }
 

@@ -253,7 +253,7 @@ function createSubmittedImageLayout(page, options = {}) {
       .flatMap(other => other.mappedBoxes);
     
     // BUG 2 FIX: Start HIGH density with number-only immediately
-    const useNumberOnlyInitially = densityMode === 'HIGH';
+    const useNumberOnlyInitially = options.forceNumberOnly === true || densityMode === 'HIGH';
     let useNumberOnly = useNumberOnlyInitially;
     let dimensions = markerDimensions(geometry.density, entry.correction.symbol, useNumberOnly);
     

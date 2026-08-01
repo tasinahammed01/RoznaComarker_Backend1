@@ -124,7 +124,7 @@ describe('submitted image annotation layout', () => {
     const html = renderSubmissionFeedbackReportHtml(vm);
     expect((html.match(/class="underline"/g) || [])).toHaveLength(2);
     expect((html.match(/class="marker"/g) || [])).toHaveLength(1);
-    expect(html).toContain('#01 &lt;AGR&gt;'); expect(html).not.toContain('#01 <AGR>');
+    expect(html).toContain('>01</b>'); expect(html).toContain('#01 &middot; &lt;AGR&gt;'); expect(html).not.toContain('#01 <AGR>');
     expect(html).not.toMatch(/class="underline"[^>]*width:100%/);
     expect(html).toContain('stroke-dasharray:7 86 7');
   });
