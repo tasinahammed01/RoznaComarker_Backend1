@@ -44,34 +44,16 @@ describe('submission result LanguageTool isolation', () => {
     expect(feedbackRead).toMatch(/countSubmissionCorrections/);
   });
 
-  test('generic non-submission check remains functional', async () => {
-    writingCorrectionsService.check.mockResolvedValueOnce({ text: 'Draft', issues: [] });
-    const req = { body: { text: 'Draft', language: 'en-US' } };
-    const res = { json: jest.fn((value) => value) };
-    await writingCorrectionsController.check(req, res, jest.fn());
-    expect(writingCorrectionsService.check).toHaveBeenCalledWith({ text: 'Draft', language: 'en-US' });
-    expect(res.json).toHaveBeenCalledWith({ text: 'Draft', issues: [] });
+  test('retired generic check is not exported or mounted', () => {
+    expect(writingCorrectionsController.check).toBeUndefined();
+    expect(source('src/routes/writingCorrections.routes.js')).not.toMatch(/router\.post\(['"]\/check/);
+    expect(writingCorrectionsService.check).not.toHaveBeenCalled();
   });
 
-  test('generic check classifies provider abort safely as a 504', async () => {
-    const abort = new Error('This operation was aborted');
-    abort.name = 'AbortError';
-    writingCorrectionsService.check.mockRejectedValueOnce(abort);
-    const response = {};
-    const res = {
-      status: jest.fn(() => res),
-      json: jest.fn((value) => Object.assign(response, value))
-    };
-    const next = jest.fn();
-    await writingCorrectionsController.check({ body: { text: 'Draft' } }, res, next);
-    expect(res.status).toHaveBeenCalledWith(504);
-    expect(response).toEqual({
-      success: false,
-      errorCode: 'LANGUAGETOOL_TIMEOUT',
-      message: 'LanguageTool request timed out'
-    });
-    expect(JSON.stringify(response)).not.toContain('aborted');
-    expect(next).not.toHaveBeenCalled();
+  test('legend endpoint does not import the legacy checker', () => {
+    const controller = source('src/controllers/writingCorrections.controller.js');
+    expect(controller).toMatch(/resolveLegend/);
+    expect(controller).not.toMatch(/writingCorrections\.service|LanguageTool|\.check\(/);
   });
 
   test('two-page persisted 26 plus 2 fixture is identical for repeated teacher and student reads', () => {

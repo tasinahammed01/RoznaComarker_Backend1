@@ -10,6 +10,8 @@ describe('Security & Production Hardening', () => {
     const res = await request(app).get('/api/health');
 
     expect(res.status).toBe(200);
+    expect(res.body.runtime).toMatchObject({ applicationVersion: '1.0.0', contractHash: expect.stringMatching(/^[a-f0-9]{16}$/),
+      contracts: { correctionSchema: 'semantic-corrections-v8', rubricSchema: 'semantic-rubric-assessment-json-v4' } });
 
     // CSP
     expect(res.headers).toHaveProperty('content-security-policy');

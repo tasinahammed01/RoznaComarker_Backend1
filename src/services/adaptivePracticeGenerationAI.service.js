@@ -9,7 +9,7 @@ const integer = (value, fallback, minimum, maximum) => {
 
 function config(env = process.env) {
   try {
-    const global = gateway.getAIConfig(env);
+    const global = gateway.getAssessmentAIConfig(env);
     const primary = global.chain[0];
     return { ...global, provider: primary.provider, model: primary.model,
       timeoutMs: global.attemptTimeoutMs,

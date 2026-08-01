@@ -1,12 +1,15 @@
 const crypto = require('crypto');
 const { defaultLegend } = require('./writingCorrections.service');
 
-const VERSION = 'canonical-3-hybrid';
+const VERSION = 'canonical-5-ai-only';
+const DEDUCTION_POLICY_VERSION = 'legend-diminishing-v1';
+const REPETITION_FACTORS = Object.freeze([1, 0.75, 0.55]);
 
 function legendIndex(legend = defaultLegend()) {
   const index = new Map();
   for (const group of legend.groups || []) for (const item of group.symbols || []) {
-    index.set(item.symbol, { category: group.key, symbolLabel: item.label, color: group.color });
+    index.set(item.symbol, { category: group.key, groupLabel: group.label, symbolLabel: item.label,
+      legendDescription: item.description, color: group.color, defaultDeduction: Number(item.defaultDeduction) });
   }
   return index;
 }
@@ -26,8 +29,11 @@ function mapOffsetsToWords(correction, spans) {
   if (!matches.length) return null;
   const fileIds = new Set(matches.map((span) => String(span.fileId || '')));
   if (fileIds.size !== 1) return null;
+  const confidences = matches.map((span) => Number(span.ocrConfidence)).filter(Number.isFinite);
   return { fileId: matches[0].fileId || null, page: matches[0].page,
-    wordIds: matches.map((span) => span.wordId), bboxList: matches.map((span) => span.bbox).filter(Boolean) };
+    wordIds: matches.map((span) => span.wordId), bboxList: matches.map((span) => span.bbox).filter(Boolean),
+    ocrConfidence: confidences.length ? Math.min(...confidences) : null,
+    ocrLayoutSuspicious: matches.some((span) => span.ocrLayoutSuspicious === true) };
 }
 
 function normalizeCorrection(raw, text, spans, legend, source) {
@@ -40,19 +46,23 @@ function normalizeCorrection(raw, text, spans, legend, source) {
   const mapped = mapOffsetsToWords({ startChar: range.start, endChar: range.end }, spans) ||
     { fileId: null, page: null, wordIds: [], bboxList: [] };
   const seed = [VERSION, source, raw.category, raw.symbol, range.start, range.end, quote].join('|');
+  const mechanicsOcrSuspect = raw.category === 'MECHANICS'
+    && ['SP', 'CAP', 'P'].includes(String(raw.symbol || '').toUpperCase())
+    && (mapped.ocrLayoutSuspicious === true || (mapped.ocrConfidence != null && mapped.ocrConfidence < 0.7));
   return { id: `${source.toLowerCase()}_${crypto.createHash('sha1').update(seed).digest('hex').slice(0, 16)}`,
-    source, category: raw.category, groupKey: raw.category, groupLabel: raw.category,
-    symbol: raw.symbol, symbolLabel: meta.symbolLabel, color: meta.color, quotedText: quote,
+    source, category: raw.category, groupKey: raw.category, groupLabel: meta.groupLabel,
+    symbol: raw.symbol, symbolLabel: meta.symbolLabel, legendDescription: meta.legendDescription,
+    color: meta.color, quotedText: quote,
     message: String(raw.message || '').trim(), suggestedText: String(raw.suggestedText || '').trim(),
-    ...(source === 'LANGUAGETOOL' ? {
-      classificationReason: String(raw.classificationReason || ''),
-      languageToolRuleId: String(raw.languageToolRuleId || ''),
-      languageToolCategoryId: String(raw.languageToolCategoryId || ''),
-      languageToolIssueType: String(raw.languageToolIssueType || ''),
-      languageToolMappingVersion: String(raw.languageToolMappingVersion || '')
-    } : {}),
     startChar: range.start, endChar: range.end, ...mapped,
+    ...(raw.category === 'MECHANICS' && ['SP', 'CAP', 'P'].includes(String(raw.symbol || '').toUpperCase()) ? {
+      ocrSuspect: mechanicsOcrSuspect,
+      ocrSuspectReasons: [mapped.ocrLayoutSuspicious ? 'STRUCTURALLY_SUSPICIOUS_LAYOUT' : null,
+        mapped.ocrConfidence != null && mapped.ocrConfidence < 0.7 ? 'LOW_OCR_CONFIDENCE' : null].filter(Boolean)
+    } : {}),
     confidence: Math.max(0, Math.min(1, Number(raw.confidence) || 0)),
+    defaultDeduction: meta.defaultDeduction, repetitionFactor: 1,
+    appliedDeduction: meta.defaultDeduction, deductionPolicyVersion: DEDUCTION_POLICY_VERSION,
     ...(raw.correctionKind ? { correctionKind: raw.correctionKind } : {}),
     ...(source === 'AI' && raw.severity ? { severity: String(raw.severity).toLowerCase() } : {}),
     editable: false };
@@ -81,22 +91,19 @@ function substantiallyOverlaps(a, b) {
 }
 
 function preferredCorrection(a, b) {
-  const category = a.category;
-  if (['GRAMMAR', 'VOCABULARY', 'MECHANICS'].includes(category)) {
-    if (a.source === 'LANGUAGETOOL') return a;
-    if (b.source === 'LANGUAGETOOL') return b;
-  }
-  if (['CONTENT', 'ORGANIZATION'].includes(category)) {
-    if (a.source === 'AI') return a;
-    if (b.source === 'AI') return b;
-  }
+  // In AI-only pipeline, prefer higher confidence
   return Number(b.confidence || 0) > Number(a.confidence || 0) ? b : a;
 }
 
+function contextualGrammarOverride(a, b) {
+  // No longer needed in AI-only pipeline - kept for backward compatibility
+  return null;
+}
+
 function mergeCanonicalCorrections({ languageToolCorrections = [], aiCorrections = [] } = {}) {
-  const sorted = [...languageToolCorrections, ...aiCorrections].filter(Boolean).sort(canonicalSort);
+  const sorted = [...aiCorrections].filter(Boolean).sort(canonicalSort);
   const result = [];
-  const diagnostics = { exactDuplicates: 0, overlapDuplicates: 0, conflicts: 0, rejectedIds: [] };
+  const diagnostics = { exactDuplicates: 0, overlapDuplicates: 0, conflicts: 0, contextualOverrides: 0, rejectedIds: [] };
   const exact = new Map();
   const spanSymbols = new Map();
   const buckets = new Map();
@@ -147,7 +154,16 @@ function mergeCanonicalCorrections({ languageToolCorrections = [], aiCorrections
     candidates.push(index);
     buckets.set(bucketKey, candidates);
   }
-  return { corrections: result.filter(Boolean).sort(canonicalSort), diagnostics };
+  const occurrences = new Map();
+  const corrections = result.filter(Boolean).sort(canonicalSort).map((item) => {
+    const pattern = `${item.category}|${item.symbol}|${normalizedText(item.suggestedText)}`;
+    const seen = occurrences.get(pattern) || 0; occurrences.set(pattern, seen + 1);
+    const repetitionFactor = REPETITION_FACTORS[seen] ?? Math.max(0.25, 0.55 * Math.pow(0.78, seen - 2));
+    const base = Number(item.defaultDeduction);
+    return { ...item, repetitionFactor, appliedDeduction: Number.isFinite(base) ? base * repetitionFactor : 0,
+      deductionPolicyVersion: DEDUCTION_POLICY_VERSION };
+  });
+  return { corrections, diagnostics };
 }
 
 function mergeCorrections(items) {
@@ -165,5 +181,5 @@ function statistics(items) {
 
 const computeCanonicalCorrectionStatistics = statistics;
 
-module.exports = { VERSION, legendIndex, locateQuote, mapOffsetsToWords, normalizeCorrection, mergeCanonicalCorrections,
+module.exports = { VERSION, DEDUCTION_POLICY_VERSION, REPETITION_FACTORS, legendIndex, locateQuote, mapOffsetsToWords, normalizeCorrection, mergeCanonicalCorrections,
   mergeCorrections, statistics, computeCanonicalCorrectionStatistics };

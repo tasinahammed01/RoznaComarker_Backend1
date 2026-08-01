@@ -4,10 +4,10 @@ const { getSemanticAIConfig, runSemanticCompletion } =
   require('../src/services/semanticAIClient.service');
 
 const env = (overrides = {}) => ({
-  AI_PRIMARY_PROVIDER: 'google', AI_PRIMARY_MODEL: 'semantic-primary',
-  AI_FALLBACK_1_PROVIDER: 'openrouter', AI_FALLBACK_1_MODEL: 'semantic-fallback',
-  AI_ATTEMPT_TIMEOUT_MS: '30000', AI_TOTAL_BUDGET_MS: '120000',
-  AI_RETRIES_PER_MODEL: '0', AI_RETRY_DELAY_MS: '0',
+  ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1',
+  ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter', ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini',
+  ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '30000', ASSESSMENT_AI_TOTAL_BUDGET_MS: '120000',
+  ASSESSMENT_AI_PRIMARY_RETRIES: '0', ASSESSMENT_AI_FALLBACK_RETRIES: '0', ASSESSMENT_AI_RETRY_DELAY_MS: '0',
   GEMINI_API_KEY: 'google-key', OPENROUTER_API_KEY: 'router-key',
   GEMINI_BASE_URL: 'https://google.test/v1', OPENROUTER_BASE_URL: 'https://router.test/v1',
   SEMANTIC_AI_MAX_OUTPUT_TOKENS: '1800', ...overrides
@@ -23,7 +23,7 @@ const router = (content) => response(200, {
   choices: [{ finish_reason: 'stop', message: { content } }]
 });
 
-describe('semantic global-chain facade', () => {
+describe('semantic assessment-chain facade', () => {
   test('uses a bounded 8000-token semantic default', () => {
     const withoutFeatureLimit = env();
     delete withoutFeatureLimit.SEMANTIC_AI_MAX_OUTPUT_TOKENS;
@@ -41,22 +41,22 @@ describe('semantic global-chain facade', () => {
     }
   });
 
-  test('reads the global chain and semantic token limit only', () => {
+  test('reads the assessment chain and semantic token limit only', () => {
     expect(getSemanticAIConfig(env())).toMatchObject({
-      provider: 'google', model: 'semantic-primary', maxOutputTokens: 1800,
+      provider: 'openrouter', model: 'openai/gpt-4.1', maxOutputTokens: 1800,
       chain: [
-        { provider: 'google', model: 'semantic-primary', fallbackIndex: 0 },
-        { provider: 'openrouter', model: 'semantic-fallback', fallbackIndex: 1 }
+        { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 0 },
+        { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 1 }
       ]
     });
   });
 
   test('primary success performs no fallback', async () => {
-    const fetchImpl = jest.fn(async () => google('{"ok":true}'));
+    const fetchImpl = jest.fn(async () => router('{"ok":true}'));
     const result = await runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
       config: getSemanticAIConfig(env()), env: env(), fetchImpl });
     expect(result.content).toBe('{"ok":true}');
-    expect(result.provider).toBe('google');
+    expect(result.provider).toBe('openrouter');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -68,21 +68,20 @@ describe('semantic global-chain facade', () => {
     const result = await runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
       config: getSemanticAIConfig(env()), env: env(), fetchImpl,
       onAttempt: (attempt) => attempts.push(attempt) });
-    expect(result).toMatchObject({ provider: 'openrouter', model: 'semantic-fallback' });
+    expect(result).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-4.1-mini' });
     expect(result.metrics.attempts).toHaveLength(2);
     expect(attempts).toHaveLength(2);
-    expect(attempts.map((attempt) => attempt.provider)).toEqual(['google', 'openrouter']);
+    expect(attempts.map((attempt) => attempt.model)).toEqual(['openai/gpt-4.1', 'openai/gpt-4.1-mini']);
     expect(JSON.parse(fetchImpl.mock.calls[1][1].body)).not.toHaveProperty('thinkingConfig');
   });
 
-  test('12000 reaches both Google and OpenRouter transports', async () => {
-    const configuredEnv = env({ AI_PRIMARY_MODEL: 'gemini-3.6-flash',
-      SEMANTIC_AI_MAX_OUTPUT_TOKENS: '12000' });
+  test('12000 reaches both OpenRouter assessment models', async () => {
+    const configuredEnv = env({ SEMANTIC_AI_MAX_OUTPUT_TOKENS: '12000' });
     const fetchImpl = jest.fn().mockResolvedValueOnce(response(503, {}))
       .mockResolvedValueOnce(router('{"ok":true}'));
     await runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
       config: getSemanticAIConfig(configuredEnv), env: configuredEnv, fetchImpl });
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).generationConfig.maxOutputTokens).toBe(12000);
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).max_tokens).toBe(12000);
     expect(JSON.parse(fetchImpl.mock.calls[1][1].body).max_tokens).toBe(12000);
   });
 
@@ -95,15 +94,15 @@ describe('semantic global-chain facade', () => {
       timeoutCount: 0,
       finalFailureCode: 'AI_PROVIDER_UNAVAILABLE',
       attempts: [
-        expect.objectContaining({ provider: 'google', model: 'semantic-primary' }),
-        expect.objectContaining({ provider: 'openrouter', model: 'semantic-fallback' })
+        expect.objectContaining({ provider: 'openrouter', model: 'openai/gpt-4.1' }),
+        expect.objectContaining({ provider: 'openrouter', model: 'openai/gpt-4.1-mini' })
       ]
     });
   });
 
   test('feature validation failure selects fallback', async () => {
     const fetchImpl = jest.fn()
-      .mockResolvedValueOnce(google('{"ok":false}'))
+      .mockResolvedValueOnce(router('{"ok":false}'))
       .mockResolvedValueOnce(router('{"ok":true}'));
     const result = await runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
       config: getSemanticAIConfig(env()), env: env(), fetchImpl,
@@ -113,6 +112,6 @@ describe('semantic global-chain facade', () => {
         return parsed;
       } });
     expect(result.value).toEqual({ ok: true });
-    expect(result.model).toBe('semantic-fallback');
+    expect(result.model).toBe('openai/gpt-4.1-mini');
   });
 });

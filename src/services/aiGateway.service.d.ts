@@ -35,6 +35,9 @@ export function generate<T = unknown>(options: {
 
 export function getAIConfig(env?: NodeJS.ProcessEnv): Record<string, unknown>;
 export function getAssessmentAIConfig(env?: NodeJS.ProcessEnv): Record<string, unknown>;
+export function sanitizedAssessmentChain(env?: NodeJS.ProcessEnv): Array<{
+  index: number; role: string; provider: string; model: string;
+}>;
 export function validateAIConfig(env?: NodeJS.ProcessEnv): {
   isValid: boolean;
   errors: string[];

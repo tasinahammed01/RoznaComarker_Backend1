@@ -4,12 +4,10 @@ const { CANONICAL_TRANSCRIPT_LAYOUT_VERSION } = require('../utils/ocrTranscriptN
 const { isStructuredDetailedFeedback } = require('./canonicalDetailedFeedback.service');
 const { ASSESSMENT_VERSION, EVALUATION_VERSION } = require('./rubricLanguageScoring.service');
 
-const SEMANTIC_CATEGORIES = ['content', 'organization', 'vocabulary'];
-const LANGUAGE_CATEGORIES = ['grammar', 'mechanics'];
+const SEMANTIC_CATEGORIES = ['content', 'organization', 'vocabulary', 'grammar', 'mechanics'];
 
 const countSources = (corrections) => (corrections || []).reduce((out, item) => {
   const source = String(item?.source || '').toUpperCase();
-  if (source === 'LANGUAGETOOL') out.languageTool += 1;
   if (source === 'AI') out.semanticAi += 1;
   return out;
 }, { languageTool: 0, semanticAi: 0 });
@@ -42,23 +40,11 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
   const semanticComplete = layoutCurrent && (submission.semanticStatus === 'completed' || (!submission.semanticStatus && correctionStatus === 'completed'));
   const semanticFailed = !layoutCurrent || submission.semanticStatus === 'failed'
     || (!submission.semanticStatus && ['partial', 'failed', 'stale'].includes(correctionStatus));
-  const explicitLanguageStatus = submission.languageToolStatus;
-  const retainedLanguageCurrent = layoutCurrent && explicitLanguageStatus === 'failed'
-    && submission.languageToolSourceHash === submission.correctionSourceHash
-    && submission.languageToolVersion === submission.correctionVersion
-    && submission.languageToolTranscriptLayoutVersion === CANONICAL_TRANSCRIPT_LAYOUT_VERSION
-    && corrections.some((item) => String(item?.source || '').toUpperCase() === 'LANGUAGETOOL');
-  const languageAvailable = layoutCurrent && (explicitLanguageStatus === 'completed' || retainedLanguageCurrent
-    || (!explicitLanguageStatus && ['processing', 'partial', 'completed'].includes(correctionStatus) && Array.isArray(submission.writingCorrections)));
-  const languageFailed = !layoutCurrent || (explicitLanguageStatus === 'failed' && !retainedLanguageCurrent)
-    || (!explicitLanguageStatus && ['failed', 'stale'].includes(correctionStatus));
   const statistics = layoutCurrent ? (submission.correctionStatistics || null) : null;
   const categoryAvailability = {};
-  for (const category of LANGUAGE_CATEGORIES) categoryAvailability[category] = languageAvailable ? 'available'
-    : languageFailed ? 'failed' : 'pending';
   for (const category of SEMANTIC_CATEGORIES) categoryAvailability[category] = semanticComplete ? 'available' : semanticFailed ? 'failed' : 'pending';
-  const canonicalComplete = semanticComplete && languageAvailable && correctionStatus === 'completed';
-  const anyCategoryAvailable = semanticComplete || languageAvailable;
+  const canonicalComplete = semanticComplete && correctionStatus === 'completed';
+  const anyCategoryAvailable = semanticComplete;
 
   const sourceHash = layoutCurrent ? (submission.correctionSourceHash || null) : null;
   const teacherOverride = layoutCurrent && Boolean(feedback?.overriddenByTeacher);
@@ -115,12 +101,9 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
     correctionStatus,
     correctionCurrent: layoutCurrent,
     transcriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
-    correctionStage: correctionStatus === 'completed' ? 'complete' : semanticFailed ? 'semantic_failed'
-      : languageFailed ? 'language_tool_failed' : languageAvailable ? 'semantic' : 'language_tool',
-    statisticsStatus: canonicalComplete ? 'complete' : anyCategoryAvailable ? 'partial'
-      : (semanticFailed || languageFailed) ? 'failed' : 'processing',
-    statisticsCompleteness: canonicalComplete ? 'canonical' : semanticComplete && !languageAvailable ? 'semantic_only'
-      : languageAvailable ? 'language_only' : 'none',
+    correctionStage: correctionStatus === 'completed' ? 'complete' : semanticFailed ? 'ai_only_failed' : 'ai_only',
+    statisticsStatus: canonicalComplete ? 'complete' : anyCategoryAvailable ? 'partial' : semanticFailed ? 'failed' : 'processing',
+    statisticsCompleteness: canonicalComplete ? 'canonical' : 'none',
     statistics,
     categoryAvailability,
     sourceCounts,

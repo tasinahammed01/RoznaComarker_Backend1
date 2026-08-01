@@ -51,6 +51,11 @@ const submissionSchema = new Schema(
         required: false
       }
     ],
+    fileOrder: [{
+      _id: false,
+      fileId: { type: Schema.Types.ObjectId, ref: 'File', required: true },
+      order: { type: Number, min: 0, required: true }
+    }],
     fileUrls: [
       {
         type: String,
@@ -60,7 +65,9 @@ const submissionSchema = new Schema(
     ocrPages: [
       {
         fileId: { type: Schema.Types.ObjectId, ref: 'File', required: false },
+        fileOrder: { type: Number, min: 0, required: false },
         pageNumber: { type: Number, required: false },
+        pageIndex: { type: Number, min: 0, required: false },
         text: { type: String, trim: true },
         rawText: { type: String },
         words: { type: Schema.Types.Mixed, default: undefined }
@@ -159,6 +166,10 @@ const submissionSchema = new Schema(
     semanticProvider: { type: String, trim: true },
     semanticModel: { type: String, trim: true },
     semanticPromptVersion: { type: String, trim: true },
+    correctionLegendSource: { type: String, enum: ['DATABASE', 'VERSIONED_FALLBACK'], default: undefined },
+    correctionLegendVersion: { type: String, trim: true },
+    correctionLegendContentHash: { type: String, trim: true },
+    deductionPolicyVersion: { type: String, trim: true },
     semanticMetrics: { type: Schema.Types.Mixed, default: undefined },
     evaluationStatus: { type: String, enum: ['pending', 'processing', 'completed', 'partial', 'failed', 'stale'], default: undefined, index: true },
     evaluationJobId: { type: String, index: true },
@@ -169,6 +180,7 @@ const submissionSchema = new Schema(
     evaluationModel: { type: String, trim: true },
     evaluationErrorCode: { type: String, trim: true },
     evaluationAttempts: { type: Schema.Types.Mixed, default: undefined },
+    evaluationDiagnostics: { type: Schema.Types.Mixed, default: undefined },
     evaluationError: { type: String, trim: true },
     evaluationUpdatedAt: { type: Date },
     feedback: {

@@ -37,6 +37,7 @@ const fileSchema = new mongoose.Schema(
       enum: ['assignments', 'submissions', 'feedback'],
       required: [true, 'type is required']
     },
+    uploadOrder: { type: Number, min: 0, required: false },
     createdAt: {
       type: Date,
       default: Date.now

@@ -15,7 +15,7 @@ function integer(value, fallback, minimum, maximum) {
 
 function getConfig(env = process.env) {
   let global;
-  try { global = aiGateway.getAIConfig(env); } catch { global = null; }
+  try { global = aiGateway.getAssessmentAIConfig(env); } catch { global = null; }
   const provider = global?.chain?.[0]?.provider || '';
   const model = global?.chain?.[0]?.model || '';
   const timeoutMs = global?.attemptTimeoutMs || DEFAULT_TIMEOUT_MS;

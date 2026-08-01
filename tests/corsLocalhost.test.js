@@ -46,4 +46,24 @@ describe('localhost CORS configuration', () => {
   test('allows origin-less server and local test requests', async () => {
     await request(app()).get('/health').expect(200);
   });
+
+  test('authenticated preflight succeeds for the local frontend', async () => {
+    const response = await request(app()).options('/health')
+      .set('Origin', 'http://localhost:4200')
+      .set('Access-Control-Request-Method', 'GET')
+      .set('Access-Control-Request-Headers', 'authorization,content-type');
+    expect(response.status).toBe(204);
+    expect(response.headers['access-control-allow-origin']).toBe('http://localhost:4200');
+    expect(response.headers['access-control-allow-headers']).toMatch(/Authorization/i);
+  });
+
+  test('allows the configured production frontend without adding localhost', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.FRONTEND_URL = 'https://comarkers.roznahub.com';
+    const productionApp = app();
+    const accepted = await request(productionApp).get('/health').set('Origin', 'https://comarkers.roznahub.com');
+    expect(accepted.status).toBe(200);
+    const rejected = await request(productionApp).get('/health').set('Origin', 'http://localhost:4200');
+    expect(rejected.status).toBe(403);
+  });
 });

@@ -2,7 +2,7 @@
 
 // Increment whenever canonical reading-order or separator rules change. This is
 // intentionally independent from the correction prompt/schema version.
-const CANONICAL_TRANSCRIPT_LAYOUT_VERSION = 'ocr-layout-v3';
+const CANONICAL_TRANSCRIPT_LAYOUT_VERSION = 'ocr-layout-v4';
 
 const CLOSING_PUNCTUATION = /^[,.!?:;%\)\]\}’”]/u;
 const OPENING_PUNCTUATION = /[\(\[\{“]$/u;
@@ -99,10 +99,14 @@ function clusterVisualLines(words) {
     let bestLine = null;
     let bestDistance = Number.POSITIVE_INFINITY;
     for (const line of lines) {
-      const overlap = Math.max(0, Math.min(line.y1, candidate.box.y1) - Math.max(line.y0, candidate.box.y0));
-      const overlapRatio = overlap / Math.min(line.height, candidate.box.height);
-      const centerDistance = Math.abs(line.centerY - candidate.box.centerY);
-      if (overlapRatio >= 0.45 || centerDistance <= Math.max(line.height, candidate.box.height) * 0.55) {
+      const representativeHeight = median(line.words.map((item) => item.box.height));
+      const representativeCenterY = median(line.words.map((item) => item.box.centerY));
+      const memberOverlapRatio = Math.max(...line.words.map((item) => {
+        const overlap = Math.max(0, Math.min(item.box.y1, candidate.box.y1) - Math.max(item.box.y0, candidate.box.y0));
+        return overlap / Math.min(item.box.height, candidate.box.height);
+      }));
+      const centerDistance = Math.abs(representativeCenterY - candidate.box.centerY);
+      if (memberOverlapRatio >= 0.45 || centerDistance <= Math.max(representativeHeight, candidate.box.height) * 0.45) {
         if (centerDistance < bestDistance) { bestLine = line; bestDistance = centerDistance; }
       }
     }
@@ -114,8 +118,8 @@ function clusterVisualLines(words) {
     bestLine.words.push(candidate);
     bestLine.y0 = Math.min(bestLine.y0, candidate.box.y0);
     bestLine.y1 = Math.max(bestLine.y1, candidate.box.y1);
-    bestLine.height = bestLine.y1 - bestLine.y0;
-    bestLine.centerY = (bestLine.y0 + bestLine.y1) / 2;
+    bestLine.height = median(bestLine.words.map((item) => item.box.height));
+    bestLine.centerY = median(bestLine.words.map((item) => item.box.centerY));
     bestLine.inputIndex = Math.min(bestLine.inputIndex, candidate.inputIndex);
   }
 
@@ -146,8 +150,12 @@ function lineParagraphBoundary(previousLine, currentLine, context) {
 }
 
 function orderWordsAndSeparators(words) {
-  const cleaned = sanitizeOcrMarginArtifacts(words)
+  const sanitized = sanitizeOcrMarginArtifacts(words);
+  const typicalHeight = median(sanitized.map((word) => bboxOf(word)?.height).filter(Number.isFinite));
+  const cleaned = sanitized
     .map((word, index) => ({ ...word, text: typeof word?.text === 'string' ? word.text.trim() : '', __inputIndex: index }))
+    .map((word) => ({ ...word, ocrLayoutSuspicious: word.ocrLayoutSuspicious === true
+      || Boolean(typicalHeight && bboxOf(word)?.height > typicalHeight * 1.6) }))
     .filter((word) => word.text);
   const lines = clusterVisualLines(cleaned);
   const medianHeight = median(lines.filter((line) => line.geometry).map((line) => line.height)) || 1;
@@ -242,14 +250,23 @@ function buildCanonicalSubmissionTranscript(submission) {
   const empty = { text: '', pages: [], paragraphs: [], wordSpans: [], separators: [], source: 'none',
     isComplete: false, version: CANONICAL_TRANSCRIPT_LAYOUT_VERSION };
   if (!submission || typeof submission !== 'object') return empty;
-  const expected = (Array.isArray(submission.files) && submission.files.length ? submission.files : (submission.file ? [submission.file] : []))
+  const explicitOrder = Array.isArray(submission.fileOrder) ? submission.fileOrder
+    .map((entry) => ({ id: String(entry?.fileId?._id || entry?.fileId || ''), order: Number(entry?.order) }))
+    .filter((entry) => entry.id && Number.isFinite(entry.order)).sort((a, b) => a.order - b.order) : [];
+  // Legacy records fall back deterministically to the persisted Submission.files array order.
+  const expected = (explicitOrder.length ? explicitOrder.map((entry) => entry.id)
+    : (Array.isArray(submission.files) && submission.files.length ? submission.files : (submission.file ? [submission.file] : [])))
     .map((item) => String(item?._id || item));
   const order = new Map(expected.map((id, index) => [id, index]));
   const seen = new Set();
   const pages = (Array.isArray(submission.ocrPages) ? submission.ocrPages : [])
-    .map((page, originalIndex) => ({ page, originalIndex, fileId: String(page?.fileId?._id || page?.fileId || ''), pageNumber: Number(page?.pageNumber || 1) }))
+    .map((page, originalIndex) => ({ page, originalIndex, fileId: String(page?.fileId?._id || page?.fileId || ''),
+      fileOrder: Number.isFinite(Number(page?.fileOrder)) ? Number(page.fileOrder) : null,
+      pageNumber: Number(page?.pageNumber || 1), pageIndex: Number.isFinite(Number(page?.pageIndex)) ? Number(page.pageIndex) : null }))
     .filter(({ page, fileId, pageNumber }) => page && fileId && Number.isFinite(pageNumber))
-    .sort((a, b) => (order.get(a.fileId) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.fileId) ?? Number.MAX_SAFE_INTEGER)
+    .sort((a, b) => (order.get(a.fileId) ?? a.fileOrder ?? Number.MAX_SAFE_INTEGER)
+      - (order.get(b.fileId) ?? b.fileOrder ?? Number.MAX_SAFE_INTEGER)
+      || (a.pageIndex ?? a.pageNumber - 1) - (b.pageIndex ?? b.pageNumber - 1)
       || a.pageNumber - b.pageNumber || a.originalIndex - b.originalIndex)
     .filter(({ fileId, pageNumber }) => { const key = `${fileId}:${pageNumber}`; if (seen.has(key)) return false; seen.add(key); return true; });
   const completed = new Set(pages.filter(({ page }) => normalizeOcrTranscript(page.text || '') || buildCanonicalPageFromWords(page.words || []).text)
@@ -278,7 +295,9 @@ function buildCanonicalSubmissionTranscript(submission) {
       separatorBefore: index === 0 ? pageSeparator : span.separatorBefore,
       fileId: entry.fileId, page: entry.pageNumber }));
     wordSpans.push(...pageSpans);
-    manifest.push({ fileId: entry.fileId, pageNumber: entry.pageNumber, text: pageText,
+    manifest.push({ fileId: entry.fileId,
+      fileOrder: order.get(entry.fileId) ?? entry.fileOrder ?? Number.MAX_SAFE_INTEGER,
+      pageNumber: entry.pageNumber, pageIndex: entry.pageIndex ?? entry.pageNumber - 1, text: pageText,
       startChar, endChar: text.length, words: pageSpans.map((span) => ({ ...span.word, fileId: entry.fileId,
         page: entry.pageNumber, separatorBefore: span.separatorBefore })), paragraphs: structured.paragraphs.map((paragraph) => ({
         ...paragraph, startChar: paragraph.startChar + startChar, endChar: paragraph.endChar + startChar })) });

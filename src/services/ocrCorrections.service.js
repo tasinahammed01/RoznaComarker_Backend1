@@ -1,5 +1,3 @@
-const writingCorrectionsService = require('./writingCorrections.service');
-const logger = require('../utils/logger');
 const {
   normalizeOcrTranscript,
   buildCanonicalPageFromWords,
@@ -42,6 +40,8 @@ function normalizeOcrWordsFromStored(ocrDataWords, options = {}) {
       return {
         id,
         page, fileId,
+        confidence: Number.isFinite(Number(w?.confidence)) ? Number(w.confidence) : undefined,
+        ocrLayoutSuspicious: w?.ocrLayoutSuspicious === true,
         paragraphIndex: Number.isFinite(Number(w?.paragraphIndex)) ? Number(w.paragraphIndex) : undefined,
         text,
         bbox: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
@@ -76,6 +76,8 @@ function buildTranscriptAndSpans(ocrWords) {
       start: span.start + offset,
       end: span.end + offset,
       bbox: span.bbox,
+      ocrConfidence: Number.isFinite(Number(span.word?.confidence)) ? Number(span.word.confidence) : undefined,
+      ocrLayoutSuspicious: span.word?.ocrLayoutSuspicious === true,
       separatorBefore: index === 0 ? boundary : span.separatorBefore
     })));
     previousText = built.spans[built.spans.length - 1]?.word?.text || built.text;
@@ -114,6 +116,9 @@ function groupWordsIntoPages(ocrWords, spans) {
 }
 
 async function buildOcrCorrections({ text, language, ocrWords }) {
+  // Deprecated compatibility helper. It intentionally performs OCR mapping
+  // only: assignment correction detection belongs exclusively to the canonical
+  // OpenRouter pipeline and this helper must never call an external checker.
   const safeText = normalizeOcrTranscript(text);
 
   const { text: transcriptText, spans } = buildTranscriptAndSpans(ocrWords);
@@ -123,17 +128,7 @@ async function buildOcrCorrections({ text, language, ocrWords }) {
   // but are not attached to an unrelated OCR word box.
   const alignedSpans = baseText === transcriptText ? spans : [];
 
-  let issues = [];
-  try {
-    const writing = await writingCorrectionsService.check({ text: baseText, language });
-    issues = Array.isArray(writing && writing.issues) ? writing.issues : [];
-  } catch (err) {
-    logger.error({
-      message: 'Writing corrections failed (LanguageTool)',
-      error: err && err.message ? err.message : err
-    });
-    issues = [];
-  }
+  const issues = [];
 
   const corrections = issues.map((issue, idx) => {
     const start = typeof issue.start === 'number' ? issue.start : Number(issue.start);

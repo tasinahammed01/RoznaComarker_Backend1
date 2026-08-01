@@ -1,7 +1,9 @@
 const { scoreGrammar, scoreMechanics, scoringAudit } = require('../src/services/rubricLanguageScoring.service');
 
 const issues = (category, count, symbol = category === 'GRAMMAR' ? 'AGR' : 'P') =>
-  Array.from({ length: count }, (_, i) => ({ id: `${category}-${i}`, category, symbol, quotedText: `q${i}`, confidence: 1 }));
+  Array.from({ length: count }, (_, i) => { const factor = [1, .75, .55][i] ?? Math.max(.25, .55 * Math.pow(.78, i - 2));
+    return { id: `${category}-${i}`, category, symbol, quotedText: `q${i}`, confidence: 1,
+      defaultDeduction: 1.35, repetitionFactor: factor, appliedDeduction: 1.35 * factor }; });
 
 describe('v2 language rubric scoring', () => {
   test('more errors never produce a higher score for equal word count', () => {
@@ -31,19 +33,17 @@ describe('v2 language rubric scoring', () => {
     const repeated = issues('GRAMMAR', 15, 'AGR');
     const audit = scoringAudit({ corrections: repeated, category: 'GRAMMAR', maxScore: 25, wordCount: 600 });
     expect(audit.groups).toHaveLength(1);
-    expect(audit.weightedPenalty).toBeGreaterThan(1.35 * 4);
+    expect(audit.weightedPenalty).toBeGreaterThan(1.35 * 3);
     expect(audit.weightedPenalty).toBeLessThan(1.35 * 15);
   });
 
-  test('different LanguageTool rules remain distinct high-impact patterns', () => {
-    const corrections = issues('GRAMMAR', 15, 'AGR').map((item, index) => ({
-      ...item, languageToolRuleId: `RULE_${index}`
-    }));
-    const distinct = scoringAudit({ corrections, category: 'GRAMMAR', maxScore: 25, wordCount: 600 });
-    const repeated = scoringAudit({ corrections: issues('GRAMMAR', 15, 'AGR'),
-      category: 'GRAMMAR', maxScore: 25, wordCount: 600 });
-    expect(distinct.groups).toHaveLength(15);
-    expect(distinct.weightedPenalty).toBeGreaterThan(repeated.weightedPenalty);
+  test('same symbol corrections are grouped by pattern in AI-only pipeline', () => {
+    // In AI-only pipeline, corrections are grouped by symbol, not by rule ID
+    const corrections = issues('GRAMMAR', 15, 'AGR');
+    const audit = scoringAudit({ corrections, category: 'GRAMMAR', maxScore: 25, wordCount: 600 });
+    expect(audit.groups).toHaveLength(1);
+    expect(audit.groups[0].symbol).toBe('AGR');
+    expect(audit.groups[0].count).toBe(15);
   });
 
   test('accepted provider confidence does not change score deductions', () => {

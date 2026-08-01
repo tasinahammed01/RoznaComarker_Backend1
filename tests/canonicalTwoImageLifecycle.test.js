@@ -6,8 +6,8 @@ process.env.ASSESSMENT_AI_PRIMARY_PROVIDER = 'openrouter';
 process.env.ASSESSMENT_AI_PRIMARY_MODEL = 'openai/gpt-4.1';
 process.env.ASSESSMENT_AI_FALLBACK_1_PROVIDER = 'openrouter';
 process.env.ASSESSMENT_AI_FALLBACK_1_MODEL = 'openai/gpt-4.1-mini';
-process.env.ASSESSMENT_AI_FALLBACK_2_PROVIDER = 'google';
-process.env.ASSESSMENT_AI_FALLBACK_2_MODEL = 'gemini-3.6-flash';
+process.env.ASSESSMENT_AI_FALLBACK_2_PROVIDER = '';
+process.env.ASSESSMENT_AI_FALLBACK_2_MODEL = '';
 process.env.ASSESSMENT_AI_FALLBACK_3_PROVIDER = '';
 process.env.ASSESSMENT_AI_FALLBACK_3_MODEL = '';
 process.env.ASSESSMENT_AI_PRIMARY_RETRIES = '1';
@@ -21,6 +21,9 @@ let mockOcrCall = 0;
 let languageToolRequestCount = 0;
 let rubricProviderRequestCount = 0;
 let assessmentPrimaryRequestCount = 0;
+let correctionProviderRequestCount = 0;
+let retryAnalysisRequestCount = 0;
+let lifecycleEvents = [];
 
 const pageResult = (text) => ({
   fullText: text,
@@ -39,41 +42,11 @@ jest.mock('../src/services/visionOcr.service', () => ({
     await mockOcrGate;
     const text = mockOcrCall++ % 2 === 0
       ? 'This is the first test paragraph.'
-      : 'This are the second test paragraph with erors.';
+      : 'This are the second test paragraph. It has vague wording and teh error.';
+    lifecycleEvents.push('ocr-completed');
     return pageResult(text);
   })
 }));
-
-jest.mock('../src/services/semanticWritingCorrections.service', () => {
-  const actual = jest.requireActual('../src/services/semanticWritingCorrections.service');
-  return {
-    ...actual,
-    analyze: jest.fn(async () => {
-      if (mockSemanticMode === 'failure') {
-        const error = new Error('Synthetic invalid provider response');
-        error.code = 'AI_CHAIN_EXHAUSTED';
-        error.attemptCount = 4;
-        error.timeoutCount = 3;
-        error.attempts = [
-          { provider: 'google', model: 'gemini', code: 'AI_RESPONSE_TRUNCATED' },
-          { provider: 'openrouter', model: 'ultra', code: 'AI_ATTEMPT_TIMEOUT' },
-          { provider: 'openrouter', model: 'super', code: 'AI_ATTEMPT_TIMEOUT' },
-          { provider: 'openrouter', model: 'gpt-oss', code: 'AI_ATTEMPT_TIMEOUT' }
-        ];
-        throw error;
-      }
-      return {
-        provider: 'synthetic', model: 'canonical-test-model',
-        metrics: { attemptCount: 1, timeoutCount: 0, promptInputTokenEstimate: 30, outputTokenCount: 50 },
-        corrections: [
-          { category: 'CONTENT', symbol: 'DEV', quotedText: 'first test paragraph', occurrence: 1, message: 'Develop this evidence.', suggestedText: 'Develop the first test paragraph with evidence.', confidence: 0.95 },
-          { category: 'ORGANIZATION', symbol: 'COH', quotedText: 'second test paragraph', occurrence: 1, message: 'Improve the transition.', suggestedText: 'Connect the second paragraph clearly.', confidence: 0.95 },
-          { category: 'VOCABULARY', symbol: 'WF', quotedText: 'erors', occurrence: 1, message: 'Use the correct word form.', suggestedText: 'errors', confidence: 0.95 }
-        ]
-      };
-    })
-  };
-});
 
 jest.mock('../src/services/autoRubricDesigner.service', () => ({
   autoGenerateRubricDesignerForSubmission: jest.fn(async () => ({ skipped: true, reason: 'DETERMINISTIC_TEST' }))
@@ -118,6 +91,14 @@ const waitFor = async (id, predicate, timeoutMs = 10000) => {
   }
   throw new Error(`Timed out waiting for submission ${id}`);
 };
+const waitForCondition = async (predicate, timeoutMs = 10000) => {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Timed out waiting for lifecycle condition');
+};
 const canonicalFields = (data) => ({
   submissionId: data.submissionId,
   correctionSourceHash: data.correctionSourceHash,
@@ -136,35 +117,49 @@ function lineJson(prompt, prefix) {
   return JSON.parse(line.slice(prefix.length));
 }
 
-function rubricFixtureFromGoogleRequest(options) {
-  const requestBody = JSON.parse(options.body);
-  const prompt = requestBody.contents.flatMap((item) => item.parts || [])
-    .map((part) => part.text || '').join('\n');
+function rubricFixtureFromPrompt(prompt) {
   const sourceHash = String(prompt.match(/^sourceHash=(.+)$/mu)?.[1] || '');
-  const corrections = lineJson(prompt, 'correctionCatalog=');
-  const byCategory = Object.fromEntries(corrections.map((item) => [item.category, item]));
-  const evidence = {
-    CONTENT: 'first test paragraph',
-    ORGANIZATION: 'second test paragraph',
-    VOCABULARY: 'erors'
-  };
+  const transcriptEvidence = lineJson(prompt, 'evidenceCatalog=');
+  const evidence = Object.fromEntries([
+    ['CONTENT', 'first test paragraph'], ['ORGANIZATION', 'second test paragraph'], ['VOCABULARY', 'vague wording']
+  ].map(([category, quote]) => [category, transcriptEvidence.find((item) => item.quotedText.includes(quote))]));
   const categories = Object.fromEntries(['CONTENT', 'ORGANIZATION', 'VOCABULARY'].map((category, index) => {
-    const correction = byCategory[category];
     return [category, {
       score: 18 - index,
       maxScore: 20,
       comment: `${category} evidence is grounded in the submitted transcript.`,
-      strengthEvidence: [{ quotedText: evidence[category], explanation: 'This is exact synthetic transcript evidence.' }],
+      strengthEvidence: [{ evidenceId: evidence[category].evidenceId, explanation: 'This is exact synthetic transcript evidence.' }],
       improvementEvidence: [{
-        evidenceType: 'correction',
-        correctionId: correction.correctionId,
-        quotedText: correction.quotedText,
+        evidenceType: 'transcript',
+        correctionId: null,
+        evidenceId: evidence[category].evidenceId,
         explanation: 'This validated correction identifies a specific improvement.',
-        suggestion: correction.suggestedText
+        suggestion: `Improve the grounded ${category.toLowerCase()} evidence.`
       }]
     }];
   }));
   return { sourceHash, categories };
+}
+
+function rubricPromptFromRequest(options) {
+  const requestBody = JSON.parse(options.body);
+  if (Array.isArray(requestBody.messages)) return requestBody.messages.map((item) => item.content || '').join('\n');
+  return requestBody.contents.flatMap((item) => item.parts || []).map((part) => part.text || '').join('\n');
+}
+
+function correctionFixtureFromPrompt(prompt) {
+  const transcriptHash = String(prompt.match(/^transcriptHash=(.+)$/mu)?.[1] || '');
+  const corrections = [
+    { category: 'CONTENT', symbol: 'DEV', correctionKind: 'global', quotedText: 'first test paragraph', occurrence: 1, message: 'Develop this evidence.', suggestedText: '', confidence: 0.95, severity: 'medium', stylePreference: false },
+    { category: 'ORGANIZATION', symbol: 'COH', correctionKind: 'global', quotedText: 'second test paragraph', occurrence: 1, message: 'Improve the transition.', suggestedText: '', confidence: 0.95, severity: 'medium', stylePreference: false },
+    { category: 'VOCABULARY', symbol: 'WC', correctionKind: 'localized', quotedText: 'vague wording', occurrence: 1, message: 'Use more precise wording.', suggestedText: 'precise wording', confidence: 0.95, severity: 'medium', stylePreference: false },
+    { category: 'GRAMMAR', symbol: 'AGR', correctionKind: 'localized', quotedText: 'This are', occurrence: 1, message: 'Correct subject-verb agreement.', suggestedText: 'This is', confidence: 0.95, severity: 'medium', stylePreference: false },
+    { category: 'MECHANICS', symbol: 'SP', correctionKind: 'localized', quotedText: 'teh', occurrence: 1, message: 'Correct the spelling.', suggestedText: 'the', confidence: 0.95, severity: 'medium', stylePreference: false }
+  ];
+  const categories = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'];
+  const categoryReviews = categories.map((category) => ({ category, reviewed: true, noFindingReason: '' }));
+  if (mockSemanticMode === 'failure') categoryReviews[4] = { ...categoryReviews[0] };
+  return { transcriptHash, categoryReviews, corrections };
 }
 
 describe('isolated canonical two-image HTTP lifecycle', () => {
@@ -177,6 +172,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     global.fetch = jest.fn(async (url, options) => {
       if (String(url).includes(':generateContent')) {
         rubricProviderRequestCount += 1;
+        lifecycleEvents.push('evaluation-started');
         await mockRubricGate;
         return {
           ok: true,
@@ -187,7 +183,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
               finishReason: 'STOP',
               content: { parts: [
                 { thought: true, text: 'synthetic thought content must be ignored' },
-                { text: JSON.stringify(rubricFixtureFromGoogleRequest(options)) }
+                { text: JSON.stringify(rubricFixtureFromPrompt(rubricPromptFromRequest(options))) }
               ] }
             }],
             usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 100, totalTokenCount: 200 }
@@ -195,7 +191,25 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
         };
       }
       if (String(url).includes('/chat/completions')) {
-        assessmentPrimaryRequestCount += 1;
+        const prompt = rubricPromptFromRequest(options);
+        if (prompt.includes('schema=semantic-corrections-v8')) {
+          correctionProviderRequestCount += 1;
+          lifecycleEvents.push('correction-started');
+          return { ok: true, status: 200, headers: { get: () => 'application/json' },
+            text: async () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: {
+              content: JSON.stringify(correctionFixtureFromPrompt(prompt)) } }],
+            usage: { prompt_tokens: 100, completion_tokens: 100, total_tokens: 200 } }) };
+        }
+        if (prompt.includes('correctionCatalog=')) {
+          assessmentPrimaryRequestCount += 1;
+          rubricProviderRequestCount += 1;
+          lifecycleEvents.push('evaluation-started');
+          await mockRubricGate;
+          return { ok: true, status: 200, headers: { get: () => 'application/json' },
+            text: async () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: {
+              content: JSON.stringify(rubricFixtureFromPrompt(prompt)) } }],
+            usage: { prompt_tokens: 100, completion_tokens: 100, total_tokens: 200 } }) };
+        }
         return { ok: false, status: 503, headers: { get: () => null },
           text: async () => JSON.stringify({ error: { code: 503 } }) };
       }
@@ -256,9 +270,14 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     return pdfMock.getCapturedViewModel();
   }
 
+  async function retryCorrections(id, token) {
+    retryAnalysisRequestCount += 1;
+    return request(app).post(`/api/submissions/${id}/ocr-corrections/regenerate`).set('Authorization', `Bearer ${token}`);
+  }
+
   test('success, semantic failure, and manual retry remain canonical across student, teacher, and PDF', async () => {
     const firstAssignment = await assignment('Lifecycle success', 'success');
-    mockSemanticMode = 'success'; mockOcrCall = 0;
+    mockSemanticMode = 'success'; mockOcrCall = 0; lifecycleEvents = []; retryAnalysisRequestCount = 0;
     let releaseRubric; mockRubricGate = new Promise((resolve) => { releaseRubric = resolve; });
     let releaseOcr; mockOcrGate = new Promise((resolve) => { releaseOcr = resolve; });
     const uploaded = await uploadTwoImages(firstAssignment._id, studentToken);
@@ -274,11 +293,15 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     const processingDoc = await waitFor(successId, (doc) => doc.evaluationStatus === 'processing');
     expect(processingDoc.semanticStatus).toBe('completed');
     expect(processingDoc.correctionStatus).toBe('completed');
+    expect(processingDoc.writingCorrections).toHaveLength(5);
+    await waitForCondition(() => lifecycleEvents.includes('evaluation-started'));
+    expect(lifecycleEvents.slice(0, 4)).toEqual(['ocr-completed', 'ocr-completed', 'correction-started', 'evaluation-started']);
+    expect(retryAnalysisRequestCount).toBe(0);
     releaseRubric();
     const completedDoc = await waitFor(successId, (doc) => doc.correctionStatus === 'completed' && doc.evaluationStatus === 'completed');
     expect(completedDoc.ocrPages).toHaveLength(2);
     const canonicalOcr = await getOcrCorrections(successId, studentToken);
-    expect(canonicalOcr.transcriptLayoutVersion).toBe('ocr-layout-v3');
+    expect(canonicalOcr.transcriptLayoutVersion).toBe('ocr-layout-v4');
     expect(canonicalOcr.ocr.map((page) => page.fileId)).toEqual(completedDoc.files.map(String));
     expect(canonicalOcr.ocr.map((page) => page.pageNumber)).toEqual([1, 1]);
     const canonicalWordTexts = canonicalOcr.ocr.flatMap((page) => page.words).map((word) => word.text);
@@ -298,7 +321,10 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(successStudent.grade).toBeTruthy();
     expect(successStudent.evaluationSourceHash).toBe(successStudent.correctionSourceHash);
     expect(successStudent.detailedFeedback).not.toBeNull();
-    expect(successStudent.correctionStatistics).toMatchObject({ grammar: 1, mechanics: 1, content: 1, organization: 1, vocabulary: 1 });
+    expect(successStudent.correctionStatistics).toMatchObject({ grammar: 1, mechanics: 1, content: 1, organization: 1, vocabulary: 1, total: 5 });
+    expect(completedDoc.writingCorrections).toHaveLength(5);
+    expect(successStudent.correctionStatistics.total).toBe(['content', 'organization', 'grammar', 'vocabulary', 'mechanics']
+      .reduce((sum, category) => sum + successStudent.correctionStatistics[category], 0));
     expect(canonicalFields(await getResult(successId, studentToken))).toEqual(canonicalFields(successStudent));
     expect(canonicalFields(await getResult(successId, teacherToken))).toEqual(canonicalFields(successTeacher));
     const successPdf = await getPdf(successId, studentToken);
@@ -326,17 +352,17 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     const failedStudent = await getResult(failureId, failureToken);
     const failedTeacher = await getResult(failureId, teacherToken);
     expect(canonicalFields(failedStudent)).toEqual(canonicalFields(failedTeacher));
-    expect(failedStudent).toMatchObject({ submissionId: failureId, score: null, rubricScores: null, evaluationStatus: 'blocked', detailedFeedbackStatus: 'blocked', statisticsCompleteness: 'language_only', manualRetryAllowed: true, automaticPollingAllowed: false });
-    expect(failedStudent.correctionStatistics).toMatchObject({ grammar: 1, mechanics: 1 });
+    expect(failedStudent).toMatchObject({ submissionId: failureId, score: null, rubricScores: null, evaluationStatus: 'blocked', detailedFeedbackStatus: 'blocked', statisticsCompleteness: 'none', manualRetryAllowed: true, automaticPollingAllowed: false });
+    expect(failedStudent.correctionStatistics).toMatchObject({ grammar: 0, mechanics: 0 });
     expect(failedStudent.score).not.toBe(77);
     expect(failedStudent.overallScore).not.toBe(77);
     expect(failedStudent.score).not.toBe(successStudent.score);
-    const failedPdf = await getPdf(failureId, teacherToken);
-    expect(failedPdf.submission.submissionId).toBe(failureId);
-    expect(failedPdf.result.overallScore).toBeNull();
+    // In AI-only pipeline, when corrections fail completely, PDF generation returns 409
+    const failedPdfResponse = await request(app).get(`/api/pdf/download/${failureId}`).set('Authorization', `Bearer ${teacherToken}`);
+    expect(failedPdfResponse.status).toBe(409);
 
     mockSemanticMode = 'success';
-    const retry = await request(app).post(`/api/submissions/${failureId}/ocr-corrections/regenerate`).set('Authorization', `Bearer ${failureToken}`);
+    const retry = await retryCorrections(failureId, failureToken);
     expect(retry.status).toBe(202);
     await waitFor(failureId, (doc) => doc.correctionStatus === 'completed' && doc.evaluationStatus === 'completed');
     const retriedStudent = await getResult(failureId, failureToken);
@@ -352,13 +378,15 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(retriedPdf.submission.submissionId).toBe(failureId);
     expect(retriedPdf.result.overallScore).toBe(retriedStudent.score);
     expect(await SubmissionFeedback.countDocuments({ submissionId: failureId })).toBe(1);
-    expect(require('../src/services/semanticWritingCorrections.service').analyze).toHaveBeenCalledTimes(3);
-    expect(languageToolRequestCount).toBe(2);
+    expect(languageToolRequestCount).toBe(0); // AI-only pipeline does not call LanguageTool
     expect(rubricProviderRequestCount).toBe(2);
-    // Each of the two rubric evaluations exhausts GPT-4.1 (initial + one retry)
-    // and GPT-4.1-mini once before the deterministic Gemini response succeeds.
-    expect(assessmentPrimaryRequestCount).toBe(6);
-    expect(global.fetch).toHaveBeenCalledTimes(languageToolRequestCount + rubricProviderRequestCount
-      + assessmentPrimaryRequestCount);
+    // Both rubric evaluations succeed on the first GPT-4.1 request; no fallback
+    // or non-OpenRouter assessment request is needed.
+    expect(assessmentPrimaryRequestCount).toBe(2);
+    expect(rubricProviderRequestCount).toBe(assessmentPrimaryRequestCount);
+    expect(correctionProviderRequestCount).toBe(4);
+    expect(global.fetch).toHaveBeenCalledTimes(
+      languageToolRequestCount + assessmentPrimaryRequestCount + correctionProviderRequestCount
+    );
   }, 30000);
 });

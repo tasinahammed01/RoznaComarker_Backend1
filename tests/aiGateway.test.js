@@ -1,6 +1,8 @@
 'use strict';
 
 const gateway = require('../src/services/aiGateway.service');
+const { semanticRubricAssessmentSchema, NO_TRANSCRIPT_EVIDENCE_SENTINEL } =
+  require('../src/services/structuredOutputSchemas.service');
 
 const env = (overrides = {}) => ({
   AI_PRIMARY_PROVIDER: 'google',
@@ -59,6 +61,21 @@ describe('global AI gateway', () => {
     expect(googleBody.generationConfig).toMatchObject({ responseMimeType: 'application/json',
       responseJsonSchema: strictSchema });
     expect(googleBody.response_format).toBeUndefined();
+  });
+
+  test('serializes the empty-catalog rubric schema unchanged without empty enums', async () => {
+    const schema = semanticRubricAssessmentSchema('hash');
+    const fetchImpl = jest.fn().mockResolvedValueOnce(router('{"sourceHash":"hash"}'));
+    await gateway.providerAttempt({ entry: { provider: 'openrouter', model: 'openai/gpt-4.1' },
+      messages: [{ role: 'user', content: 'x' }], maxOutputTokens: 100, temperature: 0,
+      responseFormat: 'json', responseSchema: schema, schemaName: 'semantic_rubric_assessment',
+      attemptTimeoutMs: 1000, fetchImpl, env: env(), now: Date.now, feature: 'test' });
+    const serialized = JSON.parse(fetchImpl.mock.calls[0][1].body).response_format.json_schema.schema;
+    expect(serialized).toEqual(schema);
+    expect(serialized.properties.categories.properties.CONTENT.properties.strengthEvidence.maxItems).toBe(0);
+    expect(serialized.properties.categories.properties.CONTENT.properties.strengthEvidence.items
+      .properties.evidenceId.enum).toEqual([NO_TRANSCRIPT_EVIDENCE_SENTINEL]);
+    expect(JSON.stringify(serialized)).not.toContain('"enum":[]');
   });
 
   test('HTTP 200 OpenRouter payload error is a failed attempt and safely falls back', async () => {
@@ -150,7 +167,7 @@ describe('global AI gateway', () => {
     expect(() => gateway.getAssessmentAIConfig(configured)).toThrow(/invalid/i);
   });
 
-  test('assessment profile loads fallback 2 and preserves the configured paid chain order', () => {
+  test('assessment profile ignores fallback 2 and remains the closed paid OpenRouter chain', () => {
     const configured = env({ ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter',
       ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1', ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter',
       ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini', ASSESSMENT_AI_FALLBACK_2_PROVIDER: 'google',
@@ -158,9 +175,27 @@ describe('global AI gateway', () => {
       ASSESSMENT_AI_FALLBACK_RETRIES: '0' });
     expect(gateway.getAssessmentAIConfig(configured).chain).toEqual([
       { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 0 },
-      { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 1 },
-      { provider: 'google', model: 'gemini-3.6-flash', fallbackIndex: 2 }
+      { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 1 }
     ]);
+    expect(gateway.sanitizedAssessmentChain(configured)).toEqual([
+      { index: 0, role: 'primary', provider: 'openrouter', model: 'openai/gpt-4.1' },
+      { index: 1, role: 'fallback_1', provider: 'openrouter', model: 'openai/gpt-4.1-mini' }
+    ]);
+    expect(JSON.stringify(gateway.sanitizedAssessmentChain(configured))).not.toContain('router-key');
+  });
+
+  test('assessment 180s budget gives the primary correction attempt a full 60s window', async () => {
+    const allocations = [];
+    await expect(gateway.generate({ messages: [{ role: 'user', content: 'x' }],
+      config: gateway.getAssessmentAIConfig(env({ ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter',
+        ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1', ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter',
+        ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini', ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '60000',
+        ASSESSMENT_AI_TOTAL_BUDGET_MS: '180000', ASSESSMENT_AI_PRIMARY_RETRIES: '1',
+        ASSESSMENT_AI_FALLBACK_RETRIES: '0', ASSESSMENT_AI_RETRY_DELAY_MS: '0' })),
+      env: env(), fetchImpl: async () => response(503, {}), now: () => 0,
+      onAttempt: ({ attemptTimeoutMs }) => allocations.push(attemptTimeoutMs) }))
+      .rejects.toHaveProperty('code', 'AI_CHAIN_EXHAUSTED');
+    expect(allocations).toEqual([60000, 60000, 60000]);
   });
 
   test('assessment execution settings inherit globals and assessment values override them', () => {

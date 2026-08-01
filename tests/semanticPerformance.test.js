@@ -5,9 +5,10 @@ const { getSemanticAIConfig, runSemanticCompletion } =
 const semantic = require('../src/services/semanticWritingCorrections.service');
 
 const env = (overrides = {}) => ({
-  AI_PRIMARY_PROVIDER: 'openrouter', AI_PRIMARY_MODEL: 'global-semantic-model',
-  AI_ATTEMPT_TIMEOUT_MS: '45000', AI_TOTAL_BUDGET_MS: '90000',
-  AI_RETRIES_PER_MODEL: '1', AI_RETRY_DELAY_MS: '0',
+  ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1',
+  ASSESSMENT_AI_FALLBACK_1_PROVIDER: '', ASSESSMENT_AI_FALLBACK_1_MODEL: '',
+  ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '45000', ASSESSMENT_AI_TOTAL_BUDGET_MS: '90000',
+  ASSESSMENT_AI_PRIMARY_RETRIES: '1', ASSESSMENT_AI_FALLBACK_RETRIES: '0', ASSESSMENT_AI_RETRY_DELAY_MS: '0',
   OPENROUTER_API_KEY: 'router-key', OPENROUTER_BASE_URL: 'https://router.test/v1',
   SEMANTIC_AI_MAX_OUTPUT_TOKENS: '1800', ...overrides
 });
@@ -19,11 +20,11 @@ const response = (status, content = '{"ok":true}') => ({
 });
 
 describe('semantic performance contract', () => {
-  test('uses global selection while retaining semantic output size', () => {
+  test('uses assessment selection while retaining semantic output size', () => {
     expect(getSemanticAIConfig(env({
       SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'ignored'
     }))).toMatchObject({
-      provider: 'openrouter', model: 'global-semantic-model',
+      provider: 'openrouter', model: 'openai/gpt-4.1',
       attemptTimeoutMs: 45000, totalBudgetMs: 90000, maxOutputTokens: 1800
     });
   });
@@ -47,7 +48,9 @@ describe('semantic performance contract', () => {
     await expect(runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
       config: getSemanticAIConfig(env()), env: env(), fetchImpl }))
       .rejects.toMatchObject({ code: 'AI_CHAIN_EXHAUSTED' });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls.map((call) => JSON.parse(call[1].body).model))
+      .toEqual(['openai/gpt-4.1', 'openai/gpt-4.1-mini']);
   });
 
   test('audited category-review prompt keeps bounded overhead over the incomplete legacy contract', () => {
@@ -59,7 +62,10 @@ describe('semantic performance contract', () => {
     // The strict contract now proves all five categories were reviewed and includes
     // both correction kinds and the learner-English taxonomy/examples; that
     // required evidence did not exist in the legacy prompt.
-    expect(audited - legacy).toBeLessThanOrEqual(4000);
-    expect(audited).toBeLessThan(12000);
+    // AI-only pipeline adds GRAMMAR and MECHANICS categories, increasing overhead
+    expect(audited - legacy).toBeLessThanOrEqual(7500);
+    // The complete 28-symbol legend now includes authoritative descriptions and
+    // deductions; keep the serialized request below a conservative 15k chars.
+    expect(audited).toBeLessThan(15000);
   });
 });

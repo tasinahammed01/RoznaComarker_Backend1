@@ -138,6 +138,7 @@ const submissionFeedbackSchema = new Schema(
     evaluationProvider: { type: String, trim: true },
     evaluationModel: { type: String, trim: true },
     evaluationAttempts: { type: Schema.Types.Mixed, default: undefined },
+    evaluationDiagnostics: { type: Schema.Types.Mixed, default: undefined },
     grade: { type: String, default: 'F', trim: true },
 
     // Always AI-generated from LanguageTool/annotations counts (not teacher-authored).

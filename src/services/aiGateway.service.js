@@ -91,20 +91,19 @@ function getAIConfig(env = process.env, { requireCredentials = true } = {}) {
 }
 
 function getAssessmentAIConfig(env = process.env, options = {}) {
-  const configured = text(env.ASSESSMENT_AI_PRIMARY_PROVIDER)
-    || text(env.ASSESSMENT_AI_PRIMARY_MODEL);
-  if (!configured) return getAIConfig(env, options);
   const assessmentOrGlobal = (assessmentKey, globalKey) =>
     text(env[assessmentKey]) ? env[assessmentKey] : env[globalKey];
   const assessmentEnv = { ...env,
-    AI_PRIMARY_PROVIDER: env.ASSESSMENT_AI_PRIMARY_PROVIDER,
-    AI_PRIMARY_MODEL: env.ASSESSMENT_AI_PRIMARY_MODEL,
-    AI_FALLBACK_1_PROVIDER: env.ASSESSMENT_AI_FALLBACK_1_PROVIDER,
-    AI_FALLBACK_1_MODEL: env.ASSESSMENT_AI_FALLBACK_1_MODEL,
-    AI_FALLBACK_2_PROVIDER: env.ASSESSMENT_AI_FALLBACK_2_PROVIDER,
-    AI_FALLBACK_2_MODEL: env.ASSESSMENT_AI_FALLBACK_2_MODEL,
-    AI_FALLBACK_3_PROVIDER: env.ASSESSMENT_AI_FALLBACK_3_PROVIDER,
-    AI_FALLBACK_3_MODEL: env.ASSESSMENT_AI_FALLBACK_3_MODEL,
+    AI_PRIMARY_PROVIDER: text(env.ASSESSMENT_AI_PRIMARY_PROVIDER) || 'openrouter',
+    AI_PRIMARY_MODEL: text(env.ASSESSMENT_AI_PRIMARY_MODEL) || 'openai/gpt-4.1',
+    AI_FALLBACK_1_PROVIDER: text(env.ASSESSMENT_AI_FALLBACK_1_PROVIDER) || 'openrouter',
+    AI_FALLBACK_1_MODEL: text(env.ASSESSMENT_AI_FALLBACK_1_MODEL) || 'openai/gpt-4.1-mini',
+    // Assessment is intentionally a closed paid chain. Never inherit or append
+    // global/free/Google fallbacks beyond the declared GPT-4.1-mini slot.
+    AI_FALLBACK_2_PROVIDER: '',
+    AI_FALLBACK_2_MODEL: '',
+    AI_FALLBACK_3_PROVIDER: '',
+    AI_FALLBACK_3_MODEL: '',
     AI_ATTEMPT_TIMEOUT_MS: assessmentOrGlobal('ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS', 'AI_ATTEMPT_TIMEOUT_MS'),
     AI_TOTAL_BUDGET_MS: assessmentOrGlobal('ASSESSMENT_AI_TOTAL_BUDGET_MS', 'AI_TOTAL_BUDGET_MS'),
     AI_PRIMARY_RETRIES: assessmentOrGlobal('ASSESSMENT_AI_PRIMARY_RETRIES', 'AI_PRIMARY_RETRIES'),
@@ -116,6 +115,13 @@ function getAssessmentAIConfig(env = process.env, options = {}) {
     throw configurationError(['Assessment AI permits at most one primary retry and no fallback retries.']);
   }
   return config;
+}
+
+function sanitizedAssessmentChain(env = process.env) {
+  return getAssessmentAIConfig(env).chain.map((entry, index) => Object.freeze({
+    index, role: index === 0 ? 'primary' : `fallback_${index}`,
+    provider: entry.provider, model: entry.model
+  }));
 }
 
 function safeCode(error) {
@@ -163,7 +169,9 @@ function googleUsage(payload) {
 function safeFailureMetadata(error) {
   const allowed = ['httpStatus', 'finishReason', 'promptTokenCount', 'candidateTokenCount',
     'candidatesTokenCount', 'thoughtsTokenCount', 'totalTokenCount', 'maxOutputTokens',
-    'responseTextLength', 'candidateCount', 'validationCode'];
+    'responseTextLength', 'candidateCount', 'validationCode', 'validationStage', 'jsonPath',
+    'expected', 'actualType', 'category', 'symbol', 'candidateIndex', 'transcriptHashMatch',
+    'requiredPropertyMissing', 'unexpectedPropertyPresent'];
   return Object.fromEntries(allowed.filter((key) => error?.[key] !== undefined && error?.[key] !== null)
     .map((key) => [key, error[key]]));
 }
@@ -339,8 +347,12 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
       const laterModelAttempts = config.chain.slice(chainIndex + 1)
         .reduce((sum, laterEntry) => sum + retriesFor(laterEntry) + 1, 0);
       const attemptsRemaining = currentModelAttempts + laterModelAttempts;
+      // Give a configured attempt its full window whenever the total budget can
+      // still fund every planned attempt. Fair-share only when the configuration
+      // is intrinsically tighter or earlier calls consumed unexpected overhead.
+      const fullyFunded = remaining >= config.attemptTimeoutMs * attemptsRemaining;
       const fairShare = Math.max(1, Math.floor((remaining - reserve) / attemptsRemaining));
-      const timeout = Math.min(config.attemptTimeoutMs, fairShare);
+      const timeout = fullyFunded ? config.attemptTimeoutMs : Math.min(config.attemptTimeoutMs, fairShare);
       attemptCount += 1;
       const attemptStarted = now();
       if (typeof onAttempt === 'function') await onAttempt({ attempt: attemptCount,
@@ -354,10 +366,11 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
           googleThinkingLevel, feature });
         let value = result.content;
         if (typeof validate === 'function') {
-          try { value = await validate(result.content, { provider: entry.provider, model: entry.model }); }
+          try { value = await validate(result.content, { provider: entry.provider, model: entry.model,
+            attemptIndex: attemptCount - 1, attemptNumber: attemptCount }); }
           catch (error) {
             throw attemptError('AI_OUTPUT_VALIDATION_FAILED', 'AI output failed feature validation.', {
-              validationCode: error?.code || null, cause: error
+              validationCode: error?.code || null, ...safeFailureMetadata(error), cause: error
             });
           }
         }
@@ -464,7 +477,7 @@ function validateAIConfig(env = process.env) {
 
 module.exports = {
   SUPPORTED_PROVIDERS, DEFAULTS, MAX_RETRIES, MAX_RETRY_DELAY_MS, credentialFor, endpointFor,
-  getAIConfig, getAssessmentAIConfig, validateAIConfig,
+  getAIConfig, getAssessmentAIConfig, sanitizedAssessmentChain, validateAIConfig,
   retryAfterMs, safeCode, extractGoogle, extractOpenRouter, googleUsage, safeFailureMetadata,
   safeSchemaName, googleBody, providerAttempt, generate
 };

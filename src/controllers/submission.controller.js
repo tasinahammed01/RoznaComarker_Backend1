@@ -287,7 +287,7 @@ function toStoredPath(type, filename) {
   return path.posix.join(basePath, type, filename);
 }
 
-async function persistUploadedFile(req, type, providedFile) {
+async function persistUploadedFile(req, type, providedFile, uploadOrder) {
   const userId = req.user && req.user._id;
   const role = req.user && req.user.role;
 
@@ -310,7 +310,8 @@ async function persistUploadedFile(req, type, providedFile) {
     url,
     uploadedBy: userId,
     role,
-    type
+    type,
+    uploadOrder: Number.isInteger(uploadOrder) ? uploadOrder : undefined
   });
 
   return {
@@ -325,15 +326,15 @@ async function persistUploadedFiles(req, type) {
     // allow legacy single-file
     const single = req.file;
     if (!single) return { error: { statusCode: 400, message: 'No file provided' } };
-    const one = await persistUploadedFile(req, type, single);
+    const one = await persistUploadedFile(req, type, single, 0);
     if (one.error) return one;
     return { files: [one.fileDoc], urls: [one.url] };
   }
 
   const fileDocs = [];
   const urls = [];
-  for (const f of list) {
-    const persisted = await persistUploadedFile(req, type, f);
+  for (let uploadOrder = 0; uploadOrder < list.length; uploadOrder += 1) {
+    const persisted = await persistUploadedFile(req, type, list[uploadOrder], uploadOrder);
     if (persisted.error) {
       return persisted;
     }
@@ -439,6 +440,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       }
 
       existing.files = persistedFiles.map((f) => f._id);
+      existing.fileOrder = persistedFiles.map((f, order) => ({ fileId: f._id, order }));
       existing.fileUrls = persistedUrls;
       existing.status = status;
       existing.submittedAt = now;
@@ -560,6 +562,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       file: firstFile ? firstFile._id : undefined,
       fileUrl: firstUrl || undefined,
       files: persistedFiles.map((f) => f._id),
+      fileOrder: persistedFiles.map((f, order) => ({ fileId: f._id, order })),
       fileUrls: persistedUrls,
       status,
       submittedAt: now,
@@ -1040,7 +1043,7 @@ async function regenerateCanonicalCorrections(req, res) {
       correctionStatus: 'processing', processingActive: true, automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false
     }});
     submission.correctionStatus = 'processing';
-    setImmediate(() => canonicalCorrectionsPipeline.generateAndPersist(submission, { force: true, reuseLanguageTool: true, assignment: assignment ? {
+    setImmediate(() => canonicalCorrectionsPipeline.generateAndPersist(submission, { force: true, assignment: assignment ? {
       title: assignment.title || '', description: assignment.description || assignment.instructions || '',
       rubric: assignment.rubric || assignment.rubrics || null
     } : {} }).catch((error) => logger.error({ message: 'Authorized correction regeneration failed', submissionId: String(submission._id), error: error?.message || error })));

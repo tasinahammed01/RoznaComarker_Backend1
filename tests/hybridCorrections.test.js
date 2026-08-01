@@ -7,27 +7,30 @@ const canonical = require('../src/services/correctionCanonical.service');
 const writing = require('../src/services/writingCorrections.service');
 const policy = require('../src/services/aiCorrectionPolicy.service');
 const pipeline = require('../src/services/canonicalCorrectionsPipeline.service');
+const expertFixture = require('./fixtures/twoPageLearnerEssaySanitized');
 
 const finding = (overrides = {}) => ({
-  category: 'CONTENT', symbol: 'DEV', quotedText: 'claim', occurrence: 0,
+  category: 'CONTENT', symbol: 'DEV', correctionKind: 'localized', quotedText: 'claim', occurrence: 0,
   message: 'Develop this claim with relevant evidence.', suggestedText: 'claim with evidence',
   confidence: 0.95, severity: 'medium', stylePreference: false, ...overrides
 });
 const reviewsFor = (corrections = []) => Object.keys(policy.CATEGORY_POLICY).map((category) => {
   const findingCount = corrections.filter((item) => item.category === category).length;
-  return { category, reviewed: true, findingCount,
+  return { category, reviewed: true,
     noFindingReason: findingCount ? '' : 'No additional grounded finding after complete review.' };
 });
 
 describe('safe hybrid correction policy', () => {
   const legend = semantic.compactSemanticLegend(writing.defaultLegend());
 
-  test('semantic prompt uses the real hash and a valid correctionKind example', () => {
-    const request = semantic.buildSemanticRequest({ transcript: 'Exact essay.', transcriptHash: 'hash-123' });
-    const prompt = request.messages.map((message) => message.content).join('\n');
+  test('builds a compact prompt with schema and transcript hash', () => {
+    const request = semantic.buildSemanticRequest({
+      transcript: 'Exact essay.', transcriptHash: 'hash-123',
+      languageToolCorrections: []
+    });
+    const prompt = request.messages[1].content;
     expect(prompt).toContain('"transcriptHash":"hash-123"');
     expect(prompt).toContain('"correctionKind":"localized"');
-    expect(prompt).toContain('"correctionKind":"global"');
     expect(prompt).not.toContain('localized|global');
     expect(prompt).not.toContain('<exact supplied hash>');
   });
@@ -37,16 +40,29 @@ describe('safe hybrid correction policy', () => {
     expect(semantic.parseJson(JSON.stringify({ ...empty, categoryReviews: reviewsFor([]) }), 'hash'))
       .toMatchObject({ corrections: [] });
     expect(() => semantic.parseJson(JSON.stringify(empty), 'hash')).toThrow(expect.objectContaining({
-      validationStage: 'category_reviews'
+      validationStage: 'semantic_schema', jsonPath: '$.categoryReviews', requiredPropertyMissing: true
     }));
     const duplicate = reviewsFor([]); duplicate[4] = { ...duplicate[0] };
     expect(() => semantic.parseJson(JSON.stringify({ ...empty, categoryReviews: duplicate }), 'hash'))
       .toThrow(expect.objectContaining({ validationStage: 'category_reviews' }));
     const mismatchFinding = finding();
-    expect(() => semantic.parseJson(JSON.stringify({ transcriptHash: 'hash', corrections: [mismatchFinding],
-      categoryReviews: reviewsFor([]) }), 'hash')).toThrow(expect.objectContaining({
-      validationStage: 'category_review_count'
-    }));
+    const legacyReviews = reviewsFor([]).map((review) => ({ ...review, findingCount: 99 }));
+    const parsed = semantic.parseJson(JSON.stringify({ transcriptHash: 'hash', corrections: [mismatchFinding],
+      categoryReviews: legacyReviews }), 'hash');
+    expect(parsed.categoryReviews.find((review) => review.category === 'CONTENT')).toMatchObject({ findingCount: 1,
+      noFindingReason: '' });
+    expect(parsed.compatibilityDiagnostics).toEqual({ legacyFindingCountIgnored: true });
+  });
+
+  test('reports a sanitized JSON path for null and missing canonical fields', () => {
+    const nullReason = reviewsFor([]); nullReason[0].noFindingReason = null;
+    expect(() => semantic.parseJson(JSON.stringify({ transcriptHash: 'hash', categoryReviews: nullReason,
+      corrections: [] }), 'hash')).toThrow(expect.objectContaining({ validationStage: 'semantic_schema',
+      jsonPath: '$.categoryReviews[0].noFindingReason', expected: expect.stringContaining('string'), actualType: 'null' }));
+    const missing = finding(); delete missing.suggestedText;
+    expect(() => semantic.parseJson(JSON.stringify({ transcriptHash: 'hash', categoryReviews: reviewsFor([missing]),
+      corrections: [missing] }), 'hash')).toThrow(expect.objectContaining({ validationStage: 'semantic_schema',
+      jsonPath: '$.corrections[0].suggestedText', requiredPropertyMissing: true, candidateIndex: 0 }));
   });
 
   test('accepts grounded localized and global Content findings and rejects global Grammar', () => {
@@ -71,6 +87,13 @@ describe('safe hybrid correction policy', () => {
     expect(result.diagnostics).toMatchObject({ returnedByCategory: { CONTENT: 3 },
       acceptedByCategory: { CONTENT: 1 }, rejectedByCategory: { CONTENT: 2 },
       rejectionReasonsByCategory: { CONTENT: { LOW_CONFIDENCE: 1, UNGROUNDED_EVIDENCE: 1 } } });
+    expect(result.diagnostics.rejectionDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: 'CONTENT', rejectionCode: 'LOW_CONFIDENCE',
+        validationStage: 'confidence_validation', candidateIndex: 0, quotedTextHash: expect.any(String) }),
+      expect.objectContaining({ category: 'CONTENT', rejectionCode: 'UNGROUNDED_EVIDENCE',
+        validationStage: 'grounding_validation', candidateIndex: 1, quotedTextHash: expect.any(String) })
+    ]));
+    expect(JSON.stringify(result.diagnostics.rejectionDiagnostics)).not.toContain('missing quote');
   });
 
   test('accepts individually grounded learner-English second-pass corrections across the taxonomy', () => {
@@ -180,18 +203,18 @@ describe('safe hybrid correction policy', () => {
     }));
   });
 
-  test('sends compact LanguageTool evidence while retaining all-category instructions', () => {
+  test('sends AI-only prompt with all five category instructions', () => {
     const request = semantic.buildSemanticRequest({
       transcript: 'students is here.', transcriptHash: 'hash',
-      languageToolCorrections: [{ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'students is',
-        startChar: 0, endChar: 11, suggestedText: 'students are',
-        message: 'A deliberately long private explanation that must not be included.' }]
+      languageToolCorrections: []
     });
     const prompt = request.messages[1].content;
-    expect(prompt).toContain('"quotedText":"students is"');
-    expect(prompt).toContain('"suggestedText":"students are"');
-    expect(prompt).not.toContain('deliberately long private explanation');
-    for (const category of Object.keys(policy.CATEGORY_POLICY)) expect(prompt).toContain(category);
+    expect(prompt).toContain('Pass 1 CONTENT: REL, DEV, TA, CL, SD');
+    expect(prompt).toContain('Pass 2 ORGANIZATION: COH, CO, PU, TS, CONC');
+    expect(prompt).toContain('Pass 3 GRAMMAR: T, VF, AGR, FRAG, RO, WO, ART, PREP');
+    expect(prompt).toContain('Pass 4 VOCABULARY: WC, WF, REP, FORM, COL');
+    expect(prompt).toContain('Pass 5 MECHANICS: SP, P, CAP, SPC, FMT');
+    expect(prompt).not.toContain('LanguageTool');
   });
 
   test('accepts a grounded global organization finding without fabricated replacement text', () => {
@@ -221,27 +244,56 @@ describe('deterministic canonical hybrid merge', () => {
   const base = { category: 'GRAMMAR', symbol: 'AGR', quotedText: 'students is',
     startChar: 0, endChar: 11, message: 'Agreement.', suggestedText: 'students are', confidence: 0.99 };
 
-  test('keeps LanguageTool for an exact cross-engine duplicate and counts it once', () => {
-    const lt = normalize(base, 'LANGUAGETOOL');
-    const ai = normalize({ ...base, message: 'Plural agreement.' }, 'AI');
-    const merged = canonical.mergeCanonicalCorrections({ languageToolCorrections: [lt], aiCorrections: [ai] });
+  test('AI-only merge handles exact duplicates and counts them once', () => {
+    const ai1 = normalize(base, 'AI');
+    const ai2 = normalize({ ...base, message: 'Plural agreement.' }, 'AI');
+    const merged = canonical.mergeCanonicalCorrections({ languageToolCorrections: [], aiCorrections: [ai1, ai2] });
     expect(merged.corrections).toHaveLength(1);
-    expect(merged.corrections[0].source).toBe('LANGUAGETOOL');
+    expect(merged.corrections[0].source).toBe('AI');
     expect(merged.diagnostics.exactDuplicates).toBe(1);
     expect(canonical.statistics(merged.corrections)).toMatchObject({ grammar: 1, total: 1 });
   });
 
-  test('deduplicates equivalent overlapping corrections but preserves distinct issues on one span', () => {
-    const lt = normalize(base, 'LANGUAGETOOL');
-    const overlap = canonical.normalizeCorrection({ ...base, quotedText: 'students is here', endChar: 16,
-      suggestedText: 'students are', message: 'Plural agreement.' }, 'students is here.', [], legend, 'AI');
-    const article = canonical.normalizeCorrection({ category: 'GRAMMAR', symbol: 'ART', quotedText: 'students is',
-      startChar: 0, endChar: 11, message: 'Article issue.', suggestedText: 'the students are', confidence: 0.95 },
+  test('preserves distinct corrections on different spans', () => {
+    const agr = canonical.normalizeCorrection({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'students is',
+      startChar: 0, endChar: 11, message: 'Agreement.', suggestedText: 'students are', confidence: 0.99 },
     'students is here.', [], legend, 'AI');
-    const merged = canonical.mergeCanonicalCorrections({ languageToolCorrections: [lt], aiCorrections: [overlap, article] });
+    const art = canonical.normalizeCorrection({ category: 'GRAMMAR', symbol: 'ART', quotedText: 'here',
+      startChar: 12, endChar: 16, message: 'Article issue.', suggestedText: 'here', confidence: 0.95 },
+    'students is here.', [], legend, 'AI');
+    const merged = canonical.mergeCanonicalCorrections({ languageToolCorrections: [], aiCorrections: [agr, art] });
     expect(merged.corrections).toHaveLength(2);
     expect(merged.corrections.map((item) => item.symbol)).toEqual(['AGR', 'ART']);
-    expect(merged.diagnostics.overlapDuplicates).toBe(1);
+    expect(merged.diagnostics.overlapDuplicates).toBe(0);
+  });
+
+  test('AI-only merge prefers higher confidence for same location corrections', () => {
+    const text = 'every student cames to class';
+    const ai1 = canonical.normalizeCorrection({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'student cames',
+      startChar: 6, endChar: 19, suggestedText: 'student comes', message: 'Use the singular verb form.', confidence: 0.96 },
+    text, [], legend, 'AI');
+    const ai2 = canonical.normalizeCorrection({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'student cames',
+      startChar: 6, endChar: 19, suggestedText: 'student comes', message: 'Agreement issue.', confidence: 0.98 },
+    text, [], legend, 'AI');
+    const merged = canonical.mergeCanonicalCorrections({ languageToolCorrections: [], aiCorrections: [ai1, ai2] });
+    expect(merged.corrections).toHaveLength(1);
+    expect(merged.corrections[0]).toMatchObject({ source: 'AI', category: 'GRAMMAR', symbol: 'AGR', suggestedText: 'student comes', confidence: 0.98 });
+    expect(merged.diagnostics.exactDuplicates).toBe(1);
+    expect(merged.diagnostics.contextualOverrides).toBe(0);
+    expect(merged.diagnostics.rejectedIds).toHaveLength(1);
+  });
+
+  test('semantic prompt requires independent five-category AI-only review', () => {
+    const text = 'there are a big problem every student cames Taking a taxis is than taken private cars cars gives without pay more money';
+    const built = semantic.buildSemanticRequest({ transcript: text, transcriptHash: 'a'.repeat(64), languageToolCorrections: [] });
+    const prompt = built.messages[1].content;
+    expect(prompt).toContain('five explicit full-transcript passes');
+    expect(prompt).toContain('Analyze the entire canonical transcript independently');
+    expect(prompt).toContain('No external grammar checker is available');
+    expect(prompt).toContain('Pass 3 GRAMMAR');
+    expect(prompt).toContain('Pass 5 MECHANICS');
+    expect(prompt).not.toContain('LanguageTool exclusions');
+    expect(prompt).not.toContain('LanguageTool auxiliary');
   });
 
   test('repeated errors at different locations remain separate and statistics equal final records', () => {
@@ -270,6 +322,9 @@ describe('deterministic canonical hybrid merge', () => {
     expect(statistics.content).toBe(0);
     expect(pipeline.hasHolisticCoverageMismatch({ CONTENT: { score: 13, maxScore: 20 } }, statistics)).toBe(true);
     expect(statistics).toEqual({ content: 0, organization: 0, grammar: 0, vocabulary: 0, mechanics: 0, total: 0 });
+    expect(pipeline.holisticCoverageMismatchCategories({ CONTENT: { score: 13, maxScore: 20 },
+      ORGANIZATION: { score: 11, maxScore: 20 }, VOCABULARY: { score: 10, maxScore: 20 } }, statistics))
+      .toEqual(['CONTENT', 'ORGANIZATION', 'VOCABULARY']);
   });
 
   test('displayed semantic attempt count matches primary and fallback retry plans', () => {
@@ -301,13 +356,32 @@ describe('deterministic canonical hybrid merge', () => {
     ];
     const validated = semantic.validateCorrections(rawAi, { transcript: text,
       legend: semantic.compactSemanticLegend(writing.defaultLegend()) });
-    const merged = canonical.mergeCanonicalCorrections({ languageToolCorrections: lt, aiCorrections: validated.corrections });
-    expect(ltDiagnostics).toMatchObject({ rawMatches: 3, accepted: 3, dropped: 0,
-      droppedGrammarRuleIds: [], byFinalClassification: { 'GRAMMAR/AGR': 1, 'GRAMMAR/VF': 1, 'GRAMMAR/FRAG': 1 } });
+    const merged = canonical.mergeCanonicalCorrections({ languageToolCorrections: [], aiCorrections: validated.corrections });
     expect(validated.diagnostics).toMatchObject({ rawCorrectionCount: 5, acceptedCorrectionCount: 5,
       rejectedCorrectionCount: 0, returnedByCategory: { CONTENT: 1, ORGANIZATION: 1, GRAMMAR: 3 } });
-    expect(merged.diagnostics).toMatchObject({ exactDuplicates: 3, overlapDuplicates: 0, conflicts: 0 });
+    expect(merged.diagnostics).toMatchObject({ exactDuplicates: 0, overlapDuplicates: 0, conflicts: 0 });
     expect(canonical.statistics(merged.corrections)).toEqual({ content: 1, organization: 1,
       grammar: 3, vocabulary: 0, mechanics: 0, total: 5 });
+  });
+});
+
+describe('sanitized two-page expert coverage fixture', () => {
+  test('obvious grounded category coverage is retained without asserting an exact model total', () => {
+    const validated = semantic.validateCorrections(expertFixture.corrections, {
+      transcript: expertFixture.transcript,
+      legend: semantic.compactSemanticLegend(writing.defaultLegend())
+    });
+    const retained = new Set(validated.corrections.map((item) => item.category));
+    for (const category of expertFixture.expectedMinimumCategories) expect(retained.has(category)).toBe(true);
+    expect(validated.diagnostics.rejectedCorrectionCount).toBe(0);
+  });
+
+  test('zero category reviews require explicit diagnostic reasons', () => {
+    const reviews = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'].map((category) => ({
+      category, reviewed: true, findingCount: 0, noFindingReason: category === 'VOCABULARY' ? '' : 'No grounded finding.'
+    }));
+    expect(() => semantic.validateCategoryReviews(reviews, [])).toThrow(expect.objectContaining({
+      validationStage: 'category_review_reason'
+    }));
   });
 });

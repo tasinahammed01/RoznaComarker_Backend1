@@ -6,6 +6,8 @@ const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const router = express.Router();
 
 router.get('/legend', verifyJwtToken, writingCorrectionsController.getLegend);
-router.post('/check', verifyJwtToken, writingCorrectionsController.check);
+// The former direct LanguageTool check endpoint was not used by a supported UI flow.
+// It is intentionally no longer externally reachable; assignment analysis uses the
+// canonical AI-only submission pipeline.
 
 module.exports = router;

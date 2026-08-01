@@ -8,10 +8,12 @@ const { completeRubric, validateRubric } = require('../src/services/rubricComple
 const logger = require('../src/utils/logger');
 
 const env = (overrides = {}) => ({
-  AI_PRIMARY_PROVIDER: 'google', AI_PRIMARY_MODEL: 'global-rubric-model',
-  AI_ATTEMPT_TIMEOUT_MS: '30000', AI_TOTAL_BUDGET_MS: '120000',
-  AI_RETRIES_PER_MODEL: '0', AI_RETRY_DELAY_MS: '0',
-  GEMINI_API_KEY: 'google-key', RUBRIC_AI_MAX_OUTPUT_TOKENS: '4000',
+  ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1',
+  ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter', ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini',
+  ASSESSMENT_AI_PRIMARY_RETRIES: '1', ASSESSMENT_AI_FALLBACK_RETRIES: '0',
+  ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '30000', ASSESSMENT_AI_TOTAL_BUDGET_MS: '120000',
+  ASSESSMENT_AI_RETRY_DELAY_MS: '0', OPENROUTER_API_KEY: 'router-key',
+  OPENROUTER_BASE_URL: 'https://router.test/v1', RUBRIC_AI_MAX_OUTPUT_TOKENS: '4000',
   ...overrides
 });
 const valid = { title: 'Writing Rubric', levels: [
@@ -21,32 +23,33 @@ const valid = { title: 'Writing Rubric', levels: [
   { title: 'Language', cells: ['a', 'b', 'c'] }
 ] };
 
-describe('rubric global AI configuration and completion', () => {
-  test('uses the global provider/model and retains the rubric token limit', () => {
+describe('rubric assessment AI configuration and completion', () => {
+  test('uses the assessment provider/model and retains the rubric token limit', () => {
     expect(getRubricAiConfig(env())).toMatchObject({
-      provider: 'google', model: 'global-rubric-model',
+      provider: 'openrouter', model: 'openai/gpt-4.1',
       attemptTimeoutMs: 30000, maxOutputTokens: 4000
     });
     expect(getRubricAiConfig(env({
       RUBRIC_AI_PROVIDER: 'openrouter', RUBRIC_AI_MODEL: 'ignored'
-    }))).toMatchObject({ provider: 'google', model: 'global-rubric-model' });
+    }))).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-4.1' });
   });
 
-  test('changing the global primary model changes rubric transport', async () => {
+  test('changing the assessment primary model changes rubric transport', async () => {
     const fetchImpl = jest.fn(async () => ({ ok: true, status: 200,
       headers: { get: () => null }, text: async () => JSON.stringify({
-        candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(valid) }] } }]
+        choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(valid) } }]
       }) }));
     await expect(completeRubric({ systemInstruction: 'system', userPrompt: 'prompt' }, {
-      config: getRubricAiConfig(env({ AI_PRIMARY_MODEL: 'changed-rubric-model' })),
-      env: env({ AI_PRIMARY_MODEL: 'changed-rubric-model' }), fetchImpl
+      config: getRubricAiConfig(env({ ASSESSMENT_AI_PRIMARY_MODEL: 'openai/changed-rubric-model' })),
+      env: env({ ASSESSMENT_AI_PRIMARY_MODEL: 'openai/changed-rubric-model' }), fetchImpl
     })).resolves.toEqual(valid);
-    expect(fetchImpl.mock.calls[0][0]).toContain('/models/changed-rubric-model:generateContent');
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://router.test/v1/chat/completions');
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).model).toBe('openai/changed-rubric-model');
   });
 
   test('missing primary credential fails before transport', async () => {
     const runCompletion = jest.fn();
-    const missing = env({ GEMINI_API_KEY: '' });
+    const missing = env({ OPENROUTER_API_KEY: '' });
     expect(() => getRubricAiConfig(missing)).toThrow(expect.objectContaining({ code: 'AI_CHAIN_NOT_CONFIGURED' }));
     expect(runCompletion).not.toHaveBeenCalled();
   });
@@ -72,7 +75,7 @@ describe('rubric global AI configuration and completion', () => {
     expect(runCompletion.mock.calls[0][0]).toMatchObject({ schemaName: 'rubric_generation',
       responseSchema: { type: 'object', additionalProperties: false } });
     const logs = JSON.stringify([...info.mock.calls, ...warn.mock.calls]);
-    for (const privateValue of ['secret-system', 'secret-prompt', '{bad', 'google-key']) {
+    for (const privateValue of ['secret-system', 'secret-prompt', '{bad', 'router-key']) {
       expect(logs).not.toContain(privateValue);
     }
     info.mockRestore();

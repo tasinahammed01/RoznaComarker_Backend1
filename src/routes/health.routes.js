@@ -1,4 +1,5 @@
 const express = require('express');
+const { runtimeContractFingerprint } = require('../services/runtimeContractFingerprint.service');
 
 const router = express.Router();
 
@@ -27,7 +28,8 @@ router.get('/health', (req, res) => {
     success: true,
     status: 'OK',
     environment: process.env.NODE_ENV,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    runtime: runtimeContractFingerprint()
   });
 });
 

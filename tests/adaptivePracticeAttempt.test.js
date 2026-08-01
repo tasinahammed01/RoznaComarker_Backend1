@@ -7,6 +7,9 @@ const AdaptivePracticeAttempt = require('../src/models/AdaptivePracticeAttempt')
 const aiGeneration = require('../src/services/aiGeneration.service');
 const checkAI = require('../src/services/adaptivePracticeCheckAI.service');
 const service = require('../src/services/adaptivePracticeAttempt.service');
+const ASSESSMENT_ENV_KEYS = ['ASSESSMENT_AI_PRIMARY_PROVIDER', 'ASSESSMENT_AI_PRIMARY_MODEL',
+  'ASSESSMENT_AI_FALLBACK_1_PROVIDER', 'ASSESSMENT_AI_FALLBACK_1_MODEL', 'OPENROUTER_API_KEY'];
+const savedAssessmentEnv = Object.fromEntries(ASSESSMENT_ENV_KEYS.map((key) => [key, process.env[key]]));
 
 const checklist = ['Connect the ideas clearly.', 'Use precise vocabulary.'];
 function result(overrides = {}) {
@@ -26,12 +29,20 @@ async function seed() {
 
 describe('adaptive practice attempts', () => {
   beforeAll(async () => {
-    process.env.AI_PRIMARY_PROVIDER = 'google';
-    process.env.AI_PRIMARY_MODEL = 'global-check-model';
-    process.env.GEMINI_API_KEY = 'test-gemini-key';
+    process.env.ASSESSMENT_AI_PRIMARY_PROVIDER = 'openrouter';
+    process.env.ASSESSMENT_AI_PRIMARY_MODEL = 'openai/gpt-4.1';
+    process.env.ASSESSMENT_AI_FALLBACK_1_PROVIDER = 'openrouter';
+    process.env.ASSESSMENT_AI_FALLBACK_1_MODEL = 'openai/gpt-4.1-mini';
+    process.env.OPENROUTER_API_KEY = 'test-router-key';
     await connectInMemoryMongo();
   });
-  afterAll(disconnectInMemoryMongo);
+  afterAll(async () => {
+    await disconnectInMemoryMongo();
+    for (const key of ASSESSMENT_ENV_KEYS) {
+      if (savedAssessmentEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedAssessmentEnv[key];
+    }
+  });
   beforeEach(async () => { await clearDatabase(); jest.restoreAllMocks(); });
 
   it('builds stable response fingerprints and changes them for response or identity changes', () => {
@@ -134,12 +145,12 @@ describe('adaptive practice attempts', () => {
     await expect(service.listAttempts(session._id, other, activityId)).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
-  it('records the globally configured primary model', async () => {
+  it('records the assessment primary model', async () => {
     const { session, studentId, activityId } = await seed();
     const globalSpy = jest.spyOn(aiGeneration, 'generateChatCompletion');
     const geminiSpy = jest.spyOn(checkAI, 'generateCheckCompletion').mockResolvedValue(result());
     const checked = await service.checkResponse(session._id, activityId, studentId, { response: 'However, these ideas now connect clearly.' });
-    expect(checked.attempt.checking).toMatchObject({ provider: 'google', model: 'global-check-model' });
+    expect(checked.attempt.checking).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-4.1' });
     expect(geminiSpy).toHaveBeenCalledTimes(1);
     expect(globalSpy).not.toHaveBeenCalled();
   });

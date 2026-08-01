@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
+    "verify:runtime": "node scripts/verify-runtime-contract.js",
     "test": "jest --runInBand",
     "benchmark:semantic": "node scripts/benchmarkSemanticAnalysis.js",
     "test:live-gemini-smoke": "node scripts/liveGeminiSemanticSmoke.js",

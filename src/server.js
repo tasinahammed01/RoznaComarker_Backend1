@@ -3,6 +3,8 @@ const connectDB = require("./config/db");
 const logger = require("./utils/logger");
 const { validateAIConfig } = require("./services/aiGeneration.service");
 const pdfBrowserManager = require("./services/pdfBrowserManager.service");
+const { runtimeContractFingerprint } = require("./services/runtimeContractFingerprint.service");
+const { sanitizedAssessmentChain } = require("./services/aiGateway.service");
 
 const Plan = require("./models/Plan");
 
@@ -71,6 +73,10 @@ async function start() {
       model: entry.model,
     })),
   });
+  logger.info({
+    message: "Resolved assessment AI chain",
+    models: sanitizedAssessmentChain(process.env),
+  });
 
   if (!process.env.GROQ_API_KEY) {
     logger.warn(
@@ -93,6 +99,7 @@ async function start() {
   const port = process.env.PORT || env.PORT || 5000;
   server = app.listen(port, "0.0.0.0", () => {
     logger.info(`Server running on port ${port} (${env.NODE_ENV})`);
+    logger.metric({ event: "runtime_contract_fingerprint", ...runtimeContractFingerprint() });
   });
 }
 

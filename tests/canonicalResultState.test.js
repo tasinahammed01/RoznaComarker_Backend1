@@ -38,23 +38,25 @@ describe('canonical result state contract', () => {
       .toBe('AI_CHAIN_EXHAUSTED');
   });
 
-  test('LanguageTool-only corrections are partial and semantic categories are pending', () => {
-    const state = buildCanonicalResultState({ submission: { correctionStatus: 'processing', writingCorrections: [
-      { source: 'LANGUAGETOOL', category: 'GRAMMAR' }, { source: 'LANGUAGETOOL', category: 'MECHANICS' }
+  test('AI-only corrections are canonical when completed', () => {
+    const state = buildCanonicalResultState({ submission: { correctionStatus: 'completed', semanticStatus: 'completed',
+      correctionSourceHash: 'hash', correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
+      writingCorrections: [
+      { source: 'AI', category: 'GRAMMAR' }, { source: 'AI', category: 'MECHANICS' }
     ], correctionStatistics: { content: 0, grammar: 1, organization: 0, vocabulary: 0, mechanics: 1, total: 2 } } });
-    expect(state.statisticsCompleteness).toBe('language_only');
-    expect(state.categoryAvailability).toEqual({ grammar: 'available', mechanics: 'available', content: 'pending', organization: 'pending', vocabulary: 'pending' });
-    expect(state.sourceCounts).toEqual({ languageTool: 2, semanticAi: 0 });
+    expect(state.statisticsCompleteness).toBe('canonical');
+    expect(state.categoryAvailability).toEqual({ grammar: 'available', mechanics: 'available', content: 'available', organization: 'available', vocabulary: 'available' });
+    expect(state.sourceCounts).toEqual({ languageTool: 0, semanticAi: 2 });
   });
 
-  test('semantic failure preserves language availability without claiming zeros', () => {
-    const state = buildCanonicalResultState({ submission: { correctionStatus: 'partial', correctionError: 'AI_PROVIDER_NOT_CONFIGURED',
-      writingCorrections: [{ source: 'LANGUAGETOOL', category: 'GRAMMAR' }] } });
-    expect(state.statisticsStatus).toBe('partial');
+  test('AI-only failure results in failed state', () => {
+    const state = buildCanonicalResultState({ submission: { correctionStatus: 'failed', correctionError: 'AI_PROVIDER_NOT_CONFIGURED',
+      semanticStatus: 'failed', writingCorrections: [] } });
+    expect(state.statisticsStatus).toBe('failed');
     expect(state.categoryAvailability.content).toBe('failed');
-    expect(state.categoryAvailability.grammar).toBe('available');
+    expect(state.categoryAvailability.grammar).toBe('failed');
     expect(state.retryable).toBe(false);
-    expect(state).toMatchObject({ correctionStage: 'semantic_failed', processingActive: false,
+    expect(state).toMatchObject({ correctionStage: 'ai_only_failed', processingActive: false,
       automaticPollingAllowed: false, manualRetryAllowed: false, terminal: true,
       evaluationStatus: 'blocked', detailedFeedbackStatus: 'blocked',
       evaluationBlockedReason: 'corrections_incomplete', detailedFeedbackBlockedReason: 'evaluation_unavailable' });
@@ -115,28 +117,26 @@ describe('canonical result state contract', () => {
     expect(state.statistics.content).toBe(0);
   });
 
-  test('LanguageTool failure never turns missing analysis into synthetic zero availability', () => {
-    const state = buildCanonicalResultState({ submission: { correctionStatus: 'partial', semanticStatus: 'completed',
-      languageToolStatus: 'failed', correctionSourceHash: 'hash', correctionVersion: 'v',
+  test('AI-only corrections provide all categories when completed', () => {
+    const state = buildCanonicalResultState({ submission: { correctionStatus: 'completed', semanticStatus: 'completed',
+      correctionSourceHash: 'hash', correctionVersion: 'v',
       correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
       writingCorrections: [{ source: 'AI', category: 'CONTENT' }],
-      correctionStatistics: { content: 1, grammar: null, organization: 0, vocabulary: 0, mechanics: null, total: 1 } } });
-    expect(state.statisticsCompleteness).toBe('semantic_only');
-    expect(state.categoryAvailability).toMatchObject({ grammar: 'failed', mechanics: 'failed', content: 'available' });
-    expect(state.statistics.grammar).toBeNull();
+      correctionStatistics: { content: 1, grammar: 0, organization: 0, vocabulary: 0, mechanics: 0, total: 1 } } });
+    expect(state.statisticsCompleteness).toBe('canonical');
+    expect(state.categoryAvailability).toMatchObject({ grammar: 'available', mechanics: 'available', content: 'available' });
+    expect(state.statistics.grammar).toBe(0);
     expect(state.score).toBeNull();
   });
 
-  test('same-hash retained LanguageTool corrections remain available but result stays partial', () => {
-    const state = buildCanonicalResultState({ submission: { correctionStatus: 'partial', semanticStatus: 'completed',
-      languageToolStatus: 'failed', correctionSourceHash: 'hash', correctionVersion: 'v',
+  test('AI-only corrections are canonical when both AI and LanguageTool sources exist (legacy compatibility)', () => {
+    const state = buildCanonicalResultState({ submission: { correctionStatus: 'completed', semanticStatus: 'completed',
+      correctionSourceHash: 'hash', correctionVersion: 'v',
       correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
-      languageToolSourceHash: 'hash', languageToolVersion: 'v',
-      languageToolTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
-      writingCorrections: [{ source: 'LANGUAGETOOL', category: 'GRAMMAR' }, { source: 'AI', category: 'CONTENT' }],
+      writingCorrections: [{ source: 'AI', category: 'GRAMMAR' }, { source: 'AI', category: 'CONTENT' }],
       correctionStatistics: { content: 1, grammar: 1, organization: 0, vocabulary: 0, mechanics: 0, total: 2 } } });
-    expect(state.statisticsCompleteness).toBe('language_only');
-    expect(state.statisticsStatus).toBe('partial');
+    expect(state.statisticsCompleteness).toBe('canonical');
+    expect(state.statisticsStatus).toBe('complete');
     expect(state.categoryAvailability).toEqual({ grammar: 'available', mechanics: 'available',
       content: 'available', organization: 'available', vocabulary: 'available' });
     expect(state.score).toBeNull();
@@ -205,7 +205,6 @@ describe('canonical result state contract', () => {
 
   test.each([
     ['OCR', { ocrStatus: 'processing', correctionStatus: 'pending' }],
-    ['LanguageTool', { ocrStatus: 'completed', correctionStatus: 'processing', languageToolStatus: 'processing' }],
     ['semantic', { ocrStatus: 'completed', correctionStatus: 'processing', semanticStatus: 'processing' }],
     ['semantic retry', { ocrStatus: 'completed', correctionStatus: 'processing', semanticStatus: 'retry_wait' }]
   ])('%s processing keeps automatic polling active', (_stage, submission) => {

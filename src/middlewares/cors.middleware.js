@@ -1,4 +1,5 @@
 const cors = require('cors');
+const logger = require('../utils/logger');
 
 function normalizeUrl(value) {
   if (typeof value !== 'string') return '';
@@ -18,9 +19,20 @@ function createCorsMiddleware() {
   const configuredOrigins = parseAllowedOrigins(
     process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGINS || process.env.FRONTEND_URL
   );
-  const allowedOrigins = configuredOrigins.length
+
+  let allowedOrigins = configuredOrigins.length
     ? configuredOrigins
     : (isProd ? [] : ['http://localhost:4200']);
+
+  // Always allow localhost origins in development mode
+  if (!isProd) {
+    const devOrigins = ['http://localhost:4200', 'http://127.0.0.1:4200'];
+    devOrigins.forEach((origin) => {
+      if (!allowedOrigins.includes(origin)) {
+        allowedOrigins.push(origin);
+      }
+    });
+  }
 
   if (isProd && !allowedOrigins.length) {
     throw new Error('CORS_ALLOWED_ORIGINS, CORS_ORIGINS, or FRONTEND_URL must be set in production');
@@ -37,6 +49,13 @@ function createCorsMiddleware() {
       if (allowedOrigins.includes(normalizedOrigin)) {
         return callback(null, true);
       }
+
+      logger.warn({
+        message: 'CORS origin rejected',
+        origin: normalizedOrigin,
+        nodeEnv: process.env.NODE_ENV,
+        allowedOrigins
+      });
 
       const err = new Error('Not allowed by CORS');
       err.statusCode = 403;

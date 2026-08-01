@@ -1,12 +1,13 @@
 const { checkTextWithLanguageTool } = require('./languageTool.service');
 const { normalizeOcrTranscript } = require('../utils/ocrTranscriptNormalizer');
 const CorrectionLegend = require('../models/CorrectionLegend');
+const legendResolver = require('./correctionLegendResolver.service');
 
 let _legendCache = null;
 let _legendCacheAt = 0;
 const LEGEND_CACHE_TTL_MS = 5 * 60 * 1000;
 
-const LANGUAGE_TOOL_MAPPING_VERSION = 'language-tool-mapping-2';
+const LANGUAGE_TOOL_MAPPING_VERSION = 'language-tool-mapping-3';
 
 const EXACT_RULE_OVERRIDES = Object.freeze({
   EN_UPPER_CASE_NGRAM: ['MECHANICS', 'CAP'],
@@ -27,7 +28,10 @@ const EXACT_RULE_OVERRIDES = Object.freeze({
   EN_A_VS_AN: ['GRAMMAR', 'ART'],
   SENT_START_CONJUNCTIVE_LINKING_ADVERB_COMMA: ['MECHANICS', 'P'],
   ENGLISH_WORD_REPEAT_RULE: ['VOCABULARY', 'REP'],
-  INFORMALITY: ['VOCABULARY', 'FORM']
+  INFORMALITY: ['VOCABULARY', 'FORM'],
+  MOST_COMPARATIVE: ['GRAMMAR', 'WO'],
+  IS_OWN: ['VOCABULARY', 'WF'],
+  THE_CC: ['GRAMMAR', 'FRAG']
 });
 
 const CATEGORY_MAPPINGS = Object.freeze({
@@ -56,6 +60,8 @@ const REVIEWED_RULE_ID_PATTERNS = Object.freeze([
 ]);
 
 function defaultLegend() {
+  return legendResolver.fallbackLegend(); /* deprecated compatibility export */
+  /* istanbul ignore next */
   return {
     version: '1.0',
     description: 'Academic correction legend for AI-assisted writing feedback',
@@ -134,9 +140,8 @@ async function getLegendFromDb() {
   }
 
   try {
-    const doc = await CorrectionLegend.findOne({ version: '1.0' }).lean();
-    if (doc && Array.isArray(doc.groups) && doc.groups.length) {
-      const { _id, __v, ...legend } = doc;
+    const legend = await legendResolver.resolveLegend({ model: CorrectionLegend });
+    if (legend) {
       _legendCache = legend;
       _legendCacheAt = now;
       return _legendCache;
@@ -144,7 +149,7 @@ async function getLegendFromDb() {
   } catch {
   }
 
-  return defaultLegend();
+  return { ...defaultLegend(), source: 'VERSIONED_FALLBACK', contentHash: legendResolver.contentHash(defaultLegend()) };
 }
 
 function mapLanguageToolRule(match, legend = defaultLegend()) {

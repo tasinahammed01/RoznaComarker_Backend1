@@ -147,6 +147,7 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       evaluationRubricSourceHash: rubricHash, evaluationSource: 'ai', evaluationStatus: semantic.status,
       evaluationProvider: semantic.provider, evaluationModel: semantic.model, evaluationErrorCode: null, correctionStats: stats,
       evaluationAttempts: semantic.metrics?.attempts || [],
+      evaluationDiagnostics: semantic.diagnostics || { commentNormalizations: [] },
       rubricScores, overallScore, grade,
       detailedFeedback, detailedFeedbackSourceHash: sourceHash, detailedFeedbackVersion: detailedFeedbackService.VERSION
     }}, { new: true, runValidators: true });
@@ -156,7 +157,9 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       evaluationStatus: 'processing', evaluationJobId: jobId }, { $set: {
       evaluationStatus: semantic.status === 'partial' ? 'partial' : 'completed', evaluationSourceHash: sourceHash, evaluationVersion: VERSION,
       evaluationRubricSourceHash: rubricHash, evaluationProvider: semantic.provider, evaluationModel: semantic.model,
-      evaluationAttempts: semantic.metrics?.attempts || [], evaluationUpdatedAt: new Date(), evaluationError: null, evaluationErrorCode: null
+      evaluationAttempts: semantic.metrics?.attempts || [],
+      evaluationDiagnostics: semantic.diagnostics || { commentNormalizations: [] },
+      evaluationUpdatedAt: new Date(), evaluationError: null, evaluationErrorCode: null
     }});
     if (completed.modifiedCount !== 1) throw supersededEvaluationError();
     console.info('[canonical-evaluation] canonical evaluation persisted', { submissionId: String(submission._id),
@@ -178,14 +181,20 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     console.warn('[canonical-evaluation] semantic rubric assessment failed', {
       submissionId: String(submission._id), provider: error?.provider || lastAttempt.provider || null,
       model: error?.model || lastAttempt.model || null,
-      attempt: lastAttempt.attempt || null, httpStatus: Number(error?.httpStatus || error?.status) || null,
-      finishReason: error?.finishReason || null, candidateCount: Number.isFinite(error?.candidateCount) ? error.candidateCount : null,
+      attempt: lastAttempt.attemptNumber || null, fallbackIndex: Number.isInteger(lastAttempt.fallbackIndex)
+        ? lastAttempt.fallbackIndex : null,
+      httpStatus: Number(lastAttempt.httpStatus || error?.httpStatus || error?.status) || null,
+      finishReason: lastAttempt.finishReason || error?.finishReason || null,
+      candidateCount: Number.isFinite(lastAttempt.candidateCount) ? lastAttempt.candidateCount
+        : Number.isFinite(error?.candidateCount) ? error.candidateCount : null,
       hasContent: typeof error?.hasContent === 'boolean' ? error.hasContent : null,
       hasText: typeof error?.hasText === 'boolean' ? error.hasText : null,
       contentType: error?.contentType || null, responseTextLength: Number.isFinite(error?.responseTextLength)
         ? error.responseTextLength : null,
       markdownFenceDetected: error?.markdownFenceDetected === true,
-      validationStage: error?.validationStage || null,
+      validationCode: lastAttempt.validationCode || error?.validationCode || null,
+      validationStage: lastAttempt.validationStage || error?.validationStage || null,
+      jsonPath: lastAttempt.jsonPath || error?.jsonPath || null,
       validationIssues: Array.isArray(error?.validationIssues) ? error.validationIssues : [],
       requestId: error?.requestId || null, durationMs: Number(error?.durationMs) || null,
       tokenUsage: error?.usage ? {
@@ -200,13 +209,27 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
         evaluationSource: 'provisional', evaluationStatus: 'failed', evaluationErrorCode: errorCode,
         evaluationProvider: lastAttempt.provider || submission.evaluationProvider || null,
         evaluationModel: lastAttempt.model || submission.evaluationModel || null,
-        evaluationAttempts: attempts, correctionStats: stats },
+        evaluationAttempts: attempts, evaluationDiagnostics: { terminalValidation: {
+          provider: lastAttempt.provider || null, model: lastAttempt.model || null,
+          attemptNumber: lastAttempt.attemptNumber || null,
+          fallbackIndex: Number.isInteger(lastAttempt.fallbackIndex) ? lastAttempt.fallbackIndex : null,
+          validationCode: lastAttempt.validationCode || null, validationStage: lastAttempt.validationStage || null,
+          jsonPath: lastAttempt.jsonPath || null, httpStatus: lastAttempt.httpStatus || null,
+          durationMs: lastAttempt.durationMs || null, finishReason: lastAttempt.finishReason || null
+        } }, correctionStats: stats },
       $unset: { evaluationSourceHash: 1, evaluationRubricSourceHash: 1, rubricScores: 1, overallScore: 1, grade: 1,
         detailedFeedback: 1, detailedFeedbackSourceHash: 1, detailedFeedbackVersion: 1 } }, { runValidators: true });
     await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash, evaluationJobId: jobId },
       { $set: { evaluationStatus: 'failed', evaluationError: `Canonical semantic rubric evaluation failed (${errorCode})`,
         evaluationErrorCode: errorCode, evaluationProvider: lastAttempt.provider || null, evaluationModel: lastAttempt.model || null,
-        evaluationAttempts: attempts, evaluationUpdatedAt: new Date() },
+        evaluationAttempts: attempts, evaluationDiagnostics: { terminalValidation: {
+          provider: lastAttempt.provider || null, model: lastAttempt.model || null,
+          attemptNumber: lastAttempt.attemptNumber || null,
+          fallbackIndex: Number.isInteger(lastAttempt.fallbackIndex) ? lastAttempt.fallbackIndex : null,
+          validationCode: lastAttempt.validationCode || null, validationStage: lastAttempt.validationStage || null,
+          jsonPath: lastAttempt.jsonPath || null, httpStatus: lastAttempt.httpStatus || null,
+          durationMs: lastAttempt.durationMs || null, finishReason: lastAttempt.finishReason || null
+        } }, evaluationUpdatedAt: new Date() },
       $unset: { evaluationSourceHash: 1, evaluationRubricSourceHash: 1 } });
     return { status: 'failed', sourceHash, provider: lastAttempt.provider || null, model: lastAttempt.model || null,
       overallScore: null, errorCode, attempts };

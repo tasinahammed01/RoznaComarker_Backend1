@@ -3,11 +3,11 @@
 const CATEGORY_POLICY = Object.freeze({
   CONTENT: Object.freeze({ minimumConfidence: 0.75, primarySource: 'AI' }),
   ORGANIZATION: Object.freeze({ minimumConfidence: 0.75, primarySource: 'AI' }),
-  VOCABULARY: Object.freeze({ minimumConfidence: 0.80, primarySource: 'LANGUAGETOOL' }),
-  GRAMMAR: Object.freeze({ minimumConfidence: 0.85, primarySource: 'LANGUAGETOOL' }),
-  MECHANICS: Object.freeze({ minimumConfidence: 0.90, primarySource: 'LANGUAGETOOL' })
+  VOCABULARY: Object.freeze({ minimumConfidence: 0.80, primarySource: 'AI' }),
+  GRAMMAR: Object.freeze({ minimumConfidence: 0.85, primarySource: 'AI' }),
+  MECHANICS: Object.freeze({ minimumConfidence: 0.90, primarySource: 'AI' })
 });
-const POLICY_VERSION = 'ai-correction-policy-v2';
+const POLICY_VERSION = 'ai-correction-policy-v3-ai-only';
 
 const ENV_KEYS = Object.freeze({
   CONTENT: 'AI_CORRECTION_CONTENT_MIN_CONFIDENCE',

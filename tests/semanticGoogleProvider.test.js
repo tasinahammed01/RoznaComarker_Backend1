@@ -7,6 +7,10 @@ const env = (overrides = {}) => ({
   AI_ATTEMPT_TIMEOUT_MS: '30000', AI_TOTAL_BUDGET_MS: '120000',
   AI_RETRIES_PER_MODEL: '0', AI_RETRY_DELAY_MS: '0',
   GEMINI_API_KEY: 'google-key', GEMINI_BASE_URL: 'https://google.test/v1',
+  ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1',
+  ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter', ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini',
+  ASSESSMENT_AI_PRIMARY_RETRIES: '0', ASSESSMENT_AI_FALLBACK_RETRIES: '0',
+  OPENROUTER_API_KEY: 'router-key', OPENROUTER_BASE_URL: 'https://router.test/v1',
   SEMANTIC_AI_MAX_OUTPUT_TOKENS: '1800', ...overrides
 });
 const response = (status, payload, retryAfter = null) => ({
@@ -15,45 +19,39 @@ const response = (status, payload, retryAfter = null) => ({
   text: async () => JSON.stringify(payload)
 });
 
-describe('Google adapter through the global semantic facade', () => {
-  test('uses any globally configured Google model and JSON mode', async () => {
+describe('Google adapter isolation from the semantic assessment facade', () => {
+  test('semantic facade ignores globally configured Google and uses assessment JSON mode', async () => {
     const fetchImpl = jest.fn(async () => response(200, {
-      candidates: [{ finishReason: 'STOP', content: { parts: [
-        { text: '{"ok":' }, { thought: true, text: 'private reasoning' }, { text: 'true}' }
-      ] } }]
+      choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }]
     }));
     const result = await client.runSemanticCompletion({
       messages: [{ role: 'system', content: 'system' }, { role: 'user', content: 'fixture' }],
       config: client.getSemanticAIConfig(env()), env: env(), fetchImpl
     });
     expect(result.content).toBe('{"ok":true}');
-    expect(fetchImpl.mock.calls[0][0]).toBe(
-      'https://google.test/v1/models/any-google-model:generateContent');
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://router.test/v1/chat/completions');
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.generationConfig).toMatchObject({
-      maxOutputTokens: 1800, responseMimeType: 'application/json'
-    });
+    expect(body).toMatchObject({ model: 'openai/gpt-4.1', max_tokens: 1800, response_format: { type: 'json_object' } });
     expect(result.content).not.toContain('private reasoning');
   });
 
-  test('Gemini 3 semantic JSON requests use minimal thinking', async () => {
+  test('global Gemini model cannot replace the assessment primary', async () => {
     const configuredEnv = env({ AI_PRIMARY_MODEL: 'gemini-3.6-flash' });
     const fetchImpl = jest.fn(async () => response(200, {
-      candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{"ok":true}' }] } }]
+      choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }]
     }));
     await client.runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
       config: client.getSemanticAIConfig(configuredEnv), env: configuredEnv, fetchImpl });
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).generationConfig.thinkingConfig)
-      .toEqual({ thinkingLevel: 'minimal' });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).model).toBe('openai/gpt-4.1');
   });
 
-  test('unsupported Google models omit thinkingConfig safely', async () => {
+  test('assessment OpenRouter requests omit Google thinkingConfig', async () => {
     const fetchImpl = jest.fn(async () => response(200, {
-      candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{"ok":true}' }] } }]
+      choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }]
     }));
     await client.runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
       config: client.getSemanticAIConfig(env()), env: env(), fetchImpl });
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).generationConfig)
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body))
       .not.toHaveProperty('thinkingConfig');
   });
 
@@ -97,13 +95,13 @@ describe('Google adapter through the global semantic facade', () => {
       env: env(), now: Date.now })).rejects.toMatchObject({ code, status, retryAfterMs: 2000 });
   });
 
-  test('does not hard-code a Google model allowlist', () => {
+  test('does not inherit a newly configured global Google model', () => {
     expect(client.getSemanticAIConfig(env({ AI_PRIMARY_MODEL: 'new-google-model' })))
-      .toMatchObject({ provider: 'google', model: 'new-google-model' });
+      .toMatchObject({ provider: 'openrouter', model: 'openai/gpt-4.1' });
   });
 
   test('missing credentials fail deterministically before transport', () => {
-    expect(() => client.getSemanticAIConfig(env({ GEMINI_API_KEY: '' })))
+    expect(() => client.getSemanticAIConfig(env({ OPENROUTER_API_KEY: '' })))
       .toThrow(expect.objectContaining({ code: 'AI_CHAIN_NOT_CONFIGURED' }));
   });
 });

@@ -7,7 +7,7 @@ const { createCanvas } = require('canvas');
 const { buildCanonicalSubmissionTranscript } = require('../utils/ocrTranscriptNormalizer');
 const { buildSubmissionFeedbackReportViewModel } = require('../pdf/sample/submissionFeedbackReportViewModel');
 const { resolveTeacherComments } = require('./teacherComments.service');
-const { getOfficialCorrectionLegend } = require('./correctionLegendCatalog.service');
+const { resolveLegend } = require('./correctionLegendResolver.service');
 const { ApiError } = require('../middlewares/error.middleware');
 const logger = require('../utils/logger');
 
@@ -165,7 +165,8 @@ async function buildPersistedSubmissionFeedbackReport({ submission, submissionFe
   const transcriptPages = canonical.pages.map((page) => ({ ...page, ...(assets.metadataByPageKey[`${objectId(page.fileId)}:${Number(page.pageNumber)}`] || {}) }));
   const feedbackObject = submissionFeedback?.toObject ? submissionFeedback.toObject() : { ...(submissionFeedback || {}) }; const teacherObject = feedback?.toObject ? feedback.toObject() : { ...(feedback || {}) };
   const teacherComments = resolveTeacherComments({ submissionFeedback: feedbackObject, legacyFeedback: teacherObject });
-  const vm = buildSubmissionFeedbackReportViewModel({ generatedAt, identity, legend: getOfficialCorrectionLegend(), submission: { ...(submission.toObject ? submission.toObject() : submission), files: files.map(objectId), canonicalText: canonical.text, transcriptPages, imageDataByPageKey: assets.byPageKey }, evaluation: { ...feedbackObject, status: submission.evaluationStatus }, feedback: { ...feedbackObject, teacherComments, overrideReason: teacherObject.overrideReason } });
+  const legend = await resolveLegend();
+  const vm = buildSubmissionFeedbackReportViewModel({ generatedAt, identity, legend, submission: { ...(submission.toObject ? submission.toObject() : submission), files: files.map(objectId), canonicalText: canonical.text, transcriptPages, imageDataByPageKey: assets.byPageKey }, evaluation: { ...feedbackObject, status: submission.evaluationStatus }, feedback: { ...feedbackObject, teacherComments, overrideReason: teacherObject.overrideReason } });
   return { viewModel: vm, diagnostics: { ...safeDiagnostics(submission, transcriptPages, Array.isArray(submission.writingCorrections) ? submission.writingCorrections : [], vm.submittedPages), missingAssetCount: vm.submittedPages.filter((page) => !page.imageDataUrl).length,
     assetMetrics: assets.metrics, totalEmbeddedAssetBytes: assets.totalEmbeddedBytes },
     timings: { normalizationMs: normalizedAt - startedAt, assetResolutionMs: assetsAt - normalizedAt, viewModelMs: Date.now() - assetsAt, totalMs: Date.now() - startedAt } };

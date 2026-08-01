@@ -1,6 +1,9 @@
-const { parseJson, validateAssessment, assess } = require('../src/services/semanticRubricAssessment.service');
+const { parseJson, validateAssessment, assess, transcriptEvidenceCatalog, buildRequest } = require('../src/services/semanticRubricAssessment.service');
+const { NO_TRANSCRIPT_EVIDENCE_SENTINEL } = require('../src/services/structuredOutputSchemas.service');
+const { getSemanticAIConfig } = require('../src/services/semanticAIClient.service');
 
 const transcript = 'This essay has a clear idea. The ending repeats the same point.';
+const evidence = transcriptEvidenceCatalog(transcript);
 const corrections = [
   { id: 'c1', category: 'CONTENT', quotedText: 'clear idea' },
   { id: 'o1', category: 'ORGANIZATION', quotedText: 'The ending repeats' },
@@ -10,14 +13,14 @@ const corrections = [
 function valid() {
   return { sourceHash: 'hash', categories: {
     CONTENT: { score: 18, maxScore: 20, comment: 'Relevant and developed.',
-      strengthEvidence: [{ quotedText: 'clear idea', explanation: 'This states a controlling idea.' }],
-      improvementEvidence: [{ correctionId: 'c1', quotedText: 'clear idea', explanation: 'Needs more support.', suggestion: 'Add evidence.' }] },
+      strengthEvidence: [{ evidenceId: evidence[0].evidenceId, explanation: 'This states a controlling idea.' }],
+      improvementEvidence: [{ evidenceType: 'correction', correctionId: 'c1', evidenceId: null, explanation: 'Needs more support.', suggestion: 'Add evidence.' }] },
     ORGANIZATION: { score: 16, maxScore: 20, comment: 'Mostly logical.',
-      strengthEvidence: [{ quotedText: 'This essay has a clear idea.', explanation: 'The opening is clear.' }],
-      improvementEvidence: [{ correctionId: 'o1', quotedText: 'The ending repeats', explanation: 'The ending repeats.', suggestion: 'Revise the conclusion.' }] },
+      strengthEvidence: [{ evidenceId: evidence[0].evidenceId, explanation: 'The opening is clear.' }],
+      improvementEvidence: [{ evidenceType: 'correction', correctionId: 'o1', evidenceId: null, explanation: 'The ending repeats.', suggestion: 'Revise the conclusion.' }] },
     VOCABULARY: { score: 15, maxScore: 20, comment: 'Adequate but repetitive.',
-      strengthEvidence: [{ quotedText: 'clear idea', explanation: 'The phrase is understandable.' }],
-      improvementEvidence: [{ correctionId: 'v1', quotedText: 'same point', explanation: 'The wording is repetitive.', suggestion: 'Use a more precise phrase.' }] }
+      strengthEvidence: [{ evidenceId: evidence[0].evidenceId, explanation: 'The phrase is understandable.' }],
+      improvementEvidence: [{ evidenceType: 'correction', correctionId: 'v1', evidenceId: null, explanation: 'The wording is repetitive.', suggestion: 'Use a more precise phrase.' }] }
   } };
 }
 
@@ -27,11 +30,26 @@ describe('semantic rubric assessment validation', () => {
       .toThrow(/source hash/i);
   });
 
-  test('rejects invented evidence quotes', () => {
+  test('rejects unknown transcript evidence IDs', () => {
     const payload = valid();
-    payload.categories.CONTENT.strengthEvidence[0].quotedText = 'invented quotation';
+    payload.categories.CONTENT.strengthEvidence[0].evidenceId = 'invented-id';
     expect(() => validateAssessment(payload, { sourceHash: 'hash', transcript, corrections }))
-      .toThrow(/quote/i);
+      .toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_EVIDENCE_ID_INVALID' }));
+  });
+
+  test('never prompts, persists, or resolves the private empty-catalog sentinel', () => {
+    const request = buildRequest({ transcript: '', corrections: [], sourceHash: 'empty-hash', assignment: {} });
+    expect(request.evidenceCatalog).toEqual([]);
+    expect(JSON.stringify(request.messages)).not.toContain(NO_TRANSCRIPT_EVIDENCE_SENTINEL);
+    const emptyCategory = { score: 20, maxScore: 20, comment: 'No unsupported judgment.',
+      strengthEvidence: [], improvementEvidence: [] };
+    const payload = { sourceHash: 'empty-hash', categories: {
+      CONTENT: { ...emptyCategory, strengthEvidence: [{ evidenceId: NO_TRANSCRIPT_EVIDENCE_SENTINEL,
+        explanation: 'This must never resolve.' }] },
+      ORGANIZATION: { ...emptyCategory }, VOCABULARY: { ...emptyCategory }
+    } };
+    expect(() => validateAssessment(payload, { sourceHash: 'empty-hash', transcript: '', corrections: [] }))
+      .toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_EVIDENCE_ID_INVALID' }));
   });
 
   test('rejects invalid correction IDs', () => {
@@ -44,11 +62,11 @@ describe('semantic rubric assessment validation', () => {
   test('accepts transcript-grounded Content and Organization improvement evidence with zero corrections', () => {
     const payload = valid();
     payload.categories.CONTENT.improvementEvidence = [{
-      evidenceType: 'transcript', correctionId: null, quotedText: 'clear idea',
+      evidenceType: 'transcript', correctionId: null, evidenceId: evidence[0].evidenceId,
       explanation: 'The idea needs more development.', suggestion: 'Add a specific supporting example.'
     }];
     payload.categories.ORGANIZATION.improvementEvidence = [{
-      evidenceType: 'transcript', correctionId: null, quotedText: 'The ending repeats',
+      evidenceType: 'transcript', correctionId: null, evidenceId: evidence[1].evidenceId,
       explanation: 'The conclusion repeats rather than synthesizes.', suggestion: 'Synthesize the main point.'
     }];
     const result = validateAssessment(payload, {
@@ -57,10 +75,12 @@ describe('semantic rubric assessment validation', () => {
       corrections: corrections.filter((item) => !['CONTENT', 'ORGANIZATION'].includes(item.category))
     });
     expect(result.categories.CONTENT.improvementEvidence[0]).toMatchObject({
-      evidenceType: 'transcript', correctionId: null, quotedText: 'clear idea'
+      evidenceType: 'transcript', correctionId: null, evidenceId: evidence[0].evidenceId,
+      quotedText: evidence[0].quotedText
     });
     expect(result.categories.ORGANIZATION.improvementEvidence[0]).toMatchObject({
-      evidenceType: 'transcript', correctionId: null, quotedText: 'The ending repeats'
+      evidenceType: 'transcript', correctionId: null, evidenceId: evidence[1].evidenceId,
+      quotedText: evidence[1].quotedText
     });
   });
 
@@ -72,14 +92,29 @@ describe('semantic rubric assessment validation', () => {
     })).toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_CORRECTION_INVALID' }));
   });
 
-  test('rejects an ungrounded transcript-evidence quotation', () => {
+  test('rejects an unknown transcript evidence ID', () => {
     const payload = valid();
     payload.categories.CONTENT.improvementEvidence = [{
-      evidenceType: 'transcript', correctionId: null, quotedText: 'invented passage',
+      evidenceType: 'transcript', correctionId: null, evidenceId: 'invented-id',
       explanation: 'Needs support.', suggestion: 'Add support.'
     }];
     expect(() => validateAssessment(payload, { sourceHash: 'hash', transcript, corrections: [] }))
-      .toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_EVIDENCE_UNGROUNDED' }));
+      .toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_EVIDENCE_ID_INVALID' }));
+  });
+
+  test('restricts conclusion claims to transcript evidence IDs in the final quarter', () => {
+    const payload = valid();
+    payload.categories.ORGANIZATION.comment = 'The conclusion is weak.';
+    payload.categories.ORGANIZATION.strengthEvidence = [{ evidenceId: evidence[0].evidenceId,
+      explanation: 'The opening is clear.' }];
+    payload.categories.ORGANIZATION.improvementEvidence = [{ evidenceType: 'correction', correctionId: 'o1',
+      evidenceId: null, explanation: 'The ending repeats.', suggestion: 'Revise the conclusion.' }];
+    expect(() => validateAssessment(payload, { sourceHash: 'hash', transcript, corrections }))
+      .toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_CONCLUSION_EVIDENCE_INVALID' }));
+    payload.categories.ORGANIZATION.improvementEvidence = [{ evidenceType: 'transcript', correctionId: null,
+      evidenceId: evidence[1].evidenceId, explanation: 'The ending repeats.', suggestion: 'Revise the conclusion.' }];
+    expect(validateAssessment(payload, { sourceHash: 'hash', transcript, corrections })
+      .categories.ORGANIZATION.improvementEvidence[0].quotedText).toBe(evidence[1].quotedText);
   });
 
   test.each([99, -1, '18'])('rejects incorrect score type or range: %p', (score) => {
@@ -133,6 +168,32 @@ describe('semantic rubric assessment validation', () => {
     expect(result.categories.VOCABULARY.score).toBe(15);
   });
 
+  test.each(['3 vocabulary errors were detected.', 'Frequent vocabulary errors weaken precision.'])
+  ('normalizes a zero-count Vocabulary contradiction without changing score or evidence: %s', (comment) => {
+    const payload = valid();
+    payload.categories.VOCABULARY.comment = comment;
+    payload.categories.VOCABULARY.improvementEvidence = [{ evidenceType: 'transcript', correctionId: null,
+      evidenceId: evidence[1].evidenceId, explanation: 'The wording is repetitive.', suggestion: 'Use more precise wording.' }];
+    const result = validateAssessment(payload, { sourceHash: 'hash', transcript,
+      corrections: corrections.filter((item) => item.category !== 'VOCABULARY') });
+    expect(result.categories.VOCABULARY.score).toBe(15);
+    expect(result.categories.VOCABULARY.comment).toBe('This category was assessed holistically from the submitted writing. No validated canonical vocabulary corrections were recorded.');
+    expect(result.categories.VOCABULARY.improvementEvidence[0].evidenceId).toBe(evidence[1].evidenceId);
+    expect(result.diagnostics.commentNormalizations).toEqual([expect.objectContaining({ category: 'VOCABULARY',
+      commentNormalized: true, commentNormalizationReason: 'ZERO_CANONICAL_COUNT_CONTRADICTION', canonicalCount: 0 })]);
+  });
+
+  test('normalizes a nonzero numeric claim to the authoritative canonical count', () => {
+    const payload = valid();
+    payload.categories.VOCABULARY.comment = '5 vocabulary corrections were detected.';
+    const result = validateAssessment(payload, { sourceHash: 'hash', transcript,
+      corrections: [...corrections, { id: 'v2', category: 'VOCABULARY', quotedText: 'same point' }] });
+    expect(result.categories.VOCABULARY.score).toBe(15);
+    expect(result.categories.VOCABULARY.comment).toContain('2 validated canonical vocabulary corrections');
+    expect(result.diagnostics.commentNormalizations[0]).toMatchObject({ canonicalCount: 2,
+      commentNormalizationReason: 'NONZERO_CANONICAL_COUNT_CONTRADICTION' });
+  });
+
   test('accepts a gateway-validated fallback replacement in one transaction', async () => {
     const invalid = valid();
     invalid.categories.CONTENT.score = 25;
@@ -156,6 +217,11 @@ describe('semantic rubric assessment validation', () => {
     expect(runCompletion.mock.calls[0][0]).toMatchObject({ schemaName: 'semantic_rubric_assessment',
       responseSchema: { type: 'object', additionalProperties: false,
         properties: { sourceHash: { const: 'hash' } } } });
+    const responseSchema = runCompletion.mock.calls[0][0].responseSchema;
+    expect(responseSchema.properties.categories.properties.CONTENT.properties.strengthEvidence.items
+      .properties.evidenceId.enum).toEqual(evidence.map((item) => item.evidenceId));
+    expect(responseSchema.properties.categories.properties.CONTENT.properties.improvementEvidence.items
+      .properties.correctionId.enum).toEqual([null, 'c1']);
     expect(result.categories.CONTENT.score).toBe(18);
     expect(result.metrics.validationRepairAttempted).toBe(false);
     expect(result.metrics.attempts).toHaveLength(2);
@@ -182,7 +248,7 @@ describe('semantic rubric assessment validation', () => {
     invalid.categories.CONTENT.improvementEvidence[0].correctionId = 'invented-content-id';
     const repaired = valid();
     repaired.categories.CONTENT.improvementEvidence = [{
-      evidenceType: 'transcript', correctionId: null, quotedText: 'clear idea',
+      evidenceType: 'transcript', correctionId: null, evidenceId: evidence[0].evidenceId,
       explanation: 'The idea needs more development.', suggestion: 'Add a specific supporting example.'
     }];
     const runCompletion = jest.fn(async ({ validate }) => ({
@@ -212,5 +278,44 @@ describe('semantic rubric assessment validation', () => {
     });
     expect(result.metrics.attempts).toHaveLength(2);
     expect(result.metrics.attempts[1]).toMatchObject({ status: 'success' });
+  });
+
+  test('rejects invented primary evidence, then normalizes a valid zero-count fallback comment', async () => {
+    const configuredEnv = {
+      ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1',
+      ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter', ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini',
+      ASSESSMENT_AI_PRIMARY_RETRIES: '0', ASSESSMENT_AI_FALLBACK_RETRIES: '0',
+      ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '30000', ASSESSMENT_AI_TOTAL_BUDGET_MS: '90000',
+      ASSESSMENT_AI_RETRY_DELAY_MS: '0', SEMANTIC_AI_MAX_OUTPUT_TOKENS: '4000',
+      OPENROUTER_API_KEY: 'test-key', OPENROUTER_BASE_URL: 'https://router.test/v1'
+    };
+    const invalidPrimary = valid();
+    invalidPrimary.categories.CONTENT.strengthEvidence[0].evidenceId = 'invented-id';
+    const validFallback = valid();
+    validFallback.categories.VOCABULARY.comment = '3 vocabulary errors were detected.';
+    validFallback.categories.VOCABULARY.improvementEvidence = [{ evidenceType: 'transcript', correctionId: null,
+      evidenceId: evidence[1].evidenceId, explanation: 'The wording is repetitive.', suggestion: 'Use precise wording.' }];
+    const payloads = [invalidPrimary, validFallback];
+    const fetchImpl = jest.fn(async () => ({ ok: true, status: 200, headers: { get: () => 'application/json' },
+      text: async () => JSON.stringify({ choices: [{ finish_reason: 'stop',
+        message: { content: JSON.stringify(payloads.shift()) } }] }) }));
+    const result = await assess({ transcript, sourceHash: 'hash', assignment: { title: 'Essay' },
+      corrections: corrections.filter((item) => item.category !== 'VOCABULARY'), statistics: { vocabulary: 0 },
+      pageManifest: [] }, { config: getSemanticAIConfig(configuredEnv), env: configuredEnv, fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).model).toBe('openai/gpt-4.1');
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).model).toBe('openai/gpt-4.1-mini');
+    expect(result.metrics.attempts[0]).toMatchObject({ fallbackIndex: 0, code: 'AI_OUTPUT_VALIDATION_FAILED',
+      validationCode: 'SEMANTIC_RUBRIC_EVIDENCE_ID_INVALID' });
+    expect(result.metrics.attempts[1]).toMatchObject({ fallbackIndex: 1, status: 'success' });
+    expect(result.categories.VOCABULARY.score).toBe(15);
+    expect(result.categories.VOCABULARY.comment).not.toMatch(/3 vocabulary errors|frequent vocabulary errors/iu);
+    expect(result.diagnostics.commentNormalizations[0]).toMatchObject({ category: 'VOCABULARY',
+      commentNormalizationReason: 'ZERO_CANONICAL_COUNT_CONTRADICTION' });
+    const schema = JSON.parse(fetchImpl.mock.calls[0][1].body).response_format.json_schema.schema;
+    expect(schema.properties.categories.properties.CONTENT.properties.strengthEvidence.items
+      .properties.evidenceId.enum).toEqual(evidence.map((item) => item.evidenceId));
+    expect(schema.properties.categories.properties.CONTENT.properties.strengthEvidence.items
+      .properties.evidenceId.enum).not.toContain('invented-id');
   });
 });

@@ -9,8 +9,8 @@ const RUBRIC_MAX = Object.freeze({
   PRESENTATION: 5
 });
 
-const ASSESSMENT_VERSION = 'writing-rubric-100-v3';
-const EVALUATION_VERSION = 'canonical-evaluation-3';
+const ASSESSMENT_VERSION = 'writing-rubric-100-v4-legend-deductions';
+const EVALUATION_VERSION = 'canonical-evaluation-6-evidence-schema-comments';
 
 // Symbol severities are intentionally conservative. Unknown symbols get the
 // default penalty so newly-added correction symbols cannot be treated as free.
@@ -39,39 +39,30 @@ function categoryCorrections(corrections, category) {
 }
 
 function weightedIssuePenalty(corrections, category) {
-  const severity = SYMBOL_SEVERITY[category] || {};
-  const occurrences = new Map();
-  let total = 0;
-  for (const correction of categoryCorrections(corrections, category)) {
-    const symbol = String(correction?.symbol || 'DEFAULT').toUpperCase();
-    const rule = String(correction?.languageToolRuleId || '').trim().toUpperCase();
-    const key = `${symbol}:${rule || 'CANONICAL_PATTERN'}`;
-    const seen = occurrences.get(key) || 0;
-    occurrences.set(key, seen + 1);
-    const repeatedFactor = seen === 0 ? 1 : Math.max(0.25, Math.pow(0.78, seen));
-    total += (severity[symbol] || severity.DEFAULT || 1) * repeatedFactor;
-  }
-  return total;
+  return categoryCorrections(corrections, category).reduce((total, correction) => {
+    const applied = Number(correction?.appliedDeduction);
+    if (Number.isFinite(applied) && applied >= 0) return total + applied;
+    const base = Number(correction?.defaultDeduction);
+    return total + (Number.isFinite(base) && base >= 0 ? base : 0);
+  }, 0);
 }
 
 function scoringAudit({ corrections, category, maxScore, wordCount }) {
-  const severity = SYMBOL_SEVERITY[category] || {};
   const groups = new Map();
   for (const correction of categoryCorrections(corrections, category)) {
     const symbol = String(correction?.symbol || 'DEFAULT').toUpperCase();
-    const rule = String(correction?.languageToolRuleId || '').trim().toUpperCase();
-    const key = `${symbol}:${rule || 'CANONICAL_PATTERN'}`;
-    const group = groups.get(key) || { key, symbol, ruleId: rule || null, count: 0,
-      severityWeight: severity[symbol] || severity.DEFAULT || 1, weightedPenalty: 0 };
-    const factor = group.count === 0 ? 1 : Math.max(0.25, Math.pow(0.78, group.count));
+    const key = `${symbol}:CANONICAL_PATTERN`;
+    const group = groups.get(key) || { key, symbol, ruleId: null, count: 0,
+      severityWeight: Number(correction?.defaultDeduction) || 0, weightedPenalty: 0 };
+    const factor = Number.isFinite(Number(correction?.repetitionFactor)) ? Number(correction.repetitionFactor) : 1;
     group.count += 1;
     group.weightedPenalty += group.severityWeight * factor;
     groups.set(key, group);
   }
   const weightedPenalty = [...groups.values()].reduce((sum, group) => sum + group.weightedPenalty, 0);
   const density = wordCount ? weightedPenalty / Math.max(120, wordCount) : 0;
-  const baseDeduction = weightedPenalty * (maxScore === 25 ? 0.78 : 0.46);
-  const densityDeduction = density * maxScore * 3.25;
+  const baseDeduction = Math.min(maxScore * 0.75, weightedPenalty);
+  const densityDeduction = 0;
   const unclampedScore = maxScore - baseDeduction - densityDeduction;
   return { category, wordCount, issueCount: categoryCorrections(corrections, category).length,
     groups: [...groups.values()], weightedPenalty, density, baseDeduction, densityDeduction,
@@ -83,7 +74,7 @@ function scoreFromWeightedIssues({ corrections, category, maxScore, wordCount })
   const issueCount = categoryCorrections(corrections, category).length;
   const weightedPenalty = weightedIssuePenalty(corrections, category);
   const density = weightedPenalty / Math.max(120, wordCount);
-  const raw = maxScore - (weightedPenalty * (maxScore === 25 ? 0.78 : 0.46)) - (density * maxScore * 3.25);
+  const raw = maxScore - Math.min(maxScore * 0.75, weightedPenalty);
   let score = roundToHalf(clamp(raw, maxScore));
   if (issueCount > 0) score = Math.min(score, maxScore - 0.5);
   return { score, weightedPenalty, density, issueCount };

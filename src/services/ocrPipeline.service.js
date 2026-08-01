@@ -52,21 +52,8 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
     if (!(await saveCurrentJob())) return { ocrStatus: 'superseded' };
   }
 
-  const ocrPages = [];
-  const perFileTexts = [];
-  const perFileRawTexts = [];
-  let legacyFirstOcrText = '';
-  let legacyFirstRawOcrText = '';
-  let legacyFirstOcrWords = [];
-
-  let attempted = 0;
-  let processed = 0;
-
-  for (let i = 0; i < ids.length; i++) {
-    const fileId = ids[i];
-    if (!fileId) continue;
-
-    attempted += 1;
+  const attempted = ids.length;
+  const results = await Promise.all(ids.map(async (fileId, fileOrder) => {
 
     const fileDoc = await File.findById(fileId);
     if (!fileDoc || !fileDoc.path) {
@@ -74,7 +61,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
         message: 'OCR skipped: file doc not found or missing path',
         fileId: String(fileId)
       });
-      continue;
+      return null;
     }
 
     const absolute = toAbsoluteStoredPath(fileDoc.path);
@@ -84,7 +71,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
         fileId: String(fileId),
         storedPath: fileDoc.path
       });
-      continue;
+      return null;
     }
 
     if (!fs.existsSync(absolute)) {
@@ -95,7 +82,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
         absolutePath: absolute,
         cwd: process.cwd()
       });
-      continue;
+      return null;
     }
 
     let ocr;
@@ -108,25 +95,14 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
         error: err && err.message ? String(err.message) : 'Unknown OCR provider error',
         stack: err && err.stack
       });
-      continue;
+      return null;
     }
     const rawText = ocr && (ocr.fullText || ocr.transcriptText) ? String(ocr.fullText || ocr.transcriptText) : '';
     const text = normalizeOcrTranscript(ocr && (ocr.transcriptText || ocr.fullText));
     const words = toStoredOcrWords(ocr && Array.isArray(ocr.words) ? ocr.words : []);
 
-    processed += 1;
-
-    if (i === 0) {
-      legacyFirstOcrText = text;
-      legacyFirstRawOcrText = rawText;
-      legacyFirstOcrWords = words;
-    }
-
-    perFileTexts.push(text);
-    perFileRawTexts.push(rawText);
-
     const pages = (ocr && Array.isArray(ocr.pages) ? ocr.pages : [])
-      .map((p) => {
+      .map((p, pageIndex) => {
         const pageNumber = typeof p?.pageNumber === 'number' ? p.pageNumber : Number(p?.pageNumber);
         const n = Number.isFinite(pageNumber) ? pageNumber : 1;
 
@@ -148,6 +124,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
                   text: t,
                   page: n,
                   paragraphIndex: Number.isFinite(Number(w?.paragraphIndex)) ? Number(w.paragraphIndex) : undefined,
+                  confidence: Number.isFinite(Number(w?.confidence)) ? Number(w.confidence) : undefined,
                   bbox: {
                     x0: x,
                     y0: y,
@@ -161,7 +138,9 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
 
         return {
           fileId,
+          fileOrder,
           pageNumber: n,
+          pageIndex,
           text: text,
           rawText,
           words: pageWords
@@ -169,18 +148,26 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
       })
       .filter(Boolean);
 
-    if (pages.length) {
-      ocrPages.push(...pages);
-    } else {
-      ocrPages.push({
+    return { fileOrder, text, rawText, words, pages: pages.length ? pages : [{
         fileId,
+        fileOrder,
         pageNumber: 1,
+        pageIndex: 0,
         text,
         rawText,
         words
-      });
-    }
-  }
+      }] };
+  }));
+  const completedResults = results.filter(Boolean).sort((a, b) => a.fileOrder - b.fileOrder);
+  const processed = completedResults.length;
+  const ocrPages = completedResults.flatMap((result) => result.pages)
+    .sort((a, b) => a.fileOrder - b.fileOrder || a.pageIndex - b.pageIndex);
+  const perFileTexts = completedResults.map((result) => result.text);
+  const perFileRawTexts = completedResults.map((result) => result.rawText);
+  const firstResult = completedResults.find((result) => result.fileOrder === 0);
+  const legacyFirstOcrText = firstResult?.text || '';
+  const legacyFirstRawOcrText = firstResult?.rawText || '';
+  const legacyFirstOcrWords = firstResult?.words || [];
 
   if (!processed || !ocrPages.length) {
     const msg =
@@ -259,6 +246,7 @@ function toStoredOcrWords(words) {
       return {
         text,
         page,
+        confidence: Number.isFinite(Number(w.confidence)) ? Number(w.confidence) : undefined,
         paragraphIndex: Number.isFinite(Number(w.paragraphIndex)) ? Number(w.paragraphIndex) : undefined,
         bbox: {
           x0,

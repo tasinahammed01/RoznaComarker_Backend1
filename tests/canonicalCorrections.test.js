@@ -16,6 +16,15 @@ describe('canonical correction primitives', () => {
     expect(writing.mapLanguageToolRule({ rule: { id, issueType: 'grammar', category: { id: 'GRAMMAR' } } }).symbol).toBe(symbol);
   });
 
+  test.each([
+    ['MOST_COMPARATIVE', 'GRAMMAR', 'WO'],
+    ['IS_OWN', 'VOCABULARY', 'WF'],
+    ['THE_CC', 'GRAMMAR', 'FRAG']
+  ])('maps audited LanguageTool rule %s narrowly to %s/%s', (id, category, symbol) => {
+    expect(writing.mapLanguageToolRule({ rule: { id, issueType: 'grammar', category: { id: 'GRAMMAR' } } }))
+      .toMatchObject({ accepted: true, category, symbol, reason: 'EXACT_RULE_OVERRIDE' });
+  });
+
   test('omits unknown LanguageTool rules', () => {
     expect(writing.mapLanguageToolRule({ rule: { id: 'UNKNOWN_STYLE_RULE', issueType: 'style' } }))
       .toMatchObject({ accepted: false, reason: 'UNSUPPORTED_LANGUAGETOOL_RULE' });
@@ -140,5 +149,17 @@ describe('canonical correction primitives', () => {
       message: 'Subject and verb do not agree', suggestedText: 'students learn', startChar: 0, endChar: 15, confidence: 1 },
     'students learns', [], writing.defaultLegend(), 'LANGUAGETOOL');
     expect(result).toMatchObject({ wordIds: [], bboxList: [], category: 'GRAMMAR', symbol: 'AGR' });
+  });
+
+  test('retains OCR provenance and marks low-confidence LT mechanics as suspect', () => {
+    const words = normalizeOcrWordsFromStored([
+      { text: 'Cames', confidence: 0.42, page: 1, bbox: { x0: 1, y0: 2, x1: 6, y1: 6 } }
+    ], { fileId: 'f' });
+    const built = buildTranscriptAndSpans(words);
+    const correction = canonical.normalizeCorrection({ category: 'MECHANICS', symbol: 'SP', quotedText: 'Cames',
+      suggestedText: 'Cams', startChar: 0, endChar: 5, confidence: 1, languageToolRuleId: 'MORFOLOGIK_RULE_EN_US' },
+    built.text, built.spans, writing.defaultLegend(), 'LANGUAGETOOL');
+    expect(correction).toMatchObject({ ocrConfidence: 0.42, ocrSuspect: true,
+      ocrSuspectReasons: ['LOW_OCR_CONFIDENCE'] });
   });
 });
