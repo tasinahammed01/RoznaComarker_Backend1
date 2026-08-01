@@ -11,6 +11,7 @@ const service = require('../src/services/adaptivePractice.service');
 
 function aiPayload(targets, evidence = 'This is the student writing.') {
   return JSON.stringify({ activities: targets.map(({ id, category }) => ({
+    targetId: `adaptive:${id.toLowerCase()}`,
     skillId: id,
     category,
     title: `Practice ${category}`,
@@ -207,6 +208,38 @@ describe('adaptive practice', () => {
     }));
     expect((await service.generateSession(submission._id, studentId)).state).toBe('ready');
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('performs one bounded same-provider repair for an incorrect activity count', async () => {
+    const { studentId, submission } = await seed({ CONTENT: { score: 10, maxScore: 20 }, ORGANIZATION: { score: 10, maxScore: 20 } });
+    const targets = [{ id: 'CONTENT', category: 'Task Achievement' }, { id: 'ORGANIZATION', category: 'Coherence & Flow' }];
+    const repaired = aiPayload(targets);
+    const repairSpy = jest.spyOn(generationAI, 'repair').mockImplementation(async (_messages, options) => ({
+      content: repaired, value: options.validate(repaired), provider: options.provider, model: options.model
+    }));
+    jest.spyOn(generationAI, 'generate').mockImplementation(async (_messages, options) => ({
+      value: await options.validate(aiPayload(targets.slice(0, 1)), {
+        provider: 'openrouter', model: 'openai/gpt-4.1', attemptNumber: 1
+      }), metadata: { attemptCount: 1, fallbackIndex: 0 }, provider: 'openrouter', model: 'openai/gpt-4.1'
+    }));
+
+    const result = await service.generateSession(submission._id, studentId);
+    expect(result.state).toBe('ready');
+    expect(result.session.activities).toHaveLength(2);
+    expect(repairSpy).toHaveBeenCalledTimes(1);
+    expect(result.session.generation.metrics).toMatchObject({ repairAttemptCount: 1, totalAttemptCount: 2 });
+  });
+
+  it('reports missing, duplicate, and unexpected backend-owned target IDs', () => {
+    const targets = service.buildTargets([
+      { id: 'CONTENT', category: 'Task Achievement', percentage: 50 },
+      { id: 'GRAMMAR', category: 'Grammar', percentage: 50 }
+    ]);
+    expect(service.targetDiagnostics([
+      { targetId: 'adaptive:content' }, { targetId: 'adaptive:content' }, { targetId: 'adaptive:other' }
+    ], targets)).toMatchObject({ expectedActivityCount: 2, returnedActivityCount: 3,
+      missingTargetIds: ['adaptive:grammar'], duplicateTargetIds: ['adaptive:content'],
+      unexpectedTargetIds: ['adaptive:other'] });
   });
 
   it('persists no partial activities after gateway validation fails', async () => {

@@ -20,8 +20,15 @@ function config(env = process.env) {
   }
 }
 
+function singleProviderConfig(current, provider, model, timeoutMs) {
+  return { chain: [{ provider, model, fallbackIndex: 0 }],
+    attemptTimeoutMs: Math.min(current.attemptTimeoutMs, timeoutMs || current.attemptTimeoutMs),
+    totalBudgetMs: current.totalBudgetMs, retriesPerModel: 0, primaryRetries: 0, fallbackRetries: 0,
+    retryDelayMs: current.retryDelayMs };
+}
+
 async function generate(messages, { timeoutMs, env = process.env, fetchImpl = global.fetch,
-  now = Date.now, validate } = {}) {
+  now = Date.now, validate, responseSchema } = {}) {
   const current = config(env);
   if (!current.configured) {
     const error = new Error('Adaptive Practice AI is not configured.');
@@ -30,7 +37,8 @@ async function generate(messages, { timeoutMs, env = process.env, fetchImpl = gl
     throw error;
   }
   const result = await gateway.generate({ feature: 'adaptive_practice_generation', messages,
-    maxOutputTokens: current.maxOutputTokens, responseFormat: 'json', validate,
+    maxOutputTokens: current.maxOutputTokens, responseFormat: 'json', responseSchema,
+    schemaName: 'adaptive_practice_activities', validate,
     googleThinkingLevel: 'minimal',
     env, fetchImpl, now, config: {
       chain: current.chain,
@@ -45,4 +53,15 @@ async function generate(messages, { timeoutMs, env = process.env, fetchImpl = gl
     metadata: result.metadata, timings: { semanticProviderMs: result.durationMs } };
 }
 
-module.exports = { config, generate };
+async function repair(messages, { provider, model, timeoutMs, env = process.env,
+  fetchImpl = global.fetch, now = Date.now, validate, responseSchema } = {}) {
+  const current = config(env);
+  const result = await gateway.generate({ feature: 'adaptive_practice_generation_repair', messages,
+    maxOutputTokens: current.maxOutputTokens, responseFormat: 'json', responseSchema,
+    schemaName: 'adaptive_practice_activities_repair', validate, googleThinkingLevel: 'minimal',
+    env, fetchImpl, now, config: singleProviderConfig(current, provider, model, timeoutMs) });
+  return { content: result.content, value: result.value, usage: result.usage,
+    provider: result.provider, model: result.model, metadata: result.metadata };
+}
+
+module.exports = { config, generate, repair };

@@ -28,12 +28,26 @@ async function getBrowser() {
   if (browser?.connected) return browser;
   if (launchPromise) return launchPromise;
   launchPromise = (async () => {
-    const puppeteer = getPuppeteer(); const resolved = resolveBrowserExecutable(); const isRestart = Boolean(browser);
+    const puppeteer = getPuppeteer(); const resolutionStartedAt = Date.now();
+    const resolved = resolveBrowserExecutable(); const isRestart = Boolean(browser);
+    logger.metric({ event: 'pdf_render_stage', stage: 'browser_executable_resolution',
+      elapsedMs: Date.now() - resolutionStartedAt, browserStrategy: resolved.strategy,
+      executableBasename: path.basename(resolved.executablePath) });
     const noSandbox = config().noSandbox;
-    const instance = await puppeteer.launch({ headless: true, executablePath: resolved.executablePath,
-      ...(noSandbox ? { args: ['--no-sandbox', '--disable-setuid-sandbox'] } : {}),
-      timeout: numberEnv('PUPPETEER_LAUNCH_TIMEOUT_MS', 30000),
-      protocolTimeout: numberEnv('PUPPETEER_PROTOCOL_TIMEOUT_MS', 30000) });
+    const launchStartedAt = Date.now(); let instance;
+    try {
+      instance = await puppeteer.launch({ headless: true, executablePath: resolved.executablePath,
+        ...(noSandbox ? { args: ['--no-sandbox', '--disable-setuid-sandbox'] } : {}),
+        timeout: numberEnv('PUPPETEER_LAUNCH_TIMEOUT_MS', 30000),
+        protocolTimeout: numberEnv('PUPPETEER_PROTOCOL_TIMEOUT_MS', 30000) });
+      logger.metric({ event: 'pdf_render_stage', stage: 'browser_launch', elapsedMs: Date.now() - launchStartedAt,
+        browserStrategy: resolved.strategy, executableBasename: path.basename(resolved.executablePath), errorCode: null });
+    } catch (error) {
+      logger.metric({ event: 'pdf_render_stage', stage: 'browser_launch', elapsedMs: Date.now() - launchStartedAt,
+        browserStrategy: resolved.strategy, executableBasename: path.basename(resolved.executablePath),
+        errorCode: String(error?.name || error?.code || 'BROWSER_LAUNCH_FAILED').slice(0, 80) });
+      throw error;
+    }
     browser = instance; coldStarts += isRestart ? 0 : 1; restarts += isRestart ? 1 : 0;
     instance.once('disconnected', () => { if (browser === instance) browser = null; logger.metric({ event: 'pdf_browser_disconnected' }); });
     logger.metric({ event: isRestart ? 'pdf_browser_restarted' : 'pdf_browser_started', strategy: resolved.strategy,
