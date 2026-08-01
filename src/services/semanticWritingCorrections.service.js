@@ -11,7 +11,8 @@ const { semanticCorrectionsSchema, CORRECTION_CATEGORIES, CORRECTION_KINDS,
 
 const SEMANTIC_PROMPT_VERSION = 'ai-only-correction-detection-v4';
 const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v8';
-const CATEGORY_REVIEW_POLICY_VERSION = 'ai-only-categories-v2';
+const CATEGORY_REVIEW_POLICY_VERSION = 'ai-only-categories-v3';
+const DEFAULT_NO_FINDING_REASON = 'No validated canonical findings were returned for this category.';
 const SEMANTIC_CATEGORIES = new Set(CORRECTION_CATEGORIES);
 const OMIT_CONTEXT_KEYS = new Set(['_id', '__v', 'createdAt', 'updatedAt', 'student', 'teacher', 'class', 'files', 'fileUrls', 'images']);
 
@@ -106,7 +107,7 @@ function buildLegacySemanticRequestForBenchmark({ transcript, assignment = {}, l
   return { messages, promptCharacters: serializedLength, promptInputTokenEstimate: Math.ceil(serializedLength / 4) };
 }
 
-function parseJson(value, expectedHash) {
+function parseJson(value, expectedHash, attemptMeta = {}) {
   const text = String(value || '').trim().replace(/^```json\s*/iu, '').replace(/```$/u, '').trim();
   let parsed;
   try { parsed = JSON.parse(text); }
@@ -118,9 +119,17 @@ function parseJson(value, expectedHash) {
   if (parsed.corrections.length > policy.MAX_AI_CORRECTIONS)
     throw semanticError('SEMANTIC_SCHEMA_INVALID', 'correction_limit', 'Semantic analysis returned too many corrections');
   validateSemanticContract(parsed);
-  validateCategoryReviews(parsed.categoryReviews, parsed.corrections);
+  const legacyFindingCountIgnored = parsed.categoryReviews.some(
+    (review) => Object.prototype.hasOwnProperty.call(review, 'findingCount')
+  );
+  const categoryReviewNormalizations = validateCategoryReviews(
+    parsed.categoryReviews,
+    parsed.corrections,
+    attemptMeta
+  );
   parsed.compatibilityDiagnostics = {
-    legacyFindingCountIgnored: parsed.categoryReviews.some((review) => Object.prototype.hasOwnProperty.call(review, 'findingCount'))
+    legacyFindingCountIgnored,
+    categoryReviewNormalizations
   };
   return parsed;
 }
@@ -169,24 +178,44 @@ function validateSemanticContract(parsed) {
   return true;
 }
 
-function validateCategoryReviews(reviews, corrections) {
+function meaningfulNoFindingReason(value) {
+  const reason = String(value || '').replace(/\s+/gu, ' ').trim();
+  if (reason.length < 8) return '';
+  if (/^(?:n\/?a|none|no reason|unknown|not applicable|no findings?)\.?$/iu.test(reason)) return '';
+  return reason;
+}
+
+function validateCategoryReviews(reviews, corrections, attemptMeta = {}) {
   const categories = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'];
   if (!Array.isArray(reviews) || reviews.length !== categories.length)
     throw semanticError('SEMANTIC_SCHEMA_INVALID', 'category_reviews', 'Every correction category must be reviewed');
   const seen = new Set();
+  const diagnostics = [];
   for (const review of reviews) {
     const category = review?.category;
     if (!categories.includes(category) || seen.has(category) || review.reviewed !== true)
       throw semanticError('SEMANTIC_SCHEMA_INVALID', 'category_reviews', 'Category reviews must be unique and complete');
     seen.add(category);
     const actual = corrections.filter((item) => item?.category === category).length;
-    const reason = String(review.noFindingReason || '').trim();
-    if (actual === 0 && !reason)
-      throw semanticError('SEMANTIC_SCHEMA_INVALID', 'category_review_reason', 'Category review reason is inconsistent with findings');
+    const originalReason = String(review.noFindingReason || '').trim();
+    const meaningfulReason = meaningfulNoFindingReason(originalReason);
     review.findingCount = actual;
-    review.noFindingReason = actual > 0 ? '' : reason;
+    review.noFindingReason = actual > 0 ? '' : (meaningfulReason || DEFAULT_NO_FINDING_REASON);
+    diagnostics.push({
+      category,
+      correctionCount: actual,
+      originalReasonPresent: Boolean(originalReason),
+      normalizationReason: actual > 0
+        ? (originalReason ? 'nonzero_reason_cleared' : 'server_count_calculated')
+        : (meaningfulReason ? 'zero_reason_retained' : 'zero_reason_defaulted'),
+      provider: attemptMeta.provider || null,
+      model: attemptMeta.model || null,
+      attemptNumber: Number.isInteger(attemptMeta.attemptNumber)
+        ? attemptMeta.attemptNumber
+        : (Number.isInteger(attemptMeta.attemptIndex) ? attemptMeta.attemptIndex + 1 : null)
+    });
   }
-  return true;
+  return diagnostics;
 }
 
 function semanticError(code, stage, message, details = {}) {
@@ -303,7 +332,7 @@ async function analyze(input, dependencies = {}) {
   const validate = (content, attemptMeta = {}) => {
     const startedAt = Date.now();
     try {
-      const parsed = parseJson(content, input.transcriptHash);
+      const parsed = parseJson(content, input.transcriptHash, attemptMeta);
       const validated = validateCorrections(parsed.corrections, {
         transcript: input.transcript, legend: request.legend, spans: input.spans || [], env: dependencies.env || process.env,
         provider: attemptMeta.provider || null, model: attemptMeta.model || null,
@@ -343,6 +372,7 @@ async function analyze(input, dependencies = {}) {
 }
 
 module.exports = { SEMANTIC_PROMPT_VERSION, SEMANTIC_SCHEMA_VERSION, CATEGORY_REVIEW_POLICY_VERSION,
+  DEFAULT_NO_FINDING_REASON,
   compactAssignment, compactSemanticLegend,
   compactLanguageToolExclusions, compactPageManifest, buildSemanticRequest, buildLegacySemanticRequestForBenchmark,
   parseJson, validateSemanticContract, validateCategoryReviews, validateCorrections, semanticSourceKey, analyze };

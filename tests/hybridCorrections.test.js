@@ -51,7 +51,38 @@ describe('safe hybrid correction policy', () => {
       categoryReviews: legacyReviews }), 'hash');
     expect(parsed.categoryReviews.find((review) => review.category === 'CONTENT')).toMatchObject({ findingCount: 1,
       noFindingReason: '' });
-    expect(parsed.compatibilityDiagnostics).toEqual({ legacyFindingCountIgnored: true });
+    expect(parsed.compatibilityDiagnostics).toMatchObject({
+      legacyFindingCountIgnored: true,
+      categoryReviewNormalizations: expect.arrayContaining([
+        expect.objectContaining({ category: 'CONTENT', correctionCount: 1,
+          originalReasonPresent: true, normalizationReason: 'nonzero_reason_cleared' })
+      ])
+    });
+  });
+
+  test('normalizes category-review reasons without discarding authoritative corrections', () => {
+    const correction = finding();
+    const reviews = reviewsFor([]);
+    reviews.find((review) => review.category === 'CONTENT').noFindingReason = 'Contradictory provider reason.';
+    reviews.find((review) => review.category === 'VOCABULARY').noFindingReason = 'N/A';
+    const parsed = semantic.parseJson(JSON.stringify({ transcriptHash: 'hash', categoryReviews: reviews,
+      corrections: [correction] }), 'hash', {
+      provider: 'openrouter', model: 'openai/gpt-4.1', attemptNumber: 1
+    });
+
+    expect(parsed.categoryReviews.find((review) => review.category === 'CONTENT')).toMatchObject({
+      findingCount: 1, noFindingReason: ''
+    });
+    expect(parsed.categoryReviews.find((review) => review.category === 'ORGANIZATION').noFindingReason)
+      .toBe('No additional grounded finding after complete review.');
+    expect(parsed.categoryReviews.find((review) => review.category === 'VOCABULARY').noFindingReason)
+      .toBe(semantic.DEFAULT_NO_FINDING_REASON);
+    expect(parsed.compatibilityDiagnostics.categoryReviewNormalizations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: 'CONTENT', correctionCount: 1, originalReasonPresent: true,
+        normalizationReason: 'nonzero_reason_cleared', provider: 'openrouter', model: 'openai/gpt-4.1', attemptNumber: 1 }),
+      expect.objectContaining({ category: 'VOCABULARY', correctionCount: 0, originalReasonPresent: true,
+        normalizationReason: 'zero_reason_defaulted' })
+    ]));
   });
 
   test('reports a sanitized JSON path for null and missing canonical fields', () => {
@@ -376,12 +407,16 @@ describe('sanitized two-page expert coverage fixture', () => {
     expect(validated.diagnostics.rejectedCorrectionCount).toBe(0);
   });
 
-  test('zero category reviews require explicit diagnostic reasons', () => {
+  test('zero category reviews receive a deterministic reason when provider metadata is meaningless', () => {
     const reviews = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'].map((category) => ({
       category, reviewed: true, findingCount: 0, noFindingReason: category === 'VOCABULARY' ? '' : 'No grounded finding.'
     }));
-    expect(() => semantic.validateCategoryReviews(reviews, [])).toThrow(expect.objectContaining({
-      validationStage: 'category_review_reason'
-    }));
+    const diagnostics = semantic.validateCategoryReviews(reviews, []);
+    expect(reviews.find((review) => review.category === 'VOCABULARY').noFindingReason)
+      .toBe(semantic.DEFAULT_NO_FINDING_REASON);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: 'VOCABULARY', correctionCount: 0,
+        normalizationReason: 'zero_reason_defaulted' })
+    ]));
   });
 });
