@@ -192,11 +192,6 @@ function findBestLocalPlacement({ targetRect, dimensions, geometry, currentTarge
       const overlapsMarker = placedMarkers.some((marker) => overlap(candidateRect, marker.rect, markerGap));
       if (overlapsMarker) continue;
 
-      // OCR words are occupied regions. A nearby badge is useful only when it
-      // sits in actual whitespace; otherwise the gutter is the safe fallback.
-      const overlapsOcrWord = textObstacles.some((box) => overlap(candidateRect, box, 0.25));
-      if (overlapsOcrWord) continue;
-      
       const distance = distanceFromTarget(candidateRect, targetRect);
       if (distance <= maxDistanceMm) {
         const score = scoreCandidate(candidateRect, targetRect, currentTargetBoxes, otherCorrectionBoxes, textObstacles, placedMarkers, markerGap, dimensions);
@@ -224,9 +219,7 @@ function createSubmittedImageLayout(page, options = {}) {
     { dx: -2, dy: 0 }
   ];
   
-  const hasImageDimensions = finite(page?.imageWidth) && Number(page.imageWidth) > 0
-    && finite(page?.imageHeight) && Number(page.imageHeight) > 0;
-  const corrections = (hasImageDimensions && Array.isArray(page?.corrections) ? page.corrections : []).map((correction) => {
+  const corrections = (Array.isArray(page?.corrections) ? page.corrections : []).map((correction) => {
     const boxes = (Array.isArray(correction?.bboxList) ? correction.bboxList : []).map(normalizePercentBox).filter(Boolean);
     return { correction, boxes };
   }).filter((entry) => entry.boxes.length);
@@ -292,7 +285,16 @@ function createSubmittedImageLayout(page, options = {}) {
       }
     }
     const color = entry.correction.color || ANNOTATION_COLORS[entry.correction.category] || '#536273';
-    if (!rectangle) { overflowMarkers.push({ correction: entry.correction, color }); continue; }
+    if (!rectangle) {
+      const reason = 'No in-bounds local candidate or collision-free slot in either gutter';
+      overflowMarkers.push({ correction: entry.correction, color, reason });
+      if (DEBUG) console.log('[PDF ANNOTATION OVERFLOW]', {
+        displayNumber: entry.correction.displayNumber,
+        reportId: entry.correction.reportId || entry.correction.id,
+        reason
+      });
+      continue;
+    }
     
     const targetText = entry.mappedBoxes.length === 1 
       ? (entry.correction.quotedText || '') 
@@ -309,6 +311,15 @@ function createSubmittedImageLayout(page, options = {}) {
         y1: rectangle.y + rectangle.h / 2, 
         x2: nearestEdge.x, 
         y2: nearestEdge.y 
+      };
+    } else if (finalDistance !== null && finalDistance > 3) {
+      const markerEdge = findNearestTargetEdge(primaryAnchorBox, rectangle);
+      const targetEdge = findNearestTargetEdge(rectangle, primaryAnchorBox);
+      marker.leader = {
+        x1: round(markerEdge.x),
+        y1: round(markerEdge.y),
+        x2: round(targetEdge.x),
+        y2: round(targetEdge.y)
       };
     }
     
@@ -330,6 +341,26 @@ function createSubmittedImageLayout(page, options = {}) {
     }
     
     placed.push(marker);
+  }
+
+  if (DEBUG) {
+    console.log('[PDF ANNOTATION PAGE]', {
+      displayPageNumber: page?.displayPageNumber,
+      fileId: page?.fileId,
+      pageNumber: page?.pageNumber || page?.page,
+      imageWidth: page?.imageWidth,
+      imageHeight: page?.imageHeight,
+      correctionCount: Array.isArray(page?.corrections) ? page.corrections.length : 0,
+      correctionsWithBbox: Array.isArray(page?.corrections)
+        ? page.corrections.filter((correction) => Array.isArray(correction?.bboxList) && correction.bboxList.length > 0).length
+        : 0,
+      mappedCorrectionCount: corrections.length,
+      markerCount: placed.length,
+      underlineCount: mapped.reduce((sum, entry) => sum + entry.mappedBoxes.length, 0),
+      overflowCount: overflowMarkers.length,
+      stageWidthMm: geometry.stageWidthMm,
+      stageHeightMm: geometry.stageHeightMm
+    });
   }
 
   return { ...geometry, textObstacles, underlines: mapped.flatMap((entry) => entry.mappedBoxes.map((box) => ({

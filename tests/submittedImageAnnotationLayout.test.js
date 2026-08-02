@@ -74,6 +74,16 @@ describe('submitted image annotation layout', () => {
     expect(layout.markers.map((marker) => marker.correction.displayNumber)).toEqual([1, 2]);
   });
 
+  test('treats generic OCR overlap as a placement penalty and keeps a valid label local', () => {
+    const layout = createSubmittedImageLayout(page([correction('c1', 45, 45)], {
+      annotationObstacles: [{ x: 0, y: 0, w: 100, h: 100 }]
+    }));
+    expect(layout.markers).toHaveLength(1);
+    expect(layout.markers[0].placement).not.toMatch(/^gutter/);
+    expect(layout.markers[0].leader).toBeDefined();
+    expect(layout.overflowMarkers).toHaveLength(0);
+  });
+
   test('keeps every correction exactly once across a two-image submission', () => {
     const pages = [page([correction('c1', 20, 20), correction('c2', 70, 70)]),
       page([correction('c3', 5, 50), correction('c4', 90, 50)], { fileId: 'file-b', fileIndex: 1, displayPageNumber: 2 })];
@@ -109,9 +119,27 @@ describe('submitted image annotation layout', () => {
     expect(normalizePercentBox({ x: 12, y: 23, w: 18, h: 5 })).toEqual({ x: 12, y: 23, w: 18, h: 5 });
   });
 
-  test('requires real image dimensions before creating markers', () => {
+  test('uses fallback geometry to create markers and underlines when image dimensions are missing', () => {
     const layout = createSubmittedImageLayout(page([correction('c1', 20, 20)], { imageWidth: 0, imageHeight: 0 }));
-    expect(layout.markers).toEqual([]); expect(layout.underlines).toEqual([]);
+    expect(layout.sourceWidth).toBe(900); expect(layout.sourceHeight).toBe(1200);
+    expect(layout.markers).toHaveLength(1); expect(layout.underlines).toHaveLength(1);
+  });
+
+  test('renders valid bbox marker HTML without invalid style values and keeps unboxed corrections in notes only', () => {
+    const boxed = correction('c1', 20, 20, { displayNumber: 1, symbol: 'AGR', color: '#287a55' });
+    const unboxed = correction('c2', 30, 30, { displayNumber: 2, symbol: 'SP', color: '#946b00', bboxList: [] });
+    const input = page([boxed, unboxed], { imageWidth: undefined, imageHeight: undefined });
+    const html = renderSubmissionFeedbackReportHtml({
+      submission: { uploadedPageCount: 1 }, result: { maximumScore: 100 }, statistics: {
+        content: 0, grammar: 2, organization: 0, vocabulary: 0, mechanics: 0 }, categoryScores: [],
+      submittedPages: [input], detailedFeedback: {}, teacherComments: '', activeLegendItems: [], completeLegend: []
+    });
+    expect((html.match(/class="marker"/g) || [])).toHaveLength(1);
+    expect((html.match(/class="underline"/g) || [])).toHaveLength(1);
+    expect(html).toContain('>#01 AGR</b>');
+    expect(html).toContain('#02 &middot; SP');
+    expect(html).not.toMatch(/class="marker"[^>]*data-correction-id="c2"/);
+    expect(html.match(/style="[^"]*"/g).join('')).not.toMatch(/NaN|undefined/);
   });
 
   test('renders a zero-correction image without markers or errors', () => {
@@ -152,5 +180,30 @@ describe('submitted image annotation layout', () => {
     expect(html).toContain('>#01 &lt;AGR&gt;</b>'); expect(html).toContain('#01 &middot; &lt;AGR&gt;'); expect(html).not.toContain('#01 <AGR>');
     expect(html).not.toMatch(/class="underline"[^>]*width:100%/);
     expect(html).toContain('stroke-dasharray:7 86 7');
+  });
+
+  test('keeps image, underlines, leaders, and markers inside the full image stage in layer order', () => {
+    const input = page([correction('c1', 20, 20, { color: '#287a55' })]);
+    const html = renderSubmissionFeedbackReportHtml({ submission: { uploadedPageCount: 1 }, result: { maximumScore: 100 },
+      statistics: { content: 0, grammar: 1, organization: 0, vocabulary: 0, mechanics: 0 }, categoryScores: [],
+      submittedPages: [input], detailedFeedback: {}, teacherComments: '', activeLegendItems: [], completeLegend: [] });
+    const stage = html.match(/<div class="full-image-stage[\s\S]*?<\/div>/)[0];
+    expect(stage.indexOf('<img')).toBeLessThan(stage.indexOf('class="underline"'));
+    expect(stage.indexOf('class="underline"')).toBeLessThan(stage.indexOf('class="leader-layer"'));
+    expect(stage.indexOf('class="leader-layer"')).toBeLessThan(stage.indexOf('class="marker"'));
+  });
+
+  test('uses natural correction pagination without columns or forced review and feedback breaks', () => {
+    const input = page([correction('c1', 20, 20, { color: '#287a55' })]);
+    const html = renderSubmissionFeedbackReportHtml({ submission: { uploadedPageCount: 1 }, result: { maximumScore: 100 },
+      statistics: { content: 0, grammar: 1, organization: 0, vocabulary: 0, mechanics: 0 }, categoryScores: [],
+      submittedPages: [input], detailedFeedback: {}, teacherComments: '', activeLegendItems: [], completeLegend: [] });
+    expect(html).toContain('.annotated-image-page{break-after:page;page-break-after:always}');
+    expect(html).toContain('.page-review-details{break-before:auto;page-break-before:auto}');
+    expect(html).toContain('.feedback-section{page:auto;break-before:auto;page-break-before:auto}');
+    expect(html).toContain('.correction-table tbody{break-inside:auto;page-break-inside:auto}');
+    expect(html).toContain('.correction-table tr{break-inside:avoid;page-break-inside:avoid}');
+    expect(html).not.toMatch(/column-count\s*:/);
+    expect(html).not.toContain('page:feedback');
   });
 });
