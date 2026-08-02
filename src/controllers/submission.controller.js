@@ -18,11 +18,13 @@ const { buildSubmissionCorrectionStatistics } = require('../services/submissionC
 const { autoGenerateRubricDesignerForSubmission } = require('../services/autoRubricDesigner.service');
 const canonicalCorrectionsPipeline = require('../services/canonicalCorrectionsPipeline.service');
 const canonicalEvaluation = require('../services/canonicalEvaluation.service');
+const correctionCanonical = require('../services/correctionCanonical.service');
 const { buildCanonicalResultState } = require('../services/canonicalResultState.service');
 const {
   normalizeOcrTranscript,
   getNormalizedSubmissionTranscript,
   buildCanonicalSubmissionTranscript,
+  CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
   withNormalizedWordSeparators
 } = require('../utils/ocrTranscriptNormalizer');
 
@@ -1064,13 +1066,25 @@ async function retryCanonicalEvaluation(req, res) {
       success: false, message: 'Evaluation is already processing',
       data: { evaluationStatus: 'processing', processingActive: true, automaticPollingAllowed: true }
     });
+    const canonicalStatistics = Array.isArray(submission.writingCorrections)
+      ? correctionCanonical.computeCanonicalCorrectionStatistics(submission.writingCorrections) : null;
+    const persistedStatistics = submission.correctionStatistics?.toObject?.() || submission.correctionStatistics;
+    const correctionsCurrent = submission.correctionVersion === correctionCanonical.VERSION
+      && submission.correctionTranscriptLayoutVersion === CANONICAL_TRANSCRIPT_LAYOUT_VERSION;
+    const statisticKeys = ['content', 'organization', 'grammar', 'vocabulary', 'mechanics', 'total'];
+    const statisticsCurrent = canonicalStatistics && persistedStatistics && statisticKeys.every((key) =>
+      Number.isFinite(Number(persistedStatistics[key]))
+      && Number(persistedStatistics[key]) === Number(canonicalStatistics[key]));
     if (submission.correctionStatus !== 'completed' || submission.semanticStatus !== 'completed'
-      || !submission.correctionSourceHash || !Array.isArray(submission.writingCorrections)) {
+      || !submission.correctionSourceHash || !Array.isArray(submission.writingCorrections)
+      || !correctionsCurrent || !statisticsCurrent) {
       return sendError(res, 409, 'Canonical corrections are not ready for evaluation-only retry');
     }
     const jobId = crypto.randomUUID();
     const accepted = await Submission.updateOne({ _id: submission._id, correctionSourceHash: submission.correctionSourceHash,
-      correctionStatus: 'completed', semanticStatus: 'completed', evaluationStatus: { $ne: 'processing' } }, { $set: {
+      correctionStatus: 'completed', semanticStatus: 'completed', correctionVersion: correctionCanonical.VERSION,
+      correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
+      evaluationStatus: { $ne: 'processing' } }, { $set: {
       evaluationStatus: 'processing', evaluationJobId: jobId, evaluationError: null, evaluationErrorCode: null
     } });
     if (!accepted.modifiedCount) return res.status(409).json({ success: false, message: 'Evaluation is already processing' });

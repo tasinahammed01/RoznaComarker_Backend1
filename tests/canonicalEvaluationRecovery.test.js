@@ -20,7 +20,7 @@ describe('canonical evaluation interrupted-finalization recovery', () => {
       jest.doMock('../src/models/SubmissionFeedback', () => ({
         findOne: jest.fn(() => ({ lean: jest.fn().mockResolvedValue({
           submissionId: 'submission-1', evaluationJobId: 'job-1', evaluationSourceHash: sourceHash,
-          assessmentVersion: 'writing-rubric-100-v4-legend-deductions', evaluationVersion: 'canonical-evaluation-6-evidence-schema-comments',
+          assessmentVersion: 'writing-rubric-100-v4-legend-deductions', evaluationVersion: 'canonical-evaluation-7-conclusion-evidence',
           evaluationRubricSourceHash: require('../src/services/canonicalEvaluation.service').hashRubric(assignment),
           detailedFeedbackSourceHash: sourceHash, detailedFeedbackVersion: 'canonical-detailed-feedback-2',
           detailedFeedback: { sourceHash, areasForImprovement: [], strengths: [], actionSteps: [] },

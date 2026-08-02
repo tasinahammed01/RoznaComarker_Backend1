@@ -26,8 +26,9 @@ const submission = (overrides = {}) => ({
   _id: 'submission-1', student: 'student-1', class: 'class-1', assignment: 'assignment-1',
   correctionStatus: 'completed', semanticStatus: 'completed', evaluationStatus: 'failed',
   correctionSourceHash: 'correction-hash',
+  correctionVersion: 'canonical-5-ai-only', correctionTranscriptLayoutVersion: 'ocr-layout-v4',
   writingCorrections: [{ id: 'c1', category: 'GRAMMAR', symbol: 'AGR' }],
-  correctionStatistics: { grammar: 1, total: 1 },
+  correctionStatistics: { content: 0, grammar: 1, organization: 0, vocabulary: 0, mechanics: 0, total: 1 },
   ...overrides
 });
 
@@ -41,6 +42,9 @@ describe('evaluation-only retry controller', () => {
 
   test('student owner receives 202 and only canonical evaluation starts', async () => {
     const original = submission();
+    const correctionsBefore = JSON.stringify(original.writingCorrections);
+    const statisticsBefore = JSON.stringify(original.correctionStatistics);
+    const sourceHashBefore = original.correctionSourceHash;
     Submission.findById.mockResolvedValue(original);
     const res = response();
     await controller.retryCanonicalEvaluation({ params: { submissionId: 'submission-1' },
@@ -52,7 +56,12 @@ describe('evaluation-only retry controller', () => {
     expect(ocr.runOcrAndPersist).not.toHaveBeenCalled();
     expect(ocr.runOcrAndPersistForFiles).not.toHaveBeenCalled();
     expect(original.writingCorrections).toEqual([{ id: 'c1', category: 'GRAMMAR', symbol: 'AGR' }]);
-    expect(original.correctionSourceHash).toBe('correction-hash');
+    expect(JSON.stringify(original.writingCorrections)).toBe(correctionsBefore);
+    expect(JSON.stringify(original.correctionStatistics)).toBe(statisticsBefore);
+    expect(original.correctionSourceHash).toBe(sourceHashBefore);
+    expect(Submission.updateOne.mock.calls[0][1].$set).not.toHaveProperty('correctionStatus');
+    expect(Submission.updateOne.mock.calls[0][1].$set).not.toHaveProperty('correctionStatistics');
+    expect(Submission.updateOne.mock.calls[0][1].$set).not.toHaveProperty('correctionSourceHash');
   });
 
   test('other student is forbidden', async () => {
@@ -84,6 +93,19 @@ describe('evaluation-only retry controller', () => {
       user: { _id: 'student-1', role: 'student' } }, res);
     expect(res.statusCode).toBe(409);
     expect(evaluation.generate).not.toHaveBeenCalled();
+  });
+
+  test('concurrent evaluation retries acquire one single-flight job', async () => {
+    Submission.findById.mockResolvedValue(submission());
+    Submission.updateOne.mockResolvedValueOnce({ modifiedCount: 1 }).mockResolvedValueOnce({ modifiedCount: 0 });
+    const first = response(); const second = response();
+    await Promise.all([
+      controller.retryCanonicalEvaluation({ params: { submissionId: 'submission-1' }, user: { _id: 'student-1', role: 'student' } }, first),
+      controller.retryCanonicalEvaluation({ params: { submissionId: 'submission-1' }, user: { _id: 'student-1', role: 'student' } }, second)
+    ]);
+    expect([first.statusCode, second.statusCode].sort()).toEqual([202, 409]);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(evaluation.generate).toHaveBeenCalledTimes(1);
   });
 
   test('pipeline uses truthful evaluation outcome stage names', () => {

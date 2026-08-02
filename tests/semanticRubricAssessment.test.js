@@ -117,6 +117,37 @@ describe('semantic rubric assessment validation', () => {
       .categories.ORGANIZATION.improvementEvidence[0].quotedText).toBe(evidence[1].quotedText);
   });
 
+  test('does not misclassify a general Organization observation as conclusion-specific', () => {
+    const payload = valid();
+    payload.categories.ORGANIZATION.comment = 'Coherence and transitions are uneven, and the conclusion could be stronger.';
+    payload.categories.ORGANIZATION.improvementEvidence = [{ evidenceType: 'correction', correctionId: 'o1',
+      evidenceId: null, explanation: 'The progression repeats an earlier point.', suggestion: 'Improve the progression.' }];
+    expect(validateAssessment(payload, { sourceHash: 'hash', transcript, corrections })
+      .categories.ORGANIZATION.comment).toContain('Coherence');
+  });
+
+  test('requires a complete authoritative transcript for a missing-conclusion claim', () => {
+    const payload = valid();
+    payload.categories.ORGANIZATION.comment = 'The conclusion is missing.';
+    payload.categories.ORGANIZATION.improvementEvidence = [{ evidenceType: 'transcript', correctionId: null,
+      evidenceId: evidence[1].evidenceId, explanation: 'The conclusion is missing.', suggestion: 'Add a conclusion.' }];
+    expect(() => validateAssessment(payload, { sourceHash: 'hash', transcript, corrections, transcriptComplete: false }))
+      .toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_ABSENCE_EVIDENCE_INVALID' }));
+    expect(validateAssessment(payload, { sourceHash: 'hash', transcript, corrections, transcriptComplete: true })
+      .categories.ORGANIZATION.improvementEvidence[0].finalQuarter).toBe(true);
+  });
+
+  test('accepts a validated global CONC correction for a conclusion-specific claim', () => {
+    const payload = valid();
+    const withConclusion = [...corrections, { id: 'conc-1', category: 'ORGANIZATION', symbol: 'CONC',
+      quotedText: 'The ending repeats', correctionKind: 'global' }];
+    payload.categories.ORGANIZATION.comment = 'The conclusion is weak.';
+    payload.categories.ORGANIZATION.improvementEvidence = [{ evidenceType: 'correction', correctionId: 'conc-1',
+      evidenceId: null, explanation: 'The conclusion is weak.', suggestion: 'Develop the conclusion.' }];
+    expect(validateAssessment(payload, { sourceHash: 'hash', transcript, corrections: withConclusion,
+      transcriptComplete: true }).categories.ORGANIZATION.improvementEvidence[0].correctionId).toBe('conc-1');
+  });
+
   test.each([99, -1, '18'])('rejects incorrect score type or range: %p', (score) => {
     const payload = valid();
     payload.categories.CONTENT.score = score;

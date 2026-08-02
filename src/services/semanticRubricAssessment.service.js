@@ -5,7 +5,7 @@ const { getSemanticAIConfig, getSemanticAIConfigStatus, runSemanticCompletion } 
 const { promptDefinitions } = require('./writingCategoryDefinitions.service');
 const { semanticRubricAssessmentSchema, MAX_RUBRIC_EVIDENCE_IDS } = require('./structuredOutputSchemas.service');
 
-const PROMPT_VERSION = 'semantic-rubric-assessment-v4';
+const PROMPT_VERSION = 'semantic-rubric-assessment-v5';
 const SCHEMA_VERSION = 'semantic-rubric-assessment-json-v4';
 const SEMANTIC_CATEGORIES = ['CONTENT', 'ORGANIZATION', 'VOCABULARY'];
 const MAX_COMMENT = 320;
@@ -82,6 +82,21 @@ function transcriptEvidenceCatalog(transcript = '') {
   return Object.freeze(spans.slice(0, MAX_RUBRIC_EVIDENCE_IDS));
 }
 
+const CONCLUSION_CLAIM = /\b(?:conclusion|concluding paragraph|final paragraph)\b/iu;
+const MISSING_CONCLUSION_CLAIM = /\b(?:lacks?(?:\s+a)?\s+(?:clear\s+)?conclusion|conclusion\s+is\s+(?:missing|absent)|no\s+conclusion)\b/iu;
+const GENERAL_ORGANIZATION_CLAIM = /\b(?:coherence|cohesion|transition|paragraph(?:ing|s)?|progression|flow|sequence|organization)\b/iu;
+
+function conclusionClaimKind(item = {}) {
+  const comment = clean(item.comment);
+  const evidenceClaims = [...(Array.isArray(item.strengthEvidence) ? item.strengthEvidence : []),
+    ...(Array.isArray(item.improvementEvidence) ? item.improvementEvidence : [])]
+    .map((evidence) => clean(evidence?.explanation)).filter((value) => CONCLUSION_CLAIM.test(value));
+  const specificComment = CONCLUSION_CLAIM.test(comment) && !GENERAL_ORGANIZATION_CLAIM.test(comment) ? comment : '';
+  const claims = [specificComment, ...evidenceClaims].filter(Boolean);
+  if (!claims.length) return null;
+  return claims.some((claim) => MISSING_CONCLUSION_CLAIM.test(claim)) ? 'missing' : 'specific';
+}
+
 function normalizeStatisticsComment({ category, comment, issueCount, score }) {
   const numericClaim = comment.match(/\b(\d+)\s+(?:(?:validated|canonical|detected|localized)\s+)?(?:\w+\s+)?(?:corrections?|errors?|issues?)\b/iu);
   const zeroFrequencyClaim = issueCount === 0
@@ -125,6 +140,7 @@ function buildRequest(input) {
     `schema=${SCHEMA_VERSION};prompt=${PROMPT_VERSION}`,
     `sourceHash=${input.sourceHash}`,
     `contextStatus=${contextStatus}`,
+    `transcriptComplete=${input.transcriptComplete === true}`,
     `assignment=${JSON.stringify(assignment)}`,
     `statistics=${JSON.stringify(input.statistics || {})}`,
     `pageManifest=${JSON.stringify(compactPageManifest(input.pageManifest || []))}`,
@@ -133,7 +149,7 @@ function buildRequest(input) {
     `allowedCorrectionIdsByCategory=${JSON.stringify(allowedCorrectionIds)}`,
     `response=${JSON.stringify(response)}`,
     `categoryDefinitions=${promptDefinitions()}`,
-    'Assess only CONTENT, ORGANIZATION, and VOCABULARY. Do not reorder, rename, alias, or add categories. Return strict JSON only. Repeat sourceHash exactly. Scores must be numbers from 0 to 20 and maxScore exactly 20. Do not score Grammar, Mechanics, Presentation, or overall. Do not invent issue counts. Never return quotedText or occurrence. For transcript evidence, copy only an evidenceId from evidenceCatalog; the backend owns and resolves its exact text and offset. For correction evidence, copy only a correctionId from the same category correctionCatalog and set evidenceId=null. With no allowed correction ID, use transcript evidence with correctionId=null. If the evidence catalog and allowed correction list are both empty, return empty evidence arrays and do not make an unsupported deduction. Absence-based claims such as a missing conclusion must use an evidenceCatalog item marked finalQuarter=true and explicitly say the judgment is holistic. A claim that a conclusion exists must likewise use final-quarter evidence. Never treat an introduction or middle passage as a conclusion. If the ending is incomplete, do not call it complete. Never claim page or paragraph order beyond canonical order. A zero correction count may still receive a holistic deduction, but the comment must say holistic and must not say issues were detected. If detailed instructions are unavailable, follow existing title-only/provisional rules.'
+    'Assess only CONTENT, ORGANIZATION, and VOCABULARY. Do not reorder, rename, alias, or add categories. Return strict JSON only. Repeat sourceHash exactly. Scores must be numbers from 0 to 20 and maxScore exactly 20. Do not score Grammar, Mechanics, Presentation, or overall. Do not invent issue counts. Never return quotedText or occurrence. For transcript evidence, copy only an evidenceId from evidenceCatalog; the backend owns and resolves its exact text and offset. For correction evidence, copy only a correctionId from the same category correctionCatalog and set evidenceId=null. With no allowed correction ID, use transcript evidence with correctionId=null. If the evidence catalog and allowed correction list are both empty, return empty evidence arrays and do not make an unsupported deduction. Make a missing, weak, or successful conclusion claim only when it is a distinct conclusion-specific observation supported by final-quarter transcript evidence or an allowed CONC correction. Do not turn a general Organization observation about coherence, paragraphing, transitions, or progression into a conclusion claim merely by mentioning conclusion quality in the broader comment. Never claim a conclusion is missing when transcriptComplete=false. Never treat an introduction or middle passage as a conclusion. If the ending is incomplete, do not call it complete. Never claim page or paragraph order beyond canonical order. A zero correction count may still receive a holistic deduction, but the comment must say holistic and must not say issues were detected. If detailed instructions are unavailable, follow existing title-only/provisional rules.'
   ].join('\n');
   const messages = [
     { role: 'system', content: 'You are a strict evidence-grounded writing rubric assessor. Output one JSON object only.' },
@@ -188,7 +204,8 @@ function assertQuote(transcript, quote, occurrence, path) {
   return value;
 }
 
-function validateAssessment(parsed, { sourceHash, transcript, corrections = [], contextStatus = 'none', evidenceCatalog = null }) {
+function validateAssessment(parsed, { sourceHash, transcript, corrections = [], contextStatus = 'none', evidenceCatalog = null,
+  transcriptComplete = true }) {
   if (!parsed || typeof parsed !== 'object' || parsed.sourceHash !== sourceHash)
     throw semanticRubricError('SEMANTIC_RUBRIC_SOURCE_MISMATCH', 'Semantic rubric assessment source hash mismatch',
       'source_hash', 'sourceHash');
@@ -314,17 +331,18 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
         'consistency_validation', `categories.${category}.improvementEvidence`);
     if (score < 20 && issueCount === 0 && !/\bholistic(?:ally)?\b/iu.test(comment))
       comment = `${comment} This is a holistic observation, not a counted correction.`;
-    if (/lacks?(?:\s+a)?\s+(?:clear\s+)?conclusion|conclusion\s+is\s+missing/iu.test(comment)) {
-      const finalQuarter = Math.floor(transcript.length * 0.75);
-      if (!improvementEvidence.some((ev) => ev.evidenceId && ev.finalQuarter))
-        throw semanticRubricError('SEMANTIC_RUBRIC_ABSENCE_EVIDENCE_INVALID',
-          'A missing-conclusion claim must be anchored to the final passage',
-          'consistency_validation', `categories.${category}.improvementEvidence`);
-    }
-    if (/\bconclusion\b/iu.test(comment)) {
-      const finalQuarter = Math.floor(transcript.length * 0.75);
+    const conclusionClaim = category === 'ORGANIZATION' ? conclusionClaimKind(item) : null;
+    if (conclusionClaim) {
       const allEvidence = [...strengthEvidence, ...improvementEvidence];
-      if (!allEvidence.some((ev) => ev.evidenceId && ev.finalQuarter))
+      const hasFinalTranscriptEvidence = allEvidence.some((ev) => ev.evidenceId && ev.finalQuarter);
+      const hasValidatedConcCorrection = improvementEvidence.some((ev) => ev.correctionId
+        && correctionMap.get(ev.correctionId)?.category === 'ORGANIZATION'
+        && correctionMap.get(ev.correctionId)?.symbol === 'CONC');
+      if (conclusionClaim === 'missing' && transcriptComplete !== true)
+        throw semanticRubricError('SEMANTIC_RUBRIC_ABSENCE_EVIDENCE_INVALID',
+          'A missing-conclusion claim requires a complete authoritative transcript',
+          'consistency_validation', `categories.${category}.improvementEvidence`);
+      if (!hasFinalTranscriptEvidence && !hasValidatedConcCorrection)
         throw semanticRubricError('SEMANTIC_RUBRIC_CONCLUSION_EVIDENCE_INVALID',
           'A conclusion claim must be anchored to the final passage',
           'consistency_validation', `categories.${category}`);
@@ -346,7 +364,8 @@ async function assess(input, dependencies = {}) {
   const runCompletion = dependencies.runCompletion || runSemanticCompletion;
   const validate = (content) => validateAssessment(parseJson(content), {
     sourceHash: input.sourceHash, transcript: input.transcript,
-    corrections: input.corrections, contextStatus: request.contextStatus, evidenceCatalog: request.evidenceCatalog
+    corrections: input.corrections, contextStatus: request.contextStatus, evidenceCatalog: request.evidenceCatalog,
+    transcriptComplete: input.transcriptComplete === true
   });
   const completion = await runCompletion({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
@@ -366,4 +385,4 @@ async function assess(input, dependencies = {}) {
 
 module.exports = { PROMPT_VERSION, SCHEMA_VERSION, SEMANTIC_CATEGORIES, correctionCatalog,
   allowedCorrectionIdsByCategory, transcriptEvidenceCatalog, buildRequest, parseJson, normalizeStatisticsComment,
-  validateAssessment, assess };
+  validateAssessment, assess, conclusionClaimKind };

@@ -116,7 +116,8 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     console.info('[canonical-evaluation] semantic rubric assessment started', { submissionId: String(submission._id),
       sourceHashMatch: true, correctionCounts: stats });
     const semantic = await semanticRubricAssessment.assess({ transcript, sourceHash, assignment,
-      corrections, statistics: stats, pageManifest: submission.ocrPages || [] });
+      corrections, statistics: stats, pageManifest: submission.ocrPages || [],
+      transcriptComplete: submission.ocrStatus === 'completed' && Boolean(transcript.trim()) });
     console.info('[canonical-evaluation] semantic rubric assessment completed', { submissionId: String(submission._id),
       provider: semantic.provider, model: semantic.model, sourceHashMatch: semantic.sourceHash === sourceHash,
       categoryScores: Object.fromEntries(Object.entries(semantic.categories).map(([key, value]) => [key, value.score])),

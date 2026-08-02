@@ -17,6 +17,7 @@ describe('canonical evaluation contract', () => {
   test('keeps the established category weights and numeric arithmetic unchanged', () => {
     expect([20, 20, 25, 20, 10, 5].reduce((sum, score) => sum + score, 0)).toBe(100);
     expect([7, 9, 11, 14, 5.5, 4.5].reduce((sum, score) => sum + score, 0)).toBe(51);
+    expect([22.5, 3, 2, 0, 8.5, 4.5].reduce((sum, score) => sum + score, 0)).toBe(40.5);
   });
 
   test('preserves asymmetric category identities through named-property synchronization', () => {

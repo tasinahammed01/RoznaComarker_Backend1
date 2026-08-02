@@ -11,8 +11,8 @@ describe('runtime contract fingerprint', () => {
     expect(first).toEqual(runtimeContractFingerprint(env));
     expect(first).toMatchObject({ applicationVersion: '1.0.0', environment: 'test', deploymentRevision: 'release-123',
       contracts: { correctionPrompt: 'ai-only-correction-detection-v4', correctionSchema: 'semantic-corrections-v8',
-        rubricPrompt: 'semantic-rubric-assessment-v4', rubricSchema: 'semantic-rubric-assessment-json-v4',
-        canonicalCorrection: 'canonical-5-ai-only', canonicalEvaluation: 'canonical-evaluation-6-evidence-schema-comments' },
+        rubricPrompt: 'semantic-rubric-assessment-v5', rubricSchema: 'semantic-rubric-assessment-json-v4',
+        canonicalCorrection: 'canonical-5-ai-only', canonicalEvaluation: 'canonical-evaluation-7-conclusion-evidence' },
       contractHash: expect.stringMatching(/^[a-f0-9]{16}$/) });
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.contracts)).toBe(true);

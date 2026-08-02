@@ -10,7 +10,7 @@ const RUBRIC_MAX = Object.freeze({
 });
 
 const ASSESSMENT_VERSION = 'writing-rubric-100-v4-legend-deductions';
-const EVALUATION_VERSION = 'canonical-evaluation-6-evidence-schema-comments';
+const EVALUATION_VERSION = 'canonical-evaluation-7-conclusion-evidence';
 
 // Symbol severities are intentionally conservative. Unknown symbols get the
 // default penalty so newly-added correction symbols cannot be treated as free.
