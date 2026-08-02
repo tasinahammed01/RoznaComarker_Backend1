@@ -31,6 +31,11 @@ describe('submitted image annotation layout', () => {
     expect(layout.markers[0].correction.displayNumber).toBe(1); expect(layout.imageWidthMm).toBeGreaterThan(142);
   });
 
+  test('uses the canonical correction color for marker and underline', () => {
+    const layout = createSubmittedImageLayout(page([correction('c1', 30, 30, { color: '#123456' })]));
+    expect(layout.markers[0].color).toBe('#123456'); expect(layout.underlines[0].color).toBe('#123456');
+  });
+
   test('keeps multiple bbox segments but creates only one marker per canonical correction', () => {
     const item = correction('c1', 20, 20, { bboxList: [{ x: 20, y: 20, w: 8, h: 2 }, { x: 29, y: 20, w: 11, h: 2 }] });
     const layout = createSubmittedImageLayout(page([item]));
@@ -95,7 +100,27 @@ describe('submitted image annotation layout', () => {
     expect(normalizePercentBox({ x: NaN, y: 2, w: 3, h: 4 })).toBeNull();
     expect(normalizePercentBox({ x: 10, y: 10, w: 0, h: 4 })).toBeNull();
     expect(normalizePercentBox({ x: -10, y: 10, w: 5, h: 4 })).toBeNull();
-    expect(normalizePercentBox({ x: 98, y: 99, w: 8, h: 4 })).toEqual({ x: 98, y: 99, w: 2, h: 1 });
+    expect(normalizePercentBox({ x: 98, y: 99, w: 8, h: 4 })).toBeNull();
+    expect(normalizePercentBox({ x: 98, y: 99, w: 2.2, h: 1.2 })).toEqual({ x: 98, y: 99, w: 2, h: 1 });
+  });
+
+  test('normalizes canonical corner and legacy width-height bbox shapes identically', () => {
+    expect(normalizePercentBox({ x0: 12, y0: 23, x1: 30, y1: 28 })).toEqual({ x: 12, y: 23, w: 18, h: 5 });
+    expect(normalizePercentBox({ x: 12, y: 23, w: 18, h: 5 })).toEqual({ x: 12, y: 23, w: 18, h: 5 });
+  });
+
+  test('requires real image dimensions before creating markers', () => {
+    const layout = createSubmittedImageLayout(page([correction('c1', 20, 20)], { imageWidth: 0, imageHeight: 0 }));
+    expect(layout.markers).toEqual([]); expect(layout.underlines).toEqual([]);
+  });
+
+  test('renders a zero-correction image without markers or errors', () => {
+    const input = page([]); const layout = createSubmittedImageLayout(input); const html = renderSubmissionFeedbackReportHtml({
+      submission: { uploadedPageCount: 1 }, result: { maximumScore: 100 }, statistics: {
+        content: 0, grammar: 0, organization: 0, vocabulary: 0, mechanics: 0 }, categoryScores: [],
+      submittedPages: [input], detailedFeedback: {}, teacherComments: '', activeLegendItems: [], completeLegend: []
+    });
+    expect(layout.markers).toEqual([]); expect(html).not.toContain('class="marker"');
   });
 
   test('coordinate conversion includes image gutter offset and preserves proportional box width', () => {
@@ -124,7 +149,7 @@ describe('submitted image annotation layout', () => {
     const html = renderSubmissionFeedbackReportHtml(vm);
     expect((html.match(/class="underline"/g) || [])).toHaveLength(2);
     expect((html.match(/class="marker"/g) || [])).toHaveLength(1);
-    expect(html).toContain('>01</b>'); expect(html).toContain('#01 &middot; &lt;AGR&gt;'); expect(html).not.toContain('#01 <AGR>');
+    expect(html).toContain('>#01 &lt;AGR&gt;</b>'); expect(html).toContain('#01 &middot; &lt;AGR&gt;'); expect(html).not.toContain('#01 <AGR>');
     expect(html).not.toMatch(/class="underline"[^>]*width:100%/);
     expect(html).toContain('stroke-dasharray:7 86 7');
   });

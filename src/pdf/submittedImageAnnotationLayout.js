@@ -15,9 +15,14 @@ const overlap = (a, b, gap = 0) => a.x < b.x + b.w + gap && a.x + a.w + gap > b.
   && a.y < b.y + b.h + gap && a.y + a.h + gap > b.y;
 
 function normalizePercentBox(box) {
-  if (!box || !['x', 'y', 'w', 'h'].every((key) => finite(box[key]))) return null;
-  const rawX = Number(box.x); const rawY = Number(box.y); const rawW = Number(box.w); const rawH = Number(box.h);
+  if (!box) return null;
+  const corners = ['x0', 'y0', 'x1', 'y1'].every((key) => finite(box[key]));
+  const legacy = ['x', 'y', 'w', 'h'].every((key) => finite(box[key]));
+  if (!corners && !legacy) return null;
+  const rawX = Number(corners ? box.x0 : box.x); const rawY = Number(corners ? box.y0 : box.y);
+  const rawW = Number(corners ? box.x1 - box.x0 : box.w); const rawH = Number(corners ? box.y1 - box.y0 : box.h);
   if (rawW <= 0 || rawH <= 0) return null;
+  if (rawX < -0.5 || rawY < -0.5 || rawX + rawW > 100.5 || rawY + rawH > 100.5) return null;
   const x1 = clamp(rawX, 0, 100); const y1 = clamp(rawY, 0, 100);
   const x2 = clamp(rawX + rawW, 0, 100); const y2 = clamp(rawY + rawH, 0, 100);
   return x2 > x1 && y2 > y1 ? { x: round(x1), y: round(y1), w: round(x2 - x1), h: round(y2 - y1) } : null;
@@ -219,7 +224,9 @@ function createSubmittedImageLayout(page, options = {}) {
     { dx: -2, dy: 0 }
   ];
   
-  const corrections = (Array.isArray(page?.corrections) ? page.corrections : []).map((correction) => {
+  const hasImageDimensions = finite(page?.imageWidth) && Number(page.imageWidth) > 0
+    && finite(page?.imageHeight) && Number(page.imageHeight) > 0;
+  const corrections = (hasImageDimensions && Array.isArray(page?.corrections) ? page.corrections : []).map((correction) => {
     const boxes = (Array.isArray(correction?.bboxList) ? correction.bboxList : []).map(normalizePercentBox).filter(Boolean);
     return { correction, boxes };
   }).filter((entry) => entry.boxes.length);
@@ -236,32 +243,24 @@ function createSubmittedImageLayout(page, options = {}) {
       || String(a.correction.reportId || a.correction.id || '').localeCompare(String(b.correction.reportId || b.correction.id || ''));
   });
   const placed = []; const overflowMarkers = []; const markerGap = geometry.density === 'dense' ? 0.55 : 0.8;
-  const correctionCount = corrections.length;
-  const densityMode = correctionCount <= 10 ? 'LOW' : correctionCount <= 20 ? 'MEDIUM' : 'HIGH';
-
   for (const entry of sorted) {
-    // BUG 1 FIX: Use primary anchor box for marker placement, not union of all boxes
+    // Anchor one marker to the first valid canonical word box.
     const primaryAnchorBox = selectPrimaryAnchorBox(entry.mappedBoxes);
     if (!primaryAnchorBox) continue;
     
-    // Keep entry.mappedBoxes intact for underlines
     const currentTargetBoxes = entry.mappedBoxes;
     
-    // Separate other correction boxes for collision model
     const otherCorrectionBoxes = mapped
       .filter(other => other !== entry)
       .flatMap(other => other.mappedBoxes);
     
-    // BUG 2 FIX: Start HIGH density with number-only immediately
-    const useNumberOnlyInitially = options.forceNumberOnly === true || densityMode === 'HIGH';
-    let useNumberOnly = useNumberOnlyInitially;
+    const useNumberOnly = false;
     let dimensions = markerDimensions(geometry.density, entry.correction.symbol, useNumberOnly);
     
     const targetCenterX = primaryAnchorBox.x + primaryAnchorBox.w / 2;
     const targetCenterY = primaryAnchorBox.y + primaryAnchorBox.h / 2;
     let rectangle = null; let placement = null; let finalDistance = null;
 
-    // BUG 3 FIX: Use unified placement function that regenerates candidates with current dimensions
     let bestCandidate = findBestLocalPlacement({
       targetRect: primaryAnchorBox,
       dimensions,
@@ -279,30 +278,6 @@ function createSubmittedImageLayout(page, options = {}) {
       rectangle = bestCandidate.rect;
       placement = bestCandidate.placement;
       finalDistance = bestCandidate.distance;
-    } else if (!useNumberOnly) {
-      // Fallback to number-only if not already tried
-      useNumberOnly = true;
-      dimensions = markerDimensions(geometry.density, entry.correction.symbol, true);
-      
-      // BUG 3 FIX: Regenerate candidates with new dimensions
-      bestCandidate = findBestLocalPlacement({
-        targetRect: primaryAnchorBox,
-        dimensions,
-        geometry,
-        currentTargetBoxes,
-        otherCorrectionBoxes,
-        textObstacles,
-        placedMarkers: placed,
-        markerGap,
-        maxDistanceMm: MAX_LOCAL_DISTANCE_MM,
-        nudges: NUDGES
-      });
-      
-      if (bestCandidate) {
-        rectangle = bestCandidate.rect;
-        placement = bestCandidate.placement;
-        finalDistance = bestCandidate.distance;
-      }
     }
 
     // Gutter fallback - absolute last resort
@@ -316,7 +291,7 @@ function createSubmittedImageLayout(page, options = {}) {
         if (y !== undefined) { rectangle = { x, y, w: dimensions.width, h: dimensions.height }; placement = side; break; }
       }
     }
-    const color = ANNOTATION_COLORS[entry.correction.category] || '#536273';
+    const color = entry.correction.color || ANNOTATION_COLORS[entry.correction.category] || '#536273';
     if (!rectangle) { overflowMarkers.push({ correction: entry.correction, color }); continue; }
     
     const targetText = entry.mappedBoxes.length === 1 
@@ -358,7 +333,7 @@ function createSubmittedImageLayout(page, options = {}) {
   }
 
   return { ...geometry, textObstacles, underlines: mapped.flatMap((entry) => entry.mappedBoxes.map((box) => ({
-    correction: entry.correction, color: ANNOTATION_COLORS[entry.correction.category] || '#536273', box
+    correction: entry.correction, color: entry.correction.color || ANNOTATION_COLORS[entry.correction.category] || '#536273', box
   }))), markers: placed, overflowMarkers };
 }
 

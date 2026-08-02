@@ -13,9 +13,14 @@ const finite = (value) => Number.isFinite(Number(value));
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value)));
 
 function normalizeBox(box) {
-  if (!box || !['x', 'y', 'w', 'h'].every((key) => finite(box[key]))) return null;
-  const rawX = Number(box.x); const rawY = Number(box.y); const rawW = Number(box.w); const rawH = Number(box.h);
+  if (!box) return null;
+  const corners = ['x0', 'y0', 'x1', 'y1'].every((key) => finite(box[key]));
+  const legacy = ['x', 'y', 'w', 'h'].every((key) => finite(box[key]));
+  if (!corners && !legacy) return null;
+  const rawX = Number(corners ? box.x0 : box.x); const rawY = Number(corners ? box.y0 : box.y);
+  const rawW = Number(corners ? box.x1 - box.x0 : box.w); const rawH = Number(corners ? box.y1 - box.y0 : box.h);
   if (rawW <= 0 || rawH <= 0) return null;
+  if (rawX < -0.5 || rawY < -0.5 || rawX + rawW > 100.5 || rawY + rawH > 100.5) return null;
   const x = clamp(rawX, 0, 100); const y = clamp(rawY, 0, 100);
   const x2 = clamp(rawX + rawW, 0, 100); const y2 = clamp(rawY + rawH, 0, 100);
   return x2 > x && y2 > y ? { x, y, w: x2 - x, h: y2 - y } : null;
@@ -56,7 +61,7 @@ function buildSubmissionFeedbackReportViewModel(input = {}) {
   const fileIds = (submission.files || []).map(id).filter(Boolean); const fileOrder = new Map(fileIds.map((fileId, index) => [fileId, index]));
   const corrections = rawCorrections.map((item, index) => {
     const category = String(item?.category || '').toUpperCase(); const symbol = String(item?.symbol || ''); const legendItem = legendBySymbol.get(symbol);
-    return { ...item, reportId: String(item?.id || item?._id || `correction-${index}`), fileId: id(item?.fileId), page: Number(item?.page || item?.pageNumber || 1), category: CATEGORIES.includes(category) ? category : 'MECHANICS', symbol, symbolLabel: item?.symbolLabel || legendItem?.label || symbol, color: COLORS[CATEGORIES.includes(category) ? category : 'MECHANICS'], quotedText: String(item?.quotedText || item?.originalText || item?.word || ''), message: String(item?.message || ''), suggestedText: String(item?.suggestedText || ''), startChar: Number(item?.startChar), endChar: Number(item?.endChar), bboxList: normalizeBoxes(item?.bboxList) };
+    return { ...item, reportId: String(item?.id || item?._id || `correction-${index}`), fileId: id(item?.fileId), page: Number(item?.page || item?.pageNumber || 1), category: CATEGORIES.includes(category) ? category : 'MECHANICS', symbol, symbolLabel: item?.symbolLabel || legendItem?.label || symbol, color: item?.color || legendItem?.color || COLORS[CATEGORIES.includes(category) ? category : 'MECHANICS'], quotedText: String(item?.quotedText || item?.originalText || item?.word || ''), message: String(item?.message || ''), suggestedText: String(item?.suggestedText || ''), startChar: Number(item?.startChar), endChar: Number(item?.endChar), bboxList: normalizeBoxes(item?.bboxList) };
   }).sort((a, b) => (fileOrder.get(a.fileId) ?? 99999) - (fileOrder.get(b.fileId) ?? 99999) || a.page - b.page || (finite(a.startChar) ? a.startChar : 1e12) - (finite(b.startChar) ? b.startChar : 1e12));
   const numberById = new Map(corrections.map((c, index) => [c.reportId, index + 1]));
   const statistics = Object.fromEntries(CATEGORIES.map((category) => [category.toLowerCase(), corrections.filter((c) => c.category === category).length])); statistics.total = corrections.length;
@@ -68,7 +73,8 @@ function buildSubmissionFeedbackReportViewModel(input = {}) {
   const pages = [...pageSource].sort((a, b) => (fileOrder.get(id(a.fileId)) ?? 99999) - (fileOrder.get(id(b.fileId)) ?? 99999) || Number(a.pageNumber || 1) - Number(b.pageNumber || 1));
   const submittedPages = pages.map((page, index) => {
     const fileId = id(page.fileId); const pageNumber = Number(page.pageNumber || 1); const pageText = String(page.text || ''); const startChar = Number(page.startChar || 0);
-    const pageCorrections = corrections.filter((c) => c.fileId === fileId && c.page === pageNumber);
+    const pageCorrections = corrections.filter((c) => (c.fileId === fileId && c.page === pageNumber)
+      || (pages.length === 1 && !c.fileId && c.page === pageNumber));
     const assetKey = `${fileId}:${pageNumber}`;
     return { fileId, fileIndex: fileOrder.get(fileId) ?? index, fileName: String(page.fileName || ''), fileType: String(page.fileType || ''), pageNumber, displayPageNumber: index + 1, imageDataUrl: submission.imageDataByPageKey?.[assetKey] || submission.imageDataByFileId?.[fileId] || null, imageWidth: Number(page.imageWidth || 0), imageHeight: Number(page.imageHeight || 0), annotationObstacles: normalizeBoxes((Array.isArray(page.words) ? page.words : []).map((word) => word?.bbox)), transcriptStartChar: startChar, transcriptEndChar: Number(page.endChar ?? startChar + pageText.length), transcriptText: pageText, transcriptParagraphs: Array.isArray(page.paragraphs) ? page.paragraphs : [], corrections: pageCorrections.map((c) => ({ ...c, displayNumber: numberById.get(c.reportId) })), transcript: { text: pageText, startChar, endChar: Number(page.endChar ?? startChar + pageText.length), highlightedSegments: highlightedSegments(pageText, startChar, pageCorrections, numberById) } };
   });
