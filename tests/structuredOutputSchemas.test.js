@@ -16,17 +16,35 @@ describe('assessment structured output schemas', () => {
   test('semantic corrections bind the actual source hash, use the canonical enum, and allow zero findings', () => {
     const schema = schemas.semanticCorrectionsSchema('actual-hash');
     expect(schema.properties.transcriptHash).toEqual({ type: 'string', const: 'actual-hash' });
-    expect(schema.properties.corrections.minItems).toBeUndefined();
-    expect(schema.properties.corrections.maxItems).toBe(policy.MAX_AI_CORRECTIONS);
-    expect(schema.properties.categoryReviews).toMatchObject({ minItems: 5, maxItems: 5 });
-    expect(schema.properties.categoryReviews.items.properties.findingCount).toBeUndefined();
-    expect(schema.properties.corrections.items.properties.correctionKind.enum)
-      .toEqual(['localized', 'global']);
-    expect(schema.properties.corrections.items.required).toEqual(schemas.CORRECTION_FIELDS);
-    expect(schema.properties.corrections.items.properties.severity.enum).toEqual(['low', 'medium', 'high']);
-    expect(schema.properties.corrections.items.properties.stylePreference).toEqual({ type: 'boolean', const: false });
+    expect(Object.keys(schema.properties.categories.properties)).toEqual(schemas.CORRECTION_CATEGORIES);
+    expect(schema.properties.categories.required).toEqual(schemas.CORRECTION_CATEGORIES);
+    const content = schema.properties.categories.properties.CONTENT;
+    expect(content.required).toEqual(['reviewed', 'reviewedSymbols', 'noFindingReason', 'corrections']);
+    expect(content.properties.reviewedSymbols).toMatchObject({ minItems: 5, maxItems: 5, uniqueItems: true,
+      items: { enum: schemas.CATEGORY_SYMBOLS.CONTENT } });
+    expect(content.properties.findingCount).toBeUndefined();
+    expect(content.properties.corrections.items.properties.category).toBeUndefined();
+    expect(content.properties.corrections.items.properties.symbol.enum).toEqual(schemas.CATEGORY_SYMBOLS.CONTENT);
+    expect(content.properties.corrections.items.properties.correctionKind.enum).toEqual(['localized', 'global']);
+    expect(schema.properties.categories.properties.GRAMMAR.properties.corrections.items.properties.correctionKind.enum)
+      .toEqual(['localized']);
+    expect(content.properties.corrections.items.properties.severity.enum).toEqual(['low', 'medium', 'high']);
+    expect(content.properties.corrections.items.properties.stylePreference).toEqual({ type: 'boolean', const: false });
     expect(JSON.stringify(schema)).not.toContain('localized|global');
     expect(JSON.stringify(schema)).not.toContain('<exact supplied hash>');
+  });
+
+  test('semantic correction symbol enums use the resolved authoritative legend catalog', () => {
+    const schema = schemas.semanticCorrectionsSchema('hash', ['CONTENT'], { CONTENT: ['DEV', 'REL'] });
+    expect(schema.properties.categories.properties.CONTENT.properties.corrections.items.properties.symbol.enum)
+      .toEqual(['DEV', 'REL']);
+  });
+
+  test.each(Object.entries(schemas.CATEGORY_SYMBOLS))('%s requires its complete exact reviewed-symbol catalog', (category, symbols) => {
+    const schema = schemas.semanticCorrectionsSchema('hash');
+    const reviewed = schema.properties.categories.properties[category].properties.reviewedSymbols;
+    expect(reviewed).toMatchObject({ minItems: symbols.length, maxItems: symbols.length, uniqueItems: true,
+      items: { type: 'string', enum: symbols } });
   });
 
   test('rubric provider schema uses backend-owned evidence identifiers', () => {

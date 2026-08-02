@@ -203,6 +203,12 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     rejectedCorrectionCount: Object.values(rejectionReasons).reduce((sum, count) => sum + count, 0), rejectionReasons,
     returnedByCategory, acceptedByCategory: acceptedBeforeMergeByCategory, rejectedByCategory,
     rejectionReasonsByCategory: terminalValidation.rejectionReasonsByCategory || {},
+    symbolReviewCoverage: terminalValidation.symbolReviewCoverage || null,
+    allCategoriesReviewed: terminalValidation.allCategoriesReviewed === true,
+    totalExpectedSymbols: Number(terminalValidation.totalExpectedSymbols || 0),
+    totalReceivedUniqueSymbols: Number(terminalValidation.totalReceivedUniqueSymbols || 0),
+    incompleteReviewCategories: Array.isArray(terminalValidation.incompleteReviewCategories)
+      ? terminalValidation.incompleteReviewCategories : [],
     retainedAfterMergeByCategory, removedDuringMergeByCategory, persistedByCategory: retainedAfterMergeByCategory,
     ...rejectionStageCounts };
   const finalWrite = await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {

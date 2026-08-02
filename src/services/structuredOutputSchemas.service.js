@@ -1,13 +1,13 @@
 'use strict';
 
 const policy = require('./aiCorrectionPolicy.service');
+const { REQUIRED: CATEGORY_SYMBOLS } = require('./correctionLegendResolver.service');
 
 const CORRECTION_CATEGORIES = Object.freeze(['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS']);
 const CORRECTION_KINDS = Object.freeze(['localized', 'global']);
 const CORRECTION_SEVERITIES = Object.freeze(['low', 'medium', 'high']);
 const CORRECTION_FIELDS = Object.freeze(['category', 'symbol', 'correctionKind', 'quotedText', 'occurrence',
   'message', 'suggestedText', 'confidence', 'severity', 'stylePreference']);
-
 const string = (maxLength, extra = {}) => ({ type: 'string', maxLength, ...extra });
 const closedObject = (properties, required = Object.keys(properties)) => ({
   type: 'object', additionalProperties: false, properties, required
@@ -26,18 +26,10 @@ const RUBRIC_SCHEMA = closedObject({
   }) }
 });
 
-function semanticCorrectionsSchema(transcriptHash) {
+function categoryCorrectionItem(category, categorySymbols = CATEGORY_SYMBOLS) {
   return closedObject({
-    transcriptHash: { type: 'string', const: String(transcriptHash) },
-    categoryReviews: { type: 'array', minItems: 5, maxItems: 5, items: closedObject({
-      category: { type: 'string', enum: CORRECTION_CATEGORIES },
-      reviewed: { type: 'boolean', const: true },
-      noFindingReason: string(320)
-    }) },
-    corrections: { type: 'array', maxItems: policy.MAX_AI_CORRECTIONS, items: closedObject({
-      category: { type: 'string', enum: CORRECTION_CATEGORIES },
-      symbol: string(32, { minLength: 1 }),
-      correctionKind: { type: 'string', enum: CORRECTION_KINDS },
+      symbol: { type: 'string', enum: categorySymbols[category] || CATEGORY_SYMBOLS[category] },
+      correctionKind: { type: 'string', enum: ['CONTENT', 'ORGANIZATION'].includes(category) ? CORRECTION_KINDS : ['localized'] },
       quotedText: string(500, { minLength: 1 }),
       occurrence: { type: 'integer', minimum: 0 },
       message: string(240, { minLength: 1 }),
@@ -45,7 +37,21 @@ function semanticCorrectionsSchema(transcriptHash) {
       confidence: { type: 'number', minimum: 0, maximum: 1 },
       severity: { type: 'string', enum: CORRECTION_SEVERITIES },
       stylePreference: { type: 'boolean', const: false }
-    }) }
+    });
+}
+
+function semanticCorrectionsSchema(transcriptHash, categories = CORRECTION_CATEGORIES, categorySymbols = CATEGORY_SYMBOLS) {
+  const selected = categories.filter((category) => CORRECTION_CATEGORIES.includes(category));
+  return closedObject({ transcriptHash: { type: 'string', const: String(transcriptHash) },
+    categories: closedObject(Object.fromEntries(selected.map((category) => [category, closedObject({
+      reviewed: { type: 'boolean', const: true },
+      reviewedSymbols: { type: 'array', minItems: categorySymbols[category].length,
+        maxItems: categorySymbols[category].length, uniqueItems: true,
+        items: { type: 'string', enum: categorySymbols[category] } },
+      noFindingReason: string(320),
+      corrections: { type: 'array', maxItems: policy.MAX_AI_CORRECTIONS_PER_CATEGORY[category],
+        items: categoryCorrectionItem(category, categorySymbols) }
+    })])))
   });
 }
 
@@ -100,4 +106,4 @@ const DETAILED_FEEDBACK_SCHEMA = closedObject({
 module.exports = { RUBRIC_SCHEMA, DETAILED_FEEDBACK_SCHEMA, CORRECTION_CATEGORIES, CORRECTION_KINDS,
   CORRECTION_SEVERITIES, CORRECTION_FIELDS, MAX_RUBRIC_EVIDENCE_IDS,
   NO_TRANSCRIPT_EVIDENCE_SENTINEL, uniqueIds,
-  semanticCorrectionsSchema, semanticRubricAssessmentSchema };
+  CATEGORY_SYMBOLS, semanticCorrectionsSchema, semanticRubricAssessmentSchema };

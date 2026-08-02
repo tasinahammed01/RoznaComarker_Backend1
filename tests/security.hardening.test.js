@@ -11,7 +11,7 @@ describe('Security & Production Hardening', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.runtime).toMatchObject({ applicationVersion: '1.0.0', contractHash: expect.stringMatching(/^[a-f0-9]{16}$/),
-      contracts: { correctionSchema: 'semantic-corrections-v8', rubricSchema: 'semantic-rubric-assessment-json-v4' } });
+      contracts: { correctionSchema: 'semantic-corrections-v10-symbol-coverage', rubricSchema: 'semantic-rubric-assessment-json-v4' } });
 
     // CSP
     expect(res.headers).toHaveProperty('content-security-policy');

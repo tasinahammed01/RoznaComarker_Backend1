@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { defaultLegend } = require('./writingCorrections.service');
 
-const VERSION = 'canonical-5-ai-only';
+const VERSION = 'canonical-6-category-structured';
 const DEDUCTION_POLICY_VERSION = 'legend-diminishing-v1';
 const REPETITION_FACTORS = Object.freeze([1, 0.75, 0.55]);
 

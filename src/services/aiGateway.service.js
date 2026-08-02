@@ -171,7 +171,8 @@ function safeFailureMetadata(error) {
     'candidatesTokenCount', 'thoughtsTokenCount', 'totalTokenCount', 'maxOutputTokens',
     'responseTextLength', 'candidateCount', 'validationCode', 'validationStage', 'jsonPath',
     'expected', 'actualType', 'category', 'symbol', 'candidateIndex', 'transcriptHashMatch',
-    'requiredPropertyMissing', 'unexpectedPropertyPresent'];
+    'requiredPropertyMissing', 'unexpectedPropertyPresent', 'expectedSymbolCount',
+    'receivedSymbolCount', 'missingSymbols', 'duplicateSymbols', 'unexpectedSymbols'];
   return Object.fromEntries(allowed.filter((key) => error?.[key] !== undefined && error?.[key] !== null)
     .map((key) => [key, error[key]]));
 }

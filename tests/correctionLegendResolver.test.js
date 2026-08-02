@@ -57,4 +57,23 @@ describe('authoritative correction legend resolver', () => {
     expect(resolved.source).toBe('DATABASE');
     expect(semanticRows(resolved)).toEqual(semanticRows(resolver.fallbackLegend()));
   });
+
+  test('database and fallback legends derive identical complete symbol coverage catalogs', async () => {
+    const databaseLegend = resolver.fallbackLegend(); databaseLegend.version = 'mongo-complete';
+    const database = await resolver.resolveLegend({ model: { findOne: () => ({ lean: async () => databaseLegend }) } });
+    const fallback = await resolver.resolveLegend({ model: { findOne: () => ({ lean: async () => ({ groups: [] }) }) } });
+    const catalog = (legend) => Object.fromEntries(legend.groups.map((group) => [group.key,
+      group.symbols.map((item) => item.symbol)]));
+    expect(catalog(database)).toEqual(catalog(fallback));
+    expect(Object.values(catalog(database)).flat()).toHaveLength(28);
+  });
+
+  test('a partial database legend cannot become an authoritative provider catalog', async () => {
+    const partial = resolver.fallbackLegend(); partial.groups[0].symbols.pop();
+    const resolved = await resolver.resolveLegend({ model: { findOne: () => ({ lean: async () => partial }) } });
+    expect(resolved.source).toBe('VERSIONED_FALLBACK');
+    expect(resolved.validationErrors).toEqual(expect.arrayContaining(['MISSING_SYMBOL:CONTENT/SD',
+      'UNEXPECTED_SYMBOL_COUNT:CONTENT']));
+    expect(resolved.groups.flatMap((group) => group.symbols)).toHaveLength(28);
+  });
 });

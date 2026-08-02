@@ -8,6 +8,7 @@ const writing = require('../src/services/writingCorrections.service');
 const policy = require('../src/services/aiCorrectionPolicy.service');
 const pipeline = require('../src/services/canonicalCorrectionsPipeline.service');
 const expertFixture = require('./fixtures/twoPageLearnerEssaySanitized');
+const { CATEGORY_SYMBOLS } = require('../src/services/structuredOutputSchemas.service');
 
 const finding = (overrides = {}) => ({
   category: 'CONTENT', symbol: 'DEV', correctionKind: 'localized', quotedText: 'claim', occurrence: 0,
@@ -19,6 +20,17 @@ const reviewsFor = (corrections = []) => Object.keys(policy.CATEGORY_POLICY).map
   return { category, reviewed: true,
     noFindingReason: findingCount ? '' : 'No additional grounded finding after complete review.' };
 });
+const structuredFor = (corrections = [], overrides = {}) => ({
+  transcriptHash: overrides.transcriptHash || 'hash',
+  categories: Object.fromEntries(Object.keys(policy.CATEGORY_POLICY).map((category) => {
+    const items = corrections.filter((item) => item.category === category)
+      .map(({ category: _category, ...item }) => item);
+    return [category, { reviewed: true,
+      reviewedSymbols: [...CATEGORY_SYMBOLS[category]],
+      noFindingReason: items.length ? '' : 'No additional grounded finding after complete review.',
+      corrections: items, ...(overrides[category] || {}) }];
+  }))
+});
 
 describe('safe hybrid correction policy', () => {
   const legend = semantic.compactSemanticLegend(writing.defaultLegend());
@@ -29,44 +41,46 @@ describe('safe hybrid correction policy', () => {
       languageToolCorrections: []
     });
     const prompt = request.messages[1].content;
-    expect(prompt).toContain('"transcriptHash":"hash-123"');
-    expect(prompt).toContain('"correctionKind":"localized"');
+    expect(prompt).toContain('transcriptHash=hash-123');
+    expect(prompt).toContain('localized means a specific passage');
     expect(prompt).not.toContain('localized|global');
     expect(prompt).not.toContain('<exact supplied hash>');
   });
 
   test('requires one consistent review for every canonical category while allowing zero Content findings', () => {
-    const empty = { transcriptHash: 'hash', corrections: [] };
-    expect(semantic.parseJson(JSON.stringify({ ...empty, categoryReviews: reviewsFor([]) }), 'hash'))
+    const empty = structuredFor([]);
+    expect(semantic.parseJson(JSON.stringify(empty), 'hash'))
       .toMatchObject({ corrections: [] });
-    expect(() => semantic.parseJson(JSON.stringify(empty), 'hash')).toThrow(expect.objectContaining({
-      validationStage: 'semantic_schema', jsonPath: '$.categoryReviews', requiredPropertyMissing: true
+    expect(() => semantic.parseJson(JSON.stringify({ transcriptHash: 'hash' }), 'hash')).toThrow(expect.objectContaining({
+      validationStage: 'semantic_schema', jsonPath: '$.categories', requiredPropertyMissing: true
     }));
-    const duplicate = reviewsFor([]); duplicate[4] = { ...duplicate[0] };
-    expect(() => semantic.parseJson(JSON.stringify({ ...empty, categoryReviews: duplicate }), 'hash'))
-      .toThrow(expect.objectContaining({ validationStage: 'category_reviews' }));
+    const incomplete = structuredFor([]); delete incomplete.categories.MECHANICS;
+    expect(() => semantic.parseJson(JSON.stringify(incomplete), 'hash'))
+      .toThrow(expect.objectContaining({ validationStage: 'semantic_schema' }));
     const mismatchFinding = finding();
-    const legacyReviews = reviewsFor([]).map((review) => ({ ...review, findingCount: 99 }));
-    const parsed = semantic.parseJson(JSON.stringify({ transcriptHash: 'hash', corrections: [mismatchFinding],
-      categoryReviews: legacyReviews }), 'hash');
+    const payload = structuredFor([mismatchFinding], { CONTENT: { findingCount: 99 } });
+    expect(() => semantic.parseJson(JSON.stringify(payload), 'hash')).toThrow(expect.objectContaining({
+      validationStage: 'semantic_schema', jsonPath: '$.categories.CONTENT.findingCount', unexpectedPropertyPresent: true
+    }));
+    delete payload.categories.CONTENT.findingCount;
+    const parsed = semantic.parseJson(JSON.stringify(payload), 'hash');
     expect(parsed.categoryReviews.find((review) => review.category === 'CONTENT')).toMatchObject({ findingCount: 1,
       noFindingReason: '' });
     expect(parsed.compatibilityDiagnostics).toMatchObject({
-      legacyFindingCountIgnored: true,
+      legacyFindingCountIgnored: false,
       categoryReviewNormalizations: expect.arrayContaining([
         expect.objectContaining({ category: 'CONTENT', correctionCount: 1,
-          originalReasonPresent: true, normalizationReason: 'nonzero_reason_cleared' })
+          originalReasonPresent: false, normalizationReason: 'server_count_calculated' })
       ])
     });
   });
 
   test('normalizes category-review reasons without discarding authoritative corrections', () => {
     const correction = finding();
-    const reviews = reviewsFor([]);
-    reviews.find((review) => review.category === 'CONTENT').noFindingReason = 'Contradictory provider reason.';
-    reviews.find((review) => review.category === 'VOCABULARY').noFindingReason = 'N/A';
-    const parsed = semantic.parseJson(JSON.stringify({ transcriptHash: 'hash', categoryReviews: reviews,
-      corrections: [correction] }), 'hash', {
+    const payload = structuredFor([correction], {
+      CONTENT: { noFindingReason: 'Contradictory provider reason.' }, VOCABULARY: { noFindingReason: 'N/A' }
+    });
+    const parsed = semantic.parseJson(JSON.stringify(payload), 'hash', {
       provider: 'openrouter', model: 'openai/gpt-4.1', attemptNumber: 1
     });
 
@@ -74,7 +88,7 @@ describe('safe hybrid correction policy', () => {
       findingCount: 1, noFindingReason: ''
     });
     expect(parsed.categoryReviews.find((review) => review.category === 'ORGANIZATION').noFindingReason)
-      .toBe('No additional grounded finding after complete review.');
+      .toBe(semantic.DEFAULT_NO_FINDING_REASON);
     expect(parsed.categoryReviews.find((review) => review.category === 'VOCABULARY').noFindingReason)
       .toBe(semantic.DEFAULT_NO_FINDING_REASON);
     expect(parsed.compatibilityDiagnostics.categoryReviewNormalizations).toEqual(expect.arrayContaining([
@@ -85,15 +99,69 @@ describe('safe hybrid correction policy', () => {
     ]));
   });
 
+  test('accepts complete unordered 28-symbol coverage without creating corrections', () => {
+    const payload = structuredFor([]);
+    for (const review of Object.values(payload.categories)) review.reviewedSymbols.reverse();
+    const parsed = semantic.parseJson(JSON.stringify(payload), 'hash');
+    expect(parsed.corrections).toEqual([]);
+    expect(Object.values(parsed.symbolReviewCoverage).every((item) => item.complete)).toBe(true);
+    expect(Object.values(parsed.symbolReviewCoverage).reduce((sum, item) => sum + item.received, 0)).toBe(28);
+    expect(canonical.statistics(parsed.corrections)).toEqual({ content: 0, organization: 0, grammar: 0,
+      vocabulary: 0, mechanics: 0, total: 0 });
+  });
+
+  test('rejects an empty no-finding reason for a backend-calculated zero category', () => {
+    const payload = structuredFor([]); payload.categories.CONTENT.noFindingReason = '';
+    expect(() => semantic.parseJson(JSON.stringify(payload), 'hash')).toThrow(expect.objectContaining({
+      code: 'SEMANTIC_SCHEMA_INVALID', validationStage: 'category_review_reason', category: 'CONTENT'
+    }));
+  });
+
+  test.each([
+    ['missing', (symbols) => symbols.slice(1), ['REL'], [], []],
+    ['duplicate', (symbols) => [...symbols.slice(0, -1), symbols[0]], ['SD'], ['REL'], []],
+    ['unknown', (symbols) => [...symbols.slice(0, -1), 'UNKNOWN'], ['SD'], [], ['UNKNOWN']],
+    ['cross-category', (symbols) => [...symbols.slice(0, -1), 'AGR'], ['SD'], [], ['AGR']]
+  ])('rejects %s symbol-review coverage with sanitized metadata', (_label, mutate, missing, duplicate, unexpected) => {
+    const payload = structuredFor([]);
+    payload.categories.CONTENT.reviewedSymbols = mutate(payload.categories.CONTENT.reviewedSymbols);
+    expect(() => semantic.parseJson(JSON.stringify(payload), 'hash', {
+      provider: 'openrouter', model: 'openai/gpt-4.1', attemptNumber: 1
+    })).toThrow(expect.objectContaining({ code: 'SEMANTIC_SYMBOL_REVIEW_INCOMPLETE',
+      validationStage: 'symbol_review_coverage', category: 'CONTENT', expectedSymbolCount: 5,
+      missingSymbols: missing, duplicateSymbols: duplicate, unexpectedSymbols: unexpected,
+      provider: 'openrouter', model: 'openai/gpt-4.1', attemptNumber: 1 }));
+  });
+
+  test('targeted repair requires complete selected-category symbols and rejects unrelated categories', () => {
+    const selected = ['CONTENT', 'VOCABULARY'];
+    const payload = structuredFor([]);
+    payload.categories = { CONTENT: payload.categories.CONTENT, VOCABULARY: payload.categories.VOCABULARY };
+    expect(semantic.parseJson(JSON.stringify(payload), 'hash', {}, selected, CATEGORY_SYMBOLS, 'targeted-repair'))
+      .toMatchObject({ corrections: [], symbolReviewCoverage: {
+        CONTENT: { complete: true, sources: ['targeted-repair'] },
+        VOCABULARY: { complete: true, sources: ['targeted-repair'] }
+      } });
+    payload.categories.GRAMMAR = structuredFor([]).categories.GRAMMAR;
+    expect(() => semantic.parseJson(JSON.stringify(payload), 'hash', {}, selected, CATEGORY_SYMBOLS, 'targeted-repair'))
+      .toThrow(expect.objectContaining({ validationStage: 'semantic_schema', unexpectedPropertyPresent: true }));
+  });
+
+  test('symbol coverage diagnostics contain no transcript or provider response content', () => {
+    const parsed = semantic.parseJson(JSON.stringify(structuredFor([])), 'hash');
+    const serialized = JSON.stringify(parsed.symbolReviewCoverage);
+    expect(serialized).not.toContain('transcript');
+    expect(serialized).not.toContain('response');
+    expect(serialized).not.toContain('quotedText');
+  });
+
   test('reports a sanitized JSON path for null and missing canonical fields', () => {
-    const nullReason = reviewsFor([]); nullReason[0].noFindingReason = null;
-    expect(() => semantic.parseJson(JSON.stringify({ transcriptHash: 'hash', categoryReviews: nullReason,
-      corrections: [] }), 'hash')).toThrow(expect.objectContaining({ validationStage: 'semantic_schema',
-      jsonPath: '$.categoryReviews[0].noFindingReason', expected: expect.stringContaining('string'), actualType: 'null' }));
+    const nullReason = structuredFor([], { CONTENT: { noFindingReason: null } });
+    expect(() => semantic.parseJson(JSON.stringify(nullReason), 'hash')).toThrow(expect.objectContaining({ validationStage: 'semantic_schema',
+      jsonPath: '$.categories.CONTENT.noFindingReason', expected: expect.stringContaining('string'), actualType: 'null' }));
     const missing = finding(); delete missing.suggestedText;
-    expect(() => semantic.parseJson(JSON.stringify({ transcriptHash: 'hash', categoryReviews: reviewsFor([missing]),
-      corrections: [missing] }), 'hash')).toThrow(expect.objectContaining({ validationStage: 'semantic_schema',
-      jsonPath: '$.corrections[0].suggestedText', requiredPropertyMissing: true, candidateIndex: 0 }));
+    expect(() => semantic.parseJson(JSON.stringify(structuredFor([missing])), 'hash')).toThrow(expect.objectContaining({ validationStage: 'semantic_schema',
+      jsonPath: '$.categories.CONTENT.corrections[0].suggestedText', requiredPropertyMissing: true, candidateIndex: 0 }));
   });
 
   test('accepts grounded localized and global Content findings and rejects global Grammar', () => {
@@ -227,8 +295,8 @@ describe('safe hybrid correction policy', () => {
   });
 
   test('rejects an oversized response instead of silently slicing it', () => {
-    const payload = JSON.stringify({ transcriptHash: 'hash',
-      corrections: Array.from({ length: policy.MAX_AI_CORRECTIONS + 1 }, () => finding()) });
+    const payload = JSON.stringify(structuredFor(
+      Array.from({ length: policy.MAX_AI_CORRECTIONS + 1 }, (_, index) => finding({ occurrence: index }))));
     expect(() => semantic.parseJson(payload, 'hash')).toThrow(expect.objectContaining({
       code: 'SEMANTIC_SCHEMA_INVALID', validationStage: 'correction_limit'
     }));
@@ -266,6 +334,44 @@ describe('safe hybrid correction policy', () => {
     })], { transcript: 'This is more easier.', legend })).toThrow(expect.objectContaining({
       code: 'SEMANTIC_SCHEMA_INVALID'
     }));
+  });
+
+  test('runs one bounded missing-category audit and merges grounded findings into canonical diagnostics', async () => {
+    const transcript = `students is unclear ${'supporting context '.repeat(30)}`.trim();
+    const initial = structuredFor([finding({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'students is',
+      suggestedText: 'students are', message: 'Correct subject-verb agreement.' })], { transcriptHash: 'audit-hash' });
+    const auditCategories = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'MECHANICS'];
+    const audit = { transcriptHash: 'audit-hash', categories: Object.fromEntries(auditCategories.map((category) => [category, {
+      reviewed: true,
+      reviewedSymbols: [...CATEGORY_SYMBOLS[category]],
+      noFindingReason: category === 'CONTENT' ? '' : 'No grounded finding after the targeted review.',
+      corrections: category === 'CONTENT' ? [(({ category: _category, ...item }) => item)(finding({
+        category: 'CONTENT', symbol: 'DEV', correctionKind: 'global', quotedText: 'supporting context', suggestedText: '',
+        message: 'Develop this point with specific support.'
+      }))] : []
+    }])) };
+    const payloads = [initial, audit];
+    const runCompletion = jest.fn(async (options) => {
+      const content = JSON.stringify(payloads.shift());
+      return { content, value: options.validate(content, { provider: 'openrouter', model: 'openai/gpt-4.1', attemptIndex: 0 }),
+        provider: 'openrouter', model: 'openai/gpt-4.1', usage: {}, metrics: { attemptCount: 1 } };
+    });
+    const result = await semantic.analyze({ transcript, transcriptHash: 'audit-hash' }, {
+      runCompletion, env: { OPENROUTER_API_KEY: 'test-only' }, config: {
+        provider: 'openrouter', model: 'openai/gpt-4.1', fallback: []
+      }
+    });
+    expect(runCompletion).toHaveBeenCalledTimes(2);
+    expect(result.corrections).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: 'GRAMMAR', symbol: 'AGR' }),
+      expect.objectContaining({ category: 'CONTENT', symbol: 'DEV' })
+    ]));
+    expect(result.diagnostics).toMatchObject({ rawCorrectionCount: 2, acceptedCorrectionCount: 2,
+      categoryAudit: { requested: true, categories: auditCategories },
+      allCategoriesReviewed: true, totalExpectedSymbols: 28, totalReceivedUniqueSymbols: 28,
+      incompleteReviewCategories: [],
+      returnedByCategory: { CONTENT: 1, GRAMMAR: 1 }, acceptedByCategory: { CONTENT: 1, GRAMMAR: 1 } });
+    expect(result.diagnostics.symbolReviewCoverage.CONTENT.sources).toEqual(['initial', 'targeted-repair']);
   });
 });
 
@@ -407,9 +513,9 @@ describe('sanitized two-page expert coverage fixture', () => {
     expect(validated.diagnostics.rejectedCorrectionCount).toBe(0);
   });
 
-  test('zero category reviews receive a deterministic reason when provider metadata is meaningless', () => {
+  test('non-empty but meaningless provider reasons are replaced with deterministic neutral wording', () => {
     const reviews = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'].map((category) => ({
-      category, reviewed: true, findingCount: 0, noFindingReason: category === 'VOCABULARY' ? '' : 'No grounded finding.'
+      category, reviewed: true, findingCount: 0, noFindingReason: category === 'VOCABULARY' ? 'N/A' : 'No grounded finding.'
     }));
     const diagnostics = semantic.validateCategoryReviews(reviews, []);
     expect(reviews.find((review) => review.category === 'VOCABULARY').noFindingReason)

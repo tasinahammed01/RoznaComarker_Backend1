@@ -157,9 +157,15 @@ function correctionFixtureFromPrompt(prompt) {
     { category: 'MECHANICS', symbol: 'SP', correctionKind: 'localized', quotedText: 'teh', occurrence: 1, message: 'Correct the spelling.', suggestedText: 'the', confidence: 0.95, severity: 'medium', stylePreference: false }
   ];
   const categories = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'];
-  const categoryReviews = categories.map((category) => ({ category, reviewed: true, noFindingReason: '' }));
-  if (mockSemanticMode === 'failure') categoryReviews[4] = { ...categoryReviews[0] };
-  return { transcriptHash, categoryReviews, corrections };
+  const symbols = require('../src/services/structuredOutputSchemas.service').CATEGORY_SYMBOLS;
+  const grouped = Object.fromEntries(categories.map((category) => [category, {
+    reviewed: true,
+    reviewedSymbols: [...symbols[category]],
+    noFindingReason: corrections.some((item) => item.category === category) ? '' : 'No grounded finding after review.',
+    corrections: corrections.filter((item) => item.category === category).map(({ category: _category, ...item }) => item)
+  }]));
+  if (mockSemanticMode === 'failure') delete grouped.MECHANICS;
+  return { transcriptHash, categories: grouped };
 }
 
 describe('isolated canonical two-image HTTP lifecycle', () => {
@@ -192,7 +198,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
       }
       if (String(url).includes('/chat/completions')) {
         const prompt = rubricPromptFromRequest(options);
-        if (prompt.includes('schema=semantic-corrections-v8')) {
+        if (prompt.includes('schema=semantic-corrections-v10-symbol-coverage')) {
           correctionProviderRequestCount += 1;
           lifecycleEvents.push('correction-started');
           return { ok: true, status: 200, headers: { get: () => 'application/json' },
@@ -300,6 +306,10 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     releaseRubric();
     const completedDoc = await waitFor(successId, (doc) => doc.correctionStatus === 'completed' && doc.evaluationStatus === 'completed');
     expect(completedDoc.ocrPages).toHaveLength(2);
+    expect(completedDoc.semanticMetrics).toMatchObject({ allCategoriesReviewed: true,
+      totalExpectedSymbols: 28, totalReceivedUniqueSymbols: 28, incompleteReviewCategories: [] });
+    expect(Object.values(completedDoc.semanticMetrics.symbolReviewCoverage)
+      .every((item) => item.complete === true)).toBe(true);
     const canonicalOcr = await getOcrCorrections(successId, studentToken);
     expect(canonicalOcr.transcriptLayoutVersion).toBe('ocr-layout-v5-native-text');
     expect(canonicalOcr.ocr.map((page) => page.fileId)).toEqual(completedDoc.files.map(String));

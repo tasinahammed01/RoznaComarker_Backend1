@@ -313,16 +313,26 @@ describe('global AI gateway', () => {
 
   test('invalid JSON and feature validation failure select fallback', async () => {
     const fetchImpl = jest.fn()
-      .mockResolvedValueOnce(google('not json'))
+      .mockResolvedValueOnce(google('{"valid":false}'))
       .mockResolvedValueOnce(router('{"valid":true}'));
     const result = await gateway.generate({ messages: [{ role: 'user', content: 'x' }],
       responseFormat: 'json', validate: (content) => {
         const parsed = JSON.parse(content);
-        if (!parsed.valid) throw new Error('schema');
+        if (!parsed.valid) {
+          const error = new Error('schema'); error.code = 'SEMANTIC_SYMBOL_REVIEW_INCOMPLETE';
+          error.validationStage = 'symbol_review_coverage'; error.category = 'CONTENT';
+          error.expectedSymbolCount = 5; error.receivedSymbolCount = 4;
+          error.missingSymbols = ['REL']; error.duplicateSymbols = []; error.unexpectedSymbols = [];
+          throw error;
+        }
         return parsed;
       }, env: env(), fetchImpl });
     expect(result.value).toEqual({ valid: true });
-    expect(result.attempts[0].code).toBe('AI_OUTPUT_VALIDATION_FAILED');
+    expect(result.attempts).toHaveLength(2);
+    expect(result.attempts[0]).toMatchObject({ code: 'AI_OUTPUT_VALIDATION_FAILED', fallbackIndex: 0,
+      validationCode: 'SEMANTIC_SYMBOL_REVIEW_INCOMPLETE', validationStage: 'symbol_review_coverage',
+      category: 'CONTENT', expectedSymbolCount: 5, receivedSymbolCount: 4, missingSymbols: ['REL'] });
+    expect(result.attempts[1]).toMatchObject({ status: 'success', fallbackIndex: 1 });
   });
 
   test('truncated Gemini output is discarded and selects fallback', async () => {

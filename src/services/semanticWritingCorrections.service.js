@@ -9,10 +9,10 @@ const { promptDefinitions } = require('./writingCategoryDefinitions.service');
 const { semanticCorrectionsSchema, CORRECTION_CATEGORIES, CORRECTION_KINDS,
   CORRECTION_SEVERITIES, CORRECTION_FIELDS } = require('./structuredOutputSchemas.service');
 
-const SEMANTIC_PROMPT_VERSION = 'ai-only-correction-detection-v4';
-const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v8';
-const CATEGORY_REVIEW_POLICY_VERSION = 'ai-only-categories-v3';
-const DEFAULT_NO_FINDING_REASON = 'No validated canonical findings were returned for this category.';
+const SEMANTIC_PROMPT_VERSION = 'ai-only-correction-detection-v6-symbol-coverage';
+const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v10-symbol-coverage';
+const CATEGORY_REVIEW_POLICY_VERSION = 'ai-only-categories-v5-28-symbol-coverage';
+const DEFAULT_NO_FINDING_REASON = 'No validated canonical findings were returned after the category review.';
 const SEMANTIC_CATEGORIES = new Set(CORRECTION_CATEGORIES);
 const OMIT_CONTEXT_KEYS = new Set(['_id', '__v', 'createdAt', 'updatedAt', 'student', 'teacher', 'class', 'files', 'fileUrls', 'images']);
 
@@ -36,6 +36,9 @@ function compactSemanticLegend(legend = defaultLegend()) {
   }));
 }
 
+const categorySymbolCatalog = (legend) => Object.fromEntries((legend || []).map((group) => [group.category,
+  (group.symbols || []).map((item) => item.symbol)]));
+
 function compactLanguageToolExclusions(corrections = []) {
   // No longer used in AI-only pipeline - kept for backward compatibility
   return [];
@@ -51,23 +54,16 @@ function buildSemanticRequest({ transcript, assignment = {}, legend: resolvedLeg
   const legend = compactSemanticLegend(resolvedLegend);
   const context = compactAssignment(assignment);
   const pages = compactPageManifest(pageManifest);
-  const responseShape = { transcriptHash, categoryReviews: SEMANTIC_CATEGORIES.has('CONTENT') ? ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'].map((category) => ({
-    category, reviewed: true, noFindingReason: '<meaningful reason only when this category has no findings>'
-  })) : [], corrections: [
-    { category: 'GRAMMAR', symbol: 'AGR', correctionKind: 'localized', quotedText: '<exact quote>', occurrence: 0,
-      message: '<explanation>', suggestedText: '<replacement>', confidence: 0.86, severity: 'medium', stylePreference: false },
-    { category: 'MECHANICS', symbol: 'SP', correctionKind: 'localized', quotedText: '<exact quote>', occurrence: 0,
-      message: '<explanation>', suggestedText: '<replacement>', confidence: 0.91, severity: 'medium', stylePreference: false }
-  ] };
   const prompt = [
     `schema=${SEMANTIC_SCHEMA_VERSION};prompt=${SEMANTIC_PROMPT_VERSION}`,
     `transcriptHash=${transcriptHash}`,
     `pages=${JSON.stringify(pages)}`,
     `assignment=${JSON.stringify(context)}`,
     `legend=${JSON.stringify(legend)}`,
-    `response=${JSON.stringify(responseShape)}`,
     'You are an AI-only writing correction detector. Analyze the entire canonical transcript independently. No external grammar checker is available.',
-    'Review every category exactly once in categoryReviews and set reviewed=true. Do not return findingCount; the server calculates it. If a category has no corrections, give a meaningful non-empty noFindingReason. For a category with corrections, return noFindingReason="". Zero findings remains valid and must never be forced.',
+    'Return the provider-native category-structured object defined by the JSON Schema. Review every required category exactly once and set reviewed=true. Do not return findingCount; the server calculates it. If a category has no corrections, give a meaningful non-empty noFindingReason. For a category with corrections, return noFindingReason="". Zero findings remains valid and must never be forced.',
+    'For every category, perform a separate complete-transcript review of every supplied legend symbol and return the complete symbol list in reviewedSymbols. reviewedSymbols reports review coverage only: it does not mean an error was found, does not affect scoring or statistics, and must never cause a correction to be created. Use each authoritative legend label and description supplied above.',
+    'Use the narrowest correct symbol. A passage may support multiple genuinely different findings, but duplicates are prohibited. Every correction symbol must belong to its containing category object.',
     'Perform five explicit full-transcript passes and return every material defensible finding within the supplied safe limits, not merely representative examples.',
     'Pass 1 CONTENT: REL, DEV, TA, CL, SD. Review relevance, task achievement, claim clarity/development, support specificity, and repetitive development.',
     'Pass 2 ORGANIZATION: COH, CO, PU, TS, CONC. Review progression, transitions, paragraph unity, topic sentences, and actual introduction/conclusion structure.',
@@ -82,6 +78,7 @@ function buildSemanticRequest({ transcript, assignment = {}, legend: resolvedLeg
     'Balance attention equally across all five passes. Category examples are boundaries, not quotas: CONTENT may ground an unsupported claim; ORGANIZATION may ground a weak transition or ending; GRAMMAR may ground agreement or verb form; VOCABULARY may ground imprecise choice, word form, repetition, register, or collocation; MECHANICS may ground spelling, punctuation, capitalization, spacing, or formatting. Never match examples mechanically.',
     'Poor grammar alone is not CONTENT/CL. Do not infer COH when the underlying ideas are not understandable. Do not fill categories or limits.',
     'Only genuine errors. Quote minimum exact evidence; occurrence is zero-based; message<=240. No rewrites, duplicates, praise, styles, or OCR guesses.',
+    'Never treat a zero-category explanation as proof of quality. Do not claim a clear conclusion unless the authoritative ending supports it. Do not claim Mechanics is clean when spelling or punctuation findings are returned.',
     promptDefinitions(),
     'localized means a specific passage has an identifiable replacement and suggestedText is required.',
     'For localized quotedText, copy the shortest exact erroneous text verbatim from the canonical transcript. Preserve its OCR spelling, case, punctuation, and normalized whitespace. Never put corrected or paraphrased text in quotedText; put that only in suggestedText.',
@@ -107,31 +104,28 @@ function buildLegacySemanticRequestForBenchmark({ transcript, assignment = {}, l
   return { messages, promptCharacters: serializedLength, promptInputTokenEstimate: Math.ceil(serializedLength / 4) };
 }
 
-function parseJson(value, expectedHash, attemptMeta = {}) {
+function parseJson(value, expectedHash, attemptMeta = {}, expectedCategories = CORRECTION_CATEGORIES,
+  expectedSymbols = null, coverageSource = 'initial') {
   const text = String(value || '').trim().replace(/^```json\s*/iu, '').replace(/```$/u, '').trim();
   let parsed;
   try { parsed = JSON.parse(text); }
   catch { throw semanticError('SEMANTIC_RESPONSE_INVALID', 'json_parse', 'Semantic analysis returned invalid JSON'); }
   if (!expectedHash || parsed?.transcriptHash !== expectedHash)
     throw semanticError('SEMANTIC_SOURCE_MISMATCH', 'source_hash', 'Semantic analysis did not confirm the complete transcript hash');
-  if (!Array.isArray(parsed?.corrections))
-    throw semanticError('SEMANTIC_SCHEMA_INVALID', 'schema_validation', 'Semantic analysis corrections must be an array');
-  if (parsed.corrections.length > policy.MAX_AI_CORRECTIONS)
+  const symbolReviewCoverage = validateSemanticContract(parsed, expectedCategories, expectedSymbols, attemptMeta, coverageSource);
+  const corrections = [];
+  const categoryReviews = [];
+  for (const category of expectedCategories) {
+    const review = parsed.categories[category];
+    categoryReviews.push({ category, reviewed: true, reviewedSymbols: [...review.reviewedSymbols], noFindingReason: review.noFindingReason });
+    corrections.push(...review.corrections.map((item) => ({ ...item, category })));
+  }
+  if (corrections.length > policy.MAX_AI_CORRECTIONS)
     throw semanticError('SEMANTIC_SCHEMA_INVALID', 'correction_limit', 'Semantic analysis returned too many corrections');
-  validateSemanticContract(parsed);
-  const legacyFindingCountIgnored = parsed.categoryReviews.some(
-    (review) => Object.prototype.hasOwnProperty.call(review, 'findingCount')
-  );
-  const categoryReviewNormalizations = validateCategoryReviews(
-    parsed.categoryReviews,
-    parsed.corrections,
-    attemptMeta
-  );
-  parsed.compatibilityDiagnostics = {
-    legacyFindingCountIgnored,
-    categoryReviewNormalizations
-  };
-  return parsed;
+  const categoryReviewNormalizations = validateCategoryReviews(categoryReviews, corrections, attemptMeta, expectedCategories);
+  return { transcriptHash: parsed.transcriptHash, corrections, categoryReviews,
+    symbolReviewCoverage,
+    compatibilityDiagnostics: { legacyFindingCountIgnored: false, categoryReviewNormalizations } };
 }
 
 function contractError({ jsonPath, expected, actual, category = null, symbol = null,
@@ -142,40 +136,72 @@ function contractError({ jsonPath, expected, actual, category = null, symbol = n
   });
 }
 
-function validateSemanticContract(parsed) {
-  const rootFields = ['transcriptHash', 'categoryReviews', 'corrections'];
+function validateSemanticContract(parsed, expectedCategories = CORRECTION_CATEGORIES, expectedSymbols = null,
+  attemptMeta = {}, coverageSource = 'initial') {
+  const rootFields = ['transcriptHash', 'categories'];
   for (const key of Object.keys(parsed)) if (!rootFields.includes(key)) throw contractError({
     jsonPath: `$.${key}`, expected: 'no unexpected properties', actual: parsed[key], unexpectedPropertyPresent: true });
-  if (!Array.isArray(parsed.categoryReviews)) throw contractError({ jsonPath: '$.categoryReviews',
-    expected: 'array with exactly five category reviews', actual: parsed.categoryReviews,
-    requiredPropertyMissing: !('categoryReviews' in parsed) });
-  const requiredReviewFields = ['category', 'reviewed', 'noFindingReason'];
-  const reviewFields = [...requiredReviewFields, 'findingCount']; // tolerated and ignored for legacy model output
-  for (let index = 0; index < parsed.categoryReviews.length; index += 1) {
-    const review = parsed.categoryReviews[index]; const base = `$.categoryReviews[${index}]`;
+  if (!parsed.categories || typeof parsed.categories !== 'object' || Array.isArray(parsed.categories)) throw contractError({ jsonPath: '$.categories',
+    expected: 'closed category object', actual: parsed.categories, requiredPropertyMissing: !('categories' in parsed) });
+  for (const key of Object.keys(parsed.categories)) if (!expectedCategories.includes(key)) throw contractError({
+    jsonPath: `$.categories.${key}`, expected: 'no unexpected category', actual: parsed.categories[key], unexpectedPropertyPresent: true });
+  for (const category of expectedCategories) {
+    const review = parsed.categories[category]; const base = `$.categories.${category}`;
     if (!review || typeof review !== 'object' || Array.isArray(review)) throw contractError({ jsonPath: base, expected: 'object', actual: review });
-    for (const field of requiredReviewFields) if (!(field in review)) throw contractError({ jsonPath: `${base}.${field}`,
-      expected: 'required property', actual: undefined, category: review.category || null, requiredPropertyMissing: true });
-    for (const field of Object.keys(review)) if (!reviewFields.includes(field)) throw contractError({ jsonPath: `${base}.${field}`,
-      expected: 'no unexpected properties', actual: review[field], category: review.category || null, unexpectedPropertyPresent: true });
+    for (const field of ['reviewed', 'reviewedSymbols', 'noFindingReason', 'corrections']) if (!(field in review)) throw contractError({ jsonPath: `${base}.${field}`,
+      expected: 'required property', actual: undefined, category, requiredPropertyMissing: true });
+    for (const field of Object.keys(review)) if (!['reviewed', 'reviewedSymbols', 'noFindingReason', 'corrections'].includes(field)) throw contractError({ jsonPath: `${base}.${field}`,
+      expected: 'no unexpected properties', actual: review[field], category, unexpectedPropertyPresent: true });
+    if (review.reviewed !== true || !Array.isArray(review.corrections) || !Array.isArray(review.reviewedSymbols)) throw contractError({ jsonPath: base,
+      expected: 'reviewed=true, reviewedSymbols array, and corrections array', actual: review, category });
     if (typeof review.noFindingReason !== 'string') throw contractError({ jsonPath: `${base}.noFindingReason`,
-      expected: 'string; non-empty only when the server-calculated count is zero', actual: review.noFindingReason, category: review.category || null });
-  }
-  for (let index = 0; index < parsed.corrections.length; index += 1) {
-    const item = parsed.corrections[index]; const base = `$.corrections[${index}]`;
+      expected: 'string; non-empty only when the server-calculated count is zero', actual: review.noFindingReason, category });
+    for (let index = 0; index < review.corrections.length; index += 1) {
+    const item = review.corrections[index]; const itemBase = `${base}.corrections[${index}]`;
     if (!item || typeof item !== 'object' || Array.isArray(item)) throw contractError({ jsonPath: base, expected: 'object', actual: item, candidateIndex: index });
-    for (const field of CORRECTION_FIELDS) if (!(field in item)) throw contractError({ jsonPath: `${base}.${field}`,
-      expected: 'required property', actual: undefined, category: item.category || null, symbol: item.symbol || null,
+    const providerFields = CORRECTION_FIELDS.filter((field) => field !== 'category');
+    for (const field of providerFields) if (!(field in item)) throw contractError({ jsonPath: `${itemBase}.${field}`,
+      expected: 'required property', actual: undefined, category, symbol: item.symbol || null,
       candidateIndex: index, requiredPropertyMissing: true });
-    for (const field of Object.keys(item)) if (!CORRECTION_FIELDS.includes(field)) throw contractError({ jsonPath: `${base}.${field}`,
-      expected: 'no unexpected properties', actual: item[field], category: item.category || null, symbol: item.symbol || null,
+    for (const field of Object.keys(item)) if (!providerFields.includes(field)) throw contractError({ jsonPath: `${itemBase}.${field}`,
+      expected: 'no unexpected properties', actual: item[field], category, symbol: item.symbol || null,
       candidateIndex: index, unexpectedPropertyPresent: true });
-    if (!CORRECTION_CATEGORIES.includes(item.category)) throw contractError({ jsonPath: `${base}.category`, expected: CORRECTION_CATEGORIES.join('|'), actual: item.category, candidateIndex: index });
-    if (!CORRECTION_KINDS.includes(item.correctionKind)) throw contractError({ jsonPath: `${base}.correctionKind`, expected: CORRECTION_KINDS.join('|'), actual: item.correctionKind, category: item.category, symbol: item.symbol, candidateIndex: index });
-    if (!CORRECTION_SEVERITIES.includes(item.severity)) throw contractError({ jsonPath: `${base}.severity`, expected: CORRECTION_SEVERITIES.join('|'), actual: item.severity, category: item.category, symbol: item.symbol, candidateIndex: index });
-    if (item.stylePreference !== false) throw contractError({ jsonPath: `${base}.stylePreference`, expected: 'boolean false', actual: item.stylePreference, category: item.category, symbol: item.symbol, candidateIndex: index });
+    if (!CORRECTION_KINDS.includes(item.correctionKind)) throw contractError({ jsonPath: `${itemBase}.correctionKind`, expected: CORRECTION_KINDS.join('|'), actual: item.correctionKind, category, symbol: item.symbol, candidateIndex: index });
+    if (!CORRECTION_SEVERITIES.includes(item.severity)) throw contractError({ jsonPath: `${itemBase}.severity`, expected: CORRECTION_SEVERITIES.join('|'), actual: item.severity, category, symbol: item.symbol, candidateIndex: index });
+    if (item.stylePreference !== false) throw contractError({ jsonPath: `${itemBase}.stylePreference`, expected: 'boolean false', actual: item.stylePreference, category, symbol: item.symbol, candidateIndex: index });
+    }
   }
-  return true;
+  return symbolCoverageDiagnostics(parsed.categories, expectedCategories, expectedSymbols, attemptMeta, coverageSource);
+}
+
+function symbolCoverageDiagnostics(categories, expectedCategories, expectedSymbols, attemptMeta = {}, coverageSource = 'initial') {
+  const catalog = expectedSymbols || categorySymbolCatalog(compactSemanticLegend(defaultLegend()));
+  const coverage = {};
+  for (const category of expectedCategories) {
+    const expected = [...(catalog[category] || [])];
+    const received = categories[category].reviewedSymbols.map((item) => String(item || '').trim());
+    const counts = received.reduce((out, symbol) => { out[symbol] = (out[symbol] || 0) + 1; return out; }, {});
+    const expectedSet = new Set(expected); const receivedSet = new Set(received);
+    const missingSymbols = expected.filter((symbol) => !receivedSet.has(symbol));
+    const duplicateSymbols = Object.keys(counts).filter((symbol) => counts[symbol] > 1);
+    const unexpectedSymbols = [...receivedSet].filter((symbol) => !expectedSet.has(symbol));
+    const complete = received.length === expected.length && !missingSymbols.length
+      && !duplicateSymbols.length && !unexpectedSymbols.length;
+    coverage[category] = { expected: expected.length, received: receivedSet.size, complete, sources: [coverageSource] };
+    if (!complete) {
+      const error = semanticError('SEMANTIC_SYMBOL_REVIEW_INCOMPLETE', 'symbol_review_coverage',
+        'Semantic symbol review coverage is incomplete', { category, expectedSymbolCount: expected.length,
+          receivedSymbolCount: received.length, missingSymbols, duplicateSymbols, unexpectedSymbols,
+          provider: attemptMeta.provider || null, model: attemptMeta.model || null,
+          attemptNumber: Number.isInteger(attemptMeta.attemptNumber) ? attemptMeta.attemptNumber : null });
+      error.diagnostics = { symbolReviewCoverage: coverage, allCategoriesReviewed: false,
+        totalExpectedSymbols: expectedCategories.reduce((sum, key) => sum + (catalog[key] || []).length, 0),
+        totalReceivedUniqueSymbols: Object.values(coverage).reduce((sum, item) => sum + item.received, 0),
+        incompleteReviewCategories: [category] };
+      throw error;
+    }
+  }
+  return coverage;
 }
 
 function meaningfulNoFindingReason(value) {
@@ -185,8 +211,7 @@ function meaningfulNoFindingReason(value) {
   return reason;
 }
 
-function validateCategoryReviews(reviews, corrections, attemptMeta = {}) {
-  const categories = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'];
+function validateCategoryReviews(reviews, corrections, attemptMeta = {}, categories = CORRECTION_CATEGORIES) {
   if (!Array.isArray(reviews) || reviews.length !== categories.length)
     throw semanticError('SEMANTIC_SCHEMA_INVALID', 'category_reviews', 'Every correction category must be reviewed');
   const seen = new Set();
@@ -199,8 +224,14 @@ function validateCategoryReviews(reviews, corrections, attemptMeta = {}) {
     const actual = corrections.filter((item) => item?.category === category).length;
     const originalReason = String(review.noFindingReason || '').trim();
     const meaningfulReason = meaningfulNoFindingReason(originalReason);
+    if (actual === 0 && !originalReason) {
+      throw semanticError('SEMANTIC_SCHEMA_INVALID', 'category_review_reason',
+        'A zero-correction category requires provider diagnostic text', { category });
+    }
     review.findingCount = actual;
-    review.noFindingReason = actual > 0 ? '' : (meaningfulReason || DEFAULT_NO_FINDING_REASON);
+    // Provider explanations remain diagnostic-only. Persist one neutral backend-owned
+    // value so category review prose cannot be mistaken for validated evidence.
+    review.noFindingReason = actual > 0 ? '' : DEFAULT_NO_FINDING_REASON;
     diagnostics.push({
       category,
       correctionCount: actual,
@@ -224,6 +255,31 @@ function semanticError(code, stage, message, details = {}) {
   error.validationStage = stage;
   Object.assign(error, details);
   return error;
+}
+
+function suspiciousCoverageCategories(validated, transcript) {
+  if (String(transcript || '').length < 400) return [];
+  const counts = validated?.diagnostics?.acceptedByCategory || {};
+  const zero = CORRECTION_CATEGORIES.filter((category) => Number(counts[category] || 0) === 0);
+  const populated = CORRECTION_CATEGORIES.length - zero.length;
+  return zero.length >= 3 && populated <= 1 ? zero : [];
+}
+
+function buildCategoryAuditRequest(input, request, categories) {
+  const legend = request.legend.filter((group) => categories.includes(group.category));
+  const prompt = [
+    `schema=${SEMANTIC_SCHEMA_VERSION};prompt=${SEMANTIC_PROMPT_VERSION};audit=${CATEGORY_REVIEW_POLICY_VERSION}`,
+    `transcriptHash=${input.transcriptHash}`, `categories=${JSON.stringify(categories)}`,
+    `pages=${JSON.stringify(request.pages)}`, `assignment=${JSON.stringify(request.context)}`,
+    `legend=${JSON.stringify(legend)}`,
+    'Perform one targeted independent full-transcript audit for only the required categories in the provider-native schema.',
+    'For every requested category, review every supplied legend symbol and return the complete list in reviewedSymbols. This declares coverage only and must not create findings, deductions, or issue counts.',
+    'A genuine zero is valid after review. Never invent findings, praise, or absent text. Use exact minimal transcript quotations and the supplied symbols only.',
+    'Localized findings require a replacement. Global findings are allowed only for Content or Organization and must anchor an exact existing passage.',
+    `transcript=${input.transcript}`
+  ].join('\n');
+  return [{ role: 'system', content: 'Audit only the requested writing categories. Output one strict JSON object.' },
+    { role: 'user', content: prompt }];
 }
 
 function validateCorrections(corrections, { transcript, legend, spans = [], env = process.env,
@@ -336,11 +392,13 @@ async function analyze(input, dependencies = {}) {
   const buildStartedAt = Date.now();
   const request = buildSemanticRequest(input);
   const semanticRequestBuildMs = Date.now() - buildStartedAt;
+  const runtimeCategorySymbols = categorySymbolCatalog(request.legend);
   let semanticValidationMs = 0;
   const validate = (content, attemptMeta = {}) => {
     const startedAt = Date.now();
     try {
-      const parsed = parseJson(content, input.transcriptHash, attemptMeta);
+      const parsed = parseJson(content, input.transcriptHash, attemptMeta, CORRECTION_CATEGORIES,
+        runtimeCategorySymbols, 'initial');
       const validated = validateCorrections(parsed.corrections, {
         transcript: input.transcript, legend: request.legend, spans: input.spans || [], env: dependencies.env || process.env,
         provider: attemptMeta.provider || null, model: attemptMeta.model || null,
@@ -349,13 +407,21 @@ async function analyze(input, dependencies = {}) {
       validated.categoryReviews = parsed.categoryReviews;
       validated.diagnostics.categoryReviews = parsed.categoryReviews;
       validated.diagnostics.compatibility = parsed.compatibilityDiagnostics;
+      validated.diagnostics.symbolReviewCoverage = parsed.symbolReviewCoverage;
+      validated.diagnostics.allCategoriesReviewed = true;
+      validated.diagnostics.totalExpectedSymbols = Object.values(parsed.symbolReviewCoverage)
+        .reduce((sum, item) => sum + item.expected, 0);
+      validated.diagnostics.totalReceivedUniqueSymbols = Object.values(parsed.symbolReviewCoverage)
+        .reduce((sum, item) => sum + item.received, 0);
+      validated.diagnostics.incompleteReviewCategories = [];
       return validated;
     } finally { semanticValidationMs += Date.now() - startedAt; }
   };
-  const completion = await (dependencies.runCompletion || runSemanticCompletion)({ messages: request.messages, config,
+  const runCompletion = dependencies.runCompletion || runSemanticCompletion;
+  const completion = await runCompletion({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
     onAttempt: input.onAttempt, onRetry: input.onRetry, validate, feature: 'semantic_corrections',
-    responseSchema: semanticCorrectionsSchema(input.transcriptHash), schemaName: 'semantic_corrections' });
+    responseSchema: semanticCorrectionsSchema(input.transcriptHash, CORRECTION_CATEGORIES, runtimeCategorySymbols), schemaName: 'semantic_corrections' });
   const parseStartedAt = Date.now();
   let validated;
   try {
@@ -370,17 +436,75 @@ async function analyze(input, dependencies = {}) {
     throw error;
   }
   const semanticParseMs = Date.now() - parseStartedAt;
+  const auditCategories = suspiciousCoverageCategories(validated, input.transcript);
+  let audit = null;
+  if (auditCategories.length) {
+    try {
+      const auditValidate = (content, attemptMeta = {}) => {
+        const parsed = parseJson(content, input.transcriptHash, attemptMeta, auditCategories,
+          runtimeCategorySymbols, 'targeted-repair');
+        const checked = validateCorrections(parsed.corrections, { transcript: input.transcript, legend: request.legend,
+          spans: input.spans || [], env: dependencies.env || process.env, provider: attemptMeta.provider || null,
+          model: attemptMeta.model || null, attemptIndex: Number.isInteger(attemptMeta.attemptIndex) ? attemptMeta.attemptIndex : null });
+        checked.categoryReviews = parsed.categoryReviews;
+        checked.symbolReviewCoverage = parsed.symbolReviewCoverage;
+        return checked;
+      };
+      const auditCompletion = await runCompletion({ messages: buildCategoryAuditRequest(input, request, auditCategories), config,
+        env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
+        validate: auditValidate, feature: 'semantic_corrections_category_audit',
+        responseSchema: semanticCorrectionsSchema(input.transcriptHash, auditCategories, runtimeCategorySymbols), schemaName: 'semantic_corrections_category_audit' });
+      const auditValidated = auditCompletion.value || auditValidate(auditCompletion.content);
+      const merged = canonical.mergeCanonicalCorrections({ aiCorrections: [...validated.corrections, ...auditValidated.corrections] });
+      validated.corrections = merged.corrections;
+      validated.diagnostics.rawCorrectionCount += auditValidated.diagnostics.rawCorrectionCount;
+      validated.diagnostics.acceptedCorrectionCount = validated.corrections.length;
+      validated.diagnostics.rejectedCorrectionCount += auditValidated.diagnostics.rejectedCorrectionCount;
+      for (const [reason, count] of Object.entries(auditValidated.diagnostics.rejectionReasons || {})) {
+        validated.diagnostics.rejectionReasons[reason] = Number(validated.diagnostics.rejectionReasons[reason] || 0) + Number(count || 0);
+      }
+      validated.diagnostics.rejectionDiagnostics.push(...(auditValidated.diagnostics.rejectionDiagnostics || []));
+      for (const category of auditCategories) {
+        const count = validated.corrections.filter((item) => item.category === category).length;
+        validated.diagnostics.acceptedByCategory[category] = count;
+        validated.diagnostics.returnedByCategory[category] = Number(validated.diagnostics.returnedByCategory[category] || 0)
+          + Number(auditValidated.diagnostics.returnedByCategory[category] || 0);
+        validated.diagnostics.rejectedByCategory[category] = Number(validated.diagnostics.rejectedByCategory[category] || 0)
+          + Number(auditValidated.diagnostics.rejectedByCategory[category] || 0);
+        for (const [reason, reasonCount] of Object.entries(auditValidated.diagnostics.rejectionReasonsByCategory[category] || {})) {
+          validated.diagnostics.rejectionReasonsByCategory[category][reason] =
+            Number(validated.diagnostics.rejectionReasonsByCategory[category][reason] || 0) + Number(reasonCount || 0);
+        }
+        const review = validated.categoryReviews.find((item) => item.category === category);
+        if (review) {
+          review.findingCount = count;
+          review.noFindingReason = count ? '' : DEFAULT_NO_FINDING_REASON;
+        }
+        validated.diagnostics.symbolReviewCoverage[category] = {
+          ...validated.diagnostics.symbolReviewCoverage[category], sources: ['initial', 'targeted-repair']
+        };
+      }
+      audit = { requested: true, categories: auditCategories, provider: auditCompletion.provider, model: auditCompletion.model,
+        attemptCount: auditCompletion.metrics?.attemptCount || 1, acceptedByCategory: auditValidated.diagnostics.acceptedByCategory,
+        rejectedByCategory: auditValidated.diagnostics.rejectedByCategory, mergeDiagnostics: merged.diagnostics };
+    } catch (error) {
+      audit = { requested: true, categories: auditCategories, failed: true, errorCode: error?.code || 'CATEGORY_AUDIT_FAILED' };
+    }
+  }
+  validated.diagnostics.categoryAudit = audit || { requested: false, categories: [] };
   return { corrections: validated.corrections, diagnostics: validated.diagnostics,
     provider: completion.provider, model: completion.model,
     usage: completion.usage, sourceKey: semanticSourceKey({ correctionSourceHash: input.transcriptHash, config,
       legendVersion: input.legend?.version, legendContentHash: input.legend?.contentHash }),
     metrics: { ...completion.metrics, semanticRequestBuildMs, semanticParseMs,
-      semanticValidationMs,
+      semanticValidationMs, categoryAuditRequestCount: auditCategories.length ? 1 : 0,
       promptCharacters: request.promptCharacters, promptInputTokenEstimate: request.promptInputTokenEstimate } };
 }
 
 module.exports = { SEMANTIC_PROMPT_VERSION, SEMANTIC_SCHEMA_VERSION, CATEGORY_REVIEW_POLICY_VERSION,
   DEFAULT_NO_FINDING_REASON,
   compactAssignment, compactSemanticLegend,
+  categorySymbolCatalog, symbolCoverageDiagnostics,
   compactLanguageToolExclusions, compactPageManifest, buildSemanticRequest, buildLegacySemanticRequestForBenchmark,
+  buildCategoryAuditRequest, suspiciousCoverageCategories,
   parseJson, validateSemanticContract, validateCategoryReviews, validateCorrections, semanticSourceKey, analyze };
