@@ -448,8 +448,10 @@ function normalizeRubricDesignerPayload(value) {
       const cells = Array.isArray(rawCells)
         ? rawCells.map((x) => safeCellString(x))
         : [];
+      const weight = Number(row.weight);
       return {
         title: safeString(row.title).trim(),
+        ...(Number.isFinite(weight) ? { weight } : {}),
         cells: cells.slice(0, 10),
       };
     })
@@ -462,7 +464,8 @@ function normalizeRubricDesignerPayload(value) {
     });
   }
 
-  return { value: { title, levels, criteria } };
+  const totalPoints = Number(obj.totalPoints);
+  return { value: { title, ...(Number.isFinite(totalPoints) ? { totalPoints } : {}), levels, criteria } };
 }
 
 function buildRubricDesignerFromRubricScores({ rubricScores, title }) {
@@ -1326,11 +1329,12 @@ The JSON MUST match this structure EXACTLY:
 
 {
  "title": "string",
+ "totalPoints": 100,
  "levels": [
    { "title": "string", "maxPoints": number }
  ],
  "criteria": [
-   { "title": "string", "cells": ["string"] }
+   { "title": "string", "weight": number, "cells": ["string"] }
  ]
 }
 
@@ -1341,6 +1345,8 @@ Rules:
 - cells length MUST equal levels length
 - levels must be 3-5 items
 - criteria must be 3-10 rows
+- maxPoints values are strictly descending performance percentages starting at 100
+- criterion weights are positive integers totaling exactly 100
 `;
 
     const cappedStudentText =
@@ -1351,7 +1357,7 @@ Rules:
       ? `\n\nStudent Submission Text (OCR/Transcript):\n${cappedStudentText}`
       : "";
 
-    const userPrompt = `${teacherPrompt ? teacherPrompt + "\n\n" : ""}Generate a rubric designer for grading the student's work.\n\nAssignment Title: ${assignmentTitle || "N/A"}\nAssignment Writing Type: ${assignmentWritingType || "N/A"}\nAssignment Instructions: ${assignmentInstructions || "N/A"}${studentTextSection}\n\nOutput must match this exact JSON structure:\n{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}.\nRules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. Keep criteria 3-10 rows. Keep maxPoints as integers. Make criteria relevant to the writing type. Use clear descriptions in cells for each performance level. Use title: ${rubricTitle}.`;
+    const userPrompt = `${teacherPrompt ? teacherPrompt + "\n\n" : ""}Generate a rubric designer for grading the student's work.\n\nAssignment Title: ${assignmentTitle || "N/A"}\nAssignment Writing Type: ${assignmentWritingType || "N/A"}\nAssignment Instructions: ${assignmentInstructions || "N/A"}${studentTextSection}\n\nOutput must match this exact JSON structure:\n{"title":"string","totalPoints":100,"levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","weight":number,"cells":["string"]}]}.\nRules: 3-5 unique levels with strictly descending performance percentages in maxPoints, starting at 100. Keep 3-10 unique criteria with positive integer weights totaling exactly 100. Each row has one non-empty cell per level. Performance percentages are not criterion weights. Use title: ${rubricTitle}.`;
 
     let rubricDesigner;
     try {
@@ -1776,12 +1782,14 @@ function buildRubricDesignerFilledFromRubricScores({
 
     return {
       title,
+      ...(Number.isFinite(Number(row && row.weight)) ? { weight: Number(row.weight) } : {}),
       cells,
     };
   });
 
   return {
     title: safeString(d.title).trim(),
+    ...(Number.isFinite(Number(d.totalPoints)) ? { totalPoints: Number(d.totalPoints) } : {}),
     levels: levels.map((l) => ({
       title: safeString(l && l.title).trim(),
       maxPoints: Number.isFinite(Number(l && l.maxPoints))
@@ -2925,11 +2933,12 @@ The JSON MUST match this structure EXACTLY:
 
 {
  "title": "string",
+ "totalPoints": 100,
  "levels": [
    { "title": "string", "maxPoints": number }
  ],
  "criteria": [
-   { "title": "string", "cells": ["string"] }
+   { "title": "string", "weight": number, "cells": ["string"] }
  ]
 }
 
@@ -2940,8 +2949,10 @@ Rules:
 - cells length MUST equal levels length
 - levels must be 3-5 items
 - criteria must be 3-10 rows
+- maxPoints values are strictly descending performance percentages starting at 100
+- criterion weights are positive integers totaling exactly 100
 `;
-    const userPrompt = `${prompt}\n\nOutput must match this exact JSON structure:\n{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}. Rules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. Keep criteria 3-10 rows. Keep maxPoints as integers.`;
+    const userPrompt = `${prompt}\n\nOutput must match this exact JSON structure:\n{"title":"string","totalPoints":100,"levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","weight":number,"cells":["string"]}]}. Rules: 3-5 unique levels with strictly descending performance percentages starting at 100; 3-10 unique criteria with positive integer weights totaling exactly 100; one non-empty cell per level.`;
 
     let rubricValue;
     try {

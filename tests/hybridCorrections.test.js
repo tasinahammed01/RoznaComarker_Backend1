@@ -117,12 +117,12 @@ describe('safe hybrid correction policy', () => {
     ], { transcript: 'claim', legend });
     expect(result.diagnostics).toMatchObject({ returnedByCategory: { CONTENT: 3 },
       acceptedByCategory: { CONTENT: 1 }, rejectedByCategory: { CONTENT: 2 },
-      rejectionReasonsByCategory: { CONTENT: { LOW_CONFIDENCE: 1, UNGROUNDED_EVIDENCE: 1 } } });
+      rejectionReasonsByCategory: { CONTENT: { LOW_CONFIDENCE: 1, QUOTE_NOT_FOUND: 1 } } });
     expect(result.diagnostics.rejectionDiagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ category: 'CONTENT', rejectionCode: 'LOW_CONFIDENCE',
         validationStage: 'confidence_validation', candidateIndex: 0, quotedTextHash: expect.any(String) }),
-      expect.objectContaining({ category: 'CONTENT', rejectionCode: 'UNGROUNDED_EVIDENCE',
-        validationStage: 'grounding_validation', candidateIndex: 1, quotedTextHash: expect.any(String) })
+      expect.objectContaining({ category: 'CONTENT', rejectionCode: 'QUOTE_NOT_FOUND',
+        validationStage: 'quote_match_validation', candidateIndex: 1, quotedTextHash: expect.any(String) })
     ]));
     expect(JSON.stringify(result.diagnostics.rejectionDiagnostics)).not.toContain('missing quote');
   });
@@ -202,7 +202,7 @@ describe('safe hybrid correction policy', () => {
     ], { transcript, legend });
     expect(result.corrections).toHaveLength(1);
     expect(result.diagnostics.rejectionReasons).toEqual({
-      LOW_CONFIDENCE: 1, STYLE_PREFERENCE: 1, UNGROUNDED_EVIDENCE: 1, INVALID_SCHEMA: 1
+      LOW_CONFIDENCE: 1, STYLE_PREFERENCE: 1, QUOTE_NOT_FOUND: 1, INVALID_SCHEMA: 1
     });
   });
 

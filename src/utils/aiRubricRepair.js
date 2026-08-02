@@ -38,12 +38,14 @@ function repairAiRubric(data) {
 
     return {
       title: String((c && (c.title || c.name)) || "Criteria"),
+      weight: Number(c && c.weight),
       cells: cells.map((x) => String(x))
     };
   });
 
   return {
     title: String(data.title || "Rubric"),
+    totalPoints: Number(data.totalPoints),
     levels,
     criteria
   };

@@ -352,7 +352,12 @@ function normalizeRubrics(value) {
     .filter((c) => c && typeof c.name === 'string')
     .slice(0, 100);
 
-  return { criteria };
+  const totalPoints = Number(obj.totalPoints);
+  for (let i = 0; i < criteria.length; i += 1) {
+    const weight = Number(rawCriteria[i] && rawCriteria[i].weight);
+    if (Number.isFinite(weight)) criteria[i].weight = weight;
+  }
+  return { ...(Number.isFinite(totalPoints) ? { totalPoints } : {}), criteria };
 }
 
 function rubricsToRubricDesigner({ rubrics, assignmentTitle }) {
@@ -373,6 +378,7 @@ function rubricsToRubricDesigner({ rubrics, assignmentTitle }) {
     const rowLevels = Array.isArray(c && c.levels) ? c.levels : [];
     return {
       title: safeString(c && c.name).trim(),
+      ...(Number.isFinite(Number(c && c.weight)) ? { weight: Number(c.weight) } : {}),
       cells: levels.map((_, i) => safeString(rowLevels[i] && rowLevels[i].description).trim())
     };
   });
@@ -380,6 +386,7 @@ function rubricsToRubricDesigner({ rubrics, assignmentTitle }) {
   const at = safeString(assignmentTitle).trim();
   return {
     title: at ? `Rubric: ${at}` : 'Rubric',
+    ...(Number.isFinite(Number(obj.totalPoints)) ? { totalPoints: Number(obj.totalPoints) } : {}),
     levels,
     criteria
   };
@@ -586,12 +593,12 @@ function rubricDesignerToRubrics(value) {
         score: lvl.score,
         description: safeString(normalizedCells[i]).trim()
       }));
-      return { name, levels: mappedLevels };
+      return { name, ...(Number.isFinite(Number(row.weight)) ? { weight: Number(row.weight) } : {}), levels: mappedLevels };
     })
     .filter((c) => c && typeof c.name === 'string')
     .slice(0, 100);
 
-  return { criteria };
+  return { ...(Number.isFinite(Number(d.totalPoints)) ? { totalPoints: Number(d.totalPoints) } : {}), criteria };
 }
 
 async function createAssignment(req, res) {
@@ -924,6 +931,7 @@ async function updateAssignmentRubrics(req, res) {
 
         const cleanedDesigner = {
           title: safeString(normalizedDesigner.title).trim(),
+          totalPoints: Number(normalizedDesigner.totalPoints),
           levels: safeLevels.map((l) => {
             const lvl = l && typeof l === 'object' ? l : {};
             const maxPoints = Number(lvl.maxPoints);
@@ -942,6 +950,7 @@ async function updateAssignmentRubrics(req, res) {
             while (normalizedCells.length < safeLevels.length) normalizedCells.push('');
             return {
               title: safeString(row.title || row.name).trim() || 'Criteria',
+              weight: Number(row.weight),
               cells: normalizedCells
             };
           })
@@ -1307,11 +1316,12 @@ The JSON MUST match this structure EXACTLY:
 
 {
  "title": "string",
+ "totalPoints": 100,
  "levels": [
    { "title": "string", "maxPoints": number }
  ],
  "criteria": [
-   { "title": "string", "cells": ["string"] }
+   { "title": "string", "weight": number, "cells": ["string"] }
  ]
 }
 
@@ -1322,6 +1332,11 @@ Rules:
 - cells length MUST equal levels length
 - levels must be 3-5 items
 - criteria must be 3-10 rows
+- maxPoints is the performance percentage (not a criterion weight)
+- performance percentages must start at 100 and be strictly descending
+- every criterion needs a positive integer weight and all weights must total exactly 100
+- criterion and level titles must be unique
+- cells must be non-empty
 `;
 
     const assignmentTitle = safeString(assignment.title).trim();
@@ -1329,7 +1344,7 @@ Rules:
     const assignmentInstructions = safeString(assignment.instructions).trim();
     const rubricTitle = `Rubric: ${assignmentTitle || 'Assignment'}`;
 
-    const userPrompt = `${prompt}\n\nGenerate a rubric designer for grading student submissions for this assignment.\n\nAssignment Title: ${assignmentTitle || 'N/A'}\nAssignment Writing Type: ${assignmentWritingType || 'N/A'}\nAssignment Instructions: ${assignmentInstructions || 'N/A'}\n\nOutput must match this exact JSON structure:\n{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}.\nRules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. Keep criteria 3-10 rows. Keep maxPoints as integers. Make criteria relevant to the writing type. Use clear descriptions in cells for each performance level. Use title: ${rubricTitle}.`;
+    const userPrompt = `${prompt}\n\nGenerate a rubric designer for grading student submissions for this assignment.\n\nAssignment Title: ${assignmentTitle || 'N/A'}\nAssignment Writing Type: ${assignmentWritingType || 'N/A'}\nAssignment Instructions: ${assignmentInstructions || 'N/A'}\n\nOutput must match this exact JSON structure:\n{"title":"string","totalPoints":100,"levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","weight":number,"cells":["string"]}]}.\nRules: 3-5 levels with unique titles and strictly descending performance percentages in maxPoints, starting at 100. Performance percentages are not criterion weights. Keep criteria 3-10 rows with unique titles and positive integer weights totaling exactly 100. Each criteria row must have exactly the same number of non-empty cells as levels. Make criteria relevant to the writing type. Use clear descriptions in cells for each performance level. Use title: ${rubricTitle}.`;
 
     let rubricDesigner;
     try {

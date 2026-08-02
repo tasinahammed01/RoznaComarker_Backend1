@@ -2,7 +2,7 @@
 
 // Increment whenever canonical reading-order or separator rules change. This is
 // intentionally independent from the correction prompt/schema version.
-const CANONICAL_TRANSCRIPT_LAYOUT_VERSION = 'ocr-layout-v4';
+const CANONICAL_TRANSCRIPT_LAYOUT_VERSION = 'ocr-layout-v5-native-text';
 
 const CLOSING_PUNCTUATION = /^[,.!?:;%\)\]\}’”]/u;
 const OPENING_PUNCTUATION = /[\(\[\{“]$/u;
@@ -230,6 +230,40 @@ function buildCanonicalPageFromWords(words) {
   return { ...built, paragraphs: paragraphsFromSpans(built.text, built.spans), version: CANONICAL_TRANSCRIPT_LAYOUT_VERSION };
 }
 
+function alignWordsToAuthoritativeText(authoritativeText, words) {
+  const text = normalizeLegacyDisplayText(authoritativeText || '');
+  const sourceWords = (Array.isArray(words) ? words : []).filter((word) => typeof word?.text === 'string' && word.text.trim());
+  const lower = text.toLocaleLowerCase();
+  const spans = [];
+  let cursor = 0;
+  let mapped = 0;
+  for (const word of sourceWords) {
+    const token = word.text.trim();
+    const index = lower.indexOf(token.toLocaleLowerCase(), cursor);
+    if (index < 0) continue;
+    const separatorBefore = spans.length ? text.slice(spans[spans.length - 1].end, index) : text.slice(0, index);
+    const cleanWord = { ...word, text: text.slice(index, index + token.length) };
+    spans.push({ word: cleanWord, wordId: cleanWord.id, start: index, end: index + token.length,
+      separatorBefore, fileId: cleanWord.fileId, page: cleanWord.page, bbox: cleanWord.bbox });
+    cursor = index + token.length;
+    mapped += 1;
+  }
+  return { text, spans, words: spans.map((span) => span.word), separators: spans.map((span) => span.separatorBefore),
+    mapping: { totalWords: sourceWords.length, mappedWords: mapped,
+      alignmentRatio: sourceWords.length ? mapped / sourceWords.length : (text ? 0 : 1) } };
+}
+
+function assessCanonicalTranscriptQuality(canonical) {
+  const pages = Array.isArray(canonical?.pages) ? canonical.pages : [];
+  const diagnostics = pages.map((page) => ({ fileId: page.fileId, pageNumber: page.pageNumber,
+    alignmentRatio: Number(page.mapping?.alignmentRatio ?? 1), mappedWords: Number(page.mapping?.mappedWords || 0),
+    totalWords: Number(page.mapping?.totalWords || 0) }));
+  const unreliable = diagnostics.find((item) => item.totalWords >= 8 && item.alignmentRatio < 0.6);
+  return { reliable: !unreliable && Boolean(String(canonical?.text || '').trim()),
+    code: unreliable ? 'OCR_READING_ORDER_UNRELIABLE' : (!String(canonical?.text || '').trim() ? 'OCR_TEXT_EMPTY' : null),
+    diagnostics };
+}
+
 function normalizeLegacyDisplayText(value) {
   const lines = normalizeOcrTranscript(value).split('\n');
   const paragraphs = [];
@@ -284,13 +318,16 @@ function buildCanonicalSubmissionTranscript(submission) {
       page: entry.pageNumber
     }));
     const structured = buildCanonicalPageFromWords(identifiedWords);
-    const pageText = structured.text || normalizeLegacyDisplayText(entry.page.text || '');
+    const authoritativeText = normalizeLegacyDisplayText(entry.page.rawText || '');
+    const authoritative = authoritativeText ? alignWordsToAuthoritativeText(authoritativeText, identifiedWords) : null;
+    const selected = authoritative || structured;
+    const pageText = selected.text || normalizeLegacyDisplayText(entry.page.text || '');
     if (!pageText) continue;
     const pageSeparator = text ? getOcrWordSeparator(lastWordText || text.slice(-1), pageText, ' ') : '';
     text += pageSeparator;
     const startChar = text.length;
     text += pageText;
-    const pageSpans = structured.spans.map((span, index) => ({ ...span,
+    const pageSpans = selected.spans.map((span, index) => ({ ...span,
       start: span.start + startChar, end: span.end + startChar,
       separatorBefore: index === 0 ? pageSeparator : span.separatorBefore,
       fileId: entry.fileId, page: entry.pageNumber }));
@@ -298,10 +335,11 @@ function buildCanonicalSubmissionTranscript(submission) {
     manifest.push({ fileId: entry.fileId,
       fileOrder: order.get(entry.fileId) ?? entry.fileOrder ?? Number.MAX_SAFE_INTEGER,
       pageNumber: entry.pageNumber, pageIndex: entry.pageIndex ?? entry.pageNumber - 1, text: pageText,
+      source: authoritative ? 'visionFullText' : 'wordReconstruction', mapping: selected.mapping || null,
       startChar, endChar: text.length, words: pageSpans.map((span) => ({ ...span.word, fileId: entry.fileId,
-        page: entry.pageNumber, separatorBefore: span.separatorBefore })), paragraphs: structured.paragraphs.map((paragraph) => ({
+      page: entry.pageNumber, separatorBefore: span.separatorBefore })), paragraphs: paragraphsFromSpans(pageText, selected.spans).map((paragraph) => ({
         ...paragraph, startChar: paragraph.startChar + startChar, endChar: paragraph.endChar + startChar })) });
-    lastWordText = structured.spans[structured.spans.length - 1]?.word?.text || pageText;
+    lastWordText = selected.spans[selected.spans.length - 1]?.word?.text || pageText;
   }
   if (text) return { text, pages: manifest, paragraphs: paragraphsFromSpans(text, wordSpans), wordSpans,
     separators: wordSpans.map((span) => span.separatorBefore), source: 'ocrPages', isComplete,
@@ -325,6 +363,8 @@ module.exports = {
   getOcrWordSeparator,
   buildNormalizedTranscriptFromWords,
   buildCanonicalPageFromWords,
+  alignWordsToAuthoritativeText,
+  assessCanonicalTranscriptQuality,
   sanitizeOcrMarginArtifacts,
   normalizeLegacyDisplayText,
   buildCanonicalSubmissionTranscript,

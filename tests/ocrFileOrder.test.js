@@ -40,4 +40,39 @@ describe('OCR authoritative upload order', () => {
     expect(targetDoc.combinedOcrText).toBe('Introduction page\n\nContinuation page');
     expect(pipeline.generateAndPersist).toHaveBeenCalledTimes(1);
   });
+
+  test('persists native full text instead of corrupted word reconstruction', async () => {
+    const before = pipeline.generateAndPersist.mock.calls.length;
+    File.findById.mockResolvedValue({ _id: 'photo', path: 'photo.jpg' });
+    vision.extractOcrFromImageFile.mockResolvedValue({
+      fullText: 'Another feature to compare between private cars and taking taxis is the comfort.',
+      transcriptText: 'take Another with taxis feature own the cars comfort',
+      words: [], pages: [{ pageNumber: 1, words: [] }]
+    });
+    const targetDoc = { _id: 'native-order', assignment: null, ocrJobId: 'job-native',
+      constructor: { exists: jest.fn(async () => true), updateOne: jest.fn(async (_query, update) => {
+        if (update?.$set) Object.assign(targetDoc, update.$set); return { matchedCount: 1, modifiedCount: 1 };
+      }) }, toObject() { const { constructor, toObject, ...values } = this; return values; } };
+    await runOcrAndPersistForFiles({ fileIds: ['photo'], targetDoc, jobId: 'job-native' });
+    expect(targetDoc.ocrPages[0].text).toBe('Another feature to compare between private cars and taking taxis is the comfort.');
+    expect(targetDoc.combinedOcrText).toBe(targetDoc.ocrPages[0].text);
+    expect(pipeline.generateAndPersist).toHaveBeenCalledTimes(before + 1);
+  });
+
+  test('quality gate stops analysis when OCR words cannot align to native text', async () => {
+    File.findById.mockResolvedValue({ _id: 'bad', path: 'bad.jpg' });
+    const words = Array.from({ length: 10 }, (_, index) => ({ text: `unmapped${index}`, page: 1,
+      bbox: { x: index, y: 1, w: 1, h: 1 } }));
+    vision.extractOcrFromImageFile.mockResolvedValue({ fullText: 'This photographed paragraph has a stable readable order.',
+      transcriptText: 'unmapped word bag', words, pages: [{ pageNumber: 1, words }] });
+    const targetDoc = { _id: 'bad-order', assignment: null, ocrJobId: 'job-bad',
+      constructor: { exists: jest.fn(async () => true), updateOne: jest.fn(async (_query, update) => {
+        if (update?.$set) Object.assign(targetDoc, update.$set); return { matchedCount: 1, modifiedCount: 1 };
+      }) }, toObject() { const { constructor, toObject, ...values } = this; return values; } };
+    const before = pipeline.generateAndPersist.mock.calls.length;
+    const resultValue = await runOcrAndPersistForFiles({ fileIds: ['bad'], targetDoc, jobId: 'job-bad' });
+    expect(resultValue).toMatchObject({ ocrStatus: 'failed' });
+    expect(targetDoc.ocrError).toContain('OCR_READING_ORDER_UNRELIABLE');
+    expect(pipeline.generateAndPersist).toHaveBeenCalledTimes(before);
+  });
 });

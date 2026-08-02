@@ -7,7 +7,8 @@ const Assignment = require('../models/assignment.model');
 const logger = require('../utils/logger');
 
 const visionOcr = require('./visionOcr.service');
-const { normalizeOcrTranscript } = require('../utils/ocrTranscriptNormalizer');
+const { normalizeOcrTranscript, buildCanonicalSubmissionTranscript,
+  assessCanonicalTranscriptQuality } = require('../utils/ocrTranscriptNormalizer');
 const canonicalCorrectionsPipeline = require('./canonicalCorrectionsPipeline.service');
 
 function toAbsoluteStoredPath(storedPath) {
@@ -98,7 +99,9 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
       return null;
     }
     const rawText = ocr && (ocr.fullText || ocr.transcriptText) ? String(ocr.fullText || ocr.transcriptText) : '';
-    const text = normalizeOcrTranscript(ocr && (ocr.transcriptText || ocr.fullText));
+    // Vision's native full text owns semantic reading order. Word geometry is
+    // retained for annotation mapping and must never replace this text.
+    const text = normalizeOcrTranscript(ocr && (ocr.fullText || ocr.transcriptText));
     const words = toStoredOcrWords(ocr && Array.isArray(ocr.words) ? ocr.words : []);
 
     const pages = (ocr && Array.isArray(ocr.pages) ? ocr.pages : [])
@@ -196,7 +199,6 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
   }
 
   if (!(await isCurrentJob())) return { ocrStatus: 'superseded' };
-  targetDoc.ocrStatus = 'completed';
   targetDoc.ocrText = legacyFirstOcrText;
   targetDoc.rawOcrText = legacyFirstRawOcrText;
   targetDoc.ocrData = { words: legacyFirstOcrWords };
@@ -209,6 +211,22 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
     .map((t) => (typeof t === 'string' ? t.trim() : ''))
     .filter(Boolean)
     .join('\n\n');
+  const canonicalTranscript = buildCanonicalSubmissionTranscript(targetDoc);
+  const transcriptQuality = assessCanonicalTranscriptQuality(canonicalTranscript);
+  if (!transcriptQuality.reliable) {
+    targetDoc.ocrStatus = 'failed';
+    targetDoc.ocrError = transcriptQuality.code === 'OCR_READING_ORDER_UNRELIABLE'
+      ? 'OCR_READING_ORDER_UNRELIABLE: The photographed page reading order could not be verified. Please retry OCR or upload a clearer image.'
+      : 'OCR failed to produce readable text. Please retry OCR or upload a clearer image.';
+    targetDoc.ocrUpdatedAt = new Date();
+    if (!(await saveCurrentJob())) return { ocrStatus: 'superseded' };
+    logger.warn({ message: 'OCR transcript quality gate failed', submissionId: String(targetDoc._id),
+      errorCode: transcriptQuality.code, pages: transcriptQuality.diagnostics.map((item) => ({
+        fileId: item.fileId, pageNumber: item.pageNumber, mappedWords: item.mappedWords,
+        totalWords: item.totalWords, alignmentRatio: item.alignmentRatio })) });
+    return { ocrText: targetDoc.ocrText || '', ocrStatus: 'failed', ocrError: targetDoc.ocrError };
+  }
+  targetDoc.ocrStatus = 'completed';
   targetDoc.ocrError = undefined;
   targetDoc.ocrUpdatedAt = new Date();
   if (!(await saveCurrentJob())) return { ocrStatus: 'superseded' };

@@ -256,7 +256,8 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
     const category = SEMANTIC_CATEGORIES.has(item?.category) ? item.category : null;
     if (category) returnedByCategory[category] += 1;
     if (!item || typeof item !== 'object' || !SEMANTIC_CATEGORIES.has(item.category)
-      || !allowed.has(`${item.category}:${item.symbol}`) || typeof item.quotedText !== 'string' || !item.quotedText
+      || typeof item.symbol !== 'string' || !item.symbol.trim()
+      || typeof item.quotedText !== 'string' || !item.quotedText
       || item.quotedText.length > 500
       || typeof item.message !== 'string' || !item.message.trim() || item.message.length > 240
       || typeof item.suggestedText !== 'string' || item.suggestedText.length > 300
@@ -264,6 +265,9 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
       || !Number.isFinite(Number(item.confidence)) || Number(item.confidence) < 0 || Number(item.confidence) > 1
       || !Number.isInteger(Number(item.occurrence)) || Number(item.occurrence) < 0) {
       reject('INVALID_SCHEMA', category, item, candidateIndex, 'schema_validation'); continue;
+    }
+    if (!allowed.has(`${item.category}:${item.symbol}`)) {
+      reject('LEGEND_MISMATCH', category, item, candidateIndex, 'legend_validation'); continue;
     }
     if (item.stylePreference === true) { reject('STYLE_PREFERENCE', category, item, candidateIndex, 'category_validation'); continue; }
     const correctionKind = item.correctionKind || 'localized';
@@ -285,7 +289,11 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
       reject('CATEGORY_LIMIT', category, item, candidateIndex, 'limit_validation'); continue;
     }
     const range = canonical.locateQuote(transcript, item.quotedText, Number(item.occurrence));
-    if (!range) { reject('UNGROUNDED_EVIDENCE', category, item, candidateIndex, 'grounding_validation'); continue; }
+    if (!range) {
+      const anyOccurrence = canonical.locateQuote(transcript, item.quotedText, 0);
+      reject(anyOccurrence ? 'OCCURRENCE_NOT_FOUND' : 'QUOTE_NOT_FOUND', category, item, candidateIndex,
+        anyOccurrence ? 'occurrence_validation' : 'quote_match_validation'); continue;
+    }
     const normalized = canonical.normalizeCorrection({ ...item, startChar: range.start, endChar: range.end },
       transcript, spans, { groups: legend.map((group) => ({ key: group.category, label: group.label, color: group.color,
         symbols: group.symbols })) }, 'AI');

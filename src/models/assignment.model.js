@@ -14,6 +14,7 @@ const rubricLevelSchema = new Schema(
 const rubricCriteriaSchema = new Schema(
   {
     name: { type: String, trim: true },
+    weight: { type: Number },
     levels: { type: [rubricLevelSchema], default: [] }
   },
   { _id: false }
@@ -21,6 +22,7 @@ const rubricCriteriaSchema = new Schema(
 
 const rubricsSchema = new Schema(
   {
+    totalPoints: { type: Number },
     criteria: { type: [rubricCriteriaSchema], default: [] }
   },
   { _id: false }

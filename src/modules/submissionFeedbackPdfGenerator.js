@@ -8,6 +8,18 @@ const { ApiError } = require('../middlewares/error.middleware');
 const browserManager = require('../services/pdfBrowserManager.service');
 const { PDFDocument } = require('pdf-lib');
 
+const A4_PORTRAIT_POINTS = Object.freeze({ width: 595.28, height: 841.89 });
+function assertUniformA4Portrait(pdfDocument, tolerance = 1) {
+  for (const [index, page] of pdfDocument.getPages().entries()) {
+    const size = page.getSize();
+    const rotation = ((Number(page.getRotation()?.angle) || 0) % 360 + 360) % 360;
+    if (Math.abs(size.width - A4_PORTRAIT_POINTS.width) > tolerance
+      || Math.abs(size.height - A4_PORTRAIT_POINTS.height) > tolerance || rotation !== 0) {
+      throw new ApiError(500, `Generated PDF page ${index + 1} is not A4 portrait.`);
+    }
+  }
+}
+
 const positiveEnv = (name, fallback) => { const value = Number(process.env[name]); return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback; };
 const timeout = (promise, ms, message, onTimeout) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => { try { onTimeout?.(); } catch { /* best effort */ } reject(new ApiError(504, message)); }, ms);
@@ -62,7 +74,8 @@ async function generateSubmissionFeedbackPdf(viewModel, outputPath, options = {}
         limits.renderTimeoutMs, 'PDF document rendering timed out.', cancelRender);
       const pdfMs = Date.now() - pdfStartedAt;
       stage('page_pdf', pdfStartedAt);
-      const pdfBytes = await fs.promises.readFile(outputPath); const bytes = pdfBytes.length; const generatedPageCount = (await PDFDocument.load(pdfBytes)).getPageCount();
+      const pdfBytes = await fs.promises.readFile(outputPath); const bytes = pdfBytes.length; const renderedDocument = await PDFDocument.load(pdfBytes);
+      assertUniformA4Portrait(renderedDocument); const generatedPageCount = renderedDocument.getPageCount();
       logger.metric({ event: 'pdf_render_completed', durationMs: Date.now() - startedAt,
         htmlBytes, htmlGenerationMs: contentStartedAt - htmlStartedAt, browserAcquisitionMs,
         setContentMs, reportReadyMs, fontReadinessMs, imageDecodingMs, pdfMs,
@@ -81,4 +94,4 @@ async function generateSubmissionFeedbackPdf(viewModel, outputPath, options = {}
   });
 }
 
-module.exports = { generateSubmissionFeedbackPdf };
+module.exports = { A4_PORTRAIT_POINTS, assertUniformA4Portrait, generateSubmissionFeedbackPdf };

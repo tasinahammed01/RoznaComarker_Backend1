@@ -90,6 +90,7 @@ const aiFeedbackSchema = new Schema(
  const rubricDesignerCriteriaSchema = new Schema(
    {
      title: { type: String, default: '', trim: true },
+     weight: { type: Number, default: undefined },
      cells: { type: [String], default: [] }
    },
    { _id: false }
@@ -98,6 +99,7 @@ const aiFeedbackSchema = new Schema(
  const rubricDesignerSchema = new Schema(
    {
      title: { type: String, default: '', trim: true },
+     totalPoints: { type: Number, default: undefined },
      levels: { type: [rubricDesignerLevelSchema], default: [] },
      criteria: { type: [rubricDesignerCriteriaSchema], default: [] }
    },

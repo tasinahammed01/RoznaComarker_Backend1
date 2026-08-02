@@ -16,11 +16,12 @@ const env = (overrides = {}) => ({
   OPENROUTER_BASE_URL: 'https://router.test/v1', RUBRIC_AI_MAX_OUTPUT_TOKENS: '4000',
   ...overrides
 });
-const valid = { title: 'Writing Rubric', levels: [
-  { title: 'Strong', maxPoints: 3 }, { title: 'Developing', maxPoints: 2 }, { title: 'Beginning', maxPoints: 1 }
+const valid = { title: 'Writing Rubric', totalPoints: 100, levels: [
+  { title: 'Strong', maxPoints: 100 }, { title: 'Developing', maxPoints: 70 }, { title: 'Beginning', maxPoints: 40 }
 ], criteria: [
-  { title: 'Content', cells: ['a', 'b', 'c'] }, { title: 'Organization', cells: ['a', 'b', 'c'] },
-  { title: 'Language', cells: ['a', 'b', 'c'] }
+  { title: 'Content', weight: 40, cells: ['a', 'b', 'c'] },
+  { title: 'Organization', weight: 35, cells: ['a', 'b', 'c'] },
+  { title: 'Language', weight: 25, cells: ['a', 'b', 'c'] }
 ] };
 
 describe('rubric assessment AI configuration and completion', () => {
@@ -59,6 +60,8 @@ describe('rubric assessment AI configuration and completion', () => {
     expect(validateRubric({ ...valid, levels: valid.levels.slice(0, 2) })).toBeNull();
     expect(validateRubric({ ...valid, levels: valid.levels.map((x, i) => ({ ...x, maxPoints: i ? x.maxPoints : 1.5 })) })).toBeNull();
     expect(validateRubric({ ...valid, criteria: valid.criteria.map((x, i) => i ? x : { ...x, cells: ['a'] }) })).toBeNull();
+    expect(validateRubric({ ...valid, criteria: valid.criteria.map((x, i) => ({ ...x, weight: x.weight + (i === 0 ? 1 : 0) })) })).toBeNull();
+    expect(validateRubric({ ...valid, levels: valid.levels.map((x, i) => ({ ...x, maxPoints: i === 1 ? 100 : x.maxPoints })) })).toBeNull();
   });
 
   test('malformed output is rejected without logging prompts or credentials', async () => {

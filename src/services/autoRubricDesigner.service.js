@@ -79,11 +79,12 @@ The JSON MUST match this structure EXACTLY:
 
 {
  "title": "string",
+ "totalPoints": 100,
  "levels": [
    { "title": "string", "maxPoints": number }
  ],
  "criteria": [
-   { "title": "string", "cells": ["string"] }
+   { "title": "string", "weight": number, "cells": ["string"] }
  ]
 }
 
@@ -94,6 +95,8 @@ Rules:
 - cells length MUST equal levels length
 - levels must be 3-5 items
 - criteria must be 3-10 rows
+- maxPoints values are strictly descending performance percentages starting at 100
+- criterion weights are positive integers totaling exactly 100
 `;
 
   const cappedStudentText = studentText.length > 8000 ? studentText.slice(0, 8000) : studentText;
@@ -103,7 +106,7 @@ Rules:
 
   const rubricTitle = `Rubric: ${assignmentTitle || 'Submission'}`;
 
-  const prompt = `Generate a rubric designer for grading the student's work.\n\nAssignment Title: ${assignmentTitle || 'N/A'}\nAssignment Writing Type: ${assignmentWritingType || 'N/A'}\nAssignment Instructions: ${assignmentInstructions || 'N/A'}\n\nStudent Submission Text (OCR/Transcript):\n${cappedStudentText}\n\nOutput must match this exact JSON structure:\n{"title":"string","levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","cells":["string"]}]}.\nRules: 3-5 levels. Each criteria row must have exactly the same number of cells as levels. Keep criteria 3-10 rows. Keep maxPoints as integers. Make criteria relevant to the writing type. Use clear descriptions in cells for each performance level. Use title: ${rubricTitle}.`;
+  const prompt = `Generate a rubric designer for grading the student's work.\n\nAssignment Title: ${assignmentTitle || 'N/A'}\nAssignment Writing Type: ${assignmentWritingType || 'N/A'}\nAssignment Instructions: ${assignmentInstructions || 'N/A'}\n\nStudent Submission Text (OCR/Transcript):\n${cappedStudentText}\n\nOutput must match this exact JSON structure:\n{"title":"string","totalPoints":100,"levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","weight":number,"cells":["string"]}]}.\nRules: 3-5 unique levels with strictly descending performance percentages starting at 100. Keep 3-10 unique criteria with positive integer weights totaling exactly 100. Each row must contain one non-empty cell per level. Performance percentages are not criterion weights. Use title: ${rubricTitle}.`;
 
   let rubricDesigner;
   try {

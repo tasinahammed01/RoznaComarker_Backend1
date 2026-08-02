@@ -15,12 +15,14 @@ const closedObject = (properties, required = Object.keys(properties)) => ({
 
 const RUBRIC_SCHEMA = closedObject({
   title: string(240, { minLength: 1 }),
+  totalPoints: { type: 'integer', const: 100 },
   levels: { type: 'array', minItems: 3, maxItems: 5, items: closedObject({
     title: string(120, { minLength: 1 }), maxPoints: { type: 'integer', minimum: 0, maximum: 100 }
   }) },
   criteria: { type: 'array', minItems: 3, maxItems: 10, items: closedObject({
     title: string(240, { minLength: 1 }),
-    cells: { type: 'array', minItems: 3, maxItems: 5, items: string(1200) }
+    weight: { type: 'integer', minimum: 1, maximum: 100 },
+    cells: { type: 'array', minItems: 3, maxItems: 5, items: string(1200, { minLength: 1 }) }
   }) }
 });
 

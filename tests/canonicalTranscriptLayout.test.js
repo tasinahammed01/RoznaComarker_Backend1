@@ -1,4 +1,5 @@
 const { buildCanonicalPageFromWords, buildCanonicalSubmissionTranscript, normalizeLegacyDisplayText,
+  alignWordsToAuthoritativeText, assessCanonicalTranscriptQuality,
   CANONICAL_TRANSCRIPT_LAYOUT_VERSION } = require('../src/utils/ocrTranscriptNormalizer');
 const { buildCorrectionSourceHash } = require('../src/services/canonicalCorrectionsPipeline.service');
 
@@ -7,6 +8,34 @@ const word = (id, text, x0, y0, paragraphIndex, x1 = x0 + 8, y1 = y0 + 2) => ({
 });
 
 describe('canonical transcript layout', () => {
+  test('native Vision text remains authoritative when tilted boxes would create a word bag', () => {
+    const native = 'Another feature to compare between private cars and taking taxis is the comfort. First of all, when the student takes their own car.';
+    const tokens = native.match(/[A-Za-z]+|[.,]/gu);
+    const words = tokens.map((text, index) => word(`w${index}`, text,
+      10 + (index % 9) * 8, 10 + Math.floor(index / 9) * 3 + ((index % 4) * 1.4), Math.floor(index / 9),
+      16 + (index % 9) * 8, 12 + Math.floor(index / 9) * 3 + ((index % 4) * 1.4)));
+    const broken = buildCanonicalPageFromWords(words).text;
+    expect(broken).not.toContain('Another feature to compare between private cars and taking taxis');
+
+    const canonical = buildCanonicalSubmissionTranscript({ files: ['photo'], ocrPages: [{
+      fileId: 'photo', pageNumber: 1, rawText: native, text: broken, words
+    }] });
+    expect(canonical.text).toBe(native);
+    expect(canonical.text.startsWith('Another feature')).toBe(true);
+    expect(canonical.pages[0].source).toBe('visionFullText');
+    expect(canonical.wordSpans.map((span) => canonical.text.slice(span.start, span.end))).toEqual(tokens);
+    expect(assessCanonicalTranscriptQuality(canonical)).toMatchObject({ reliable: true, code: null });
+  });
+
+  test('quality gate rejects structurally unmappable words but accepts learner grammar', () => {
+    const bad = buildCanonicalSubmissionTranscript({ files: ['photo'], ocrPages: [{ fileId: 'photo', pageNumber: 1,
+      rawText: 'A coherent photographed paragraph remains here for analysis.',
+      words: Array.from({ length: 10 }, (_, index) => ({ id: `x${index}`, text: `unmapped${index}`, bbox: { x0: index, y0: 1, x1: index + 1, y1: 2 } })) }] });
+    expect(assessCanonicalTranscriptQuality(bad)).toMatchObject({ reliable: false, code: 'OCR_READING_ORDER_UNRELIABLE' });
+    const learner = alignWordsToAuthoritativeText('Almost every students use social media.',
+      ['Almost', 'every', 'students', 'use', 'social', 'media', '.'].map((text, index) => ({ id: String(index), text })));
+    expect(learner.mapping.alignmentRatio).toBe(1);
+  });
   test('explicit upload and page indexes override reverse OCR completion order', () => {
     const submission = {
       files: ['continuation-file', 'introduction-file'],

@@ -301,7 +301,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     const completedDoc = await waitFor(successId, (doc) => doc.correctionStatus === 'completed' && doc.evaluationStatus === 'completed');
     expect(completedDoc.ocrPages).toHaveLength(2);
     const canonicalOcr = await getOcrCorrections(successId, studentToken);
-    expect(canonicalOcr.transcriptLayoutVersion).toBe('ocr-layout-v4');
+    expect(canonicalOcr.transcriptLayoutVersion).toBe('ocr-layout-v5-native-text');
     expect(canonicalOcr.ocr.map((page) => page.fileId)).toEqual(completedDoc.files.map(String));
     expect(canonicalOcr.ocr.map((page) => page.pageNumber)).toEqual([1, 1]);
     const canonicalWordTexts = canonicalOcr.ocr.flatMap((page) => page.words).map((word) => word.text);

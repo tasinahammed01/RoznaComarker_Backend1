@@ -1,7 +1,6 @@
 const crypto = require('crypto');
 const semantic = require('./semanticWritingCorrections.service');
 const canonical = require('./correctionCanonical.service');
-const { normalizeOcrWordsFromStored, buildTranscriptAndSpans } = require('./ocrCorrections.service');
 const { buildCanonicalSubmissionTranscript, CANONICAL_TRANSCRIPT_LAYOUT_VERSION } = require('../utils/ocrTranscriptNormalizer');
 const logger = require('../utils/logger');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
@@ -67,13 +66,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     return;
   }
   const transcript = canonicalTranscript.text;
-  const spans = [];
-  for (const page of canonicalTranscript.pages) {
-    const words = normalizeOcrWordsFromStored(page.words, { fileId: page.fileId }).map((word) => ({ ...word, page: page.pageNumber, fileId: page.fileId }));
-    const local = buildTranscriptAndSpans(words);
-    if (local.text !== page.text) continue;
-    spans.push(...local.spans.map((span) => ({ ...span, start: span.start + page.startChar, end: span.end + page.startChar })));
-  }
+  const spans = canonicalTranscript.wordSpans.map((span) => ({ ...span }));
   if (!transcript) return;
   const hash = buildCorrectionSourceHash({ transcript, pages: canonicalTranscript.pages, assignment });
   const semanticConfig = getSemanticAIConfig();
@@ -191,6 +184,18 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     semanticProviderMs: semanticError.totalDurationMs || semanticError.durationMs || semanticAiMs,
     finalFailureCode: semanticError.finalFailureCode || terminalAttempt?.code || safeErrorCode(semanticError)
   } : {});
+  const rejectionCounts = terminalValidation.rejectionReasons || rejectionReasons;
+  const rejectionStageCounts = {
+    rejectedBySchema: Number(rejectionCounts.INVALID_SCHEMA || 0) + Number(rejectionCounts.INVALID_SEVERITY || 0),
+    rejectedByLegend: Number(rejectionCounts.LEGEND_MISMATCH || 0),
+    rejectedByConfidence: Number(rejectionCounts.LOW_CONFIDENCE || 0),
+    rejectedByQuoteMatch: Number(rejectionCounts.QUOTE_NOT_FOUND || 0),
+    rejectedByOccurrence: Number(rejectionCounts.OCCURRENCE_NOT_FOUND || 0),
+    rejectedByGrounding: Number(rejectionCounts.QUOTE_NOT_FOUND || 0) + Number(rejectionCounts.OCCURRENCE_NOT_FOUND || 0),
+    rejectedByOcrMapping: Number(rejectionCounts.INVALID_LOCATION || 0),
+    removedAsExactDuplicate: Number(merged.diagnostics?.exactDuplicates || 0),
+    removedAsOverlapDuplicate: Number(merged.diagnostics?.overlapDuplicates || 0)
+  };
   const persistedSemanticMetrics = { ...gatewayMetrics, semanticQueueWaitMs: null, semanticValidationMs, semanticMappingMs,
     validationDiagnostics: semanticRun?.diagnostics || semanticError?.validationDiagnostics || null,
     canonicalMergeMs, mergeDiagnostics: merged.diagnostics,
@@ -198,7 +203,8 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     rejectedCorrectionCount: Object.values(rejectionReasons).reduce((sum, count) => sum + count, 0), rejectionReasons,
     returnedByCategory, acceptedByCategory: acceptedBeforeMergeByCategory, rejectedByCategory,
     rejectionReasonsByCategory: terminalValidation.rejectionReasonsByCategory || {},
-    retainedAfterMergeByCategory, removedDuringMergeByCategory };
+    retainedAfterMergeByCategory, removedDuringMergeByCategory, persistedByCategory: retainedAfterMergeByCategory,
+    ...rejectionStageCounts };
   const finalWrite = await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
     writingCorrections: corrections, correctionStatistics: combinedStatistics, correctionSourceHash: hash,
     correctionVersion: canonical.VERSION, correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
