@@ -464,6 +464,16 @@ describe('deterministic canonical hybrid merge', () => {
       .toEqual(['CONTENT', 'ORGANIZATION', 'VOCABULARY']);
   });
 
+  test('technical correction failure blocks only unfinished non-teacher evaluations with null educational results', async () => {
+    const feedbackModel = { updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }) };
+    await pipeline.blockEvaluationAfterCorrectionFailure({ submissionId: 'submission-1',
+      errorCode: 'AI_CHAIN_EXHAUSTED', feedbackModel });
+    expect(feedbackModel.updateOne).toHaveBeenCalledWith({ submissionId: 'submission-1',
+      overriddenByTeacher: { $ne: true }, evaluationStatus: { $nin: ['completed', 'partial'] } },
+    expect.objectContaining({ $set: expect.objectContaining({ evaluationStatus: 'blocked', overallScore: null,
+      grade: null, rubricScores: null, correctionStats: null, evaluationErrorCode: 'AI_CHAIN_EXHAUSTED' }) }));
+  });
+
   test('displayed semantic attempt count matches primary and fallback retry plans', () => {
     expect(pipeline.plannedSemanticAttempts({ chain: [{}, {}, {}], primaryRetries: 1, fallbackRetries: 0 })).toBe(4);
   });

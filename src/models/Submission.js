@@ -171,7 +171,7 @@ const submissionSchema = new Schema(
     correctionLegendContentHash: { type: String, trim: true },
     deductionPolicyVersion: { type: String, trim: true },
     semanticMetrics: { type: Schema.Types.Mixed, default: undefined },
-    evaluationStatus: { type: String, enum: ['pending', 'processing', 'completed', 'partial', 'failed', 'stale'], default: undefined, index: true },
+    evaluationStatus: { type: String, enum: ['pending', 'processing', 'completed', 'partial', 'failed', 'stale', 'blocked'], default: undefined, index: true },
     evaluationJobId: { type: String, index: true },
     evaluationSourceHash: { type: String, trim: true },
     evaluationVersion: { type: String, trim: true },

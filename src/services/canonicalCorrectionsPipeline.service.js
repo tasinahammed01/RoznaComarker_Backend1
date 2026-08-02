@@ -10,6 +10,14 @@ const { getSemanticAIConfig, getSemanticAIConfigStatus } = require('./semanticAI
 const semanticMetrics = require('./semanticMetrics.service');
 const { resolveLegend } = require('./correctionLegendResolver.service');
 
+async function blockEvaluationAfterCorrectionFailure({ submissionId, errorCode, feedbackModel = SubmissionFeedback }) {
+  return feedbackModel.updateOne({ submissionId, overriddenByTeacher: { $ne: true },
+    evaluationStatus: { $nin: ['completed', 'partial'] } }, { $set: {
+    evaluationStatus: 'blocked', overallScore: null, grade: null, rubricScores: null,
+    correctionStats: null, evaluationErrorCode: errorCode || 'SEMANTIC_ANALYSIS_FAILED'
+  }, $unset: { evaluationSourceHash: 1, evaluationVersion: 1, evaluationProvider: 1, evaluationModel: 1 } });
+}
+
 function wordsFromSubmission(doc) {
   const all = [];
   for (const page of doc.ocrPages || []) {
@@ -219,7 +227,10 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     semanticNextRetryAt: null, semanticErrorCode: safeErrorCode(semanticError) || null,
     semanticProvider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
     semanticModel: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
-    semanticPromptVersion: semantic.SEMANTIC_PROMPT_VERSION, correctionLegendSource: legend.source,
+    semanticPromptVersion: semantic.SEMANTIC_PROMPT_VERSION,
+    evaluationStatus: semanticError && !['completed', 'partial'].includes(String(doc.evaluationStatus || ''))
+      ? 'blocked' : doc.evaluationStatus,
+    correctionLegendSource: legend.source,
     correctionLegendVersion: legend.version, correctionLegendContentHash: legend.contentHash,
     deductionPolicyVersion: canonical.DEDUCTION_POLICY_VERSION,
     semanticMetrics: persistedSemanticMetrics
@@ -228,6 +239,10 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     semanticMetrics.increment('semanticJobsSuperseded');
     logger.info({ message: 'Canonical correction job superseded before final persistence', submissionId: String(doc._id), stage: 'finalCorrectionsPersisted', persisted: false });
     return;
+  }
+  if (semanticError) {
+    await blockEvaluationAfterCorrectionFailure({ submissionId: doc._id,
+      errorCode: safeErrorCode(semanticError) || 'SEMANTIC_ANALYSIS_FAILED' }).catch(() => {});
   }
   const totalCorrectionsMs = Date.now() - totalStartedAt;
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id),
@@ -300,4 +315,4 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
 }
 
 module.exports = { wordsFromSubmission, orderedPageIdentity, buildCorrectionSourceHash, plannedSemanticAttempts,
-  hasHolisticCoverageMismatch, holisticCoverageMismatchCategories, generateAndPersist };
+  hasHolisticCoverageMismatch, holisticCoverageMismatchCategories, blockEvaluationAfterCorrectionFailure, generateAndPersist };

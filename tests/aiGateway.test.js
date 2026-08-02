@@ -63,6 +63,25 @@ describe('global AI gateway', () => {
     expect(googleBody.response_format).toBeUndefined();
   });
 
+  test('primary and fallback receive the identical provider-valid schema and retain bounded 400 diagnostics', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(response(400, { error: { code: 'invalid_json_schema',
+        message: 'Unsupported schema keyword.', param: 'response_format.json_schema.schema' } }))
+      .mockResolvedValueOnce(router('{"ok":true}'));
+    const result = await gateway.generate({ messages: [{ role: 'user', content: 'x' }],
+      responseFormat: 'json', responseSchema: strictSchema, schemaName: 'semantic_corrections',
+      validate: JSON.parse, fetchImpl, env: env({ AI_PRIMARY_PROVIDER: 'openrouter',
+        AI_PRIMARY_MODEL: 'openai/gpt-4.1', AI_FALLBACK_1_PROVIDER: 'openrouter',
+        AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini', AI_FALLBACK_2_PROVIDER: '',
+        AI_FALLBACK_2_MODEL: '', AI_FALLBACK_3_PROVIDER: '', AI_FALLBACK_3_MODEL: '' }) });
+    const bodies = fetchImpl.mock.calls.map((call) => JSON.parse(call[1].body));
+    expect(bodies[0].response_format).toEqual(bodies[1].response_format);
+    expect(result.attempts[0]).toMatchObject({ httpStatus: 400, fallbackIndex: 0,
+      providerErrorCode: 'invalid_json_schema', providerErrorMessage: 'Unsupported schema keyword.',
+      providerErrorParameter: 'response_format.json_schema.schema', schemaName: 'semantic_corrections' });
+    expect(JSON.stringify(result.attempts[0])).not.toContain('router-secret');
+  });
+
   test('serializes the empty-catalog rubric schema unchanged without empty enums', async () => {
     const schema = semanticRubricAssessmentSchema('hash');
     const fetchImpl = jest.fn().mockResolvedValueOnce(router('{"sourceHash":"hash"}'));

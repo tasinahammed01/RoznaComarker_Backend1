@@ -10,7 +10,7 @@ describe('runtime contract fingerprint', () => {
     const first = runtimeContractFingerprint(env);
     expect(first).toEqual(runtimeContractFingerprint(env));
     expect(first).toMatchObject({ applicationVersion: '1.0.0', environment: 'test', deploymentRevision: 'release-123',
-      contracts: { correctionPrompt: 'ai-only-correction-detection-v6-symbol-coverage', correctionSchema: 'semantic-corrections-v10-symbol-coverage',
+      contracts: { correctionPrompt: 'ai-only-correction-detection-v6-symbol-coverage', correctionSchema: 'semantic-corrections-v11-provider-compatible-symbol-coverage',
         rubricPrompt: 'semantic-rubric-assessment-v5', rubricSchema: 'semantic-rubric-assessment-json-v4',
         canonicalCorrection: 'canonical-6-category-structured', canonicalEvaluation: 'canonical-evaluation-7-conclusion-evidence' },
       contractHash: expect.stringMatching(/^[a-f0-9]{16}$/) });

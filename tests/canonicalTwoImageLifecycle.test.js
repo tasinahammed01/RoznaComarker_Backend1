@@ -198,7 +198,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
       }
       if (String(url).includes('/chat/completions')) {
         const prompt = rubricPromptFromRequest(options);
-        if (prompt.includes('schema=semantic-corrections-v10-symbol-coverage')) {
+        if (prompt.includes('schema=semantic-corrections-v11-provider-compatible-symbol-coverage')) {
           correctionProviderRequestCount += 1;
           lifecycleEvents.push('correction-started');
           return { ok: true, status: 200, headers: { get: () => 'application/json' },
@@ -354,10 +354,15 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect({ languageToolRequestCount, rubricProviderRequestCount }).toEqual(readsBefore);
 
     const secondAssignment = await assignment('Lifecycle failure', 'failure');
-    mockSemanticMode = 'failure'; mockOcrCall = 0; mockOcrGate = Promise.resolve(); mockRubricGate = Promise.resolve();
+    mockSemanticMode = 'failure'; mockOcrCall = 0; mockRubricGate = Promise.resolve();
+    let releaseFailureOcr; mockOcrGate = new Promise((resolve) => { releaseFailureOcr = resolve; });
     const failedUpload = await uploadTwoImages(secondAssignment._id, failureToken);
     expect(failedUpload.status).toBe(200);
     const failureId = String(failedUpload.body.data._id);
+    await SubmissionFeedback.create({ submissionId: failureId, classId: classDoc._id,
+      studentId: failureStudent._id, teacherId: teacher._id, evaluationStatus: 'pending',
+      evaluationSource: 'deterministic_fallback', overallScore: 0, grade: 'F', overriddenByTeacher: false });
+    releaseFailureOcr();
     await waitFor(failureId, (doc) => doc.semanticStatus === 'failed');
     const failedStudent = await getResult(failureId, failureToken);
     const failedTeacher = await getResult(failureId, teacherToken);
@@ -367,6 +372,9 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(failedStudent.score).not.toBe(77);
     expect(failedStudent.overallScore).not.toBe(77);
     expect(failedStudent.score).not.toBe(successStudent.score);
+    const failedPersistedFeedback = await SubmissionFeedback.findOne({ submissionId: failureId }).lean();
+    expect(failedPersistedFeedback).toMatchObject({ evaluationStatus: 'blocked',
+      overallScore: null, grade: null, rubricScores: null, correctionStats: null, overriddenByTeacher: false });
     // In AI-only pipeline, when corrections fail completely, PDF generation returns 409
     const failedPdfResponse = await request(app).get(`/api/pdf/download/${failureId}`).set('Authorization', `Bearer ${teacherToken}`);
     expect(failedPdfResponse.status).toBe(409);

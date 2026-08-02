@@ -46,7 +46,7 @@ function semanticCorrectionsSchema(transcriptHash, categories = CORRECTION_CATEG
     categories: closedObject(Object.fromEntries(selected.map((category) => [category, closedObject({
       reviewed: { type: 'boolean', const: true },
       reviewedSymbols: { type: 'array', minItems: categorySymbols[category].length,
-        maxItems: categorySymbols[category].length, uniqueItems: true,
+        maxItems: categorySymbols[category].length,
         items: { type: 'string', enum: categorySymbols[category] } },
       noFindingReason: string(320),
       corrections: { type: 'array', maxItems: policy.MAX_AI_CORRECTIONS_PER_CATEGORY[category],

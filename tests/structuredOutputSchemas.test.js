@@ -20,8 +20,9 @@ describe('assessment structured output schemas', () => {
     expect(schema.properties.categories.required).toEqual(schemas.CORRECTION_CATEGORIES);
     const content = schema.properties.categories.properties.CONTENT;
     expect(content.required).toEqual(['reviewed', 'reviewedSymbols', 'noFindingReason', 'corrections']);
-    expect(content.properties.reviewedSymbols).toMatchObject({ minItems: 5, maxItems: 5, uniqueItems: true,
+    expect(content.properties.reviewedSymbols).toMatchObject({ minItems: 5, maxItems: 5,
       items: { enum: schemas.CATEGORY_SYMBOLS.CONTENT } });
+    expect(JSON.stringify(schema)).not.toContain('uniqueItems');
     expect(content.properties.findingCount).toBeUndefined();
     expect(content.properties.corrections.items.properties.category).toBeUndefined();
     expect(content.properties.corrections.items.properties.symbol.enum).toEqual(schemas.CATEGORY_SYMBOLS.CONTENT);
@@ -43,8 +44,9 @@ describe('assessment structured output schemas', () => {
   test.each(Object.entries(schemas.CATEGORY_SYMBOLS))('%s requires its complete exact reviewed-symbol catalog', (category, symbols) => {
     const schema = schemas.semanticCorrectionsSchema('hash');
     const reviewed = schema.properties.categories.properties[category].properties.reviewedSymbols;
-    expect(reviewed).toMatchObject({ minItems: symbols.length, maxItems: symbols.length, uniqueItems: true,
+    expect(reviewed).toMatchObject({ minItems: symbols.length, maxItems: symbols.length,
       items: { type: 'string', enum: symbols } });
+    expect(reviewed.uniqueItems).toBeUndefined();
   });
 
   test('rubric provider schema uses backend-owned evidence identifiers', () => {

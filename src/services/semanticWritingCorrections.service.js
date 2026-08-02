@@ -10,7 +10,7 @@ const { semanticCorrectionsSchema, CORRECTION_CATEGORIES, CORRECTION_KINDS,
   CORRECTION_SEVERITIES, CORRECTION_FIELDS } = require('./structuredOutputSchemas.service');
 
 const SEMANTIC_PROMPT_VERSION = 'ai-only-correction-detection-v6-symbol-coverage';
-const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v10-symbol-coverage';
+const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v11-provider-compatible-symbol-coverage';
 const CATEGORY_REVIEW_POLICY_VERSION = 'ai-only-categories-v5-28-symbol-coverage';
 const DEFAULT_NO_FINDING_REASON = 'No validated canonical findings were returned after the category review.';
 const SEMANTIC_CATEGORIES = new Set(CORRECTION_CATEGORIES);

@@ -135,7 +135,7 @@ const submissionFeedbackSchema = new Schema(
     evaluationVersion: { type: String, trim: true },
     evaluationRubricSourceHash: { type: String, trim: true },
     evaluationSource: { type: String, enum: ['ai', 'deterministic_fallback', 'provisional'], default: 'deterministic_fallback' },
-    evaluationStatus: { type: String, enum: ['pending', 'processing', 'completed', 'partial', 'failed'], default: 'pending' },
+    evaluationStatus: { type: String, enum: ['pending', 'processing', 'completed', 'partial', 'failed', 'blocked'], default: 'pending' },
     evaluationErrorCode: { type: String, trim: true },
     evaluationProvider: { type: String, trim: true },
     evaluationModel: { type: String, trim: true },

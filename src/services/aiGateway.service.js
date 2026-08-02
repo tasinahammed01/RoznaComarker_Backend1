@@ -172,7 +172,8 @@ function safeFailureMetadata(error) {
     'responseTextLength', 'candidateCount', 'validationCode', 'validationStage', 'jsonPath',
     'expected', 'actualType', 'category', 'symbol', 'candidateIndex', 'transcriptHashMatch',
     'requiredPropertyMissing', 'unexpectedPropertyPresent', 'expectedSymbolCount',
-    'receivedSymbolCount', 'missingSymbols', 'duplicateSymbols', 'unexpectedSymbols'];
+    'receivedSymbolCount', 'missingSymbols', 'duplicateSymbols', 'unexpectedSymbols',
+    'providerErrorCode', 'providerErrorMessage', 'providerErrorParameter', 'schemaName', 'schemaPath'];
   return Object.fromEntries(allowed.filter((key) => error?.[key] !== undefined && error?.[key] !== null)
     .map((key) => [key, error[key]]));
 }
@@ -224,6 +225,8 @@ function safeSchemaName(value) {
     .replace(/[^a-z0-9_-]+/gu, '_').replace(/^_+|_+$/gu, '').slice(0, 64);
   return safe || 'structured_response';
 }
+const boundedProviderField = (value, maximum = 240) => typeof value === 'string'
+  ? value.replace(/[\r\n\t]+/gu, ' ').trim().slice(0, maximum) : null;
 
 function googleBody(messages, maxOutputTokens, temperature, responseFormat, thinkingLevel, model,
   responseSchema) {
@@ -298,7 +301,15 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
       const status = Number.isInteger(payloadStatus) && payloadStatus >= 400 && payloadStatus <= 599
         ? payloadStatus : response.ok ? 500 : response.status;
       throw attemptError(safeCode({ status }), 'AI provider request failed.', {
-        status, retryAfterMs: retryAfterMs(response, now())
+        status, retryAfterMs: retryAfterMs(response, now()),
+        providerErrorCode: boundedProviderField(String(payloadError?.code || payloadError?.type || ''), 80),
+        // Provider text is retained only for schema/invalid-request failures;
+        // other error messages may contain billing or account details.
+        providerErrorMessage: status === 400 ? boundedProviderField(payloadError?.message) : null,
+        providerErrorParameter: status === 400 ? boundedProviderField(payloadError?.param, 120) : null,
+        schemaName: safeSchemaName(schemaName || feature),
+        schemaPath: status === 400
+          ? boundedProviderField(payloadError?.metadata?.path || payloadError?.path || payloadError?.param, 160) : null
       });
     }
     const extracted = google ? extractGoogle(payload, { maxOutputTokens })
