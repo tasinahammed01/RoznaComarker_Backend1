@@ -22,7 +22,7 @@ const {
 } = require("../services/docxRubricTemplateParser.service");
 const { buildOcrCorrections } = require("../services/ocrCorrections.service");
 const { buildSubmissionCorrectionStatistics, countSubmissionCorrections } = require("../services/submissionCorrectionStatistics.service");
-const { buildCanonicalResultState } = require("../services/canonicalResultState.service");
+const { buildCanonicalResultState, buildPreviousEvaluation } = require("../services/canonicalResultState.service");
 const { resolveTeacherComments } = require("../services/teacherComments.service");
 const { TEACHER_COMMENTS_MAX_LENGTH } = require("../models/SubmissionFeedback");
 const aiGateway = require("../services/aiGateway.service");
@@ -926,11 +926,13 @@ async function getSubmissionFeedback(req, res) {
     }
     const currentFeedback = withCanonicalStatistics(feedback);
     const resultState = buildCanonicalResultState({ submission, feedback: currentFeedback });
+    const previousEvaluation = buildPreviousEvaluation(currentFeedback, resultState);
     const { teacherCommentsUpdatedBy: _internalTeacherCommentsUpdatedBy, ...publicFeedback } = currentFeedback;
     const safeFeedback = resultState.evaluationCurrent ? publicFeedback : {};
     return sendSuccess(res, {
       submissionId: String(submission._id),
       ...safeFeedback, ...resultState,
+      previousEvaluation,
       teacherComments,
       overallScore: resultState.score, grade: resultState.grade,
       rubricScores: resultState.evaluationCurrent ? currentFeedback.rubricScores : null,
@@ -1378,9 +1380,7 @@ Rules:
           classId: submission.class,
           studentId: submission.student,
           teacherId,
-          rubricDesigner: sanitizedRubricDesigner,
-          rubricScores: base.rubricScores || {},
-          overriddenByTeacher: false,
+          rubricDesigner: sanitizedRubricDesigner
         },
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
@@ -1477,9 +1477,7 @@ async function generateRubricDesignerFromFile(req, res) {
             classId: submission.class,
             studentId: submission.student,
             teacherId,
-            rubricDesigner: sanitizedRubricDesigner,
-            rubricScores: base.rubricScores || {},
-            overriddenByTeacher: false,
+            rubricDesigner: sanitizedRubricDesigner
           },
         },
         { upsert: true, new: true, setDefaultsOnInsert: true },
@@ -1532,9 +1530,7 @@ async function generateRubricDesignerFromFile(req, res) {
             classId: submission.class,
             studentId: submission.student,
             teacherId,
-            rubricDesigner: sanitizedRubricDesigner,
-            rubricScores: base.rubricScores || {},
-            overriddenByTeacher: false,
+            rubricDesigner: sanitizedRubricDesigner
           },
         },
         { upsert: true, new: true, setDefaultsOnInsert: true },
@@ -1588,9 +1584,7 @@ async function generateRubricDesignerFromFile(req, res) {
             classId: submission.class,
             studentId: submission.student,
             teacherId,
-            rubricDesigner: sanitizedRubricDesigner,
-            rubricScores: base.rubricScores || {},
-            overriddenByTeacher: false,
+            rubricDesigner: sanitizedRubricDesigner
           },
         },
         { upsert: true, new: true, setDefaultsOnInsert: true },
@@ -1646,9 +1640,7 @@ async function generateRubricDesignerFromFile(req, res) {
           classId: submission.class,
           studentId: submission.student,
           teacherId,
-          rubricDesigner,
-          rubricScores: base.rubricScores || {},
-          overriddenByTeacher: false,
+          rubricDesigner
         },
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
@@ -1954,13 +1946,7 @@ async function generateAiRubricFromDesigner(req, res) {
       classId: submission.class,
       studentId: submission.student,
       teacherId,
-      rubricScores,
-      detailedFeedback,
-      aiFeedback,
-      rubricDesigner: sanitizedRubricDesigner,
-      overriddenByTeacher: false,
-      overallScore: computeOverallScoreFromWeightedRubric(rubricScores),
-      grade: gradeFromOverallScore100(computeOverallScoreFromWeightedRubric(rubricScores)),
+      rubricDesigner: sanitizedRubricDesigner
     };
 
     const saved = await SubmissionFeedback.findOneAndUpdate(
@@ -2977,9 +2963,7 @@ Rules:
           classId: submission.class,
           studentId: submission.student,
           teacherId,
-          rubricDesigner: sanitizedRubricDesigner,
-          rubricScores: base.rubricScores || {},
-          overriddenByTeacher: false,
+          rubricDesigner: sanitizedRubricDesigner
         },
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },

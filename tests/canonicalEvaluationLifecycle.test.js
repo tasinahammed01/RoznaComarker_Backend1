@@ -10,6 +10,7 @@ const mockAssess = jest.fn().mockResolvedValue({ sourceHash: 'hash', status: 'co
 
 jest.mock('../src/models/SubmissionFeedback', () => ({ findOneAndUpdate: mockFindOneAndUpdate, findOne: mockFindOne }));
 jest.mock('../src/models/class.model', () => ({ findById: jest.fn(() => ({ select: () => ({ lean: mockClassLean }) })) }));
+jest.mock('../src/models/user.model', () => ({ findById: jest.fn(() => ({ select: () => ({ lean: jest.fn().mockResolvedValue(null) }) })) }));
 jest.mock('../src/services/semanticRubricAssessment.service', () => ({ assess: mockAssess }));
 
 const { generate } = require('../src/services/canonicalEvaluation.service');
@@ -54,6 +55,55 @@ describe('canonical evaluation write guards', () => {
     expect(mockFindOneAndUpdate.mock.calls[1][0]).toMatchObject({ submissionId: 'submission-1', evaluationJobId: expect.any(String) });
     expect(mockFindOneAndUpdate.mock.calls[1][1].$set).toMatchObject({ detailedFeedbackSourceHash: 'hash',
       detailedFeedbackVersion: 'canonical-detailed-feedback-2', evaluationProvider: 'openrouter', evaluationModel: 'openai/gpt-oss-20b' });
+    expect(mockFindOneAndUpdate.mock.calls[1][1].$set.scoringAudit).toMatchObject({
+      version: 'canonical-scoring-audit-v1',
+      overallMethod: 'fixed_six_category_sum',
+      categories: [
+        expect.objectContaining({ category: 'GRAMMAR', finalScore: 0 }),
+        expect.objectContaining({ category: 'MECHANICS', finalScore: 0 })
+      ]
+    });
+  });
+
+  test('custom-rubric scoring audit reproduces the deterministic selected-level overall score', async () => {
+    const record = submission(true);
+    const levels = [
+      { title: 'Excellent', score: 100, description: 'Excellent work.' },
+      { title: 'Good', score: 80, description: 'Good work.' },
+      { title: 'Satisfactory', score: 60, description: 'Satisfactory work.' },
+      { title: 'Needs Improvement', score: 40, description: 'Needs improvement.' }
+    ];
+    const assignment = { title: 'Custom rubric', rubrics: { totalPoints: 100, criteria: [
+      { name: 'Content', weight: 30, levels },
+      { name: 'Organization', weight: 20, levels },
+      { name: 'Language', weight: 15, levels },
+      { name: 'Analysis', weight: 20, levels },
+      { name: 'Mechanics', weight: 15, levels }
+    ] } };
+    const baseSemantic = await mockAssess();
+    mockAssess.mockResolvedValueOnce({
+      ...baseSemantic,
+      customCriteria: [
+        { criterionId: 'criterion-1', percentage: 60, levelTitle: 'Satisfactory', evidence: [] },
+        { criterionId: 'criterion-2', percentage: 60, levelTitle: 'Satisfactory', evidence: [] },
+        { criterionId: 'criterion-3', percentage: 40, levelTitle: 'Needs Improvement', evidence: [] },
+        { criterionId: 'criterion-4', percentage: 60, levelTitle: 'Satisfactory', evidence: [] },
+        { criterionId: 'criterion-5', percentage: 80, levelTitle: 'Good', evidence: [] }
+      ]
+    });
+
+    const result = await generate({ submission: record.value, assignment });
+    const persisted = mockFindOneAndUpdate.mock.calls[1][1].$set;
+
+    expect(result.overallScore).toBe(60);
+    expect(persisted.customRubricScores.criteria.map((criterion) => criterion.weightedPoints))
+      .toEqual([18, 12, 6, 12, 12]);
+    expect(persisted.scoringAudit).toMatchObject({
+      overallMethod: 'custom_rubric_weighted_total',
+      customRubric: { overallScore: 60 }
+    });
+    expect(persisted.scoringAudit.customRubric.criteria
+      .reduce((sum, criterion) => sum + criterion.weightedPoints, 0)).toBe(persisted.overallScore);
   });
 
   test('old evaluation versions are recomputed even when correction hash is unchanged', async () => {
@@ -67,7 +117,7 @@ describe('canonical evaluation write guards', () => {
     expect(record.updateOne).toHaveBeenCalledWith(expect.objectContaining({ evaluationStatus: { $ne: 'processing' } }), expect.any(Object));
   });
 
-  test('missing rubric categories fail before any score or detailed feedback is persisted', async () => {
+  test('evaluation failure preserves any previously completed score and feedback fields', async () => {
     mockAssess.mockRejectedValueOnce(Object.assign(new Error('bad semantic result'), {
       code: 'HTTP_402', status: 402, attempts: [{ attempt: 1, provider: 'google', model: 'gemini-3.6-flash',
         status: 'provider_refusal', code: 'HTTP_402' }]
@@ -77,9 +127,7 @@ describe('canonical evaluation write guards', () => {
     expect(result).toMatchObject({ status: 'failed', provider: 'google', model: 'gemini-3.6-flash',
       overallScore: null, errorCode: 'HTTP_402' });
     expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(2);
-    expect(mockFindOneAndUpdate.mock.calls[1][1].$unset).toMatchObject({
-      overallScore: 1, rubricScores: 1, detailedFeedback: 1
-    });
+    expect(mockFindOneAndUpdate.mock.calls[1][1].$unset).toBeUndefined();
     expect(record.updateOne).toHaveBeenLastCalledWith(expect.objectContaining({ evaluationJobId: expect.any(String) }),
       expect.objectContaining({ $set: expect.objectContaining({ evaluationStatus: 'failed' }) }));
   });

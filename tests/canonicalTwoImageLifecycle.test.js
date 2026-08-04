@@ -380,7 +380,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(failedPdfResponse.status).toBe(409);
 
     mockSemanticMode = 'success';
-    const retry = await retryCorrections(failureId, failureToken);
+    const retry = await retryCorrections(failureId, teacherToken);
     expect(retry.status).toBe(202);
     await waitFor(failureId, (doc) => doc.correctionStatus === 'completed' && doc.evaluationStatus === 'completed');
     const retriedStudent = await getResult(failureId, failureToken);

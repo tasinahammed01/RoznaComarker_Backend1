@@ -15,7 +15,8 @@ async function blockEvaluationAfterCorrectionFailure({ submissionId, errorCode, 
     evaluationStatus: { $nin: ['completed', 'partial'] } }, { $set: {
     evaluationStatus: 'blocked', overallScore: null, grade: null, rubricScores: null,
     correctionStats: null, evaluationErrorCode: errorCode || 'SEMANTIC_ANALYSIS_FAILED'
-  }, $unset: { evaluationSourceHash: 1, evaluationVersion: 1, evaluationProvider: 1, evaluationModel: 1 } });
+  }, $unset: { evaluationSourceHash: 1, evaluationRubricSourceHash: 1, evaluationPolicyHash: 1,
+    evaluationVersion: 1, evaluationProvider: 1, evaluationModel: 1 } });
 }
 
 function wordsFromSubmission(doc) {
@@ -103,7 +104,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   }
   semanticMetrics.increment('semanticJobsStarted');
   await SubmissionFeedback.updateOne({ submissionId: doc._id, overriddenByTeacher: { $ne: true } },
-    { $unset: { evaluationSourceHash: 1 } }).catch(() => {});
+    { $unset: { evaluationSourceHash: 1, evaluationRubricSourceHash: 1, evaluationPolicyHash: 1 } }).catch(() => {});
   let ai = []; let semanticError = null; let semanticReturnedCount = 0; let semanticRun = null; let failedSemanticAttempt = 0;
   const rejectionReasons = {};
   let semanticValidationMs = 0; let semanticMappingMs = 0;

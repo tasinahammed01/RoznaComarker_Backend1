@@ -1,5 +1,6 @@
 jest.mock('../src/models/Submission', () => ({ findById: jest.fn(), updateOne: jest.fn() }));
 jest.mock('../src/models/assignment.model', () => ({ findById: jest.fn() }));
+jest.mock('../src/models/SubmissionFeedback', () => ({ exists: jest.fn() }));
 jest.mock('../src/services/canonicalEvaluation.service', () => ({ generate: jest.fn() }));
 jest.mock('../src/services/canonicalCorrectionsPipeline.service', () => ({ generateAndPersist: jest.fn() }));
 jest.mock('../src/services/ocrPipeline.service', () => ({ runOcrAndPersist: jest.fn(), runOcrAndPersistForFiles: jest.fn() }));
@@ -7,6 +8,7 @@ jest.mock('../src/services/upload.service', () => ({ assertTeacherOwnsClassOrThr
 
 const Submission = require('../src/models/Submission');
 const Assignment = require('../src/models/assignment.model');
+const SubmissionFeedback = require('../src/models/SubmissionFeedback');
 const evaluation = require('../src/services/canonicalEvaluation.service');
 const corrections = require('../src/services/canonicalCorrectionsPipeline.service');
 const ocr = require('../src/services/ocrPipeline.service');
@@ -36,32 +38,19 @@ describe('evaluation-only retry controller', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     Submission.updateOne.mockResolvedValue({ modifiedCount: 1 });
+    SubmissionFeedback.exists.mockResolvedValue(false);
     Assignment.findById.mockReturnValue({ lean: jest.fn().mockResolvedValue({ title: 'Essay' }) });
     evaluation.generate.mockResolvedValue({ status: 'completed', provider: 'openrouter', model: 'openai/gpt-oss-20b' });
   });
 
-  test('student owner receives 202 and only canonical evaluation starts', async () => {
-    const original = submission();
-    const correctionsBefore = JSON.stringify(original.writingCorrections);
-    const statisticsBefore = JSON.stringify(original.correctionStatistics);
-    const sourceHashBefore = original.correctionSourceHash;
-    Submission.findById.mockResolvedValue(original);
+  test('student owner is forbidden from starting canonical evaluation', async () => {
+    Submission.findById.mockResolvedValue(submission());
     const res = response();
     await controller.retryCanonicalEvaluation({ params: { submissionId: 'submission-1' },
       user: { _id: 'student-1', role: 'student' } }, res);
-    expect(res.statusCode).toBe(202);
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(evaluation.generate).toHaveBeenCalledTimes(1);
-    expect(corrections.generateAndPersist).not.toHaveBeenCalled();
-    expect(ocr.runOcrAndPersist).not.toHaveBeenCalled();
-    expect(ocr.runOcrAndPersistForFiles).not.toHaveBeenCalled();
-    expect(original.writingCorrections).toEqual([{ id: 'c1', category: 'GRAMMAR', symbol: 'AGR' }]);
-    expect(JSON.stringify(original.writingCorrections)).toBe(correctionsBefore);
-    expect(JSON.stringify(original.correctionStatistics)).toBe(statisticsBefore);
-    expect(original.correctionSourceHash).toBe(sourceHashBefore);
-    expect(Submission.updateOne.mock.calls[0][1].$set).not.toHaveProperty('correctionStatus');
-    expect(Submission.updateOne.mock.calls[0][1].$set).not.toHaveProperty('correctionStatistics');
-    expect(Submission.updateOne.mock.calls[0][1].$set).not.toHaveProperty('correctionSourceHash');
+    expect(res.statusCode).toBe(403);
+    expect(evaluation.generate).not.toHaveBeenCalled();
+    expect(Submission.updateOne).not.toHaveBeenCalled();
   });
 
   test('other student is forbidden', async () => {
@@ -75,6 +64,11 @@ describe('evaluation-only retry controller', () => {
 
   test('owning teacher can retry evaluation without correction regeneration', async () => {
     Submission.findById.mockResolvedValue(submission());
+    const latestAssignment = {
+      title: 'Updated essay', description: 'Current instructions',
+      rubric: { legacy: true }, rubrics: { criteria: [{ name: 'Current criterion' }] }
+    };
+    Assignment.findById.mockReturnValueOnce({ lean: jest.fn().mockResolvedValue(latestAssignment) });
     upload.assertTeacherOwnsClassOrThrow.mockResolvedValue();
     const res = response();
     await controller.retryCanonicalEvaluation({ params: { submissionId: 'submission-1' },
@@ -83,25 +77,44 @@ describe('evaluation-only retry controller', () => {
     expect(upload.assertTeacherOwnsClassOrThrow).toHaveBeenCalledWith('teacher-1', 'class-1');
     await new Promise((resolve) => setImmediate(resolve));
     expect(evaluation.generate).toHaveBeenCalledTimes(1);
+    expect(evaluation.generate).toHaveBeenCalledWith(expect.objectContaining({
+      assignment: latestAssignment
+    }));
     expect(corrections.generateAndPersist).not.toHaveBeenCalled();
+  });
+
+  test('teacher-overridden feedback cannot be replaced', async () => {
+    Submission.findById.mockResolvedValue(submission());
+    SubmissionFeedback.exists.mockResolvedValue(true);
+    upload.assertTeacherOwnsClassOrThrow.mockResolvedValue();
+    const res = response();
+
+    await controller.retryCanonicalEvaluation({ params: { submissionId: 'submission-1' },
+      user: { _id: 'teacher-1', role: 'teacher' } }, res);
+
+    expect(res.statusCode).toBe(409);
+    expect(Submission.updateOne).not.toHaveBeenCalled();
+    expect(evaluation.generate).not.toHaveBeenCalled();
   });
 
   test('active evaluation is rejected without starting another operation', async () => {
     Submission.findById.mockResolvedValue(submission({ evaluationStatus: 'processing' }));
+    upload.assertTeacherOwnsClassOrThrow.mockResolvedValue();
     const res = response();
     await controller.retryCanonicalEvaluation({ params: { submissionId: 'submission-1' },
-      user: { _id: 'student-1', role: 'student' } }, res);
+      user: { _id: 'teacher-1', role: 'teacher' } }, res);
     expect(res.statusCode).toBe(409);
     expect(evaluation.generate).not.toHaveBeenCalled();
   });
 
   test('concurrent evaluation retries acquire one single-flight job', async () => {
     Submission.findById.mockResolvedValue(submission());
+    upload.assertTeacherOwnsClassOrThrow.mockResolvedValue();
     Submission.updateOne.mockResolvedValueOnce({ modifiedCount: 1 }).mockResolvedValueOnce({ modifiedCount: 0 });
     const first = response(); const second = response();
     await Promise.all([
-      controller.retryCanonicalEvaluation({ params: { submissionId: 'submission-1' }, user: { _id: 'student-1', role: 'student' } }, first),
-      controller.retryCanonicalEvaluation({ params: { submissionId: 'submission-1' }, user: { _id: 'student-1', role: 'student' } }, second)
+      controller.retryCanonicalEvaluation({ params: { submissionId: 'submission-1' }, user: { _id: 'teacher-1', role: 'teacher' } }, first),
+      controller.retryCanonicalEvaluation({ params: { submissionId: 'submission-1' }, user: { _id: 'teacher-1', role: 'teacher' } }, second)
     ]);
     expect([first.statusCode, second.statusCode].sort()).toEqual([202, 409]);
     await new Promise((resolve) => setImmediate(resolve));

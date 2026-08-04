@@ -88,12 +88,26 @@ function categoryAssessment(transcriptEvidenceIds, correctionIds) {
   });
 }
 
-function semanticRubricAssessmentSchema(sourceHash, { transcriptEvidenceIds = [], correctionIds = {} } = {}) {
-  return closedObject({ sourceHash: { type: 'string', const: String(sourceHash) }, categories: closedObject({
+function semanticRubricAssessmentSchema(sourceHash, { transcriptEvidenceIds = [], correctionIds = {}, customCriteria = [] } = {}) {
+  const properties = { sourceHash: { type: 'string', const: String(sourceHash) }, categories: closedObject({
     CONTENT: categoryAssessment(transcriptEvidenceIds, correctionIds.CONTENT),
     ORGANIZATION: categoryAssessment(transcriptEvidenceIds, correctionIds.ORGANIZATION),
     VOCABULARY: categoryAssessment(transcriptEvidenceIds, correctionIds.VOCABULARY)
-  }) });
+  }) };
+  if (customCriteria.length) {
+    properties.customCriteria = {
+      type: 'array', minItems: customCriteria.length, maxItems: customCriteria.length,
+      items: closedObject({
+        criterionId: { type: 'string', enum: customCriteria.map((criterion) => criterion.id) },
+        percentage: { type: 'number', minimum: 0, maximum: 100 },
+        levelTitle: string(160, { minLength: 1 }),
+        comment: string(500, { minLength: 1 }),
+        evidenceIds: { type: 'array', maxItems: transcriptEvidenceIds.length ? 20 : 0,
+          items: transcriptEvidenceIds.length ? { type: 'string', enum: transcriptEvidenceIds } : { type: 'string' } }
+      })
+    };
+  }
+  return closedObject(properties);
 }
 
 const DETAILED_FEEDBACK_SCHEMA = closedObject({

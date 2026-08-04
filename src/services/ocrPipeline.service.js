@@ -234,7 +234,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
     const assignmentDoc = targetDoc.assignment ? await Assignment.findById(targetDoc.assignment).lean().catch(() => null) : null;
     await canonicalCorrectionsPipeline.generateAndPersist(targetDoc, { assignment: assignmentDoc ? {
       title: assignmentDoc.title || '', description: assignmentDoc.description || assignmentDoc.instructions || '',
-      rubric: assignmentDoc.rubric || assignmentDoc.rubrics || null
+      rubric: assignmentDoc.rubric || null, rubrics: assignmentDoc.rubrics || null
     } : {} });
   } catch (err) {
     logger.error({ message: 'Canonical correction generation failed after OCR', error: err?.message || err });

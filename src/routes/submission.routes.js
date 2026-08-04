@@ -288,11 +288,11 @@ router.post(
   ...getOcrCorrectionsMiddleware
 );
 
-router.post('/:submissionId/ocr-corrections/regenerate', createSensitiveRateLimiter(), verifyJwtToken, requireRole(['student', 'teacher']),
+router.post('/:submissionId/ocr-corrections/regenerate', createSensitiveRateLimiter(), verifyJwtToken, requireRole('teacher'),
   param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult,
   submissionController.regenerateCanonicalCorrections);
 
-router.post('/:submissionId/evaluation/retry', verifyJwtToken, requireRole(['student', 'teacher']),
+router.post('/:submissionId/evaluation/retry', verifyJwtToken, requireRole('teacher'),
   createSensitiveRateLimiter(),
   param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult,
   submissionController.retryCanonicalEvaluation);

@@ -10,6 +10,7 @@ const FlashcardSet = require('../models/FlashcardSet');
 const WorksheetSubmission = require('../models/WorksheetSubmission');
 const Worksheet = require('../models/Worksheet');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
+const staleAssignmentEvaluation = require('../services/staleAssignmentEvaluation.service');
 
 const {
   RubricExcelTemplateError,
@@ -392,26 +393,33 @@ function rubricsToRubricDesigner({ rubrics, assignmentTitle }) {
   };
 }
 
-async function propagateAssignmentRubricToSubmissionFeedback({ assignmentId, rubricDesigner }) {
+async function propagateAssignmentRubricToSubmissionFeedback({ assignmentId, rubricDesigner, updateRubricDesigner = true }) {
   if (!mongoose.Types.ObjectId.isValid(assignmentId)) return;
   const d = rubricDesigner && typeof rubricDesigner === 'object' ? rubricDesigner : null;
-  if (!d) return;
 
   const submissions = await Submission.find({ assignment: assignmentId }).select('_id');
   const ids = (submissions || []).map((s) => s && s._id).filter(Boolean);
   if (!ids.length) return;
+  const overridden = await SubmissionFeedback.find({
+    submissionId: { $in: ids }, overriddenByTeacher: true
+  }).select('submissionId').lean();
+  const overriddenIds = new Set((overridden || []).map((item) => String(item.submissionId)));
+  const invalidatedIds = ids.filter((id) => !overriddenIds.has(String(id)));
 
+  const feedbackUpdate = {
+    $set: { evaluationStatus: 'pending', ...(updateRubricDesigner && d ? { rubricDesigner: d } : {}) }
+  };
+  if (updateRubricDesigner && !d) feedbackUpdate.$unset = { rubricDesigner: 1 };
   await SubmissionFeedback.updateMany(
     {
       submissionId: { $in: ids },
       overriddenByTeacher: { $ne: true }
     },
-    {
-      $set: {
-        rubricDesigner: d
-      }
-    }
+    feedbackUpdate
   );
+  await Submission.updateMany({ _id: { $in: invalidatedIds } }, {
+    $set: { evaluationStatus: 'stale' }
+  });
 }
 
 function normalizeMimeForRubricUpload(file) {
@@ -852,9 +860,14 @@ async function updateAssignment(req, res) {
     const saved = await assignment.save();
 
     try {
-      if (typeof rubrics !== 'undefined') {
-        const designer = rubricsToRubricDesigner({ rubrics: saved.rubrics, assignmentTitle: saved.title });
-        await propagateAssignmentRubricToSubmissionFeedback({ assignmentId: saved._id, rubricDesigner: designer });
+      if (typeof rubrics !== 'undefined' || typeof rubric !== 'undefined') {
+        const updateRubricDesigner = typeof rubrics !== 'undefined';
+        const designer = updateRubricDesigner
+          ? rubricsToRubricDesigner({ rubrics: saved.rubrics, assignmentTitle: saved.title })
+          : null;
+        await propagateAssignmentRubricToSubmissionFeedback({
+          assignmentId: saved._id, rubricDesigner: designer, updateRubricDesigner
+        });
       }
     } catch {
       // ignore propagation failures
@@ -1622,6 +1635,39 @@ async function getFlashcardAssignmentSubmissions(req, res) {
   }
 }
 
+async function getStaleEvaluationSummary(req, res) {
+  try {
+    const assignment = await Assignment.findOne({
+      _id: req.params.id,
+      teacher: req.user?._id,
+      isActive: true,
+      resourceType: 'essay'
+    }).lean();
+    if (!assignment) return sendError(res, 404, 'Assignment not found');
+    return sendSuccess(res, await staleAssignmentEvaluation.summarize(assignment));
+  } catch (err) {
+    return sendError(res, 500, err?.message || 'Failed to inspect stale evaluations');
+  }
+}
+
+async function retryStaleEvaluations(req, res) {
+  try {
+    const assignment = await Assignment.findOne({
+      _id: req.params.id,
+      teacher: req.user?._id,
+      isActive: true,
+      resourceType: 'essay'
+    }).lean();
+    if (!assignment) return sendError(res, 404, 'Assignment not found');
+    return res.status(202).json({
+      success: true,
+      data: await staleAssignmentEvaluation.start(assignment)
+    });
+  } catch (err) {
+    return sendError(res, 500, err?.message || 'Failed to start stale evaluations');
+  }
+}
+
 module.exports = {
   createAssignment,
   updateAssignment,
@@ -1635,5 +1681,7 @@ module.exports = {
   uploadRubricFileForAssignment,
   submitFlashcardAssignment,
   getMyFlashcardSubmission,
-  getFlashcardAssignmentSubmissions
+  getFlashcardAssignmentSubmissions,
+  getStaleEvaluationSummary,
+  retryStaleEvaluations
 };

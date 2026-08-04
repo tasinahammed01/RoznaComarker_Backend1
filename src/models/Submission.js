@@ -176,6 +176,7 @@ const submissionSchema = new Schema(
     evaluationSourceHash: { type: String, trim: true },
     evaluationVersion: { type: String, trim: true },
     evaluationRubricSourceHash: { type: String, trim: true },
+    evaluationPolicyHash: { type: String, trim: true },
     evaluationProvider: { type: String, trim: true },
     evaluationModel: { type: String, trim: true },
     evaluationErrorCode: { type: String, trim: true },

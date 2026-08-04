@@ -59,8 +59,13 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
   const evaluationPending = semanticComplete && persistedEvaluationStatus === 'pending';
   const evaluationProcessing = evaluationJobActive || evaluationPending;
   const evaluationLifecycleComplete = ['completed', 'partial'].includes(persistedEvaluationStatus);
+  const rubricHashCurrent = !submission.evaluationRubricSourceHash
+    || feedback?.evaluationRubricSourceHash === submission.evaluationRubricSourceHash;
+  const policyHashCurrent = !submission.evaluationPolicyHash
+    || feedback?.evaluationPolicyHash === submission.evaluationPolicyHash;
   const evaluationCurrent = Boolean(feedback && (teacherOverride || (semanticComplete
     && evaluationLifecycleComplete && sourceHash && feedback.evaluationSourceHash === sourceHash
+    && rubricHashCurrent && policyHashCurrent
     && feedback.assessmentVersion === ASSESSMENT_VERSION && feedback.evaluationVersion === EVALUATION_VERSION
     && submission.evaluationVersion === EVALUATION_VERSION)));
   let evaluationStatus = teacherOverride ? 'completed' : persistedEvaluationStatus;
@@ -133,4 +138,23 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
   };
 }
 
-module.exports = { buildCanonicalResultState, countSources, safeErrorCode };
+function buildPreviousEvaluation(feedback, resultState) {
+  if (!feedback || resultState?.evaluationCurrent || !feedback.evaluationSourceHash
+    || !Number.isFinite(Number(feedback.overallScore))) return null;
+  return {
+    overallScore: Number(feedback.overallScore),
+    grade: typeof feedback.grade === 'string' ? feedback.grade : null,
+    rubricScores: feedback.rubricScores || null,
+    customRubricScores: feedback.customRubricScores || null,
+    sourceRubric: feedback.sourceRubric || null,
+    scoringAudit: feedback.scoringAudit || null,
+    detailedFeedback: feedback.detailedFeedback || null,
+    evaluationSourceHash: feedback.evaluationSourceHash,
+    evaluationRubricSourceHash: feedback.evaluationRubricSourceHash || null,
+    evaluationPolicyHash: feedback.evaluationPolicyHash || null,
+    evaluationVersion: feedback.evaluationVersion || null,
+    assessmentVersion: feedback.assessmentVersion || null
+  };
+}
+
+module.exports = { buildCanonicalResultState, buildPreviousEvaluation, countSources, safeErrorCode };

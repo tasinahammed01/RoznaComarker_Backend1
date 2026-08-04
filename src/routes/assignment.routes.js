@@ -268,6 +268,25 @@ router.get(
   assignmentController.getAssignmentByIdForTeacher
 );
 
+router.get(
+  '/:id/evaluations/stale-summary',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  handleValidationResult,
+  assignmentController.getStaleEvaluationSummary
+);
+
+router.post(
+  '/:id/evaluations/retry-stale',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  handleValidationResult,
+  assignmentController.retryStaleEvaluations
+);
+
 // Student routes — submit flashcard assignment and check own submission
 router.post(
   '/:id/submit',

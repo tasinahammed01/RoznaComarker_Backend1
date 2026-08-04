@@ -25,6 +25,89 @@ function valid() {
 }
 
 describe('semantic rubric assessment validation', () => {
+  const customRubric = {
+    criteria: [{
+      id: 'criterion-1',
+      title: 'Quality',
+      weight: 100,
+      levels: [
+        { title: 'Excellent', percentage: 100 },
+        { title: 'Satisfactory', percentage: 60 }
+      ]
+    }]
+  };
+
+  function withCustomCriterion(overrides = {}) {
+    return {
+      ...valid(),
+      customCriteria: [{
+        criterionId: 'criterion-1',
+        percentage: 60,
+        levelTitle: 'Satisfactory',
+        comment: 'A supported satisfactory judgment.',
+        evidenceIds: [evidence[0].evidenceId],
+        ...overrides
+      }]
+    };
+  }
+
+  test('custom-rubric prompt makes disabled teacher checks apply to every custom criterion', () => {
+    const request = buildRequest({
+      transcript, corrections, sourceHash: 'hash', assignment: {},
+      policy: { strictness: 'balanced',
+        checks: { grammarSpelling: false, coherenceLogic: false, factChecking: false } },
+      customRubric: { criteria: [{ id: 'criterion-1', title: 'Quality', weight: 100, levels: [] }] }
+    });
+    const prompt = request.messages.map((item) => item.content).join('\n');
+    expect(prompt).toContain('For every custom criterion, do not deduct specifically for spelling, grammar, punctuation, capitalization, spacing, formatting');
+    expect(prompt).toContain('For every custom criterion, do not deduct specifically for organization, coherence, flow, transitions, or logical sequencing');
+    expect(prompt).toContain('copy that level’s configured percentage exactly');
+  });
+
+  test('accepts the exact configured percentage for the selected custom-rubric level', () => {
+    const result = validateAssessment(withCustomCriterion(), {
+      sourceHash: 'hash', transcript, corrections, customRubric
+    });
+    expect(result.customCriteria[0]).toMatchObject({
+      criterionId: 'criterion-1',
+      percentage: 60,
+      levelTitle: 'Satisfactory'
+    });
+  });
+
+  test('rejects a custom percentage inconsistent with the selected configured level', () => {
+    expect(() => validateAssessment(withCustomCriterion({ percentage: 27 }), {
+      sourceHash: 'hash', transcript, corrections, customRubric
+    })).toThrow(expect.objectContaining({
+      code: 'CUSTOM_RUBRIC_PERCENTAGE_MISMATCH',
+      validationIssues: [expect.objectContaining({
+        expectedPercentage: 60,
+        actualPercentage: 27
+      })]
+    }));
+  });
+
+  test('rejects missing, duplicate, unknown-criterion, and unknown-level custom assessments', () => {
+    const missing = { ...valid(), customCriteria: [] };
+    expect(() => validateAssessment(missing, {
+      sourceHash: 'hash', transcript, corrections, customRubric
+    })).toThrow(expect.objectContaining({ code: 'CUSTOM_RUBRIC_ASSESSMENT_INCOMPLETE' }));
+
+    const duplicate = withCustomCriterion();
+    duplicate.customCriteria.push({ ...duplicate.customCriteria[0] });
+    expect(() => validateAssessment(duplicate, {
+      sourceHash: 'hash', transcript, corrections, customRubric
+    })).toThrow(expect.objectContaining({ code: 'CUSTOM_RUBRIC_CRITERION_DUPLICATE' }));
+
+    expect(() => validateAssessment(withCustomCriterion({ criterionId: 'invented' }), {
+      sourceHash: 'hash', transcript, corrections, customRubric
+    })).toThrow(expect.objectContaining({ code: 'CUSTOM_RUBRIC_CRITERION_UNKNOWN' }));
+
+    expect(() => validateAssessment(withCustomCriterion({ levelTitle: 'Invented' }), {
+      sourceHash: 'hash', transcript, corrections, customRubric
+    })).toThrow(expect.objectContaining({ code: 'CUSTOM_RUBRIC_LEVEL_INVALID' }));
+  });
+
   test('rejects an incorrect source hash', () => {
     expect(() => validateAssessment({ ...valid(), sourceHash: 'old' }, { sourceHash: 'hash', transcript, corrections }))
       .toThrow(/source hash/i);

@@ -1,7 +1,7 @@
 describe('canonical evaluation interrupted-finalization recovery', () => {
   test('finalizes matching persisted feedback without regenerating or inserting another record', async () => {
     const sourceHash = 'source-hash';
-    const assignment = { title: 'Essay', rubric: { version: 1 } };
+    const assignment = { title: 'Essay' };
     let service;
     let semanticAssess;
     let feedbackFindOneAndUpdate;
@@ -16,12 +16,19 @@ describe('canonical evaluation interrupted-finalization recovery', () => {
         validateDetailedFeedback: jest.fn((feedback) => feedback),
         buildDeterministicDetailedFeedback: jest.fn()
       }));
-      jest.doMock('../src/models/class.model', () => ({}));
+      jest.doMock('../src/models/class.model', () => ({
+        findById: jest.fn(() => ({ select: () => ({ lean: jest.fn().mockResolvedValue({ teacher: 'teacher-1' }) }) }))
+      }));
+      jest.doMock('../src/models/user.model', () => ({
+        findById: jest.fn(() => ({ select: () => ({ lean: jest.fn().mockResolvedValue(null) }) }))
+      }));
+      const policyHash = require('../src/services/teacherEvaluationPolicy.service').evaluationPolicyHash(null);
       jest.doMock('../src/models/SubmissionFeedback', () => ({
         findOne: jest.fn(() => ({ lean: jest.fn().mockResolvedValue({
           submissionId: 'submission-1', evaluationJobId: 'job-1', evaluationSourceHash: sourceHash,
-          assessmentVersion: 'writing-rubric-100-v4-legend-deductions', evaluationVersion: 'canonical-evaluation-7-conclusion-evidence',
+          assessmentVersion: 'writing-rubric-100-v5-teacher-policy', evaluationVersion: 'canonical-evaluation-8-policy-custom-rubric',
           evaluationRubricSourceHash: require('../src/services/canonicalEvaluation.service').hashRubric(assignment),
+          evaluationPolicyHash: policyHash,
           detailedFeedbackSourceHash: sourceHash, detailedFeedbackVersion: 'canonical-detailed-feedback-2',
           detailedFeedback: { sourceHash, areasForImprovement: [], strengths: [], actionSteps: [] },
           rubricScores: Object.fromEntries(['CONTENT', 'ORGANIZATION', 'GRAMMAR', 'VOCABULARY', 'MECHANICS', 'PRESENTATION']

@@ -5,8 +5,8 @@ const { getSemanticAIConfig, getSemanticAIConfigStatus, runSemanticCompletion } 
 const { promptDefinitions } = require('./writingCategoryDefinitions.service');
 const { semanticRubricAssessmentSchema, MAX_RUBRIC_EVIDENCE_IDS } = require('./structuredOutputSchemas.service');
 
-const PROMPT_VERSION = 'semantic-rubric-assessment-v5';
-const SCHEMA_VERSION = 'semantic-rubric-assessment-json-v4';
+const PROMPT_VERSION = 'semantic-rubric-assessment-v6-policy-custom-rubric';
+const SCHEMA_VERSION = 'semantic-rubric-assessment-json-v5';
 const SEMANTIC_CATEGORIES = ['CONTENT', 'ORGANIZATION', 'VOCABULARY'];
 const MAX_COMMENT = 320;
 const MAX_EXPLANATION = 320;
@@ -119,6 +119,9 @@ function buildRequest(input) {
   const catalog = correctionCatalog(input.corrections);
   const evidenceCatalog = transcriptEvidenceCatalog(input.transcript);
   const allowedCorrectionIds = allowedCorrectionIdsByCategory(catalog);
+  const policy = input.policy || { strictness: 'balanced',
+    checks: { grammarSpelling: true, coherenceLogic: true, factChecking: false } };
+  const customCriteria = Array.isArray(input.customRubric?.criteria) ? input.customRubric.criteria : [];
   const response = { sourceHash: input.sourceHash, categories: Object.fromEntries(SEMANTIC_CATEGORIES.map((category) => {
     const hasTranscriptEvidence = evidenceCatalog.length > 0;
     const hasCorrectionEvidence = allowedCorrectionIds[category].length > 0;
@@ -136,11 +139,19 @@ function buildRequest(input) {
           suggestion: 'specific improvement' }] : []
     }];
   })) };
+  if (customCriteria.length) response.customCriteria = customCriteria.map((criterion) => ({
+    criterionId: criterion.id,
+    percentage: Number(criterion.levels?.[0]?.percentage ?? 0),
+    levelTitle: String(criterion.levels?.[0]?.title || 'exact rubric level title'),
+    comment: 'Evidence-grounded criterion judgment', evidenceIds: evidenceCatalog.length ? ['exact evidence ID'] : []
+  }));
   const prompt = [
     `schema=${SCHEMA_VERSION};prompt=${PROMPT_VERSION}`,
     `sourceHash=${input.sourceHash}`,
     `contextStatus=${contextStatus}`,
     `transcriptComplete=${input.transcriptComplete === true}`,
+    `teacherEvaluationPolicy=${JSON.stringify(policy)}`,
+    `customRubric=${JSON.stringify(input.customRubric || null)}`,
     `assignment=${JSON.stringify(assignment)}`,
     `statistics=${JSON.stringify(input.statistics || {})}`,
     `pageManifest=${JSON.stringify(compactPageManifest(input.pageManifest || []))}`,
@@ -149,7 +160,13 @@ function buildRequest(input) {
     `allowedCorrectionIdsByCategory=${JSON.stringify(allowedCorrectionIds)}`,
     `response=${JSON.stringify(response)}`,
     `categoryDefinitions=${promptDefinitions()}`,
-    'Assess only CONTENT, ORGANIZATION, and VOCABULARY. Do not reorder, rename, alias, or add categories. Return strict JSON only. Repeat sourceHash exactly. Scores must be numbers from 0 to 20 and maxScore exactly 20. Do not score Grammar, Mechanics, Presentation, or overall. Do not invent issue counts. Never return quotedText or occurrence. For transcript evidence, copy only an evidenceId from evidenceCatalog; the backend owns and resolves its exact text and offset. For correction evidence, copy only a correctionId from the same category correctionCatalog and set evidenceId=null. With no allowed correction ID, use transcript evidence with correctionId=null. If the evidence catalog and allowed correction list are both empty, return empty evidence arrays and do not make an unsupported deduction. Make a missing, weak, or successful conclusion claim only when it is a distinct conclusion-specific observation supported by final-quarter transcript evidence or an allowed CONC correction. Do not turn a general Organization observation about coherence, paragraphing, transitions, or progression into a conclusion claim merely by mentioning conclusion quality in the broader comment. Never claim a conclusion is missing when transcriptComplete=false. Never treat an introduction or middle passage as a conclusion. If the ending is incomplete, do not call it complete. Never claim page or paragraph order beyond canonical order. A zero correction count may still receive a holistic deduction, but the comment must say holistic and must not say issues were detected. If detailed instructions are unavailable, follow existing title-only/provisional rules.'
+    policy.checks.grammarSpelling === false
+      ? 'CUSTOM_RUBRIC_POLICY: For every custom criterion, do not deduct specifically for spelling, grammar, punctuation, capitalization, spacing, formatting, or other language-form accuracy. A general clarity or content deduction is allowed only when independently supported by non-language-form evidence.'
+      : 'CUSTOM_RUBRIC_POLICY: Grammar and spelling evidence may be considered when relevant to a custom criterion.',
+    policy.checks.coherenceLogic === false
+      ? 'CUSTOM_RUBRIC_POLICY: For every custom criterion, do not deduct specifically for organization, coherence, flow, transitions, or logical sequencing.'
+      : 'CUSTOM_RUBRIC_POLICY: Coherence and organization evidence may be considered when relevant to a custom criterion.',
+    'Assess CONTENT, ORGANIZATION, and VOCABULARY as specified, and assess every customRubric criterion when supplied. For each custom criterion, select exactly one configured levelTitle and copy that level’s configured percentage exactly; percentage is not a weighted score and must not be independently estimated. Do not calculate an overall or weighted total; backend code owns arithmetic. Friendly tolerates isolated/repeated low-impact errors, uses softer density thresholds, caps language-mechanics deductions, and requires especially strong evidence for large semantic deductions. Balanced applies normal academic standards with proportionate deductions. Strict applies tighter thresholds and stronger evidence-grounded deductions, including repeated low-impact patterns. Strictness never permits unsupported deductions and never overrides evidence grounding. When coherenceLogic=false, do not deduct for coherence, style, flow, or organization evidence. factChecking=false means no factual penalty; no external fact verification is available. Do not reorder, rename, alias, or add fixed categories. Return strict JSON only. Repeat sourceHash exactly. Scores must be numbers from 0 to 20 and maxScore exactly 20. Do not score Grammar, Mechanics, Presentation, or overall. Do not invent issue counts. Never return quotedText or occurrence. For transcript evidence, copy only an evidenceId from evidenceCatalog; the backend owns and resolves its exact text and offset. For correction evidence, copy only a correctionId from the same category correctionCatalog and set evidenceId=null. With no allowed correction ID, use transcript evidence with correctionId=null. If the evidence catalog and allowed correction list are both empty, return empty evidence arrays and do not make an unsupported deduction. Make a missing, weak, or successful conclusion claim only when it is a distinct conclusion-specific observation supported by final-quarter transcript evidence or an allowed CONC correction. Never claim a conclusion is missing when transcriptComplete=false. If detailed instructions are unavailable, follow existing title-only/provisional rules.'
   ].join('\n');
   const messages = [
     { role: 'system', content: 'You are a strict evidence-grounded writing rubric assessor. Output one JSON object only.' },
@@ -157,7 +174,7 @@ function buildRequest(input) {
   ];
   const length = JSON.stringify(messages).length;
   return { messages, promptCharacters: length, promptInputTokenEstimate: Math.ceil(length / 4), contextStatus,
-    correctionCatalog: catalog, allowedCorrectionIds, evidenceCatalog };
+    correctionCatalog: catalog, allowedCorrectionIds, evidenceCatalog, customCriteria };
 }
 
 function semanticRubricError(code, message, validationStage = 'schema_validation', path = null, details = null) {
@@ -205,7 +222,7 @@ function assertQuote(transcript, quote, occurrence, path) {
 }
 
 function validateAssessment(parsed, { sourceHash, transcript, corrections = [], contextStatus = 'none', evidenceCatalog = null,
-  transcriptComplete = true }) {
+  transcriptComplete = true, customRubric = null }) {
   if (!parsed || typeof parsed !== 'object' || parsed.sourceHash !== sourceHash)
     throw semanticRubricError('SEMANTIC_RUBRIC_SOURCE_MISMATCH', 'Semantic rubric assessment source hash mismatch',
       'source_hash', 'sourceHash');
@@ -350,7 +367,51 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
     validated[category] = { score, maxScore: 20, comment, issueCount,
       strengthEvidence, improvementEvidence };
   }
-  return { sourceHash, categories: validated, status: contextStatus === 'none' ? 'partial' : 'completed',
+  const customCriteria = [];
+  if (customRubric?.criteria?.length) {
+    const returnedCustom = Array.isArray(parsed.customCriteria) ? parsed.customCriteria : [];
+    const configuredIds = new Set(customRubric.criteria.map((criterion) => criterion.id));
+    const returnedIds = new Set();
+    for (const item of returnedCustom) {
+      const criterionId = String(item?.criterionId || '');
+      if (!configuredIds.has(criterionId))
+        throw semanticRubricError('CUSTOM_RUBRIC_CRITERION_UNKNOWN', 'Custom rubric response contains an unknown criterion',
+          'schema_validation', `customCriteria.${criterionId || 'unknown'}.criterionId`);
+      if (returnedIds.has(criterionId))
+        throw semanticRubricError('CUSTOM_RUBRIC_CRITERION_DUPLICATE', 'Custom rubric response contains a duplicate criterion',
+          'schema_validation', `customCriteria.${criterionId}.criterionId`);
+      returnedIds.add(criterionId);
+    }
+    for (const criterion of customRubric.criteria) {
+      const item = returnedCustom.find((candidate) => candidate?.criterionId === criterion.id);
+      if (!item)
+        throw semanticRubricError('CUSTOM_RUBRIC_ASSESSMENT_INCOMPLETE', 'Custom rubric criterion assessment is missing',
+          'score_validation', `customCriteria.${criterion.id}`);
+      if (typeof item.percentage !== 'number' || !Number.isFinite(item.percentage)
+        || item.percentage < 0 || item.percentage > 100)
+        throw semanticRubricError('CUSTOM_RUBRIC_ASSESSMENT_INVALID', 'Custom rubric criterion assessment is missing or invalid',
+          'score_validation', `customCriteria.${criterion.id}`);
+      const configuredLevel = criterion.levels.find((level) => level.title === item.levelTitle);
+      if (!configuredLevel)
+        throw semanticRubricError('CUSTOM_RUBRIC_LEVEL_INVALID', 'Custom rubric level title is invalid',
+          'schema_validation', `customCriteria.${criterion.id}.levelTitle`);
+      if (item.percentage !== configuredLevel.percentage)
+        throw semanticRubricError('CUSTOM_RUBRIC_PERCENTAGE_MISMATCH',
+          'Custom rubric percentage does not match the configured selected level',
+          'score_validation', `customCriteria.${criterion.id}.percentage`, {
+            selectedLevel: configuredLevel.title,
+            expectedPercentage: configuredLevel.percentage,
+            actualPercentage: item.percentage
+          });
+      const evidence = (Array.isArray(item.evidenceIds) ? item.evidenceIds : []).map((id) => evidenceMap.get(String(id))).filter(Boolean);
+      if (configuredLevel.percentage < 100 && !evidence.length)
+        throw semanticRubricError('CUSTOM_RUBRIC_EVIDENCE_REQUIRED', 'A custom rubric deduction requires transcript evidence',
+          'evidence_validation', `customCriteria.${criterion.id}.evidenceIds`);
+      customCriteria.push({ criterionId: criterion.id, percentage: configuredLevel.percentage,
+        levelTitle: item.levelTitle, comment: clean(item.comment, 500), evidence });
+    }
+  }
+  return { sourceHash, categories: validated, customCriteria, status: contextStatus === 'none' ? 'partial' : 'completed',
     diagnostics: Object.freeze({ commentNormalizations: Object.freeze(commentNormalizations) }) };
 }
 
@@ -365,14 +426,14 @@ async function assess(input, dependencies = {}) {
   const validate = (content) => validateAssessment(parseJson(content), {
     sourceHash: input.sourceHash, transcript: input.transcript,
     corrections: input.corrections, contextStatus: request.contextStatus, evidenceCatalog: request.evidenceCatalog,
-    transcriptComplete: input.transcriptComplete === true
+    transcriptComplete: input.transcriptComplete === true, customRubric: input.customRubric
   });
   const completion = await runCompletion({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
     validate, feature: 'semantic_rubric_assessment',
     responseSchema: semanticRubricAssessmentSchema(input.sourceHash, {
       transcriptEvidenceIds: request.evidenceCatalog.map((item) => item.evidenceId),
-      correctionIds: request.allowedCorrectionIds
+      correctionIds: request.allowedCorrectionIds, customCriteria: request.customCriteria
     }),
     schemaName: 'semantic_rubric_assessment' });
   const assessment = completion.value || validate(completion.content);

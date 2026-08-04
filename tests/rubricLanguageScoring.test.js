@@ -6,6 +6,60 @@ const issues = (category, count, symbol = category === 'GRAMMAR' ? 'AGR' : 'P') 
       defaultDeduction: 1.35, repetitionFactor: factor, appliedDeduction: 1.35 * factor }; });
 
 describe('v2 language rubric scoring', () => {
+  const spelling = (id, ocrSuspect = false) => ({
+    id, category: 'MECHANICS', symbol: 'SP', suggestedText: 'correct',
+    defaultDeduction: 0.5, repetitionFactor: 1, appliedDeduction: 0.5, ocrSuspect
+  });
+
+  test('trusted spelling affects Mechanics while an OCR-suspect spelling remains score-neutral', () => {
+    const trusted = scoreMechanics({ corrections: [spelling('trusted')], wordCount: 200 });
+    const suspect = scoreMechanics({ corrections: [spelling('suspect', true)], wordCount: 200 });
+    expect(trusted.score).toBeLessThan(10);
+    expect(suspect.score).toBe(10);
+    const audit = scoringAudit({ corrections: [spelling('suspect', true)],
+      category: 'MECHANICS', maxScore: 10, wordCount: 200 });
+    expect(audit).toMatchObject({
+      totalIssueCount: 1, countedIssueCount: 0, ignoredIssueCount: 1,
+      ignoredReasons: { OCR_SUSPECT: 1 }, finalScore: 10,
+      ignoredCorrectionIds: ['suspect']
+    });
+  });
+
+  test('mixed trusted and OCR-suspect corrections count only trusted corrections', () => {
+    const corrections = [spelling('trusted-1'), spelling('suspect-1', true), spelling('trusted-2')];
+    const audit = scoringAudit({ corrections, category: 'MECHANICS', maxScore: 10, wordCount: 200 });
+    expect(audit).toMatchObject({
+      totalIssueCount: 3, countedIssueCount: 2, ignoredIssueCount: 1,
+      correctionIds: ['trusted-1', 'trusted-2'], ignoredCorrectionIds: ['suspect-1']
+    });
+    expect(audit.finalScore).toBe(scoreMechanics({ corrections, wordCount: 200 }).score);
+  });
+
+  test('17 Mechanics corrections with 7 OCR-suspect score only the 10 trusted issues', () => {
+    const corrections = Array.from({ length: 17 }, (_, index) => ({
+      ...spelling(`sp-${index}`, index >= 10),
+      suggestedText: `correct-${index}`
+    }));
+    const audit = scoringAudit({ corrections, category: 'MECHANICS', maxScore: 10,
+      wordCount: 300, strictness: 'balanced' });
+    expect(audit).toMatchObject({
+      totalIssueCount: 17, countedIssueCount: 10, ignoredIssueCount: 7,
+      basePenalty: 5, repetitionAdjustedPenalty: 5, finalScore: 6
+    });
+    expect(audit.cappedDeduction).toBeCloseTo(4.14, 10);
+    expect(audit.unroundedScore).toBeCloseTo(5.86, 10);
+  });
+
+  test('OCR-neutral scoring remains monotonic across teacher strictness and bounded by category maximum', () => {
+    const corrections = [spelling('trusted'), spelling('suspect', true)];
+    const scores = ['friendly', 'balanced', 'strict'].map((strictness) =>
+      scoreMechanics({ corrections, wordCount: 200, strictness }).score);
+    expect(scores[0]).toBeGreaterThanOrEqual(scores[1]);
+    expect(scores[1]).toBeGreaterThanOrEqual(scores[2]);
+    for (const score of scores) expect(score).toBeGreaterThanOrEqual(0);
+    for (const score of scores) expect(score).toBeLessThanOrEqual(10);
+  });
+
   test('more errors never produce a higher score for equal word count', () => {
     const low = scoreGrammar({ corrections: issues('GRAMMAR', 2), wordCount: 500 });
     const high = scoreGrammar({ corrections: issues('GRAMMAR', 12), wordCount: 500 });

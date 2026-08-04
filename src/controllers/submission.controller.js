@@ -1022,14 +1022,10 @@ async function regenerateCanonicalCorrections(req, res) {
     if (!submission) return sendError(res, 404, 'Submission not found');
     
     // Role-based authorization
-    if (req.user.role === 'teacher') {
-      await uploadService.assertTeacherOwnsClassOrThrow(req.user._id, submission.class);
-    } else if (req.user.role === 'student') {
-      if (String(submission.student) !== String(req.user._id)) {
-        return sendError(res, 403, 'Forbidden');
-      }
-    } else {
-      return sendError(res, 403, 'Forbidden');
+    if (req.user.role !== 'teacher') return sendError(res, 403, 'Forbidden');
+    await uploadService.assertTeacherOwnsClassOrThrow(req.user._id, submission.class);
+    if (await SubmissionFeedback.exists({ submissionId: submission._id, overriddenByTeacher: true })) {
+      return sendError(res, 409, 'Teacher-overridden evaluations cannot be regenerated');
     }
     
     if (submission.correctionStatus === 'processing') return res.status(409).json({ success: false, message: 'Correction generation is already processing', data: {
@@ -1047,7 +1043,7 @@ async function regenerateCanonicalCorrections(req, res) {
     submission.correctionStatus = 'processing';
     setImmediate(() => canonicalCorrectionsPipeline.generateAndPersist(submission, { force: true, assignment: assignment ? {
       title: assignment.title || '', description: assignment.description || assignment.instructions || '',
-      rubric: assignment.rubric || assignment.rubrics || null
+      rubric: assignment.rubric || null, rubrics: assignment.rubrics || null
     } : {} }).catch((error) => logger.error({ message: 'Authorized correction regeneration failed', submissionId: String(submission._id), error: error?.message || error })));
     return res.status(202).json({ success: true, data: { correctionStatus: 'processing', processingActive: true,
       automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false } });
@@ -1058,10 +1054,11 @@ async function retryCanonicalEvaluation(req, res) {
   try {
     const submission = await Submission.findById(req.params.submissionId);
     if (!submission) return sendError(res, 404, 'Submission not found');
-    if (req.user.role === 'teacher') await uploadService.assertTeacherOwnsClassOrThrow(req.user._id, submission.class);
-    else if (req.user.role === 'student') {
-      if (String(submission.student) !== String(req.user._id)) return sendError(res, 403, 'Forbidden');
-    } else return sendError(res, 403, 'Forbidden');
+    if (req.user.role !== 'teacher') return sendError(res, 403, 'Forbidden');
+    await uploadService.assertTeacherOwnsClassOrThrow(req.user._id, submission.class);
+    if (await SubmissionFeedback.exists({ submissionId: submission._id, overriddenByTeacher: true })) {
+      return sendError(res, 409, 'Teacher-overridden evaluations cannot be re-evaluated');
+    }
     if (submission.evaluationStatus === 'processing') return res.status(409).json({
       success: false, message: 'Evaluation is already processing',
       data: { evaluationStatus: 'processing', processingActive: true, automaticPollingAllowed: true }
@@ -1093,7 +1090,7 @@ async function retryCanonicalEvaluation(req, res) {
     submission.evaluationJobId = jobId;
     setImmediate(() => canonicalEvaluation.generate({ submission, prelockedJobId: jobId, assignment: assignment ? {
       title: assignment.title || '', description: assignment.description || assignment.instructions || '',
-      rubric: assignment.rubric || assignment.rubrics || null
+      rubric: assignment.rubric || null, rubrics: assignment.rubrics || null
     } : {} }).then((result) => logger.info({ message: 'Authorized evaluation-only retry finished',
       submissionId: String(submission._id), status: result?.status || 'superseded',
       provider: result?.provider || null, model: result?.model || null, errorCode: result?.errorCode || null }))

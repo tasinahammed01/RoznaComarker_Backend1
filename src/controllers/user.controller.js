@@ -1,6 +1,10 @@
 const mongoose = require('mongoose');
 
 const User = require('../models/user.model');
+const Class = require('../models/class.model');
+const Submission = require('../models/Submission');
+const SubmissionFeedback = require('../models/SubmissionFeedback');
+const { evaluationPolicyHash } = require('../services/teacherEvaluationPolicy.service');
 
 const { ensureActivePlan } = require('../middlewares/usage.middleware');
 const { signJwt } = require('../utils/jwt');
@@ -180,6 +184,7 @@ async function updateMe(req, res) {
       user.bio = bio.trim();
     }
 
+    const previousPolicyHash = evaluationPolicyHash(user.aiConfig);
     const nextAiConfig = normalizeAiConfigPayload(aiConfig);
     if (nextAiConfig) {
       user.aiConfig = {
@@ -201,6 +206,25 @@ async function updateMe(req, res) {
     }
 
     const saved = await user.save();
+    const nextPolicyHash = evaluationPolicyHash(saved.aiConfig);
+    if (nextAiConfig && previousPolicyHash !== nextPolicyHash && saved.role === 'teacher') {
+      const classIds = (await Class.find({ teacher: saved._id }).select('_id').lean()).map((item) => item._id);
+      const submissions = await Submission.find({ class: { $in: classIds } }).select('_id').lean();
+      const submissionIds = submissions.map((item) => item._id);
+      const overridden = await SubmissionFeedback.find({
+        submissionId: { $in: submissionIds }, overriddenByTeacher: true
+      }).select('submissionId').lean();
+      const overriddenIds = new Set(overridden.map((item) => String(item.submissionId)));
+      const staleIds = submissionIds.filter((id) => !overriddenIds.has(String(id)));
+      await Submission.updateMany({ _id: { $in: staleIds } }, {
+        $set: { evaluationStatus: 'stale' }
+      });
+      await SubmissionFeedback.updateMany({
+        submissionId: { $in: staleIds }, overriddenByTeacher: { $ne: true }
+      }, {
+        $set: { evaluationStatus: 'pending' }
+      });
+    }
 
     return sendSuccess(res, {
       id: saved._id,

@@ -1,4 +1,4 @@
-const { buildCanonicalResultState, safeErrorCode } = require('../src/services/canonicalResultState.service');
+const { buildCanonicalResultState, buildPreviousEvaluation, safeErrorCode } = require('../src/services/canonicalResultState.service');
 const { CANONICAL_TRANSCRIPT_LAYOUT_VERSION } = require('../src/utils/ocrTranscriptNormalizer');
 const { ASSESSMENT_VERSION, EVALUATION_VERSION } = require('../src/services/rubricLanguageScoring.service');
 
@@ -245,6 +245,42 @@ describe('canonical result state contract', () => {
       evaluationStatus: 'stale', processingActive: false,
       automaticPollingAllowed: false, terminal: true, manualRetryAllowed: true, score: null
     });
+  });
+
+  test.each([
+    ['rubric', { evaluationRubricSourceHash: 'new-rubric' }, { evaluationRubricSourceHash: 'old-rubric' }],
+    ['policy', { evaluationPolicyHash: 'new-policy' }, { evaluationPolicyHash: 'old-policy' }]
+  ])('a persisted %s hash mismatch suppresses an otherwise current score', (_kind, submissionHash, feedbackHash) => {
+    const state = buildCanonicalResultState({
+      submission: completedSubmission({ evaluationStatus: 'completed', ...submissionHash }),
+      feedback: currentEvaluation(feedbackHash)
+    });
+    expect(state).toMatchObject({ evaluationCurrent: false, evaluationStatus: 'stale', score: null });
+  });
+
+  test('exposes a completed non-current result only as previous evaluation data', () => {
+    const feedback = currentEvaluation({
+      rubricScores: { CONTENT: { score: 18, maxScore: 20 } },
+      customRubricScores: { overallScore: 60, criteria: [] },
+      scoringAudit: { overallMethod: 'custom_rubric_weighted_total' }
+    });
+    const state = buildCanonicalResultState({
+      submission: completedSubmission({ evaluationStatus: 'stale' }),
+      feedback
+    });
+
+    expect(state).toMatchObject({ evaluationStatus: 'stale', evaluationCurrent: false, score: null });
+    expect(buildPreviousEvaluation(feedback, state)).toMatchObject({
+      overallScore: 52,
+      grade: 'C',
+      customRubricScores: { overallScore: 60 },
+      scoringAudit: { overallMethod: 'custom_rubric_weighted_total' }
+    });
+  });
+
+  test('never emits a previous evaluation for current or never-completed feedback', () => {
+    expect(buildPreviousEvaluation(currentEvaluation(), { evaluationCurrent: true })).toBeNull();
+    expect(buildPreviousEvaluation({ overallScore: 0 }, { evaluationCurrent: false })).toBeNull();
   });
 
   test('retryable evaluation failure is terminal and allows manual retry', () => {

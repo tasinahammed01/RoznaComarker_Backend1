@@ -9,8 +9,14 @@ const RUBRIC_MAX = Object.freeze({
   PRESENTATION: 5
 });
 
-const ASSESSMENT_VERSION = 'writing-rubric-100-v4-legend-deductions';
-const EVALUATION_VERSION = 'canonical-evaluation-7-conclusion-evidence';
+const ASSESSMENT_VERSION = 'writing-rubric-100-v5-teacher-policy';
+const EVALUATION_VERSION = 'canonical-evaluation-8-policy-custom-rubric';
+const SCORING_AUDIT_VERSION = 'canonical-scoring-audit-v1';
+const STRICTNESS_THRESHOLDS = Object.freeze({
+  friendly: Object.freeze({ multiplier: 0.72, lowImpactTolerance: 1.5, maxDeductionRatio: 0.45 }),
+  balanced: Object.freeze({ multiplier: 0.92, lowImpactTolerance: 0.5, maxDeductionRatio: 0.62 }),
+  strict: Object.freeze({ multiplier: 1.15, lowImpactTolerance: 0, maxDeductionRatio: 0.78 })
+});
 
 // Symbol severities are intentionally conservative. Unknown symbols get the
 // default penalty so newly-added correction symbols cannot be treated as free.
@@ -27,6 +33,7 @@ const SYMBOL_SEVERITY = Object.freeze({
 });
 
 const roundToHalf = (value) => Math.round((Number(value) || 0) * 2) / 2;
+const auditNumber = (value) => Math.round((Number(value) || 0) * 1000000) / 1000000;
 const clamp = (value, max) => Math.max(0, Math.min(max, Number(value) || 0));
 const countWords = (text) => String(text || '').trim().split(/\s+/).filter(Boolean).length;
 
@@ -38,8 +45,25 @@ function categoryCorrections(corrections, category) {
   return (Array.isArray(corrections) ? corrections : []).filter((item) => item?.category === category);
 }
 
+function ignoredScoringReason(correction, category) {
+  if (['GRAMMAR', 'MECHANICS'].includes(category) && correction?.ocrSuspect === true) return 'OCR_SUSPECT';
+  return null;
+}
+
+function partitionCategoryCorrections(corrections, category) {
+  const total = categoryCorrections(corrections, category);
+  const counted = [];
+  const ignored = [];
+  for (const correction of total) {
+    const reason = ignoredScoringReason(correction, category);
+    if (reason) ignored.push({ correction, reason });
+    else counted.push(correction);
+  }
+  return { total, counted, ignored };
+}
+
 function weightedIssuePenalty(corrections, category) {
-  return categoryCorrections(corrections, category).reduce((total, correction) => {
+  return partitionCategoryCorrections(corrections, category).counted.reduce((total, correction) => {
     const applied = Number(correction?.appliedDeduction);
     if (Number.isFinite(applied) && applied >= 0) return total + applied;
     const base = Number(correction?.defaultDeduction);
@@ -47,37 +71,75 @@ function weightedIssuePenalty(corrections, category) {
   }, 0);
 }
 
-function scoringAudit({ corrections, category, maxScore, wordCount }) {
+function scoringAudit({ corrections, category, maxScore, wordCount, strictness = 'balanced' }) {
+  const partition = partitionCategoryCorrections(corrections, category);
   const groups = new Map();
-  for (const correction of categoryCorrections(corrections, category)) {
+  for (const correction of partition.counted) {
     const symbol = String(correction?.symbol || 'DEFAULT').toUpperCase();
-    const key = `${symbol}:CANONICAL_PATTERN`;
+    const suggestedText = String(correction?.suggestedText || '').normalize('NFKC').replace(/\s+/gu, ' ').trim().toLowerCase();
+    const key = `${category}|${symbol}|${suggestedText}`;
     const group = groups.get(key) || { key, symbol, ruleId: null, count: 0,
-      severityWeight: Number(correction?.defaultDeduction) || 0, weightedPenalty: 0 };
+      severityWeight: Number(correction?.defaultDeduction) || 0, weightedPenalty: 0, correctionIds: [] };
     const factor = Number.isFinite(Number(correction?.repetitionFactor)) ? Number(correction.repetitionFactor) : 1;
     group.count += 1;
     group.weightedPenalty += group.severityWeight * factor;
+    if (correction?.id != null) group.correctionIds.push(String(correction.id));
     groups.set(key, group);
   }
-  const weightedPenalty = [...groups.values()].reduce((sum, group) => sum + group.weightedPenalty, 0);
-  const density = wordCount ? weightedPenalty / Math.max(120, wordCount) : 0;
-  const baseDeduction = Math.min(maxScore * 0.75, weightedPenalty);
-  const densityDeduction = 0;
-  const unclampedScore = maxScore - baseDeduction - densityDeduction;
-  return { category, wordCount, issueCount: categoryCorrections(corrections, category).length,
-    groups: [...groups.values()], weightedPenalty, density, baseDeduction, densityDeduction,
-    unclampedScore, score: scoreFromWeightedIssues({ corrections, category, maxScore, wordCount }).score };
+  const scored = scoreFromWeightedIssues({ corrections, category, maxScore, wordCount, strictness });
+  const ignoredReasons = partition.ignored.reduce((out, item) => {
+    out[item.reason] = (out[item.reason] || 0) + 1;
+    return out;
+  }, {});
+  const basePenalty = partition.counted.reduce((sum, correction) => {
+    const value = Number(correction?.defaultDeduction);
+    return sum + (Number.isFinite(value) && value >= 0 ? value : 0);
+  }, 0);
+  return {
+    category, maxScore, wordCount,
+    totalIssueCount: partition.total.length,
+    countedIssueCount: partition.counted.length,
+    ignoredIssueCount: partition.ignored.length,
+    ignoredReasons,
+    basePenalty: auditNumber(basePenalty),
+    repetitionAdjustedPenalty: auditNumber(scored.weightedPenalty),
+    weightedPenalty: auditNumber(scored.weightedPenalty),
+    density: auditNumber(scored.density),
+    tolerance: scored.tolerance,
+    multiplier: scored.multiplier,
+    maximumDeduction: auditNumber(scored.maximumDeduction),
+    cappedDeduction: auditNumber(scored.cappedDeduction),
+    unroundedScore: auditNumber(scored.unroundedScore),
+    finalScore: scored.score,
+    score: scored.score,
+    correctionIds: partition.counted.map((item) => String(item?.id || '')).filter(Boolean),
+    ignoredCorrectionIds: partition.ignored.map((item) => String(item.correction?.id || '')).filter(Boolean),
+    groups: [...groups.values()].map((group) => ({
+      ...group, weightedPenalty: auditNumber(group.weightedPenalty)
+    }))
+  };
 }
 
-function scoreFromWeightedIssues({ corrections, category, maxScore, wordCount }) {
-  if (!wordCount) return { score: 0, weightedPenalty: 0, density: 0, issueCount: categoryCorrections(corrections, category).length };
-  const issueCount = categoryCorrections(corrections, category).length;
+function scoreFromWeightedIssues({ corrections, category, maxScore, wordCount, strictness = 'balanced' }) {
+  const partition = partitionCategoryCorrections(corrections, category);
+  const issueCount = partition.counted.length;
+  const thresholds = STRICTNESS_THRESHOLDS[strictness] || STRICTNESS_THRESHOLDS.balanced;
+  const maximumDeduction = maxScore * thresholds.maxDeductionRatio;
+  if (!wordCount) return { score: 0, weightedPenalty: 0, density: 0, issueCount,
+    totalIssueCount: partition.total.length, ignoredIssueCount: partition.ignored.length,
+    tolerance: thresholds.lowImpactTolerance, multiplier: thresholds.multiplier,
+    maximumDeduction, cappedDeduction: 0, unroundedScore: 0 };
   const weightedPenalty = weightedIssuePenalty(corrections, category);
   const density = weightedPenalty / Math.max(120, wordCount);
-  const raw = maxScore - Math.min(maxScore * 0.75, weightedPenalty);
+  const adjustedPenalty = Math.max(0, weightedPenalty - thresholds.lowImpactTolerance) * thresholds.multiplier;
+  const cappedDeduction = Math.min(maximumDeduction, adjustedPenalty);
+  const raw = maxScore - cappedDeduction;
   let score = roundToHalf(clamp(raw, maxScore));
   if (issueCount > 0) score = Math.min(score, maxScore - 0.5);
-  return { score, weightedPenalty, density, issueCount };
+  return { score, weightedPenalty, density, issueCount,
+    totalIssueCount: partition.total.length, ignoredIssueCount: partition.ignored.length,
+    tolerance: thresholds.lowImpactTolerance, multiplier: thresholds.multiplier,
+    maximumDeduction, cappedDeduction, unroundedScore: raw };
 }
 
 function languageComment(label, count, score, maxScore, density) {
@@ -90,14 +152,16 @@ function languageComment(label, count, score, maxScore, density) {
   return `${issueText}. Frequent high-impact errors significantly affect readability.`;
 }
 
-function scoreGrammar({ corrections, wordCount }) {
-  const result = scoreFromWeightedIssues({ corrections, category: 'GRAMMAR', maxScore: RUBRIC_MAX.GRAMMAR, wordCount });
+function scoreGrammar({ corrections, wordCount, strictness = 'balanced', enabled = true }) {
+  const source = enabled ? corrections : [];
+  const result = scoreFromWeightedIssues({ corrections: source, category: 'GRAMMAR', maxScore: RUBRIC_MAX.GRAMMAR, wordCount, strictness });
   return { score: result.score, maxScore: RUBRIC_MAX.GRAMMAR, issueCount: result.issueCount,
     comment: languageComment('grammar', result.issueCount, result.score, RUBRIC_MAX.GRAMMAR, result.density) };
 }
 
-function scoreMechanics({ corrections, wordCount }) {
-  const result = scoreFromWeightedIssues({ corrections, category: 'MECHANICS', maxScore: RUBRIC_MAX.MECHANICS, wordCount });
+function scoreMechanics({ corrections, wordCount, strictness = 'balanced', enabled = true }) {
+  const source = enabled ? corrections : [];
+  const result = scoreFromWeightedIssues({ corrections: source, category: 'MECHANICS', maxScore: RUBRIC_MAX.MECHANICS, wordCount, strictness });
   return { score: result.score, maxScore: RUBRIC_MAX.MECHANICS, issueCount: result.issueCount,
     comment: languageComment('mechanics', result.issueCount, result.score, RUBRIC_MAX.MECHANICS, result.density) };
 }
@@ -113,6 +177,14 @@ function scorePresentation(submission) {
     comment: `Automated Presentation & Submission Quality score included in the overall result: page completeness/OCR readability only (${readableCount}/${pageCount} pages readable). Handwriting neatness was not scored and requires teacher review.` };
 }
 
+function applySemanticStrictness(item, strictness = 'balanced') {
+  const maxScore = Math.max(0, Number(item?.maxScore) || 20);
+  const score = clamp(item?.score, maxScore);
+  const deduction = maxScore - score;
+  const factor = strictness === 'friendly' ? 0.78 : strictness === 'strict' ? 1.18 : 1;
+  return { ...item, score: roundToHalf(clamp(maxScore - deduction * factor, maxScore)), maxScore };
+}
+
 function gradeFromOverallScore(overallScore) {
   const score = clamp(overallScore, 100);
   if (score >= 90) return 'A';
@@ -125,14 +197,18 @@ function gradeFromOverallScore(overallScore) {
 module.exports = {
   ASSESSMENT_VERSION,
   EVALUATION_VERSION,
+  SCORING_AUDIT_VERSION,
   RUBRIC_MAX,
   SYMBOL_SEVERITY,
+  STRICTNESS_THRESHOLDS,
   countWords,
   normalizedTranscript,
   scoreGrammar,
   scoreMechanics,
   scorePresentation,
+  applySemanticStrictness,
   weightedIssuePenalty,
+  partitionCategoryCorrections,
   scoreFromWeightedIssues,
   scoringAudit,
   gradeFromOverallScore
