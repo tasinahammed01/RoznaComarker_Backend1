@@ -2657,7 +2657,7 @@ async function shareWorksheet(req, res) {
       }
     }
 
-    const shareUrl = `${process.env.FRONTEND_URL || "http://localhost:4200"}/shared/worksheets/${worksheet.shareToken}`;
+    const shareUrl = `${process.env.FRONTEND_URL || "https://comarkers.roznahub.com"}/shared/worksheets/${worksheet.shareToken}`;
 
     return res.json({
       success: true,
