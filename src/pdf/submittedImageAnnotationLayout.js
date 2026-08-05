@@ -99,12 +99,13 @@ function unionBoxes(boxes) {
   return { x: round(x1), y: round(y1), w: round(x2 - x1), h: round(y2 - y1) };
 }
 
-function markerDimensions(density, symbol) {
-  const textLength = `#00 ${String(symbol || '')}`.length;
+function markerDimensions() {
+  const diameter = 4.8;
   return {
-    width: round(Math.max(10.8, Math.min(14.2, 3.7 + textLength * 1.05))),
-    height: density === 'dense' ? 3.6 : density === 'medium' ? 3.8 : 4,
-    fontPt: density === 'dense' ? 6.5 : 7
+    diameter,
+    width: diameter,
+    height: diameter,
+    fontPt: 5.5
   };
 }
 
@@ -188,76 +189,54 @@ function cssPxToMm(px) {
   return round(Number(px) * 25.4 / 96);
 }
 
+function contrastTextColor(color) {
+  const value = String(color || '').trim();
+  const match = /^#([0-9a-f]{6})$/i.exec(value);
+  if (!match) return '#ffffff';
+  const rgb = [0, 2, 4].map((offset) => parseInt(match[1].slice(offset, offset + 2), 16) / 255)
+    .map((channel) => channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+  const luminance = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+  return luminance > 0.48 ? '#17212b' : '#ffffff';
+}
+
 function localCandidates(entry, dimensions, geometry, minimumGap) {
-  const centerX = entry.target.x + entry.target.w / 2;
-  const verticalGap = cssPxToMm(3);
-  const baseX = centerX - dimensions.width / 2;
-  const horizontalOffsets = [0, -4, 4, -7, 7].map(cssPxToMm);
-  const aboveY = entry.target.y - verticalGap - dimensions.height;
-  const upwardStep = entry.sameTargetIndex
-    ? dimensions.height + minimumGap
-    : (dimensions.height + minimumGap) / 2;
-  const belowY = entry.target.y + entry.target.h + verticalGap;
+  const anchorX = entry.target.x + entry.target.w;
+  const anchorY = entry.target.y + entry.target.h * 0.15;
+  const baseX = anchorX - dimensions.width / 2;
+  const baseY = anchorY - dimensions.height / 2;
   const imageMinX = geometry.imageXmm;
   const imageMaxX = geometry.imageXmm + geometry.imageWidthMm - dimensions.width;
+  const imageMinY = geometry.imageYmm;
+  const imageMaxY = geometry.imageYmm + geometry.imageHeightMm - dimensions.height;
+  const localStep = dimensions.diameter + minimumGap;
+  const offsets = [
+    [0, 0, 'direct'],
+    [-localStep, 0, 'left'],
+    [localStep, 0, 'right'],
+    [0, -localStep, 'up'],
+    [0, localStep, 'down'],
+    [-localStep * 0.72, -localStep * 0.72, 'upper-left'],
+    [localStep * 0.72, -localStep * 0.72, 'upper-right'],
+    [-localStep * 0.72, localStep * 0.72, 'lower-left'],
+    [localStep * 0.72, localStep * 0.72, 'lower-right']
+  ];
   const positions = [];
-  const addLevel = (placement, level) => {
-    const y = placement === 'below'
-      ? belowY + level * upwardStep
-      : aboveY - level * upwardStep;
-    horizontalOffsets.forEach((requestedOffset, offsetIndex) => {
-      const x = clamp(baseX + requestedOffset, imageMinX, imageMaxX);
-      positions.push({
-        x: round(x),
-        y: round(y),
-        w: dimensions.width,
-        h: dimensions.height,
-        placement,
-        level,
-        localOffsetX: round(x - baseX),
-        variant: level === 0 && offsetIndex === 0
-          ? 'direct'
-          : `${level ? `stack-${level}` : 'shift'}-${requestedOffset < 0 ? 'left' : requestedOffset > 0 ? 'right' : 'center'}`
-      });
+  offsets.forEach(([offsetX, offsetY, variant], index) => {
+    const x = clamp(baseX + offsetX, imageMinX, imageMaxX);
+    const y = clamp(baseY + offsetY, imageMinY, imageMaxY);
+    positions.push({
+      x: round(x),
+      y: round(y),
+      w: dimensions.width,
+      h: dimensions.height,
+      placement: 'target',
+      level: index,
+      localOffsetX: round(x - baseX),
+      localOffsetY: round(y - baseY),
+      variant
     });
-  };
-  const topEdge = aboveY < geometry.imageYmm;
-  const placementOrder = topEdge ? ['below', 'above'] : ['above', 'below'];
-  placementOrder.forEach((placement) => {
-    for (let level = 0; level <= 2; level += 1) addLevel(placement, level);
   });
   return positions;
-}
-
-function withinLocalBounds(rect, entry, dimensions) {
-  const targetCenterX = entry.target.x + entry.target.w / 2;
-  const labelCenterX = rect.x + rect.w / 2;
-  const horizontalDistance = Math.abs(labelCenterX - targetCenterX);
-  const preferredGap = cssPxToMm(3);
-  const verticalDistance = rect.placement === 'below'
-    ? rect.y - (entry.target.y + entry.target.h) - preferredGap
-    : entry.target.y - (rect.y + rect.h) - preferredGap;
-  const maximumVerticalMovement = entry.sameTargetIndex
-    ? (dimensions.height + cssPxToMm(1)) * 2
-    : dimensions.height + cssPxToMm(1);
-  return horizontalDistance <= cssPxToMm(8) + 0.001
-    && verticalDistance >= -0.001
-    && verticalDistance <= maximumVerticalMovement + 0.001;
-}
-
-function localLeader(rect, target, placement) {
-  const below = String(placement).startsWith('below');
-  const startX = round(rect.x + rect.w / 2);
-  const startY = round(below ? rect.y : rect.y + rect.h);
-  return {
-    annotationId: target.annotationId,
-    kind: 'local',
-    startX,
-    startY,
-    endX: round(target.x),
-    endY: round(target.y),
-    color: target.color
-  };
 }
 
 function overlapArea(a, b, gap = 0) {
@@ -302,7 +281,6 @@ function createSubmittedImageLayout(page, options = {}) {
   const minimumGap = cssPxToMm(1);
   const textObstacles = (Array.isArray(page?.annotationObstacles) ? page.annotationObstacles : [])
     .map((box) => mapPercentBoxToStage(box, geometry)).filter(Boolean);
-  const targetObstacles = entries.flatMap((entry) => entry.mappedBoxes);
   const imageBounds = {
     x: geometry.imageXmm,
     y: geometry.imageYmm,
@@ -312,23 +290,17 @@ function createSubmittedImageLayout(page, options = {}) {
   const markers = [];
   const localRects = [];
   for (const entry of entries) {
-    const dimensions = markerDimensions(geometry.density, entry.correction.symbol);
+    const dimensions = markerDimensions();
     const localOptions = localCandidates(entry, dimensions, geometry, minimumGap)
-      .filter((rect) => inside(rect, imageBounds)
-        && withinLocalBounds(rect, entry, dimensions)
-        && !intersects(rect, entry.target, minimumGap));
+      .filter((rect) => inside(rect, imageBounds));
     const collisionFree = (rect) =>
-      !targetObstacles.some((obstacle) => intersects(rect, obstacle, minimumGap))
-      && !textObstacles.some((obstacle) => intersects(rect, obstacle, minimumGap))
-      && !localRects.some((occupied) => intersects(rect, occupied, minimumGap));
+      !localRects.some((occupied) => intersects(rect, occupied, minimumGap));
     let candidate = localOptions.find(collisionFree);
     if (!candidate) {
       candidate = localOptions
         .map((rect, index) => ({
           rect,
           score: localRects.reduce((sum, obstacle) => sum + overlapArea(rect, obstacle, minimumGap) * 10000, 0)
-            + targetObstacles.reduce((sum, obstacle) => sum + overlapArea(rect, obstacle, minimumGap) * 1000, 0)
-            + textObstacles.reduce((sum, obstacle) => sum + overlapArea(rect, obstacle, minimumGap) * 100, 0)
             + index
         }))
         .sort((a, b) => a.score - b.score)[0]?.rect;
@@ -340,16 +312,13 @@ function createSubmittedImageLayout(page, options = {}) {
     const target = {
       annotationId,
       color,
-      x: round(entry.target.x + entry.target.w / 2),
-      y: round(candidate.placement.startsWith('below')
-        ? entry.target.y + entry.target.h
-        : entry.target.y)
+      x: round(entry.target.x + entry.target.w),
+      y: round(entry.target.y + entry.target.h * 0.15)
     };
     localRects.push(rect);
     markers.push({
       correction: entry.correction,
       annotationId,
-      number: entry.correction.displayNumber,
       symbol: entry.correction.symbol,
       color,
       rect,
@@ -362,12 +331,19 @@ function createSubmittedImageLayout(page, options = {}) {
       placement: candidate.placement,
       localLevel: candidate.level,
       localOffsetX: candidate.localOffsetX,
+      localOffsetY: candidate.localOffsetY,
       localVariant: candidate.variant,
       side: null,
       fontPt: dimensions.fontPt,
+      diameter: dimensions.diameter,
+      textColor: contrastTextColor(color),
       boxes: entry.mappedBoxes,
+      targetLeft: entry.target.x,
+      targetTop: entry.target.y,
+      targetWidth: entry.target.w,
+      targetHeight: entry.target.h,
       target,
-      leader: localLeader(rect, target, candidate.placement)
+      leader: null
     });
   }
 

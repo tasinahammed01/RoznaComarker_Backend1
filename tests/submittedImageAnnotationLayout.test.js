@@ -19,39 +19,63 @@ const assertSafe = (layout, expectedIds) => {
     expect(marker.rect.x).toBeGreaterThanOrEqual(0); expect(marker.rect.y).toBeGreaterThanOrEqual(0);
     expect(marker.rect.x + marker.rect.w).toBeLessThanOrEqual(layout.stageWidthMm + 0.001);
     expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(layout.stageHeightMm + 0.001);
-    for (const obstacle of layout.textObstacles || []) expect(intersects(marker.rect, obstacle)).toBe(false);
   }
   for (let i = 0; i < layout.markers.length; i += 1) for (let j = i + 1; j < layout.markers.length; j += 1)
     expect(intersects(layout.markers[i].rect, layout.markers[j].rect)).toBe(false);
 };
 
 describe('submitted image annotation layout', () => {
-  test('maps one correction to one compact marker and one exact underline', () => {
+  test('maps one correction to one target-attached bubble and one exact underline', () => {
     const layout = createSubmittedImageLayout(page([correction('c1', 30, 30)]));
     expect(layout.density).toBe('sparse'); expect(layout.markers).toHaveLength(1); expect(layout.underlines).toHaveLength(1);
     expect(layout.markers[0].correction.displayNumber).toBe(1); expect(layout.gutterMm).toBe(0);
     expect(layout.imageWidthMm).toBeGreaterThan(165);
-    expect(layout.markers[0].placement).toBe('above');
+    expect(layout.markers[0].placement).toBe('target');
     const target = unionBoxes(layout.markers[0].boxes);
-    expect(intersects(layout.markers[0].rect, target)).toBe(false);
+    expect(intersects(layout.markers[0].rect, target)).toBe(true);
     expect(layout.markers[0].rect.x + layout.markers[0].rect.w / 2)
-      .toBeCloseTo(target.x + target.w / 2, 3);
-    expect(target.y - (layout.markers[0].rect.y + layout.markers[0].rect.h)).toBeCloseTo(3 * 25.4 / 96, 3);
+      .toBeCloseTo(target.x + target.w, 3);
+    expect(layout.markers[0].rect.y + layout.markers[0].rect.h / 2)
+      .toBeCloseTo(target.y + target.h * .15, 3);
+    const coversTarget = layout.markers[0].rect.x <= target.x && layout.markers[0].rect.y <= target.y
+      && layout.markers[0].rect.x + layout.markers[0].rect.w >= target.x + target.w
+      && layout.markers[0].rect.y + layout.markers[0].rect.h >= target.y + target.h;
+    expect(coversTarget).toBe(false);
   });
 
-  test('uses a readable 10-14 point bubble and 6-8 point text', () => {
+  test('uses a compact circular bubble with the selected PDF diameter and font size', () => {
     const compact = markerDimensions('sparse', 'AGR');
-    const heightPt = compact.height * 72 / 25.4;
-    expect(heightPt).toBeGreaterThanOrEqual(10);
-    expect(heightPt).toBeLessThanOrEqual(14);
-    expect(compact.fontPt).toBeGreaterThanOrEqual(6);
-    expect(compact.fontPt).toBeLessThanOrEqual(8);
-    expect(compact).toEqual({ width: 11.05, height: 4, fontPt: 7 });
+    const diameterPt = compact.diameter * 72 / 25.4;
+    expect(diameterPt).toBeGreaterThanOrEqual(10);
+    expect(diameterPt).toBeLessThanOrEqual(14);
+    expect(compact.fontPt).toBeGreaterThanOrEqual(5.5);
+    expect(compact.fontPt).toBeLessThanOrEqual(7);
+    expect(compact).toEqual({
+      diameter: 4.8, width: 4.8, height: 4.8, fontPt: 5.5
+    });
   });
 
   test('uses the canonical correction color for marker and underline', () => {
     const layout = createSubmittedImageLayout(page([correction('c1', 30, 30, { color: '#123456' })]));
     expect(layout.markers[0].color).toBe('#123456'); expect(layout.underlines[0].color).toBe('#123456');
+  });
+
+  test('uses high-contrast text and renders only the symbol inside the circular image bubble', () => {
+    const input = page([correction('c1', 30, 30, {
+      color: '#f4d35e', symbol: 'SP', message: 'Do not render this explanation in the image.'
+    })]);
+    const layout = createSubmittedImageLayout(input);
+    const html = renderSubmissionFeedbackReportHtml({ submission: { uploadedPageCount: 1 },
+      result: { maximumScore: 100 }, statistics: { content: 0, grammar: 0, organization: 0, vocabulary: 0, mechanics: 1 },
+      categoryScores: [], submittedPages: [input], detailedFeedback: {}, teacherComments: '',
+      activeLegendItems: [], completeLegend: [] });
+    expect(layout.markers[0].textColor).toBe('#17212b');
+    const markerHtml = html.match(/<b class="marker"[^>]*>.*?<\/b>/)[0];
+    expect(markerHtml).toContain('background:#f4d35e;color:#17212b');
+    expect(markerHtml).toContain('border-radius:50%');
+    expect(markerHtml).toMatch(/>SP<\/b>$/);
+    expect(markerHtml).not.toMatch(/>#[0-9]/);
+    expect(markerHtml).not.toContain('Do not render this explanation');
   });
 
   test('keeps multiple bbox segments but creates only one marker per canonical correction', () => {
@@ -82,12 +106,15 @@ describe('submitted image annotation layout', () => {
   test.each([
     ['sparse portrait', 900, 1180],
     ['sparse landscape', 1400, 850]
-  ])('avoids OCR words on a %s page', (_name, imageWidth, imageHeight) => {
+  ])('anchors bubbles to the target upper-right on a %s page', (_name, imageWidth, imageHeight) => {
     const corrections = [correction('c1', 42, 48), correction('c2', 62, 48)];
     const annotationObstacles = [{ x: 5, y: 48, w: 90, h: 2 }, { x: 5, y: 55, w: 90, h: 2 }];
     const layout = createSubmittedImageLayout(page(corrections, { imageWidth, imageHeight, annotationObstacles }));
-    const mappedObstacles = annotationObstacles.map((box) => mapPercentBoxToStage(box, layout));
-    layout.markers.forEach((marker) => mappedObstacles.forEach((box) => expect(intersects(marker.rect, box)).toBe(false)));
+    layout.markers.forEach((marker) => {
+      const target = unionBoxes(marker.boxes);
+      expect(marker.target.x).toBeCloseTo(target.x + target.w, 3);
+      expect(marker.target.y).toBeCloseTo(target.y + target.h * .15, 3);
+    });
     expect(layout.markers.map((marker) => marker.correction.displayNumber)).toEqual([1, 2]);
   });
 
@@ -108,7 +135,7 @@ describe('submitted image annotation layout', () => {
     expect(layouts.flatMap((layout) => layout.markers.map((marker) => marker.correction.id))).toEqual(['c1', 'c2', 'c3', 'c4']);
   });
 
-  test('keeps edge markers inside the printable stage and uses a safe below fallback at the top', () => {
+  test('keeps edge bubbles inside the image by shifting locally at each edge', () => {
     const layout = createSubmittedImageLayout(page([
       correction('c1', 0, 0), correction('c2', 91, 0), correction('c3', 0, 97), correction('c4', 91, 97),
       ...Array.from({ length: 9 }, (_, index) => correction(`c${index + 5}`, 45, 10 + index * 8))
@@ -118,8 +145,8 @@ describe('submitted image annotation layout', () => {
       expect(marker.rect.x + marker.rect.w).toBeLessThanOrEqual(layout.stageWidthMm + 0.001);
       expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(layout.stageHeightMm + 0.001);
     }
-    expect(layout.markers.find((marker) => marker.correction.id === 'c1').placement).toBe('below');
-    expect(layout.markers.find((marker) => marker.correction.id === 'c2').placement).toBe('below');
+    expect(layout.markers.find((marker) => marker.correction.id === 'c1').placement).toBe('target');
+    expect(layout.markers.find((marker) => marker.correction.id === 'c2').placement).toBe('target');
   });
 
   test('rejects invalid and fully out-of-range boxes while clamping safe intersections', () => {
@@ -152,7 +179,7 @@ describe('submitted image annotation layout', () => {
     });
     expect((html.match(/class="marker"/g) || [])).toHaveLength(1);
     expect((html.match(/class="underline"/g) || [])).toHaveLength(1);
-    expect(html).toContain('>#01 AGR</b>');
+    expect(html).toContain('>AGR</b>');
     expect(html).toContain('#02 &middot; SP');
     expect(html).not.toMatch(/class="marker"[^>]*data-correction-id="c2"/);
     expect(html.match(/style="[^"]*"/g).join('')).not.toMatch(/NaN|undefined/);
@@ -193,22 +220,23 @@ describe('submitted image annotation layout', () => {
     const html = renderSubmissionFeedbackReportHtml(vm);
     expect((html.match(/class="underline"/g) || [])).toHaveLength(2);
     expect((html.match(/class="marker"/g) || [])).toHaveLength(1);
-    expect(html).toContain('>#01 &lt;AGR&gt;</b>'); expect(html).toContain('#01 &middot; &lt;AGR&gt;'); expect(html).not.toContain('#01 <AGR>');
+    expect(html).toContain('>&lt;AGR&gt;</b>'); expect(html).toContain('#01 &middot; &lt;AGR&gt;'); expect(html).not.toContain('#1 <AGR>');
     expect(html).not.toMatch(/class="underline"[^>]*width:100%/);
-    expect(html).toContain('.leader-layer polyline');
     expect(html).not.toContain('<polyline');
-    expect(html).toContain('<circle ');
+    expect(html).not.toContain('<line ');
+    expect(html).not.toContain('<circle ');
+    expect(html).toMatch(/class="marker"[^>]*background:#287a55;color:#ffffff[^>]*border-radius:50%[^>]*>&lt;AGR&gt;<\/b>/);
   });
 
-  test('keeps image, underlines, leaders, and markers inside the full image stage in layer order', () => {
+  test('keeps image, underlines, and markers inside the full image stage in layer order', () => {
     const input = page([correction('c1', 20, 20, { color: '#287a55' })]);
     const html = renderSubmissionFeedbackReportHtml({ submission: { uploadedPageCount: 1 }, result: { maximumScore: 100 },
       statistics: { content: 0, grammar: 1, organization: 0, vocabulary: 0, mechanics: 0 }, categoryScores: [],
       submittedPages: [input], detailedFeedback: {}, teacherComments: '', activeLegendItems: [], completeLegend: [] });
     const stage = html.match(/<div class="full-image-stage[\s\S]*?<\/div>/)[0];
     expect(stage.indexOf('<img')).toBeLessThan(stage.indexOf('class="underline"'));
-    expect(stage.indexOf('class="underline"')).toBeLessThan(stage.indexOf('class="leader-layer"'));
-    expect(stage.indexOf('class="leader-layer"')).toBeLessThan(stage.indexOf('class="marker"'));
+    expect(stage.indexOf('class="underline"')).toBeLessThan(stage.indexOf('class="marker"'));
+    expect(stage).not.toContain('class="leader-layer"');
   });
 
   test('uses natural correction pagination without columns or forced review and feedback breaks', () => {
@@ -225,25 +253,31 @@ describe('submitted image annotation layout', () => {
     expect(html).not.toContain('page:feedback');
   });
 
-  test('places ordinary left and right targets locally above their words', () => {
+  test('places ordinary left and right bubbles at their target upper-right anchors', () => {
     const layout = createSubmittedImageLayout(page([
       correction('c1', 10, 20), correction('c2', 80, 30)
     ]));
-    expect(layout.markers.find((marker) => marker.correction.id === 'c1')).toMatchObject({ side: null, placement: 'above' });
-    expect(layout.markers.find((marker) => marker.correction.id === 'c2')).toMatchObject({ side: null, placement: 'above' });
+    for (const marker of layout.markers) {
+      const target = unionBoxes(marker.boxes);
+      expect(marker).toMatchObject({ side: null, placement: 'target', localVariant: 'direct' });
+      expect(marker.rect.x + marker.rect.w / 2).toBeCloseTo(target.x + target.w, 3);
+      expect(marker.rect.y + marker.rect.h / 2).toBeCloseTo(target.y + target.h * .15, 3);
+    }
   });
 
-  test('connector endpoint matches the transformed union-box center-top', () => {
+  test('target metadata matches the transformed union-box upper-right anchor without a connector', () => {
     const bboxList = [{ x: 10, y: 20, w: 8, h: 2 }, { x: 20, y: 22, w: 12, h: 2 }];
     const layout = createSubmittedImageLayout(page([correction('c1', 10, 20, { bboxList })]));
     const mapped = bboxList.map((box) => mapPercentBoxToStage(box, layout));
     const union = unionBoxes(mapped);
-    expect(layout.markers[0].leader.endX).toBeCloseTo(union.x + union.w / 2, 3);
-    expect(layout.markers[0].leader.endY).toBeCloseTo(union.y, 3);
     expect(layout.markers[0].target).toEqual(expect.objectContaining({
-      x: roundForTest(union.x + union.w / 2),
-      y: roundForTest(union.y)
+      x: roundForTest(union.x + union.w),
+      y: roundForTest(union.y + union.h * .15)
     }));
+    expect(layout.markers[0]).toMatchObject({
+      targetLeft: union.x, targetTop: union.y, targetWidth: union.w, targetHeight: union.h
+    });
+    expect(layout.markers[0].leader).toBeNull();
   });
 
   test('sorts labels in top-to-bottom then left-to-right reading order', () => {
@@ -289,7 +323,7 @@ describe('submitted image annotation layout', () => {
     const first = createSubmittedImageLayout(input);
     const second = createSubmittedImageLayout(input);
     expect(first.markers.map((marker) => marker.placement)).toEqual(second.markers.map((marker) => marker.placement));
-    expect(first.markers.find((marker) => marker.correction.id === 'c2').placement).toMatch(/^above/);
+    expect(first.markers.find((marker) => marker.correction.id === 'c2').placement).toBe('target');
   });
 
   test('transforms percentage and explicit pixel coordinates correctly', () => {
@@ -344,22 +378,30 @@ describe('submitted image annotation layout', () => {
     const layout = createSubmittedImageLayout(page([
       correction('c1', 45, 55), correction('c2', 50, 55)
     ]));
-    expect(layout.markers.map((marker) => marker.placement)).toEqual(['above', 'above']);
+    expect(layout.markers.map((marker) => marker.placement)).toEqual(['target', 'target']);
     expect(layout.markers[0].localVariant).toBe('direct');
     expect(layout.markers[1].localLevel).toBeLessThanOrEqual(2);
     layout.markers.forEach((marker) => {
-      const targetCenter = unionBoxes(marker.boxes).x + unionBoxes(marker.boxes).w / 2;
-      expect(Math.abs(marker.rect.x + marker.rect.w / 2 - targetCenter)).toBeLessThanOrEqual(marker.rect.w);
+      const targetRight = unionBoxes(marker.boxes).x + unionBoxes(marker.boxes).w;
+      expect(Math.abs(marker.rect.x + marker.rect.w / 2 - targetRight))
+        .toBeLessThanOrEqual(marker.rect.w + cssPixelForTest(1));
     });
     assertSafe(layout, ['c1', 'c2']);
   });
 
-  test('three extremely close targets use compact local vertical stacking', () => {
+  test('three corrections on one word form a compact local cluster', () => {
     const layout = createSubmittedImageLayout(page(
       Array.from({ length: 3 }, (_, index) => correction(`c${index + 1}`, 45, 70))
     ));
-    expect(layout.markers.map((marker) => marker.localLevel)).toEqual([0, 1, 2]);
-    expect(layout.markers.every((marker) => marker.placement === 'above')).toBe(true);
+    expect(layout.markers.map((marker) => marker.localVariant)).toEqual(['direct', 'left', 'right']);
+    expect(layout.markers.every((marker) => marker.placement === 'target')).toBe(true);
+    const target = unionBoxes(layout.markers[0].boxes);
+    layout.markers.forEach((marker) => {
+      const centerX = marker.rect.x + marker.rect.w / 2;
+      const centerY = marker.rect.y + marker.rect.h / 2;
+      expect(Math.hypot(centerX - (target.x + target.w), centerY - (target.y + target.h * .15)))
+        .toBeLessThanOrEqual(marker.diameter + cssPixelForTest(1) + .001);
+    });
     assertSafe(layout, ['c1', 'c2', 'c3']);
   });
 
@@ -368,7 +410,7 @@ describe('submitted image annotation layout', () => {
       correction(`c${index + 1}`, 8 + index % 6 * 16, 18 + Math.floor(index / 6) * 15));
     const layout = createSubmittedImageLayout(page(corrections));
     expect(layout.markers).toHaveLength(30);
-    expect(layout.markers.every((marker) => ['above', 'below'].includes(marker.placement))).toBe(true);
+    expect(layout.markers.every((marker) => marker.placement === 'target')).toBe(true);
     expect(layout.omitted.filter((item) => item.reason === 'NO_LOCAL_SPACE')).toHaveLength(0);
     expect(layout.gutterMm).toBe(0);
     expect(layout.overflowMarkers).toHaveLength(0);
@@ -379,29 +421,31 @@ describe('submitted image annotation layout', () => {
     const obstructed = createSubmittedImageLayout(page([correction('c1', 45, 45)], {
       annotationObstacles: [{ x: 0, y: 0, w: 100, h: 100 }]
     }));
-    expect(normal.markers[0].placement).toBe('above');
+    expect(normal.markers[0].placement).toBe('target');
     expect(normal.gutterMm).toBe(0);
     expect(obstructed.markers).toHaveLength(1);
     expect(obstructed.gutterMm).toBe(0);
     expect(obstructed.omitted).toEqual([]);
   });
 
-  test('renders a short local connector and colored endpoint dot at the target', () => {
+  test('does not render connector geometry for a locally attached label', () => {
     const input = page([correction('c1', 30, 30, { color: '#123456' })]);
     const layout = createSubmittedImageLayout(input, { maxWidthMm: 180, maxHeightMm: 235 });
     const html = renderSubmissionFeedbackReportHtml({ submission: { uploadedPageCount: 1 },
       result: { maximumScore: 100 }, statistics: { content: 0, grammar: 1, organization: 0, vocabulary: 0, mechanics: 0 },
       categoryScores: [], submittedPages: [input], detailedFeedback: {}, teacherComments: '',
       activeLegendItems: [], completeLegend: [] });
-    expect(layout.markers[0].leader.kind).toBe('local');
-    expect(Math.abs(layout.markers[0].leader.startX - layout.markers[0].leader.endX)).toBeLessThanOrEqual(.2);
-    expect(Math.abs(layout.markers[0].leader.startY - layout.markers[0].leader.endY))
-      .toBeLessThanOrEqual(layout.markers[0].rect.h * 3);
-    expect(html).toContain(`<line x1="${layout.markers[0].leader.startX}"`);
-    expect(html).toContain(`<circle cx="${layout.markers[0].leader.endX}" cy="${layout.markers[0].leader.endY}" r=".6" fill="#123456"`);
+    expect(layout.markers[0].leader).toBeNull();
+    expect(html).not.toContain('<line ');
+    expect(html).not.toContain('<circle ');
+    expect(html).not.toContain('class="leader-layer"');
   });
 });
 
 function roundForTest(value) {
   return Math.round(Number(value) * 1000) / 1000;
+}
+
+function cssPixelForTest(value) {
+  return Number(value) * 25.4 / 96;
 }
