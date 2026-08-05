@@ -238,6 +238,51 @@ async function tryFetchImageBuffer(urlOrPath) {
   try { return await fs.promises.readFile(abs); } catch { return null; }
 }
 
+function rectsIntersect(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function chooseOverlayBadgePosition({
+  target, badgeW, badgeH, imageBounds, contentRects = [], placedBadges = [], gap = 2
+}) {
+  const minX = imageBounds.x;
+  const maxX = Math.max(minX, imageBounds.x + imageBounds.w - badgeW);
+  const minY = imageBounds.y;
+  const maxY = Math.max(minY, imageBounds.y + imageBounds.h - badgeH);
+  const x = Math.max(minX, Math.min(maxX, target.x));
+  const candidates = [
+    { x, y: target.y - badgeH - gap, w: badgeW, h: badgeH, placement: 'above' },
+    { x, y: target.y + target.h + gap, w: badgeW, h: badgeH, placement: 'below' }
+  ];
+  const isClear = (candidate) => candidate.y >= minY && candidate.y <= maxY
+    && !contentRects.some((rect) => rectsIntersect(candidate, rect))
+    && !placedBadges.some((rect) => rectsIntersect(candidate, rect));
+  const clear = candidates.find(isClear);
+  if (clear) return clear;
+
+  const ownEdgeY = Math.max(minY, Math.min(maxY, target.y - Math.min(2, Math.max(1, target.h / 2))));
+  const horizontalOffsets = [0, badgeW + 2, -(badgeW + 2)];
+  for (const offset of horizontalOffsets) {
+    const candidate = {
+      x: Math.max(minX, Math.min(maxX, x + offset)),
+      y: ownEdgeY,
+      w: badgeW,
+      h: badgeH,
+      placement: 'target-edge'
+    };
+    if (!contentRects.some((rect) => rectsIntersect(candidate, rect))
+      && !placedBadges.some((rect) => rectsIntersect(candidate, rect))) return candidate;
+  }
+
+  return {
+    x,
+    y: Math.max(minY, Math.min(maxY, target.y + target.h + gap)),
+    w: badgeW,
+    h: badgeH,
+    placement: 'below'
+  };
+}
+
 async function renderImageSection(doc, img) {
   const urlOrPath = safeText(img && (img.url || img.path || img.imageUrl));
   const buf = urlOrPath ? await tryFetchImageBuffer(urlOrPath) : null;
@@ -292,14 +337,31 @@ async function renderImageSection(doc, img) {
     return { x, y, w, h };
   };
 
-  const renderOverlayBox = (bbox, color, label) => {
-    const normalized = normalizeBox(bbox);
-    if (!normalized) return;
+  const imageBounds = { x: L + padX, y: boxY + 6, w: imgW, h: imgH };
+  const overlayBoxes = [];
+  for (const corr of corrections) {
+    const symbol = safeText(corr && corr.symbol) || 'CK';
+    const color = CORRECTION_COLOR[symbol] || STYLE.colors.primary;
+    const boxes = Array.isArray(corr && corr.bboxList) ? corr.bboxList : [];
+    for (const bbox of boxes) {
+      const normalized = normalizeBox(bbox);
+      if (!normalized) continue;
+      overlayBoxes.push({
+        color,
+        label: symbol,
+        rect: {
+          x: L + padX + (normalized.x / 100) * imgW,
+          y: boxY + 6 + (normalized.y / 100) * imgH,
+          w: (normalized.w / 100) * imgW,
+          h: (normalized.h / 100) * imgH
+        }
+      });
+    }
+  }
+  const placedBadges = [];
 
-    const left = L + padX + (normalized.x / 100) * imgW;
-    const top = boxY + 6 + (normalized.y / 100) * imgH;
-    const width = (normalized.w / 100) * imgW;
-    const height = (normalized.h / 100) * imgH;
+  const renderOverlayBox = ({ rect, color, label }, index) => {
+    const { x: left, y: top, w: width, h: height } = rect;
 
     doc.save();
     doc.fillOpacity(0.16);
@@ -310,8 +372,26 @@ async function renderImageSection(doc, img) {
     if (label) {
       const badgeW = Math.max(18, Math.min(28, doc.widthOfString(label, { font: 'Helvetica-Bold', size: 7 }) + 8));
       const badgeH = 12;
-      const bx = Math.max(left, Math.min(left + width - badgeW, left));
-      const by = Math.max(boxY + 6, top - badgeH - 2);
+      const linePad = Math.max(2, height * 0.6);
+      const contentRects = overlayBoxes
+        .filter((_item, itemIndex) => itemIndex !== index)
+        .map((item) => ({
+          x: item.rect.x,
+          y: item.rect.y - linePad,
+          w: item.rect.w,
+          h: item.rect.h + linePad * 2
+        }));
+      const badge = chooseOverlayBadgePosition({
+        target: rect,
+        badgeW,
+        badgeH,
+        imageBounds,
+        contentRects,
+        placedBadges
+      });
+      const bx = badge.x;
+      const by = badge.y;
+      placedBadges.push(badge);
       doc.save();
       doc.roundedRect(bx, by, badgeW, badgeH, 3).fill(color);
       doc.restore();
@@ -319,14 +399,7 @@ async function renderImageSection(doc, img) {
     }
   };
 
-  for (const corr of corrections) {
-    const symbol = safeText(corr && corr.symbol) || 'CK';
-    const color = CORRECTION_COLOR[symbol] || STYLE.colors.primary;
-    const boxes = Array.isArray(corr && corr.bboxList) ? corr.bboxList : [];
-    for (const bbox of boxes) {
-      renderOverlayBox(bbox, color, symbol);
-    }
-  }
+  overlayBoxes.forEach(renderOverlayBox);
 
   doc.y = boxY + imgH + 20;
 }
@@ -1076,4 +1149,4 @@ function renderAfterPairSections(doc, {
   }
 }
 
-module.exports = { generatePdf };
+module.exports = { generatePdf, chooseOverlayBadgePosition };
