@@ -30,7 +30,7 @@ function safeErrorCode(error) {
   return 'SEMANTIC_ANALYSIS_FAILED';
 }
 
-function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
+function buildCanonicalResultState({ submission = {}, feedback = null, currentSettings = null } = {}) {
   const storedCorrectionStatus = String(submission.correctionStatus || 'pending');
   const layoutCurrent = !submission.correctionSourceHash
     || submission.correctionTranscriptLayoutVersion === CANONICAL_TRANSCRIPT_LAYOUT_VERSION;
@@ -57,17 +57,32 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
   const semanticProcessing = ['pending', 'processing', 'retry_wait'].includes(semanticStatus);
   const evaluationJobActive = semanticComplete && persistedEvaluationStatus === 'processing' && Boolean(submission.evaluationJobId);
   const evaluationPending = semanticComplete && persistedEvaluationStatus === 'pending';
-  const evaluationProcessing = evaluationJobActive || evaluationPending;
+  const evaluationProcessing = evaluationJobActive || evaluationPending
+    || (semanticComplete && persistedEvaluationStatus === 'processing');
   const evaluationLifecycleComplete = ['completed', 'partial'].includes(persistedEvaluationStatus);
-  const rubricHashCurrent = !submission.evaluationRubricSourceHash
-    || feedback?.evaluationRubricSourceHash === submission.evaluationRubricSourceHash;
-  const policyHashCurrent = !submission.evaluationPolicyHash
-    || feedback?.evaluationPolicyHash === submission.evaluationPolicyHash;
+  const storedRubricHash = feedback?.evaluationRubricSourceHash || submission.evaluationRubricSourceHash || null;
+  const storedPolicyHash = feedback?.evaluationPolicyHash || submission.evaluationPolicyHash || null;
+  const hasExplicitSettings = Boolean(currentSettings?.rubricHash && currentSettings?.policyHash);
+  const rubricHashCurrent = hasExplicitSettings
+    ? (currentSettings.hasValidCustomRubric
+      ? storedRubricHash === currentSettings.rubricHash
+      : !storedRubricHash || storedRubricHash === currentSettings.rubricHash)
+    : (!submission.evaluationRubricSourceHash
+      || feedback?.evaluationRubricSourceHash === submission.evaluationRubricSourceHash);
+  const policyHashCurrent = hasExplicitSettings
+    ? (!storedPolicyHash || storedPolicyHash === currentSettings.policyHash)
+    : (!submission.evaluationPolicyHash
+      || feedback?.evaluationPolicyHash === submission.evaluationPolicyHash);
   const evaluationCurrent = Boolean(feedback && (teacherOverride || (semanticComplete
     && evaluationLifecycleComplete && sourceHash && feedback.evaluationSourceHash === sourceHash
     && rubricHashCurrent && policyHashCurrent
     && feedback.assessmentVersion === ASSESSMENT_VERSION && feedback.evaluationVersion === EVALUATION_VERSION
     && submission.evaluationVersion === EVALUATION_VERSION)));
+  const sourceHashCurrent = Boolean(sourceHash && feedback?.evaluationSourceHash === sourceHash);
+  const versionCurrent = Boolean(feedback
+    && feedback.assessmentVersion === ASSESSMENT_VERSION
+    && feedback.evaluationVersion === EVALUATION_VERSION
+    && submission.evaluationVersion === EVALUATION_VERSION);
   let evaluationStatus = teacherOverride ? 'completed' : persistedEvaluationStatus;
   if ((correctionPending || semanticProcessing) && !teacherOverride) evaluationStatus = 'pending';
   else if (semanticFailed && !teacherOverride) evaluationStatus = 'blocked';
@@ -101,6 +116,35 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
   const nonRetryableConfigurationFailure = semanticErrorCode === 'AI_PROVIDER_NOT_CONFIGURED';
   const manualRetryAllowed = !nonRetryableConfigurationFailure && (semanticFailed
     || ['failed', 'stale'].includes(evaluationStatus) || invalidCanonicalFeedback);
+  const staleReason = !teacherOverride && !evaluationProcessing && semanticComplete
+    && ['completed', 'partial', 'stale'].includes(persistedEvaluationStatus)
+    ? (!rubricHashCurrent && currentSettings?.hasValidCustomRubric ? 'rubric'
+      : !policyHashCurrent ? 'policy'
+        : !rubricHashCurrent ? 'settings'
+          : !evaluationCurrent ? 'other' : null)
+    : null;
+  const hasCompletedEvaluation = Boolean(feedback?.evaluationSourceHash
+    && Number.isFinite(Number(feedback?.overallScore))
+    && ['completed', 'partial', 'stale'].includes(persistedEvaluationStatus));
+  const reevaluationReason = !hasCompletedEvaluation || teacherOverride || evaluationProcessing
+    ? null
+    : !rubricHashCurrent ? 'rubric'
+      : !policyHashCurrent ? 'policy'
+        : !sourceHashCurrent ? 'source'
+          : !versionCurrent ? 'version'
+            : null;
+  const evaluationFreshness = teacherOverride
+    ? 'overridden'
+    : evaluationProcessing || processingActive
+      ? 'processing'
+      : persistedEvaluationStatus === 'failed'
+        ? 'failed'
+        : reevaluationReason
+          ? `stale_${reevaluationReason}`
+          : evaluationCurrent
+            ? 'current'
+            : 'not_ready';
+  const requiresCanonicalReevaluation = evaluationFreshness.startsWith('stale_');
 
   return {
     correctionStatus,
@@ -134,7 +178,18 @@ function buildCanonicalResultState({ submission = {}, feedback = null } = {}) {
     score: !evaluationProcessing && evaluationCurrent && Number.isFinite(Number(feedback?.overallScore)) ? Number(feedback.overallScore) : null,
     grade: !evaluationProcessing && evaluationCurrent && typeof feedback?.grade === 'string' ? feedback.grade : null,
     evaluationCurrent,
-    detailedFeedbackCurrent: detailedCurrent
+    evaluationFreshness,
+    requiresCanonicalReevaluation,
+    reevaluationReason,
+    detailedFeedbackCurrent: detailedCurrent,
+    evaluationStaleReason: staleReason,
+    rubricFresh: hasExplicitSettings ? rubricHashCurrent : null,
+    policyFresh: hasExplicitSettings ? policyHashCurrent : null,
+    hasValidCustomRubric: Boolean(currentSettings?.hasValidCustomRubric),
+    currentRubricSourceHash: currentSettings?.rubricHash || null,
+    currentPolicyHash: currentSettings?.policyHash || null,
+    evaluationRubricSourceHash: storedRubricHash,
+    evaluationPolicyHash: storedPolicyHash
   };
 }
 

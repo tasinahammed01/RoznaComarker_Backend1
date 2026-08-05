@@ -13,8 +13,8 @@ const ASSESSMENT_VERSION = 'writing-rubric-100-v5-teacher-policy';
 const EVALUATION_VERSION = 'canonical-evaluation-8-policy-custom-rubric';
 const SCORING_AUDIT_VERSION = 'canonical-scoring-audit-v1';
 const STRICTNESS_THRESHOLDS = Object.freeze({
-  friendly: Object.freeze({ multiplier: 0.72, lowImpactTolerance: 1.5, maxDeductionRatio: 0.45 }),
-  balanced: Object.freeze({ multiplier: 0.92, lowImpactTolerance: 0.5, maxDeductionRatio: 0.62 }),
+  friendly: Object.freeze({ multiplier: 0.60, lowImpactTolerance: 2.0, maxDeductionRatio: 0.35 }),
+  balanced: Object.freeze({ multiplier: 0.80, lowImpactTolerance: 1.0, maxDeductionRatio: 0.50 }),
   strict: Object.freeze({ multiplier: 1.15, lowImpactTolerance: 0, maxDeductionRatio: 0.78 })
 });
 
@@ -181,7 +181,7 @@ function applySemanticStrictness(item, strictness = 'balanced') {
   const maxScore = Math.max(0, Number(item?.maxScore) || 20);
   const score = clamp(item?.score, maxScore);
   const deduction = maxScore - score;
-  const factor = strictness === 'friendly' ? 0.78 : strictness === 'strict' ? 1.18 : 1;
+  const factor = strictness === 'friendly' ? 0.65 : strictness === 'strict' ? 1.18 : 0.85;
   return { ...item, score: roundToHalf(clamp(maxScore - deduction * factor, maxScore)), maxScore };
 }
 

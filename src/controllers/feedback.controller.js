@@ -23,6 +23,7 @@ const {
 const { buildOcrCorrections } = require("../services/ocrCorrections.service");
 const { buildSubmissionCorrectionStatistics, countSubmissionCorrections } = require("../services/submissionCorrectionStatistics.service");
 const { buildCanonicalResultState, buildPreviousEvaluation } = require("../services/canonicalResultState.service");
+const { currentEvaluationSettings } = require("../services/evaluationSettingsContext.service");
 const { resolveTeacherComments } = require("../services/teacherComments.service");
 const { TEACHER_COMMENTS_MAX_LENGTH } = require("../models/SubmissionFeedback");
 const aiGateway = require("../services/aiGateway.service");
@@ -880,6 +881,8 @@ async function getSubmissionFeedback(req, res) {
       submissionFeedback: feedback,
       legacyFeedback,
     });
+    const assignment = await Assignment.findById(submission.assignment).lean();
+    const currentSettings = assignment ? await currentEvaluationSettings(assignment) : null;
 
     // Normalize legacy feedback records if they exist
     if (feedback) {
@@ -915,7 +918,7 @@ async function getSubmissionFeedback(req, res) {
     res.set('Cache-Control', 'private, no-store');
     res.set('Pragma', 'no-cache');
     if (!feedback) {
-      const resultState = buildCanonicalResultState({ submission, feedback: null });
+      const resultState = buildCanonicalResultState({ submission, feedback: null, currentSettings });
       return sendSuccess(res, {
         submissionId: String(submission._id),
         teacherComments,
@@ -925,7 +928,7 @@ async function getSubmissionFeedback(req, res) {
       });
     }
     const currentFeedback = withCanonicalStatistics(feedback);
-    const resultState = buildCanonicalResultState({ submission, feedback: currentFeedback });
+    const resultState = buildCanonicalResultState({ submission, feedback: currentFeedback, currentSettings });
     const previousEvaluation = buildPreviousEvaluation(currentFeedback, resultState);
     const { teacherCommentsUpdatedBy: _internalTeacherCommentsUpdatedBy, ...publicFeedback } = currentFeedback;
     const safeFeedback = resultState.evaluationCurrent ? publicFeedback : {};

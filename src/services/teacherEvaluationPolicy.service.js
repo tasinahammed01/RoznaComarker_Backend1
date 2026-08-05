@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 
-const SCORING_POLICY_VERSION = 'teacher-evaluation-policy-v1';
+const SCORING_POLICY_VERSION = 'teacher-evaluation-policy-v2';
 const DEFAULT_POLICY = Object.freeze({
   strictness: 'balanced',
   checks: Object.freeze({ grammarSpelling: true, coherenceLogic: true, factChecking: false })

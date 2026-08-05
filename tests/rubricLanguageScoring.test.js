@@ -44,10 +44,10 @@ describe('v2 language rubric scoring', () => {
       wordCount: 300, strictness: 'balanced' });
     expect(audit).toMatchObject({
       totalIssueCount: 17, countedIssueCount: 10, ignoredIssueCount: 7,
-      basePenalty: 5, repetitionAdjustedPenalty: 5, finalScore: 6
+      basePenalty: 5, repetitionAdjustedPenalty: 5, finalScore: 7
     });
-    expect(audit.cappedDeduction).toBeCloseTo(4.14, 10);
-    expect(audit.unroundedScore).toBeCloseTo(5.86, 10);
+    expect(audit.cappedDeduction).toBeCloseTo(3.2, 10);
+    expect(audit.unroundedScore).toBeCloseTo(6.8, 10);
   });
 
   test('OCR-neutral scoring remains monotonic across teacher strictness and bounded by category maximum', () => {

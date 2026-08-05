@@ -11,39 +11,77 @@ const ANNOTATION_COLORS = Object.freeze({
 const finite = (value) => Number.isFinite(Number(value));
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value)));
 const round = (value) => Math.round(Number(value) * 1000) / 1000;
-const overlap = (a, b, gap = 0) => a.x < b.x + b.w + gap && a.x + a.w + gap > b.x
-  && a.y < b.y + b.h + gap && a.y + a.h + gap > b.y;
 
-function normalizePercentBox(box) {
+function rawBox(box) {
   if (!box) return null;
   const corners = ['x0', 'y0', 'x1', 'y1'].every((key) => finite(box[key]));
   const legacy = ['x', 'y', 'w', 'h'].every((key) => finite(box[key]));
   if (!corners && !legacy) return null;
-  const rawX = Number(corners ? box.x0 : box.x); const rawY = Number(corners ? box.y0 : box.y);
-  const rawW = Number(corners ? box.x1 - box.x0 : box.w); const rawH = Number(corners ? box.y1 - box.y0 : box.h);
-  if (rawW <= 0 || rawH <= 0) return null;
-  if (rawX < -0.5 || rawY < -0.5 || rawX + rawW > 100.5 || rawY + rawH > 100.5) return null;
-  const x1 = clamp(rawX, 0, 100); const y1 = clamp(rawY, 0, 100);
-  const x2 = clamp(rawX + rawW, 0, 100); const y2 = clamp(rawY + rawH, 0, 100);
-  return x2 > x1 && y2 > y1 ? { x: round(x1), y: round(y1), w: round(x2 - x1), h: round(y2 - y1) } : null;
+  const x = Number(corners ? box.x0 : box.x);
+  const y = Number(corners ? box.y0 : box.y);
+  const w = Number(corners ? box.x1 - box.x0 : box.w);
+  const h = Number(corners ? box.y1 - box.y0 : box.h);
+  return w > 0 && h > 0 ? { x, y, w, h } : null;
+}
+
+function normalizePercentBox(box, imageWidth, imageHeight) {
+  const raw = rawBox(box);
+  if (!raw) return null;
+  const unit = String(box?.unit || box?.coordinateSpace || box?.units || '').toLowerCase();
+  const pixelCoordinates = ['pixel', 'pixels', 'px', 'image'].includes(unit)
+    || raw.x + raw.w > 100.5 || raw.y + raw.h > 100.5;
+  let normalized = raw;
+  if (pixelCoordinates) {
+    if (!finite(imageWidth) || Number(imageWidth) <= 0 || !finite(imageHeight) || Number(imageHeight) <= 0) return null;
+    normalized = {
+      x: raw.x / Number(imageWidth) * 100,
+      y: raw.y / Number(imageHeight) * 100,
+      w: raw.w / Number(imageWidth) * 100,
+      h: raw.h / Number(imageHeight) * 100
+    };
+  }
+  if (normalized.x < -0.5 || normalized.y < -0.5
+    || normalized.x + normalized.w > 100.5 || normalized.y + normalized.h > 100.5) return null;
+  const x1 = clamp(normalized.x, 0, 100);
+  const y1 = clamp(normalized.y, 0, 100);
+  const x2 = clamp(normalized.x + normalized.w, 0, 100);
+  const y2 = clamp(normalized.y + normalized.h, 0, 100);
+  return x2 > x1 && y2 > y1
+    ? { x: round(x1), y: round(y1), w: round(x2 - x1), h: round(y2 - y1) }
+    : null;
 }
 
 function imageGeometry({ imageWidth, imageHeight, correctionCount }, options = {}) {
   const sourceWidth = finite(imageWidth) && Number(imageWidth) > 0 ? Number(imageWidth) : 900;
   const sourceHeight = finite(imageHeight) && Number(imageHeight) > 0 ? Number(imageHeight) : 1200;
-  const maxWidthMm = Number(options.maxWidthMm || 180); const maxHeightMm = Number(options.maxHeightMm || 218);
-  const density = correctionCount === 0 ? 'clean' : correctionCount <= 12 ? 'sparse' : correctionCount <= 25 ? 'medium' : 'dense';
-  const gutterMm = density === 'clean' ? 0 : 13;
-  const imageMaxWidth = maxWidthMm - gutterMm * 2;
+  const maxWidthMm = Number(options.maxWidthMm || 180);
+  const maxHeightMm = Number(options.maxHeightMm || 218);
+  const density = correctionCount === 0 ? 'clean' : correctionCount <= 12 ? 'sparse'
+    : correctionCount <= 25 ? 'medium' : 'dense';
+  const gutterMm = 0;
+  const imageMaxWidth = Math.max(1, maxWidthMm - gutterMm * 2);
   const scale = Math.min(imageMaxWidth / sourceWidth, maxHeightMm / sourceHeight);
-  const imageWidthMm = sourceWidth * scale; const imageHeightMm = sourceHeight * scale;
-  return { density, sourceWidth, sourceHeight, stageWidthMm: round(imageWidthMm + gutterMm * 2),
-    stageHeightMm: round(imageHeightMm), imageXmm: gutterMm, imageYmm: 0,
-    imageWidthMm: round(imageWidthMm), imageHeightMm: round(imageHeightMm), gutterMm };
+  const imageWidthMm = sourceWidth * scale;
+  const imageHeightMm = sourceHeight * scale;
+  return {
+    density,
+    sourceWidth,
+    sourceHeight,
+    stageWidthMm: round(imageWidthMm + gutterMm * 2),
+    stageHeightMm: round(imageHeightMm),
+    imageXmm: round(gutterMm),
+    imageYmm: 0,
+    imageWidthMm: round(imageWidthMm),
+    imageHeightMm: round(imageHeightMm),
+    gutterMm: round(gutterMm),
+    sourceAspectRatio: round(sourceWidth / sourceHeight),
+    renderedAspectRatio: round(imageWidthMm / imageHeightMm)
+  };
 }
 
 function mapPercentBoxToStage(box, geometry) {
-  const valid = normalizePercentBox(box); if (!valid) return null;
+  const valid = normalizePercentBox(box, geometry.sourceWidth, geometry.sourceHeight);
+  if (!valid) return null;
   return {
     x: round(geometry.imageXmm + valid.x / 100 * geometry.imageWidthMm),
     y: round(geometry.imageYmm + valid.y / 100 * geometry.imageHeightMm),
@@ -52,325 +90,342 @@ function mapPercentBoxToStage(box, geometry) {
   };
 }
 
-function nearestSlots(desiredY, markerHeight, stageHeight, gap) {
-  const step = markerHeight + gap; const slots = [];
-  for (let y = 0; y <= stageHeight - markerHeight + 0.001; y += step) slots.push(round(y));
-  return slots.sort((a, b) => Math.abs((a + markerHeight / 2) - desiredY)
-    - Math.abs((b + markerHeight / 2) - desiredY) || a - b);
-}
-
-function markerDimensions(density, symbol, useNumberOnly = false) {
-  if (useNumberOnly) {
-    return { width: round(7.8), height: density === 'dense' ? 3.2 : density === 'medium' ? 3.5 : 3.8,
-      fontPt: density === 'dense' ? 5.8 : density === 'medium' ? 6.2 : 6.6 };
-  }
-  const textLength = `#00 ${String(symbol || '')}`.length;
-  const baseWidth = density === 'dense' ? 11.6 : 12.2;
-  return { width: round(Math.max(baseWidth, Math.min(12.5, 7.2 + textLength * 0.62))),
-    height: density === 'dense' ? 3.65 : density === 'medium' ? 3.9 : 4.2,
-    fontPt: density === 'dense' ? 5.1 : density === 'medium' ? 5.4 : 5.8 };
-}
-
-function generateLocalCandidates(target, dimensions, geometry, gap = 0.8) {
-  const candidates = [
-    { placement: 'above-right', x: target.x + target.w - dimensions.width * 0.25, y: target.y - dimensions.height - gap },
-    { placement: 'above-center', x: target.x + target.w / 2 - dimensions.width / 2, y: target.y - dimensions.height - gap },
-    { placement: 'right', x: target.x + target.w + gap, y: target.y + target.h / 2 - dimensions.height / 2 },
-    { placement: 'below-right', x: target.x + target.w - dimensions.width * 0.25, y: target.y + target.h + gap },
-    { placement: 'above-left', x: target.x - dimensions.width * 0.75, y: target.y - dimensions.height - gap },
-    { placement: 'below-left', x: target.x - dimensions.width * 0.75, y: target.y + target.h + gap },
-    { placement: 'left', x: target.x - dimensions.width - gap, y: target.y + target.h / 2 - dimensions.height / 2 }
-  ];
-  return candidates.map((c) => ({
-    ...c,
-    x: round(c.x),
-    y: round(c.y)
-  }));
-}
-
-function calculateTightTargetRect(boxes) {
-  if (!boxes || boxes.length === 0) return null;
-  if (boxes.length === 1) return { ...boxes[0] };
-  const minX = Math.min(...boxes.map((b) => b.x));
-  const minY = Math.min(...boxes.map((b) => b.y));
-  const maxX = Math.max(...boxes.map((b) => b.x + b.w));
-  const maxY = Math.max(...boxes.map((b) => b.y + b.h));
-  return { x: round(minX), y: round(minY), w: round(maxX - minX), h: round(maxY - minY) };
-}
-
-function selectPrimaryAnchorBox(boxes) {
+function unionBoxes(boxes) {
   if (!Array.isArray(boxes) || !boxes.length) return null;
-  return { ...boxes[0] };
+  const x1 = Math.min(...boxes.map((box) => box.x));
+  const y1 = Math.min(...boxes.map((box) => box.y));
+  const x2 = Math.max(...boxes.map((box) => box.x + box.w));
+  const y2 = Math.max(...boxes.map((box) => box.y + box.h));
+  return { x: round(x1), y: round(y1), w: round(x2 - x1), h: round(y2 - y1) };
 }
 
-function distanceFromTarget(candidateRect, targetRect) {
-  const candidateCenterX = candidateRect.x + candidateRect.w / 2;
-  const candidateCenterY = candidateRect.y + candidateRect.h / 2;
-  const targetCenterX = targetRect.x + targetRect.w / 2;
-  const targetCenterY = targetRect.y + targetRect.h / 2;
-  return Math.sqrt(Math.pow(candidateCenterX - targetCenterX, 2) + Math.pow(candidateCenterY - targetCenterY, 2));
+function markerDimensions(density, symbol) {
+  const textLength = `#00 ${String(symbol || '')}`.length;
+  return {
+    width: round(Math.max(10.8, Math.min(14.2, 3.7 + textLength * 1.05))),
+    height: density === 'dense' ? 3.6 : density === 'medium' ? 3.8 : 4,
+    fontPt: density === 'dense' ? 6.5 : 7
+  };
 }
 
-function scoreCandidate(candidateRect, targetRect, currentTargetBoxes, otherCorrectionBoxes, textObstacles, placedMarkers, markerGap, dimensions) {
-  const DISTANCE_WEIGHT = 10.0;
-  const OVERLAP_PENALTY = 50.0;
-  const MARKER_COLLISION_PENALTY = 40.0;
-  const OTHER_CORRECTION_PENALTY = 35.0;
-  const HANDWRITING_PENALTY = 15.0;
-  const BOUNDARY_PENALTY = 20.0;
-  
-  const distance = distanceFromTarget(candidateRect, targetRect);
-  let score = distance * DISTANCE_WEIGHT;
-  
-  // HARD REJECT: overlaps current target word significantly
-  const overlapsCurrentTarget = currentTargetBoxes.some((box) => overlap(candidateRect, box, 0.5));
-  if (overlapsCurrentTarget) score += OVERLAP_PENALTY;
-  
-  // HARD REJECT: overlaps another marker significantly
-  const overlapsMarker = placedMarkers.some((marker) => overlap(candidateRect, marker.rect, markerGap));
-  if (overlapsMarker) score += MARKER_COLLISION_PENALTY;
-  
-  // STRONG PENALTY: overlaps another correction target
-  const overlapsOtherCorrection = otherCorrectionBoxes.some((box) => overlap(candidateRect, box, 0.5));
-  if (overlapsOtherCorrection) score += OTHER_CORRECTION_PENALTY;
-  
-  // SOFT PENALTY: overlaps generic handwriting/text obstacle slightly
-  const overlapsTextObstacle = textObstacles.some((box) => overlap(candidateRect, box, 0.65));
-  if (overlapsTextObstacle) score += HANDWRITING_PENALTY;
-  
-  return score;
+function readingOrder(a, b) {
+  const ay = a.target.y + a.target.h / 2;
+  const by = b.target.y + b.target.h / 2;
+  const sameLineTolerance = Math.max(a.target.h, b.target.h, 1.5);
+  if (Math.abs(ay - by) > sameLineTolerance) return ay - by;
+  const ax = a.target.x + a.target.w / 2;
+  const bx = b.target.x + b.target.w / 2;
+  return ax - bx || String(a.correction.reportId || a.correction.id || '')
+    .localeCompare(String(b.correction.reportId || b.correction.id || ''));
 }
 
-function applyNudges(candidate, dimensions, nudges) {
-  return nudges.map((nudge) => ({
-    placement: candidate.placement,
-    x: round(candidate.x + (nudge.dx || 0)),
-    y: round(candidate.y + (nudge.dy || 0))
+function sideCapacity(stageHeight, height, minimumGap) {
+  return Math.max(1, Math.floor((stageHeight + minimumGap) / (height + minimumGap)));
+}
+
+function assignSides(entries, geometry, dimensions, minimumGap) {
+  const midpoint = geometry.imageXmm + geometry.imageWidthMm / 2;
+  const centerBand = geometry.imageWidthMm * 0.08;
+  const capacity = sideCapacity(geometry.stageHeightMm, dimensions.height, minimumGap);
+  const sides = { left: [], right: [] };
+  const overflow = [];
+  for (const entry of entries) {
+    const centerX = entry.target.x + entry.target.w / 2;
+    const natural = centerX <= midpoint ? 'left' : 'right';
+    const alternative = natural === 'left' ? 'right' : 'left';
+    const nearCenter = Math.abs(centerX - midpoint) <= centerBand;
+    let side = natural;
+    if (nearCenter && sides[natural].length > sides[alternative].length) side = alternative;
+    if (sides[side].length >= capacity && nearCenter && sides[alternative].length < capacity) side = alternative;
+    if (sides[side].length >= capacity) {
+      overflow.push(entry);
+      continue;
+    }
+    sides[side].push(entry);
+  }
+  return { sides, overflow };
+}
+
+function placeVertically(entries, stageHeight, dimensions, preferredGap, minimumGap) {
+  if (!entries.length) return [];
+  const availableGap = entries.length > 1
+    ? (stageHeight - entries.length * dimensions.height) / (entries.length - 1)
+    : preferredGap;
+  const gap = clamp(Math.min(preferredGap, availableGap), minimumGap, preferredGap);
+  const maxY = stageHeight - dimensions.height;
+  const placed = entries.map((entry) => ({
+    entry,
+    y: clamp(entry.target.y + entry.target.h / 2 - dimensions.height / 2, 0, maxY)
   }));
-}
-
-function findNearestTargetEdge(rect, targetRect) {
-  const rectCenterX = rect.x + rect.w / 2;
-  const rectCenterY = rect.y + rect.h / 2;
-  const targetCenterX = targetRect.x + targetRect.w / 2;
-  const targetCenterY = targetRect.y + targetRect.h / 2;
-  
-  const leftDist = Math.abs(rectCenterX - targetRect.x);
-  const rightDist = Math.abs(rectCenterX - (targetRect.x + targetRect.w));
-  const topDist = Math.abs(rectCenterY - targetRect.y);
-  const bottomDist = Math.abs(rectCenterY - (targetRect.y + targetRect.h));
-  
-  const minDist = Math.min(leftDist, rightDist, topDist, bottomDist);
-  
-  if (minDist === leftDist) return { x: targetRect.x, y: targetCenterY };
-  if (minDist === rightDist) return { x: targetRect.x + targetRect.w, y: targetCenterY };
-  if (minDist === topDist) return { x: targetCenterX, y: targetRect.y };
-  return { x: targetCenterX, y: targetRect.y + targetRect.h };
-}
-
-function findBestLocalPlacement({ targetRect, dimensions, geometry, currentTargetBoxes, otherCorrectionBoxes, textObstacles, placedMarkers, markerGap, maxDistanceMm, nudges }) {
-  const localCandidates = generateLocalCandidates(targetRect, dimensions, geometry, 0.8);
-  let bestCandidate = null;
-  let bestScore = Infinity;
-  
-  for (const candidate of localCandidates) {
-    const nudgedCandidates = applyNudges(candidate, dimensions, nudges);
-    
-    for (const nudged of nudgedCandidates) {
-      const candidateRect = { x: nudged.x, y: nudged.y, w: dimensions.width, h: dimensions.height };
-      const inBounds = candidateRect.x >= geometry.imageXmm && candidateRect.x + dimensions.width <= geometry.imageXmm + geometry.imageWidthMm
-        && candidateRect.y >= geometry.imageYmm && candidateRect.y + dimensions.height <= geometry.imageYmm + geometry.imageHeightMm;
-      
-      // HARD REJECT: outside image
-      if (!inBounds) continue;
-      
-      // HARD REJECT: overlaps current target word significantly
-      const overlapsCurrentTarget = currentTargetBoxes.some((box) => overlap(candidateRect, box, 0.5));
-      if (overlapsCurrentTarget) continue;
-      
-      // HARD REJECT: overlaps another marker significantly
-      const overlapsMarker = placedMarkers.some((marker) => overlap(candidateRect, marker.rect, markerGap));
-      if (overlapsMarker) continue;
-
-      const distance = distanceFromTarget(candidateRect, targetRect);
-      if (distance <= maxDistanceMm) {
-        const score = scoreCandidate(candidateRect, targetRect, currentTargetBoxes, otherCorrectionBoxes, textObstacles, placedMarkers, markerGap, dimensions);
-        if (score < bestScore) {
-          bestScore = score;
-          bestCandidate = { rect: candidateRect, placement: candidate.placement, distance };
-        }
-      }
+  for (let index = 1; index < placed.length; index += 1) {
+    placed[index].y = Math.max(placed[index].y, placed[index - 1].y + dimensions.height + gap);
+  }
+  if (placed[placed.length - 1].y > maxY) {
+    placed[placed.length - 1].y = maxY;
+    for (let index = placed.length - 2; index >= 0; index -= 1) {
+      placed[index].y = Math.min(placed[index].y, placed[index + 1].y - dimensions.height - gap);
     }
   }
-  
-  return bestCandidate;
+  if (placed[0].y < 0) {
+    const shift = -placed[0].y;
+    placed.forEach((item) => { item.y += shift; });
+  }
+  return placed.map((item) => ({ ...item, y: round(item.y), gap: round(gap) }));
+}
+
+function intersects(a, b, gap = 0) {
+  return a.x < b.x + b.w + gap && a.x + a.w + gap > b.x
+    && a.y < b.y + b.h + gap && a.y + a.h + gap > b.y;
+}
+
+function inside(rect, bounds) {
+  return rect.x >= bounds.x && rect.y >= bounds.y
+    && rect.x + rect.w <= bounds.x + bounds.w
+    && rect.y + rect.h <= bounds.y + bounds.h;
+}
+
+function cssPxToMm(px) {
+  return round(Number(px) * 25.4 / 96);
+}
+
+function localCandidates(entry, dimensions, geometry, minimumGap) {
+  const centerX = entry.target.x + entry.target.w / 2;
+  const verticalGap = cssPxToMm(3);
+  const baseX = centerX - dimensions.width / 2;
+  const horizontalOffsets = [0, -4, 4, -7, 7].map(cssPxToMm);
+  const aboveY = entry.target.y - verticalGap - dimensions.height;
+  const upwardStep = entry.sameTargetIndex
+    ? dimensions.height + minimumGap
+    : (dimensions.height + minimumGap) / 2;
+  const belowY = entry.target.y + entry.target.h + verticalGap;
+  const imageMinX = geometry.imageXmm;
+  const imageMaxX = geometry.imageXmm + geometry.imageWidthMm - dimensions.width;
+  const positions = [];
+  const addLevel = (placement, level) => {
+    const y = placement === 'below'
+      ? belowY + level * upwardStep
+      : aboveY - level * upwardStep;
+    horizontalOffsets.forEach((requestedOffset, offsetIndex) => {
+      const x = clamp(baseX + requestedOffset, imageMinX, imageMaxX);
+      positions.push({
+        x: round(x),
+        y: round(y),
+        w: dimensions.width,
+        h: dimensions.height,
+        placement,
+        level,
+        localOffsetX: round(x - baseX),
+        variant: level === 0 && offsetIndex === 0
+          ? 'direct'
+          : `${level ? `stack-${level}` : 'shift'}-${requestedOffset < 0 ? 'left' : requestedOffset > 0 ? 'right' : 'center'}`
+      });
+    });
+  };
+  const topEdge = aboveY < geometry.imageYmm;
+  const placementOrder = topEdge ? ['below', 'above'] : ['above', 'below'];
+  placementOrder.forEach((placement) => {
+    for (let level = 0; level <= 2; level += 1) addLevel(placement, level);
+  });
+  return positions;
+}
+
+function withinLocalBounds(rect, entry, dimensions) {
+  const targetCenterX = entry.target.x + entry.target.w / 2;
+  const labelCenterX = rect.x + rect.w / 2;
+  const horizontalDistance = Math.abs(labelCenterX - targetCenterX);
+  const preferredGap = cssPxToMm(3);
+  const verticalDistance = rect.placement === 'below'
+    ? rect.y - (entry.target.y + entry.target.h) - preferredGap
+    : entry.target.y - (rect.y + rect.h) - preferredGap;
+  const maximumVerticalMovement = entry.sameTargetIndex
+    ? (dimensions.height + cssPxToMm(1)) * 2
+    : dimensions.height + cssPxToMm(1);
+  return horizontalDistance <= cssPxToMm(8) + 0.001
+    && verticalDistance >= -0.001
+    && verticalDistance <= maximumVerticalMovement + 0.001;
+}
+
+function localLeader(rect, target, placement) {
+  const below = String(placement).startsWith('below');
+  const startX = round(rect.x + rect.w / 2);
+  const startY = round(below ? rect.y : rect.y + rect.h);
+  return {
+    annotationId: target.annotationId,
+    kind: 'local',
+    startX,
+    startY,
+    endX: round(target.x),
+    endY: round(target.y),
+    color: target.color
+  };
+}
+
+function overlapArea(a, b, gap = 0) {
+  const width = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) + gap);
+  const height = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) + gap);
+  return width * height;
 }
 
 function createSubmittedImageLayout(page, options = {}) {
-  const DEBUG = process.env.DEBUG_ANNOTATION_LAYOUT === 'true';
-  const MAX_LOCAL_DISTANCE_MM = 8;
-  const NUDGES = [
-    { dx: 0, dy: 0 },
-    { dx: 0, dy: 1.5 },
-    { dx: 0, dy: -1.5 },
-    { dx: 0, dy: 3 },
-    { dx: 0, dy: -3 },
-    { dx: 2, dy: 0 },
-    { dx: -2, dy: 0 }
-  ];
-  
-  const corrections = (Array.isArray(page?.corrections) ? page.corrections : []).map((correction) => {
-    const boxes = (Array.isArray(correction?.bboxList) ? correction.bboxList : []).map(normalizePercentBox).filter(Boolean);
-    return { correction, boxes };
-  }).filter((entry) => entry.boxes.length);
-  const geometry = imageGeometry({ imageWidth: page?.imageWidth, imageHeight: page?.imageHeight,
-    correctionCount: corrections.length }, options);
-  const mapped = corrections.map((entry) => ({ ...entry,
-    mappedBoxes: entry.boxes.map((box) => mapPercentBoxToStage(box, geometry)).filter(Boolean) }));
-  const obstacles = mapped.flatMap((entry) => entry.mappedBoxes);
-  const textObstacles = (Array.isArray(page?.annotationObstacles) ? page.annotationObstacles : [])
-    .map((box) => mapPercentBoxToStage(box, geometry)).filter(Boolean);
-  const sorted = mapped.sort((a, b) => {
-    const aa = a.mappedBoxes[0]; const bb = b.mappedBoxes[0];
-    return (aa.y + aa.h / 2) - (bb.y + bb.h / 2) || (aa.x + aa.w / 2) - (bb.x + bb.w / 2)
-      || String(a.correction.reportId || a.correction.id || '').localeCompare(String(b.correction.reportId || b.correction.id || ''));
-  });
-  const placed = []; const overflowMarkers = []; const markerGap = geometry.density === 'dense' ? 0.55 : 0.8;
-  for (const entry of sorted) {
-    // Anchor one marker to the first valid canonical word box.
-    const primaryAnchorBox = selectPrimaryAnchorBox(entry.mappedBoxes);
-    if (!primaryAnchorBox) continue;
-    
-    const currentTargetBoxes = entry.mappedBoxes;
-    
-    const otherCorrectionBoxes = mapped
-      .filter(other => other !== entry)
-      .flatMap(other => other.mappedBoxes);
-    
-    const useNumberOnly = false;
-    let dimensions = markerDimensions(geometry.density, entry.correction.symbol, useNumberOnly);
-    
-    const targetCenterX = primaryAnchorBox.x + primaryAnchorBox.w / 2;
-    const targetCenterY = primaryAnchorBox.y + primaryAnchorBox.h / 2;
-    let rectangle = null; let placement = null; let finalDistance = null;
-
-    let bestCandidate = findBestLocalPlacement({
-      targetRect: primaryAnchorBox,
-      dimensions,
-      geometry,
-      currentTargetBoxes,
-      otherCorrectionBoxes,
-      textObstacles,
-      placedMarkers: placed,
-      markerGap,
-      maxDistanceMm: MAX_LOCAL_DISTANCE_MM,
-      nudges: NUDGES
-    });
-    
-    if (bestCandidate) {
-      rectangle = bestCandidate.rect;
-      placement = bestCandidate.placement;
-      finalDistance = bestCandidate.distance;
-    }
-
-    // Gutter fallback - absolute last resort
-    if (!rectangle) {
-      const preferred = targetCenterX <= geometry.imageXmm + geometry.imageWidthMm / 2 ? 'gutter-left' : 'gutter-right';
-      for (const side of [preferred, preferred === 'gutter-left' ? 'gutter-right' : 'gutter-left']) {
-        const x = side === 'gutter-left' ? Math.max(0, geometry.imageXmm - dimensions.width - 0.45)
-          : Math.min(geometry.stageWidthMm - dimensions.width, geometry.imageXmm + geometry.imageWidthMm + 0.45);
-        const y = nearestSlots(targetCenterY, dimensions.height, geometry.stageHeightMm, markerGap)
-          .find((slot) => !placed.some((marker) => overlap({ x, y: slot, w: dimensions.width, h: dimensions.height }, marker.rect, markerGap)));
-        if (y !== undefined) { rectangle = { x, y, w: dimensions.width, h: dimensions.height }; placement = side; break; }
-      }
-    }
-    const color = entry.correction.color || ANNOTATION_COLORS[entry.correction.category] || '#536273';
-    if (!rectangle) {
-      const reason = 'No in-bounds local candidate or collision-free slot in either gutter';
-      overflowMarkers.push({ correction: entry.correction, color, reason });
-      if (DEBUG) console.log('[PDF ANNOTATION OVERFLOW]', {
-        displayNumber: entry.correction.displayNumber,
-        reportId: entry.correction.reportId || entry.correction.id,
-        reason
+  const allCorrections = Array.isArray(page?.corrections) ? page.corrections : [];
+  const geometry = imageGeometry({
+    imageWidth: page?.imageWidth,
+    imageHeight: page?.imageHeight,
+    correctionCount: Number(options.correctionCountOverride ?? allCorrections.length)
+  }, options);
+  const omitted = [];
+  const entries = [];
+  for (const correction of allCorrections) {
+    const boxes = (Array.isArray(correction?.bboxList) ? correction.bboxList : [])
+      .map((box) => normalizePercentBox(box, geometry.sourceWidth, geometry.sourceHeight))
+      .filter(Boolean);
+    const mappedBoxes = boxes.map((box) => mapPercentBoxToStage(box, geometry)).filter(Boolean);
+    const target = unionBoxes(mappedBoxes);
+    if (!target) {
+      omitted.push({
+        annotationId: String(correction?.reportId || correction?.id || ''),
+        correction,
+        reason: 'Missing or invalid annotation bounding box'
       });
       continue;
     }
-    
-    const targetText = entry.mappedBoxes.length === 1 
-      ? (entry.correction.quotedText || '') 
-      : (entry.correction.quotedText || '');
-    
-    const marker = { correction: entry.correction, color, rect: Object.fromEntries(Object.entries(rectangle).map(([key, value]) => [key, round(value)])),
-      placement, fontPt: dimensions.fontPt, target: { x: round(targetCenterX), y: round(primaryAnchorBox.y + primaryAnchorBox.h) }, boxes: entry.mappedBoxes, useNumberOnly };
-    
-    if (placement === 'gutter-left' || placement === 'gutter-right') {
-      // Leader line targets primary anchor box, not union
-      const nearestEdge = findNearestTargetEdge(rectangle, primaryAnchorBox);
-      marker.leader = { 
-        x1: placement === 'gutter-left' ? rectangle.x + rectangle.w : rectangle.x,
-        y1: rectangle.y + rectangle.h / 2, 
-        x2: nearestEdge.x, 
-        y2: nearestEdge.y 
-      };
-    } else if (finalDistance !== null && finalDistance > 3) {
-      const markerEdge = findNearestTargetEdge(primaryAnchorBox, rectangle);
-      const targetEdge = findNearestTargetEdge(rectangle, primaryAnchorBox);
-      marker.leader = {
-        x1: round(markerEdge.x),
-        y1: round(markerEdge.y),
-        x2: round(targetEdge.x),
-        y2: round(targetEdge.y)
-      };
-    }
-    
-    if (DEBUG) {
-      const distanceMm = finalDistance !== null ? `${finalDistance.toFixed(1)}mm` : 'N/A';
-      const gutterUsed = placement?.startsWith('gutter') ? 'true' : 'false';
-      console.log(`#${String(entry.correction.displayNumber || '?').padStart(2, '0')} ${entry.correction.symbol || ''}`);
-      console.log(`  targetText: "${targetText}"`);
-      console.log(`  wordIds: [${entry.correction.wordIds?.slice(0, 3).join(', ') || 'none'}${entry.correction.wordIds?.length > 3 ? '...' : ''}]`);
-      console.log(`  bboxList: ${entry.mappedBoxes.length} boxes`);
-      console.log(`  primaryAnchorBox: x=${primaryAnchorBox.x.toFixed(1)}, y=${primaryAnchorBox.y.toFixed(1)}, w=${primaryAnchorBox.w.toFixed(1)}, h=${primaryAnchorBox.h.toFixed(1)}`);
-      console.log(`  placement: ${placement}`);
-      console.log(`  distance: ${distanceMm}`);
-      console.log(`  gutter fallback: ${gutterUsed}`);
-      console.log(`  useNumberOnly: ${useNumberOnly}`);
-      if (finalDistance !== null && finalDistance > 10) {
-        console.warn(`  WARNING: Distance ${finalDistance.toFixed(1)}mm exceeds 10mm threshold`);
-      }
-    }
-    
-    placed.push(marker);
+    entries.push({ correction, boxes, mappedBoxes, target });
   }
+  entries.sort(readingOrder);
+  const exactTargetCounts = new Map();
+  entries.forEach((entry) => {
+    const key = `${round(entry.target.x)}:${round(entry.target.y)}:${round(entry.target.w)}:${round(entry.target.h)}`;
+    entry.sameTargetIndex = exactTargetCounts.get(key) || 0;
+    exactTargetCounts.set(key, entry.sameTargetIndex + 1);
+  });
 
-  if (DEBUG) {
-    console.log('[PDF ANNOTATION PAGE]', {
-      displayPageNumber: page?.displayPageNumber,
-      fileId: page?.fileId,
-      pageNumber: page?.pageNumber || page?.page,
-      imageWidth: page?.imageWidth,
-      imageHeight: page?.imageHeight,
-      correctionCount: Array.isArray(page?.corrections) ? page.corrections.length : 0,
-      correctionsWithBbox: Array.isArray(page?.corrections)
-        ? page.corrections.filter((correction) => Array.isArray(correction?.bboxList) && correction.bboxList.length > 0).length
-        : 0,
-      mappedCorrectionCount: corrections.length,
-      markerCount: placed.length,
-      underlineCount: mapped.reduce((sum, entry) => sum + entry.mappedBoxes.length, 0),
-      overflowCount: overflowMarkers.length,
-      stageWidthMm: geometry.stageWidthMm,
-      stageHeightMm: geometry.stageHeightMm
+  const minimumGap = cssPxToMm(1);
+  const textObstacles = (Array.isArray(page?.annotationObstacles) ? page.annotationObstacles : [])
+    .map((box) => mapPercentBoxToStage(box, geometry)).filter(Boolean);
+  const targetObstacles = entries.flatMap((entry) => entry.mappedBoxes);
+  const imageBounds = {
+    x: geometry.imageXmm,
+    y: geometry.imageYmm,
+    w: geometry.imageWidthMm,
+    h: geometry.imageHeightMm
+  };
+  const markers = [];
+  const localRects = [];
+  for (const entry of entries) {
+    const dimensions = markerDimensions(geometry.density, entry.correction.symbol);
+    const localOptions = localCandidates(entry, dimensions, geometry, minimumGap)
+      .filter((rect) => inside(rect, imageBounds)
+        && withinLocalBounds(rect, entry, dimensions)
+        && !intersects(rect, entry.target, minimumGap));
+    const collisionFree = (rect) =>
+      !targetObstacles.some((obstacle) => intersects(rect, obstacle, minimumGap))
+      && !textObstacles.some((obstacle) => intersects(rect, obstacle, minimumGap))
+      && !localRects.some((occupied) => intersects(rect, occupied, minimumGap));
+    let candidate = localOptions.find(collisionFree);
+    if (!candidate) {
+      candidate = localOptions
+        .map((rect, index) => ({
+          rect,
+          score: localRects.reduce((sum, obstacle) => sum + overlapArea(rect, obstacle, minimumGap) * 10000, 0)
+            + targetObstacles.reduce((sum, obstacle) => sum + overlapArea(rect, obstacle, minimumGap) * 1000, 0)
+            + textObstacles.reduce((sum, obstacle) => sum + overlapArea(rect, obstacle, minimumGap) * 100, 0)
+            + index
+        }))
+        .sort((a, b) => a.score - b.score)[0]?.rect;
+    }
+    if (!candidate) candidate = localCandidates(entry, dimensions, geometry, minimumGap)[0];
+    const rect = { x: candidate.x, y: candidate.y, w: candidate.w, h: candidate.h };
+    const annotationId = String(entry.correction.reportId || entry.correction.id || '');
+    const color = entry.correction.color || ANNOTATION_COLORS[entry.correction.category] || '#536273';
+    const target = {
+      annotationId,
+      color,
+      x: round(entry.target.x + entry.target.w / 2),
+      y: round(candidate.placement.startsWith('below')
+        ? entry.target.y + entry.target.h
+        : entry.target.y)
+    };
+    localRects.push(rect);
+    markers.push({
+      correction: entry.correction,
+      annotationId,
+      number: entry.correction.displayNumber,
+      symbol: entry.correction.symbol,
+      color,
+      rect,
+      x: rect.x,
+      y: rect.y,
+      width: rect.w,
+      height: rect.h,
+      targetX: target.x,
+      targetY: target.y,
+      placement: candidate.placement,
+      localLevel: candidate.level,
+      localOffsetX: candidate.localOffsetX,
+      localVariant: candidate.variant,
+      side: null,
+      fontPt: dimensions.fontPt,
+      boxes: entry.mappedBoxes,
+      target,
+      leader: localLeader(rect, target, candidate.placement)
     });
   }
 
-  return { ...geometry, textObstacles, underlines: mapped.flatMap((entry) => entry.mappedBoxes.map((box) => ({
-    correction: entry.correction, color: entry.correction.color || ANNOTATION_COLORS[entry.correction.category] || '#536273', box
-  }))), markers: placed, overflowMarkers };
+  markers.sort((a, b) => readingOrder(
+    { target: unionBoxes(a.boxes), correction: a.correction },
+    { target: unionBoxes(b.boxes), correction: b.correction }
+  ));
+  const markerIds = new Set(markers.map((marker) => marker.annotationId));
+  const underlines = entries.filter((entry) => markerIds.has(String(entry.correction.reportId || entry.correction.id || '')))
+    .flatMap((entry) => entry.mappedBoxes.map((box) => ({
+      correction: entry.correction,
+      color: entry.correction.color || ANNOTATION_COLORS[entry.correction.category] || '#536273',
+      box
+    })));
+  const overflowMarkers = [];
+  return { ...geometry, markers, underlines, overflowMarkers, omitted, textObstacles };
 }
 
-function percent(value, total) { return round(total ? value / total * 100 : 0); }
-function stageStyle(rect, geometry) { return { left: percent(rect.x, geometry.stageWidthMm), top: percent(rect.y, geometry.stageHeightMm),
-  width: percent(rect.w, geometry.stageWidthMm), height: percent(rect.h, geometry.stageHeightMm) }; }
+function createSubmittedImageLayouts(page, options = {}) {
+  const original = Array.isArray(page?.corrections) ? page.corrections : [];
+  const layouts = [];
+  let remaining = original;
+  let guard = 0;
+  do {
+    const layout = createSubmittedImageLayout({ ...page, corrections: remaining }, {
+      ...options,
+      correctionCountOverride: original.length
+    });
+    layouts.push(layout);
+    const next = layout.overflowMarkers.map((item) => item.correction);
+    if (!next.length || next.length >= remaining.length) break;
+    remaining = next;
+    guard += 1;
+  } while (guard < 20);
+  return layouts;
+}
 
-module.exports = { ANNOTATION_COLORS, normalizePercentBox, imageGeometry, mapPercentBoxToStage,
-  createSubmittedImageLayout, markerDimensions, stageStyle };
+function percent(value, total) {
+  return round(total ? value / total * 100 : 0);
+}
+
+function stageStyle(rect, geometry) {
+  return {
+    left: percent(rect.x, geometry.stageWidthMm),
+    top: percent(rect.y, geometry.stageHeightMm),
+    width: percent(rect.w, geometry.stageWidthMm),
+    height: percent(rect.h, geometry.stageHeightMm)
+  };
+}
+
+module.exports = {
+  ANNOTATION_COLORS,
+  normalizePercentBox,
+  imageGeometry,
+  mapPercentBoxToStage,
+  unionBoxes,
+  createSubmittedImageLayout,
+  createSubmittedImageLayouts,
+  markerDimensions,
+  stageStyle
+};

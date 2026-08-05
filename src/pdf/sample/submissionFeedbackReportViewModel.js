@@ -12,27 +12,47 @@ const id = (value) => String(value?._id || value || '');
 const finite = (value) => Number.isFinite(Number(value));
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value)));
 
-function normalizeBox(box) {
+function normalizeBox(box, imageWidth, imageHeight) {
   if (!box) return null;
   const corners = ['x0', 'y0', 'x1', 'y1'].every((key) => finite(box[key]));
   const legacy = ['x', 'y', 'w', 'h'].every((key) => finite(box[key]));
   if (!corners && !legacy) return null;
-  const rawX = Number(corners ? box.x0 : box.x); const rawY = Number(corners ? box.y0 : box.y);
-  const rawW = Number(corners ? box.x1 - box.x0 : box.w); const rawH = Number(corners ? box.y1 - box.y0 : box.h);
+  let rawX = Number(corners ? box.x0 : box.x); let rawY = Number(corners ? box.y0 : box.y);
+  let rawW = Number(corners ? box.x1 - box.x0 : box.w); let rawH = Number(corners ? box.y1 - box.y0 : box.h);
   if (rawW <= 0 || rawH <= 0) return null;
+  const unit = String(box?.unit || box?.coordinateSpace || box?.units || '').toLowerCase();
+  const pixels = ['pixel', 'pixels', 'px', 'image'].includes(unit)
+    || rawX + rawW > 100.5 || rawY + rawH > 100.5;
+  if (pixels) {
+    if (!finite(imageWidth) || Number(imageWidth) <= 0 || !finite(imageHeight) || Number(imageHeight) <= 0) return null;
+    rawX = rawX / Number(imageWidth) * 100; rawY = rawY / Number(imageHeight) * 100;
+    rawW = rawW / Number(imageWidth) * 100; rawH = rawH / Number(imageHeight) * 100;
+  }
   if (rawX < -0.5 || rawY < -0.5 || rawX + rawW > 100.5 || rawY + rawH > 100.5) return null;
   const x = clamp(rawX, 0, 100); const y = clamp(rawY, 0, 100);
   const x2 = clamp(rawX + rawW, 0, 100); const y2 = clamp(rawY + rawH, 0, 100);
   return x2 > x && y2 > y ? { x, y, w: x2 - x, h: y2 - y } : null;
 }
 
-function normalizeBoxes(list) {
+function normalizeBoxes(list, imageWidth, imageHeight) {
   const seen = new Set();
-  return (Array.isArray(list) ? list : []).map(normalizeBox).filter((box) => {
+  return (Array.isArray(list) ? list : []).map((box) => normalizeBox(box, imageWidth, imageHeight)).filter((box) => {
     if (!box) return false;
     const key = [box.x, box.y, box.w, box.h].map((n) => n.toFixed(3)).join(':');
     if (seen.has(key)) return false; seen.add(key); return true;
   });
+}
+
+function correctionReadingPoint(correction) {
+  const boxes = Array.isArray(correction?.bboxList) ? correction.bboxList : [];
+  if (!boxes.length) return null;
+  const x = Math.min(...boxes.map((box) => Number(box.x)));
+  const y = Math.min(...boxes.map((box) => Number(box.y)));
+  const right = Math.max(...boxes.map((box) => Number(box.x) + Number(box.w)));
+  const bottom = Math.max(...boxes.map((box) => Number(box.y) + Number(box.h)));
+  return [x, y, right, bottom].every(finite) && right > x && bottom > y
+    ? { x: x + (right - x) / 2, y: y + (bottom - y) / 2, h: bottom - y }
+    : null;
 }
 
 function highlightedSegments(text, pageStart, corrections, numberById) {
@@ -59,24 +79,43 @@ function buildSubmissionFeedbackReportViewModel(input = {}) {
   const legend = flattenLegend(input.legend); const legendBySymbol = new Map(legend.map((item) => [item.symbol, item]));
   const rawCorrections = Array.isArray(submission.writingCorrections) ? submission.writingCorrections : [];
   const fileIds = (submission.files || []).map(id).filter(Boolean); const fileOrder = new Map(fileIds.map((fileId, index) => [fileId, index]));
+  const pageSource = Array.isArray(submission.transcriptPages) ? submission.transcriptPages : [];
   const corrections = rawCorrections.map((item, index) => {
     const category = String(item?.category || '').toUpperCase(); const symbol = String(item?.symbol || ''); const legendItem = legendBySymbol.get(symbol);
-    return { ...item, reportId: String(item?.id || item?._id || `correction-${index}`), fileId: id(item?.fileId), page: Number(item?.page || item?.pageNumber || 1), category: CATEGORIES.includes(category) ? category : 'MECHANICS', symbol, symbolLabel: item?.symbolLabel || legendItem?.label || symbol, color: item?.color || legendItem?.color || COLORS[CATEGORIES.includes(category) ? category : 'MECHANICS'], quotedText: String(item?.quotedText || item?.originalText || item?.word || ''), message: String(item?.message || ''), suggestedText: String(item?.suggestedText || ''), startChar: Number(item?.startChar), endChar: Number(item?.endChar), bboxList: normalizeBoxes(item?.bboxList) };
-  }).sort((a, b) => (fileOrder.get(a.fileId) ?? 99999) - (fileOrder.get(b.fileId) ?? 99999) || a.page - b.page || (finite(a.startChar) ? a.startChar : 1e12) - (finite(b.startChar) ? b.startChar : 1e12));
+    const fileId = id(item?.fileId); const page = Number(item?.page || item?.pageNumber || 1);
+    const sourcePage = pageSource.find((candidate) => id(candidate?.fileId) === fileId
+      && Number(candidate?.pageNumber || candidate?.page || 1) === page);
+    const imageWidth = Number(sourcePage?.imageWidth || sourcePage?.width || 0);
+    const imageHeight = Number(sourcePage?.imageHeight || sourcePage?.height || 0);
+    return { ...item, reportId: String(item?.id || item?._id || `correction-${index}`), fileId, page, category: CATEGORIES.includes(category) ? category : 'MECHANICS', symbol, symbolLabel: item?.symbolLabel || legendItem?.label || symbol, color: item?.color || legendItem?.color || COLORS[CATEGORIES.includes(category) ? category : 'MECHANICS'], quotedText: String(item?.quotedText || item?.originalText || item?.word || ''), message: String(item?.message || ''), suggestedText: String(item?.suggestedText || ''), startChar: Number(item?.startChar), endChar: Number(item?.endChar), bboxList: normalizeBoxes(item?.bboxList, imageWidth, imageHeight) };
+  }).sort((a, b) => {
+    const pageOrder = (fileOrder.get(a.fileId) ?? 99999) - (fileOrder.get(b.fileId) ?? 99999) || a.page - b.page;
+    if (pageOrder) return pageOrder;
+    const ap = correctionReadingPoint(a); const bp = correctionReadingPoint(b);
+    if (ap && bp) {
+      const sameLineTolerance = Math.max(0.7, ap.h * 0.45, bp.h * 0.45);
+      return (Math.abs(ap.y - bp.y) <= sameLineTolerance ? ap.x - bp.x : ap.y - bp.y)
+        || String(a.reportId).localeCompare(String(b.reportId));
+    }
+    if (ap) return -1;
+    if (bp) return 1;
+    return (finite(a.startChar) ? a.startChar : 1e12) - (finite(b.startChar) ? b.startChar : 1e12)
+      || String(a.reportId).localeCompare(String(b.reportId));
+  });
   const numberById = new Map(corrections.map((c, index) => [c.reportId, index + 1]));
   const statistics = Object.fromEntries(CATEGORIES.map((category) => [category.toLowerCase(), corrections.filter((c) => c.category === category).length])); statistics.total = corrections.length;
   const teacherOverride = Boolean(feedback.overriddenByTeacher || evaluation.overriddenByTeacher);
   const evaluationCurrent = teacherOverride || (Boolean(submission.correctionSourceHash) && ['completed', 'partial'].includes(String(evaluation.status || 'completed')) && evaluation.evaluationSourceHash === submission.correctionSourceHash
     && evaluation.assessmentVersion === CURRENT_ASSESSMENT_VERSION && evaluation.evaluationVersion === CURRENT_EVALUATION_VERSION);
   const detailedCurrent = teacherOverride || (Boolean(submission.correctionSourceHash) && feedback.detailedFeedbackSourceHash === submission.correctionSourceHash);
-  const pageSource = Array.isArray(submission.transcriptPages) ? submission.transcriptPages : [];
   const pages = [...pageSource].sort((a, b) => (fileOrder.get(id(a.fileId)) ?? 99999) - (fileOrder.get(id(b.fileId)) ?? 99999) || Number(a.pageNumber || 1) - Number(b.pageNumber || 1));
   const submittedPages = pages.map((page, index) => {
     const fileId = id(page.fileId); const pageNumber = Number(page.pageNumber || 1); const pageText = String(page.text || ''); const startChar = Number(page.startChar || 0);
     const pageCorrections = corrections.filter((c) => (c.fileId === fileId && c.page === pageNumber)
       || (pages.length === 1 && !c.fileId && c.page === pageNumber));
     const assetKey = `${fileId}:${pageNumber}`;
-    return { fileId, fileIndex: fileOrder.get(fileId) ?? index, fileName: String(page.fileName || ''), fileType: String(page.fileType || ''), pageNumber, displayPageNumber: index + 1, imageDataUrl: submission.imageDataByPageKey?.[assetKey] || submission.imageDataByFileId?.[fileId] || null, imageWidth: Number(page.imageWidth || page.width || 0), imageHeight: Number(page.imageHeight || page.height || 0), annotationObstacles: normalizeBoxes((Array.isArray(page.words) ? page.words : []).map((word) => word?.bbox)), transcriptStartChar: startChar, transcriptEndChar: Number(page.endChar ?? startChar + pageText.length), transcriptText: pageText, transcriptParagraphs: Array.isArray(page.paragraphs) ? page.paragraphs : [], corrections: pageCorrections.map((c) => ({ ...c, displayNumber: numberById.get(c.reportId) })), transcript: { text: pageText, startChar, endChar: Number(page.endChar ?? startChar + pageText.length), highlightedSegments: highlightedSegments(pageText, startChar, pageCorrections, numberById) } };
+    const imageWidth = Number(page.imageWidth || page.width || 0); const imageHeight = Number(page.imageHeight || page.height || 0);
+    return { fileId, fileIndex: fileOrder.get(fileId) ?? index, fileName: String(page.fileName || ''), fileType: String(page.fileType || ''), pageNumber, displayPageNumber: index + 1, imageDataUrl: submission.imageDataByPageKey?.[assetKey] || submission.imageDataByFileId?.[fileId] || null, imageWidth, imageHeight, annotationObstacles: normalizeBoxes((Array.isArray(page.words) ? page.words : []).map((word) => word?.bbox), imageWidth, imageHeight), transcriptStartChar: startChar, transcriptEndChar: Number(page.endChar ?? startChar + pageText.length), transcriptText: pageText, transcriptParagraphs: Array.isArray(page.paragraphs) ? page.paragraphs : [], corrections: pageCorrections.map((c) => ({ ...c, displayNumber: numberById.get(c.reportId) })), transcript: { text: pageText, startChar, endChar: Number(page.endChar ?? startChar + pageText.length), highlightedSegments: highlightedSegments(pageText, startChar, pageCorrections, numberById) } };
   });
   const rubric = evaluationCurrent ? evaluation.rubricScores || {} : {};
   const categoryScores = Object.entries(rubric).map(([category, item]) => { const maxScore = Math.max(0, Number(item?.maxScore || 0)); const score = clamp(Number(item?.score || 0), 0, maxScore); return { category, score, maxScore, percentage: maxScore ? Math.round(score / maxScore * 100) : 0, issueCount: CATEGORIES.includes(category) ? statistics[category.toLowerCase()] : null, feedback: String(item?.comment || '') }; });

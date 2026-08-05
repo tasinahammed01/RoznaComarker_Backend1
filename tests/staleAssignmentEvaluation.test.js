@@ -19,6 +19,9 @@ jest.mock('../src/services/correctionCanonical.service', () => ({
     content: 0, organization: 0, grammar: 1, vocabulary: 0, mechanics: 0, total: 1
   }))
 }));
+jest.mock('../src/utils/ocrTranscriptNormalizer', () => ({
+  CANONICAL_TRANSCRIPT_LAYOUT_VERSION: 'ocr-layout-v5-native-text'
+}));
 
 const Submission = require('../src/models/Submission');
 const SubmissionFeedback = require('../src/models/SubmissionFeedback');
@@ -44,6 +47,7 @@ const readySubmission = (id, overrides = {}) => ({
   },
   evaluationRubricSourceHash: 'old-rubric',
   evaluationPolicyHash: 'old-policy',
+  evaluationVersion: 'canonical-evaluation-8-policy-custom-rubric',
   ...overrides
 });
 
@@ -66,11 +70,14 @@ describe('assignment stale evaluation service', () => {
       })
     ]);
     SubmissionFeedback.find.mockReturnValue({ lean: async () => ([
-      { submissionId: 'eligible', evaluationSourceHash: 'source' },
-      { submissionId: 'override', evaluationSourceHash: 'source', overriddenByTeacher: true },
-      { submissionId: 'processing', evaluationSourceHash: 'source' },
-      { submissionId: 'not-ready', evaluationSourceHash: 'source' },
-      { submissionId: 'current', evaluationSourceHash: 'source' }
+      { submissionId: 'eligible', evaluationSourceHash: 'source', overallScore: 70 },
+      { submissionId: 'override', evaluationSourceHash: 'source', overallScore: 70, overriddenByTeacher: true },
+      { submissionId: 'processing', evaluationSourceHash: 'source', overallScore: 70 },
+      { submissionId: 'not-ready', evaluationSourceHash: 'source', overallScore: 70 },
+      { submissionId: 'current', evaluationSourceHash: 'source', overallScore: 70,
+        evaluationRubricSourceHash: 'current-rubric', evaluationPolicyHash: 'current-policy',
+        assessmentVersion: 'writing-rubric-100-v5-teacher-policy',
+        evaluationVersion: 'canonical-evaluation-8-policy-custom-rubric' }
     ]) });
 
     const summary = await service.summarize(assignment);
@@ -86,11 +93,55 @@ describe('assignment stale evaluation service', () => {
     });
   });
 
+  test('uses the authoritative feedback hashes so a re-evaluated submission is removed from the stale count', async () => {
+    Submission.find.mockResolvedValue([readySubmission('student-1', {
+      evaluationStatus: 'completed',
+      evaluationRubricSourceHash: 'old-rubric',
+      evaluationPolicyHash: 'old-policy'
+    })]);
+    SubmissionFeedback.find.mockReturnValue({ lean: async () => ([{
+      submissionId: 'student-1',
+      evaluationSourceHash: 'source',
+      evaluationRubricSourceHash: 'current-rubric',
+      evaluationPolicyHash: 'current-policy',
+      assessmentVersion: 'writing-rubric-100-v5-teacher-policy',
+      evaluationVersion: 'canonical-evaluation-8-policy-custom-rubric',
+      overallScore: 81
+    }]) });
+
+    await expect(service.summarize(assignment)).resolves.toMatchObject({ eligibleCount: 0 });
+  });
+
+  test.each([
+    ['rubric', { evaluationRubricSourceHash: 'old-rubric' }],
+    ['policy', { evaluationPolicyHash: 'old-policy' }],
+    ['source', { evaluationSourceHash: 'old-source' }],
+    ['version', { evaluationVersion: 'old-version' }]
+  ])('counts a completed %s mismatch using shared canonical freshness', async (_reason, feedbackOverride) => {
+    Submission.find.mockResolvedValue([readySubmission('student-1', {
+      evaluationStatus: 'completed',
+      evaluationRubricSourceHash: 'current-rubric',
+      evaluationPolicyHash: 'current-policy'
+    })]);
+    SubmissionFeedback.find.mockReturnValue({ lean: async () => ([{
+      submissionId: 'student-1',
+      evaluationSourceHash: 'source',
+      evaluationRubricSourceHash: 'current-rubric',
+      evaluationPolicyHash: 'current-policy',
+      assessmentVersion: 'writing-rubric-100-v5-teacher-policy',
+      evaluationVersion: 'canonical-evaluation-8-policy-custom-rubric',
+      overallScore: 81,
+      ...feedbackOverride
+    }]) });
+
+    await expect(service.summarize(assignment)).resolves.toMatchObject({ eligibleCount: 1 });
+  });
+
   test('locks eligible submissions, returns immediately, and queues current assignment settings', async () => {
     const eligible = readySubmission('eligible');
     Submission.find.mockResolvedValue([eligible]);
     SubmissionFeedback.find.mockReturnValue({ lean: async () => ([
-      { submissionId: 'eligible', evaluationSourceHash: 'source' }
+      { submissionId: 'eligible', evaluationSourceHash: 'source', overallScore: 70 }
     ]) });
     Submission.updateOne.mockResolvedValue({ modifiedCount: 1 });
 
@@ -112,7 +163,7 @@ describe('assignment stale evaluation service', () => {
   test('a repeated request cannot duplicate a job that lost the single-flight lock', async () => {
     Submission.find.mockResolvedValue([readySubmission('eligible')]);
     SubmissionFeedback.find.mockReturnValue({ lean: async () => ([
-      { submissionId: 'eligible', evaluationSourceHash: 'source' }
+      { submissionId: 'eligible', evaluationSourceHash: 'source', overallScore: 70 }
     ]) });
     Submission.updateOne.mockResolvedValue({ modifiedCount: 0 });
 

@@ -3,12 +3,11 @@
 const crypto = require('crypto');
 const Submission = require('../models/Submission');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
-const User = require('../models/user.model');
 const canonicalEvaluation = require('./canonicalEvaluation.service');
 const correctionCanonical = require('./correctionCanonical.service');
 const { CANONICAL_TRANSCRIPT_LAYOUT_VERSION } = require('../utils/ocrTranscriptNormalizer');
-const { normalizeAssignmentRubric, hashNormalizedRubric } = require('./assignmentRubric.service');
-const { normalizeTeacherEvaluationPolicy, evaluationPolicyHash } = require('./teacherEvaluationPolicy.service');
+const { currentEvaluationSettings } = require('./evaluationSettingsContext.service');
+const { buildCanonicalResultState } = require('./canonicalResultState.service');
 const logger = require('../utils/logger');
 
 const DEFAULT_CONCURRENCY = 3;
@@ -25,22 +24,7 @@ function isReadyForEvaluation(submission) {
 }
 
 async function currentHashes(assignment) {
-  const normalizedRubric = normalizeAssignmentRubric(assignment || {});
-  const rubricHash = normalizedRubric.status === 'valid'
-    ? hashNormalizedRubric(normalizedRubric)
-    : canonicalEvaluation.hashRubric(assignment);
-  const teacher = assignment?.teacher
-    ? await User.findById(assignment.teacher).select('aiConfig').lean()
-    : null;
-  const policyHash = evaluationPolicyHash(normalizeTeacherEvaluationPolicy(teacher));
-  return { rubricHash, policyHash };
-}
-
-function evaluationHashes(submission, feedback) {
-  return {
-    rubricHash: submission?.evaluationRubricSourceHash || feedback?.evaluationRubricSourceHash || null,
-    policyHash: submission?.evaluationPolicyHash || feedback?.evaluationPolicyHash || null
-  };
+  return currentEvaluationSettings(assignment);
 }
 
 async function classify(assignment) {
@@ -61,19 +45,20 @@ async function classify(assignment) {
 
   for (const submission of submissions) {
     const savedFeedback = feedbackBySubmission.get(String(submission._id));
-    const previous = evaluationHashes(submission, savedFeedback);
-    const hasPriorEvaluation = Boolean(previous.rubricHash || previous.policyHash || savedFeedback?.evaluationSourceHash);
-    const staleForSettings = hasPriorEvaluation
-      && (previous.rubricHash !== hashes.rubricHash || previous.policyHash !== hashes.policyHash);
-    if (!staleForSettings) continue;
-    if (savedFeedback?.overriddenByTeacher) {
+    const freshness = buildCanonicalResultState({
+      submission,
+      feedback: savedFeedback || null,
+      currentSettings: hashes
+    });
+    if (freshness.evaluationFreshness === 'overridden') {
       result.skippedOverrideCount += 1;
       continue;
     }
-    if (submission.evaluationStatus === 'processing') {
+    if (freshness.evaluationFreshness === 'processing') {
       result.skippedProcessingCount += 1;
       continue;
     }
+    if (!freshness.requiresCanonicalReevaluation) continue;
     if (!isReadyForEvaluation(submission)) {
       result.skippedNotReadyCount += 1;
       continue;

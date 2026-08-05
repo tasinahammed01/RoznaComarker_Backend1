@@ -11,6 +11,7 @@ const WorksheetSubmission = require('../models/WorksheetSubmission');
 const Worksheet = require('../models/Worksheet');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 const staleAssignmentEvaluation = require('../services/staleAssignmentEvaluation.service');
+const { currentEvaluationSettings } = require('../services/evaluationSettingsContext.service');
 
 const {
   RubricExcelTemplateError,
@@ -397,26 +398,39 @@ async function propagateAssignmentRubricToSubmissionFeedback({ assignmentId, rub
   if (!mongoose.Types.ObjectId.isValid(assignmentId)) return;
   const d = rubricDesigner && typeof rubricDesigner === 'object' ? rubricDesigner : null;
 
-  const submissions = await Submission.find({ assignment: assignmentId }).select('_id');
+  const assignment = await Assignment.findById(assignmentId).lean();
+  if (!assignment) return;
+  const settings = await currentEvaluationSettings(assignment);
+  const submissions = await Submission.find({ assignment: assignmentId })
+    .select('_id evaluationStatus evaluationRubricSourceHash');
   const ids = (submissions || []).map((s) => s && s._id).filter(Boolean);
   if (!ids.length) return;
-  const overridden = await SubmissionFeedback.find({
-    submissionId: { $in: ids }, overriddenByTeacher: true
-  }).select('submissionId').lean();
-  const overriddenIds = new Set((overridden || []).map((item) => String(item.submissionId)));
-  const invalidatedIds = ids.filter((id) => !overriddenIds.has(String(id)));
+  const feedback = await SubmissionFeedback.find({ submissionId: { $in: ids } })
+    .select('submissionId overriddenByTeacher evaluationSourceHash evaluationRubricSourceHash').lean();
+  const feedbackById = new Map((feedback || []).map((item) => [String(item.submissionId), item]));
+  const invalidatedIds = submissions.filter((submission) => {
+    const savedFeedback = feedbackById.get(String(submission._id));
+    if (savedFeedback?.overriddenByTeacher) return false;
+    if (!['completed', 'partial', 'stale'].includes(String(submission.evaluationStatus))) return false;
+    const storedHash = submission.evaluationRubricSourceHash
+      || savedFeedback?.evaluationRubricSourceHash || null;
+    const hasPriorEvaluation = Boolean(storedHash || savedFeedback?.evaluationSourceHash);
+    if (!hasPriorEvaluation) return false;
+    return settings.hasValidCustomRubric
+      ? storedHash !== settings.rubricHash
+      : Boolean(storedHash && storedHash !== settings.rubricHash);
+  }).map((submission) => submission._id);
 
-  const feedbackUpdate = {
-    $set: { evaluationStatus: 'pending', ...(updateRubricDesigner && d ? { rubricDesigner: d } : {}) }
-  };
-  if (updateRubricDesigner && !d) feedbackUpdate.$unset = { rubricDesigner: 1 };
-  await SubmissionFeedback.updateMany(
-    {
-      submissionId: { $in: ids },
-      overriddenByTeacher: { $ne: true }
-    },
-    feedbackUpdate
-  );
+  if (updateRubricDesigner) {
+    const designerUpdate = d ? { $set: { rubricDesigner: d } } : { $unset: { rubricDesigner: 1 } };
+    await SubmissionFeedback.updateMany({
+      submissionId: { $in: ids }, overriddenByTeacher: { $ne: true }
+    }, designerUpdate);
+  }
+  if (!invalidatedIds.length) return;
+  await SubmissionFeedback.updateMany({
+    submissionId: { $in: invalidatedIds }, overriddenByTeacher: { $ne: true }
+  }, { $set: { evaluationStatus: 'pending' } });
   await Submission.updateMany({ _id: { $in: invalidatedIds } }, {
     $set: { evaluationStatus: 'stale' }
   });

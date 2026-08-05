@@ -258,6 +258,72 @@ describe('canonical result state contract', () => {
     expect(state).toMatchObject({ evaluationCurrent: false, evaluationStatus: 'stale', score: null });
   });
 
+  test.each([
+    ['before rubric creation', null, 'current-rubric', 'rubric'],
+    ['after rubric creation', 'current-rubric', 'current-rubric', null],
+    ['after rubric edit', 'old-rubric', 'current-rubric', 'rubric']
+  ])('%s has explicit rubric freshness', (_case, storedRubric, currentRubric, staleReason) => {
+    const submission = completedSubmission({
+      evaluationRubricSourceHash: storedRubric || undefined,
+      evaluationPolicyHash: 'current-policy'
+    });
+    const feedback = currentEvaluation({
+      evaluationRubricSourceHash: storedRubric || undefined,
+      evaluationPolicyHash: 'current-policy'
+    });
+    const state = buildCanonicalResultState({
+      submission,
+      feedback,
+      currentSettings: {
+        rubricHash: currentRubric,
+        policyHash: 'current-policy',
+        hasValidCustomRubric: true
+      }
+    });
+    expect(state.evaluationStaleReason).toBe(staleReason);
+    expect(state.evaluationStatus).toBe(staleReason ? 'stale' : 'completed');
+    expect(state.evaluationCurrent).toBe(!staleReason);
+    expect(state.evaluationFreshness).toBe(staleReason ? 'stale_rubric' : 'current');
+    expect(state.requiresCanonicalReevaluation).toBe(Boolean(staleReason));
+  });
+
+  test('no rubric default result is current while a policy-only mismatch is labeled settings stale', () => {
+    const base = {
+      submission: completedSubmission({ evaluationPolicyHash: 'old-policy' }),
+      feedback: currentEvaluation({ evaluationPolicyHash: 'old-policy' })
+    };
+    const noRubricCurrent = buildCanonicalResultState({
+      ...base,
+      currentSettings: { rubricHash: 'default-rubric', policyHash: 'old-policy', hasValidCustomRubric: false }
+    });
+    expect(noRubricCurrent).toMatchObject({
+      evaluationStatus: 'completed', rubricFresh: true, policyFresh: true, evaluationStaleReason: null
+    });
+    const policyStale = buildCanonicalResultState({
+      ...base,
+      currentSettings: { rubricHash: 'default-rubric', policyHash: 'new-policy', hasValidCustomRubric: false }
+    });
+    expect(policyStale).toMatchObject({
+      evaluationStatus: 'stale', rubricFresh: true, policyFresh: false, evaluationStaleReason: 'policy'
+    });
+  });
+
+  test('processing and teacher-overridden results never expose normal stale settings state', () => {
+    const settings = { rubricHash: 'new-rubric', policyHash: 'new-policy', hasValidCustomRubric: true };
+    const processing = buildCanonicalResultState({
+      submission: completedSubmission({ evaluationStatus: 'processing', evaluationJobId: 'job' }),
+      feedback: currentEvaluation(),
+      currentSettings: settings
+    });
+    expect(processing).toMatchObject({ evaluationStatus: 'processing', evaluationStaleReason: null });
+    const overridden = buildCanonicalResultState({
+      submission: completedSubmission(),
+      feedback: currentEvaluation({ overriddenByTeacher: true }),
+      currentSettings: settings
+    });
+    expect(overridden).toMatchObject({ evaluationStatus: 'completed', evaluationStaleReason: null });
+  });
+
   test('exposes a completed non-current result only as previous evaluation data', () => {
     const feedback = currentEvaluation({
       rubricScores: { CONTENT: { score: 18, maxScore: 20 } },

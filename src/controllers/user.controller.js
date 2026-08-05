@@ -209,13 +209,20 @@ async function updateMe(req, res) {
     const nextPolicyHash = evaluationPolicyHash(saved.aiConfig);
     if (nextAiConfig && previousPolicyHash !== nextPolicyHash && saved.role === 'teacher') {
       const classIds = (await Class.find({ teacher: saved._id }).select('_id').lean()).map((item) => item._id);
-      const submissions = await Submission.find({ class: { $in: classIds } }).select('_id').lean();
+      const submissions = await Submission.find({ class: { $in: classIds } })
+        .select('_id evaluationStatus evaluationPolicyHash').lean();
       const submissionIds = submissions.map((item) => item._id);
-      const overridden = await SubmissionFeedback.find({
-        submissionId: { $in: submissionIds }, overriddenByTeacher: true
-      }).select('submissionId').lean();
-      const overriddenIds = new Set(overridden.map((item) => String(item.submissionId)));
-      const staleIds = submissionIds.filter((id) => !overriddenIds.has(String(id)));
+      const feedback = await SubmissionFeedback.find({ submissionId: { $in: submissionIds } })
+        .select('submissionId overriddenByTeacher evaluationSourceHash evaluationPolicyHash').lean();
+      const feedbackById = new Map(feedback.map((item) => [String(item.submissionId), item]));
+      const staleIds = submissions.filter((submission) => {
+        const savedFeedback = feedbackById.get(String(submission._id));
+        if (savedFeedback?.overriddenByTeacher) return false;
+        if (!['completed', 'partial', 'stale'].includes(String(submission.evaluationStatus))) return false;
+        const storedHash = submission.evaluationPolicyHash || savedFeedback?.evaluationPolicyHash || null;
+        return Boolean((storedHash || savedFeedback?.evaluationSourceHash) && storedHash
+          && storedHash !== nextPolicyHash);
+      }).map((submission) => submission._id);
       await Submission.updateMany({ _id: { $in: staleIds } }, {
         $set: { evaluationStatus: 'stale' }
       });
