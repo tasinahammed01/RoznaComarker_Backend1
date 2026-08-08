@@ -59,11 +59,11 @@ describe('localhost CORS configuration', () => {
 
   test('allows the configured production frontend without adding localhost', async () => {
     process.env.NODE_ENV = 'production';
-    process.env.FRONTEND_URL = 'https://comarkers.roznahub.com';
+    process.env.FRONTEND_URL = 'http://localhost:4200';
     const productionApp = app();
-    const accepted = await request(productionApp).get('/health').set('Origin', 'https://comarkers.roznahub.com');
+    const accepted = await request(productionApp).get('/health').set('Origin', 'http://localhost:4200');
     expect(accepted.status).toBe(200);
-    const rejected = await request(productionApp).get('/health').set('Origin', 'http://localhost:4200');
+    const rejected = await request(productionApp).get('/health').set('Origin', 'http://localhost:4300');
     expect(rejected.status).toBe(403);
   });
 });

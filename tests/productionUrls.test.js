@@ -13,11 +13,11 @@ describe('production URL and CORS configuration', () => {
   beforeAll(() => {
     for (const key of ['NODE_ENV', 'FRONTEND_URL', 'CORS_ALLOWED_ORIGINS', 'CORS_ORIGINS', 'PUBLIC_API_URL', 'BASE_URL']) previous[key] = process.env[key];
     process.env.NODE_ENV = 'production';
-    process.env.FRONTEND_URL = 'https://comarkers.roznahub.com';
-    process.env.CORS_ALLOWED_ORIGINS = ' https://comarkers.roznahub.com/ ';
+    process.env.FRONTEND_URL = 'http://localhost:4200';
+    process.env.CORS_ALLOWED_ORIGINS = ' http://localhost:4200/ ';
     delete process.env.CORS_ORIGINS;
-    process.env.PUBLIC_API_URL = 'https://comarkerback.roznahub.com/';
-    process.env.BASE_URL = 'https://comarkerback.roznahub.com';
+    process.env.PUBLIC_API_URL = 'http://localhost:5000/';
+    process.env.BASE_URL = 'http://localhost:5000';
   });
   afterAll(() => {
     for (const [key, value] of Object.entries(previous)) {
@@ -34,11 +34,11 @@ describe('production URL and CORS configuration', () => {
 
   test('allows the exact frontend origin and required preflight headers', async () => {
     const response = await request(app()).options('/api/assignments/my')
-      .set('Origin', 'https://comarkers.roznahub.com')
+      .set('Origin', 'http://localhost:4200')
       .set('Access-Control-Request-Method', 'GET')
       .set('Access-Control-Request-Headers', 'authorization,content-type');
     expect(response.status).toBe(204);
-    expect(response.headers['access-control-allow-origin']).toBe('https://comarkers.roznahub.com');
+    expect(response.headers['access-control-allow-origin']).toBe('http://localhost:4200');
     expect(response.headers['access-control-allow-credentials']).toBe('true');
     expect(response.headers['access-control-allow-headers'].toLowerCase()).toContain('authorization');
     expect(response.headers['access-control-allow-headers'].toLowerCase()).toContain('content-type');
@@ -54,7 +54,7 @@ describe('production URL and CORS configuration', () => {
   test('never combines credentials with a wildcard allow-origin header', async () => {
     const responses = await Promise.all([
       request(app()).get('/api/assignments/my'),
-      request(app()).get('/api/assignments/my').set('Origin', 'https://comarkers.roznahub.com'),
+      request(app()).get('/api/assignments/my').set('Origin', 'http://localhost:4200'),
     ]);
 
     for (const response of responses) {
@@ -67,16 +67,16 @@ describe('production URL and CORS configuration', () => {
 
   test('rejects an unapproved production origin', async () => {
     const response = await request(app()).get('/api/assignments/my')
-      .set('Origin', 'https://comarkers.roznahub.com.attacker.test');
+      .set('Origin', 'http://localhost:4200.attacker.test');
     expect(response.status).toBe(403);
     expect(response.headers['access-control-allow-origin']).toBeUndefined();
   });
 
   test('builds public and upload URLs from the canonical backend origin', () => {
     const req = { protocol: 'http', get: () => '127.0.0.1:5000' };
-    expect(getPublicApiUrl(req)).toBe('https://comarkerback.roznahub.com');
+    expect(getPublicApiUrl(req)).toBe('http://localhost:5000');
     expect(buildPublicUploadUrl(req, 'submissions', 'page one.png')).toBe(
-      'https://comarkerback.roznahub.com/uploads/submissions/page%20one.png'
+      'http://localhost:5000/uploads/submissions/page%20one.png'
     );
   });
 
@@ -86,7 +86,7 @@ describe('production URL and CORS configuration', () => {
     expect(normalizePublicUploadsUrlForDev(
       req,
       'http://localhost:5000/uploads/submissions/example.png'
-    )).toBe('https://comarkerback.roznahub.com/uploads/submissions/example.png');
+    )).toBe('http://localhost:5000/uploads/submissions/example.png');
     expect(normalizePublicUploadsUrlForDev(
       req,
       'https://assets.example.com/submissions/example.png'

@@ -3,7 +3,7 @@ module.exports = {
     {
       name: 'RoznaComarker_Backend',
       script: './src/server.js',
-      cwd: '/home/comarkerback/htdocs/comarkerback.roznahub.com/RoznaComarker_Backend1',
+      cwd: 'D:\\Client Project Fiverr\\1st project\\ProjectRozna\\backend',
       watch: false,
       env_file: '.env',
       env: {

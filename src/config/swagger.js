@@ -15,7 +15,7 @@ function createSwaggerSpec() {
 
       servers: baseUrl
         ? [{ url: baseUrl }]
-        : [{ url: "https://comarkerback.roznahub.com" }],
+        : [{ url: "http://localhost:5000" }],
 
       components: {
         securitySchemes: {

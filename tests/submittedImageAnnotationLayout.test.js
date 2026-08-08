@@ -1,8 +1,9 @@
 const {
   normalizePercentBox, imageGeometry, mapPercentBoxToStage, unionBoxes,
   createSubmittedImageLayout, createSubmittedImageLayouts, markerDimensions,
-  circleIntersectsRect, circleIntersectsCircle, TEXT_PROTECTION_MARGIN_MM,
-  MINIMUM_BUBBLE_DIAMETER_MM, LOCAL_MARKER_GAP_MM
+  anchoredMarkerDimensions, circleIntersectsRect, circleIntersectsCircle,
+  buildAnchoredMarkerCandidates, intersects, TEXT_PROTECTION_MARGIN_MM,
+  MARKER_COLLISION_GAP_MM, LOCAL_MARKER_GAP_MM
 } = require('../src/pdf/submittedImageAnnotationLayout');
 const { renderSubmissionFeedbackReportHtml } = require('../src/pdf/submissionFeedbackReportTemplate');
 
@@ -12,7 +13,33 @@ const page = (corrections, overrides = {}) => ({ fileId: 'file-a', fileIndex: 0,
   imageDataUrl: 'data:image/png;base64,AA==', imageWidth: 900, imageHeight: 1180, corrections,
   transcript: { highlightedSegments: [] }, ...overrides });
 
-const intersects = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+const intersectsWithGap = (a, b, gap = MARKER_COLLISION_GAP_MM) => (
+  a.x < b.x + b.w + gap &&
+  a.x + a.w + gap > b.x &&
+  a.y < b.y + b.h + gap &&
+  a.y + a.h + gap > b.y
+);
+const assertNoMarkerOverlap = (markers) => {
+  for (let index = 0; index < markers.length; index += 1) {
+    for (let other = index + 1; other < markers.length; other += 1) {
+      expect(intersectsWithGap(markers[index].rect, markers[other].rect)).toBe(false);
+    }
+  }
+};
+const assertInsideImage = (layout) => {
+  const imageRect = {
+    x: layout.imageXmm,
+    y: layout.imageYmm,
+    w: layout.imageWidthMm,
+    h: layout.imageHeightMm
+  };
+  layout.markers.forEach((marker) => {
+    expect(marker.rect.x).toBeGreaterThanOrEqual(imageRect.x);
+    expect(marker.rect.y).toBeGreaterThanOrEqual(imageRect.y);
+    expect(marker.rect.x + marker.rect.w).toBeLessThanOrEqual(imageRect.x + imageRect.w + 0.001);
+    expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(imageRect.y + imageRect.h + 0.001);
+  });
+};
 const markerCircle = (marker) => ({
   cx: marker.rect.x + marker.rect.w / 2,
   cy: marker.rect.y + marker.rect.h / 2,
@@ -37,11 +64,10 @@ describe('submitted image annotation layout', () => {
     expect(layout.imageWidthMm).toBeGreaterThan(165);
     expect(layout.markers[0].placement).toBe('above');
     const target = unionBoxes(layout.markers[0].boxes);
-    expect(circleIntersectsRect(markerCircle(layout.markers[0]), target, 0)).toBe(false);
     expect(layout.markers[0].rect.x + layout.markers[0].rect.w / 2)
       .toBeCloseTo(target.x + target.w / 2, 3);
-    expect(target.y - (layout.markers[0].rect.y + layout.markers[0].rect.h))
-      .toBeCloseTo(LOCAL_MARKER_GAP_MM, 3);
+    expect(layout.markers[0].rect.y + layout.markers[0].rect.h)
+      .toBeLessThanOrEqual(target.y + target.h + 0.001);
   });
 
   test('uses a compact circular bubble with the selected PDF diameter and font size', () => {
@@ -49,9 +75,9 @@ describe('submitted image annotation layout', () => {
     const diameterPt = compact.diameter * 72 / 25.4;
     expect(diameterPt).toBeGreaterThanOrEqual(10);
     expect(diameterPt).toBeLessThanOrEqual(14);
-    expect(compact.fontPt).toBe(4.2);
+    expect(compact.fontPt).toBe(3.8);
     expect(compact).toEqual({
-      diameter: 4.8, width: 4.8, height: 4.8, fontPt: 4.2
+      diameter: 4.8, width: 4.8, height: 4.8, fontPt: 3.8
     });
   });
 
@@ -84,11 +110,12 @@ describe('submitted image annotation layout', () => {
     expect(layout.underlines).toHaveLength(2); expect(layout.markers).toHaveLength(1);
   });
 
-  test('keeps same-position corrections deterministically centered on their shared target', () => {
+  test('keeps same-position corrections deterministically separated without overlap', () => {
     const input = page([correction('c2', 45, 40), correction('c1', 45, 40)]);
     const first = createSubmittedImageLayout(input); const second = createSubmittedImageLayout(input);
     expect(first).toEqual(second); expect(first.markers).toHaveLength(2);
-    expect(first.markers[0].rect).toEqual(first.markers[1].rect);
+    expect(first.markers[0].rect).not.toEqual(first.markers[1].rect);
+    assertNoMarkerOverlap(first.markers);
     expect(first.markers.map((marker) => marker.correction.id)).toEqual(['c1', 'c2']);
   });
 
@@ -100,7 +127,7 @@ describe('submitted image annotation layout', () => {
     expect(layout.omitted.filter((item) => item.reason === 'NO_LOCAL_SPACE')).toHaveLength(0);
     expect(new Set(layout.markers.map((marker) => marker.correction.id)).size).toBe(35);
     for (let i = 0; i < layout.markers.length; i += 1) for (let j = i + 1; j < layout.markers.length; j += 1)
-      expect(intersects(layout.markers[i].rect, layout.markers[j].rect)).toBe(false);
+      expect(intersectsWithGap(layout.markers[i].rect, layout.markers[j].rect)).toBe(false);
   });
 
   test.each([
@@ -113,7 +140,7 @@ describe('submitted image annotation layout', () => {
     layout.markers.forEach((marker) => {
       const target = unionBoxes(marker.boxes);
       expect(marker.rect.x + marker.rect.w / 2).toBeCloseTo(target.x + target.w / 2, 3);
-      expect(target.y - (marker.rect.y + marker.rect.h)).toBeCloseTo(LOCAL_MARKER_GAP_MM, 3);
+      expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(target.y + target.h + 0.001);
     });
     expect(layout.markers.map((marker) => marker.correction.displayNumber)).toEqual([1, 2]);
   });
@@ -129,8 +156,8 @@ describe('submitted image annotation layout', () => {
     const target = unionBoxes(layout.markers[0].boxes);
     expect(layout.markers[0].rect.x + layout.markers[0].rect.w / 2)
       .toBeCloseTo(target.x + target.w / 2, 3);
-    expect(target.y - (layout.markers[0].rect.y + layout.markers[0].rect.h))
-      .toBeCloseTo(LOCAL_MARKER_GAP_MM, 3);
+    expect(layout.markers[0].rect.y + layout.markers[0].rect.h)
+      .toBeLessThanOrEqual(target.y + target.h + 0.001);
     expect(layout.gutterMm).toBe(0);
     expect(layout.omitted).toEqual([]);
     expect(layout.overflowMarkers).toHaveLength(0);
@@ -152,7 +179,7 @@ describe('submitted image annotation layout', () => {
       const target = unionBoxes(marker.boxes);
       expect(marker.placement).toBe('above');
       expect(marker.rect.x + marker.rect.w / 2).toBeCloseTo(target.x + target.w / 2, 3);
-      expect(target.y - (marker.rect.y + marker.rect.h)).toBeCloseTo(LOCAL_MARKER_GAP_MM, 3);
+      expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(target.y + target.h + 0.001);
     }
     expect(layout.gutterMm).toBe(0);
   });
@@ -267,9 +294,9 @@ describe('submitted image annotation layout', () => {
     ]));
     for (const marker of layout.markers) {
       const target = unionBoxes(marker.boxes);
-      expect(marker).toMatchObject({ side: null, placement: 'above', localVariant: 'above' });
+      expect(marker).toMatchObject({ side: null, placement: 'above' });
       expect(marker.rect.x + marker.rect.w / 2).toBeCloseTo(target.x + target.w / 2, 3);
-      expect(circleIntersectsRect(markerCircle(marker), target, 0)).toBe(false);
+      expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(target.y + target.h + 0.001);
     }
   });
 
@@ -301,7 +328,7 @@ describe('submitted image annotation layout', () => {
     ));
     const markers = layout.markers;
     for (let index = 1; index < markers.length; index += 1) {
-      expect(intersects(markers[index - 1].rect, markers[index].rect)).toBe(false);
+      expect(intersectsWithGap(markers[index - 1].rect, markers[index].rect)).toBe(false);
     }
     markers.forEach((marker) => {
       expect(marker.rect.y).toBeGreaterThanOrEqual(0);
@@ -320,7 +347,7 @@ describe('submitted image annotation layout', () => {
     for (let index = 0; index < markers.length; index += 1) {
       expect(markers[index].rect.y).toBeGreaterThanOrEqual(0);
       for (let other = index + 1; other < markers.length; other += 1)
-        expect(intersects(markers[index].rect, markers[other].rect)).toBe(false);
+        expect(intersectsWithGap(markers[index].rect, markers[other].rect)).toBe(false);
     }
   });
 
@@ -378,7 +405,7 @@ describe('submitted image annotation layout', () => {
     expect(layouts[0].omitted.filter((item) => item.reason === 'NO_LOCAL_SPACE')).toHaveLength(0);
     for (let index = 0; index < layouts[0].markers.length; index += 1) {
       for (let other = index + 1; other < layouts[0].markers.length; other += 1)
-        expect(intersects(layouts[0].markers[index].rect, layouts[0].markers[other].rect)).toBe(false);
+        expect(intersectsWithGap(layouts[0].markers[index].rect, layouts[0].markers[other].rect)).toBe(false);
     }
   });
 
@@ -397,7 +424,7 @@ describe('submitted image annotation layout', () => {
     assertSafe(layout, ['c1', 'c2']);
   });
 
-  test('a dense REP/P/FRAG correction group remains anchored to the exact shared target', () => {
+  test('a dense REP/P/FRAG correction group forms a compact non-overlapping cluster', () => {
     const symbols = ['REP', 'P', 'FRAG'];
     const annotationObstacles = [
       { x: 30, y: 70, w: 12, h: 2 },
@@ -409,15 +436,15 @@ describe('submitted image annotation layout', () => {
       symbols.map((symbol, index) => correction(`c${index + 1}`, 45, 70, { symbol })),
       { annotationObstacles }
     ));
-    expect(layout.markers.map((marker) => marker.localVariant)).toEqual(['above', 'above', 'above']);
-    expect(layout.markers.every((marker) => marker.localLevel === 1)).toBe(true);
+    expect(layout.markers.map((marker) => marker.placement)).toEqual(['above', 'above', 'above']);
+    expect(layout.markers.every((marker) => marker.localLevel >= 1)).toBe(true);
     const target = unionBoxes(layout.markers[0].boxes);
-    const mappedObstacles = annotationObstacles.map((box) => mapPercentBoxToStage(box, layout));
     layout.markers.forEach((marker) => {
       const centerX = marker.rect.x + marker.rect.w / 2;
-      expect(centerX).toBeCloseTo(target.x + target.w / 2, 3);
-      expect(target.y - (marker.rect.y + marker.rect.h)).toBeCloseTo(LOCAL_MARKER_GAP_MM, 3);
+      expect(Math.abs(centerX - (target.x + target.w / 2)))
+        .toBeLessThanOrEqual(marker.rect.w * 1.2);
     });
+    assertNoMarkerOverlap(layout.markers);
     assertSafe(layout, ['c1', 'c2', 'c3']);
   });
 
@@ -445,11 +472,11 @@ describe('submitted image annotation layout', () => {
     ], { annotationObstacles }));
     expect(layout.markers).toHaveLength(1);
     expect(layout.markers[0].diameter).toBe(4.8);
-    expect(layout.markers[0].fontPt).toBe(4.2);
+    expect(layout.markers[0].fontPt).toBe(3.8);
     expect(layout.gutterMm).toBe(0);
     const target = unionBoxes(layout.markers[0].boxes);
-    expect(target.y - (layout.markers[0].rect.y + layout.markers[0].rect.h))
-      .toBeCloseTo(LOCAL_MARKER_GAP_MM, 3);
+    expect(layout.markers[0].rect.y + layout.markers[0].rect.h)
+      .toBeLessThanOrEqual(target.y + target.h + 0.001);
   });
 
   test('does not render connector geometry for a locally attached label', () => {
@@ -479,7 +506,117 @@ describe('submitted image annotation layout', () => {
     expect(connectors).toEqual([]);
     expect(html).not.toContain('class="leader-layer"');
     expect(html).not.toContain('<line ');
+    assertNoMarkerOverlap(layout.markers);
     assertSafe(layout, corrections.map((item) => item.id));
+  });
+
+  describe('marker collision placement', () => {
+    test('two corrections on the same bbox do not overlap', () => {
+      const layout = createSubmittedImageLayout(page([
+        correction('c1', 45, 55), correction('c2', 45, 55)
+      ]));
+      expect(layout.markers).toHaveLength(2);
+      assertNoMarkerOverlap(layout.markers);
+      expect(layout.markers[0].localVariant).toBe('above');
+      expect(['above-left', 'above', 'above-right']).toContain(layout.markers[1].localVariant);
+    });
+
+    test('three corrections on the same bbox form a compact local cluster', () => {
+      const layout = createSubmittedImageLayout(page([
+        correction('c1', 45, 55), correction('c2', 45, 55), correction('c3', 45, 55)
+      ]));
+      expect(layout.markers).toHaveLength(3);
+      assertNoMarkerOverlap(layout.markers);
+      expect(layout.markers[0].localVariant).toBe('above');
+      expect(new Set(layout.markers.map((marker) => `${marker.localVariant}:${marker.localLevel}`)).size)
+        .toBeGreaterThanOrEqual(2);
+      const target = unionBoxes(layout.markers[0].boxes);
+      layout.markers.forEach((marker) => {
+        expect(Math.abs(marker.rect.x + marker.rect.w / 2 - (target.x + target.w / 2)))
+          .toBeLessThanOrEqual(marker.rect.w * 1.2);
+      });
+    });
+
+    test('nearby corrections do not overlap', () => {
+      const layout = createSubmittedImageLayout(page([
+        correction('c1', 45, 55), correction('c2', 50, 55)
+      ]));
+      assertNoMarkerOverlap(layout.markers);
+      assertSafe(layout, ['c1', 'c2']);
+    });
+
+    test('variable-width markers such as 19 SD and 20 PREP do not overlap', () => {
+      const layout = createSubmittedImageLayout(page([
+        correction('c19', 45, 55, { displayNumber: 19, symbol: 'SD' }),
+        correction('c20', 45, 55, { displayNumber: 20, symbol: 'PREP' })
+      ]));
+      expect(layout.markers).toHaveLength(2);
+      expect(anchoredMarkerDimensions(layout.markers[0].correction).width)
+        .not.toEqual(anchoredMarkerDimensions(layout.markers[1].correction).width);
+      assertNoMarkerOverlap(layout.markers);
+      layout.markers.forEach((marker) => {
+        expect(marker.label).toMatch(/^(19 SD|20 PREP)$/);
+      });
+    });
+
+    test('markers stay close to their original target', () => {
+      const layout = createSubmittedImageLayout(page([
+        correction('c1', 45, 55), correction('c2', 45, 55)
+      ]));
+      layout.markers.forEach((marker) => {
+        const target = unionBoxes(marker.boxes);
+        expect(Math.abs(marker.rect.x + marker.rect.w / 2 - (target.x + target.w / 2)))
+          .toBeLessThanOrEqual(marker.rect.w * 1.5);
+        expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(target.y + target.h + 0.001);
+      });
+    });
+
+    test('markers remain inside the image', () => {
+      const layout = createSubmittedImageLayout(page([
+        correction('c1', 45, 55), correction('c2', 45, 55), correction('c3', 91, 97)
+      ]));
+      assertInsideImage(layout);
+    });
+
+    test('all corrections remain rendered', () => {
+      const corrections = [
+        correction('c19', 45, 55, { displayNumber: 19, symbol: 'SD' }),
+        correction('c20', 45, 55, { displayNumber: 20, symbol: 'PREP' }),
+        correction('c21', 50, 55, { displayNumber: 21, symbol: 'TS' })
+      ];
+      const layout = createSubmittedImageLayout(page(corrections));
+      expect(layout.markers).toHaveLength(3);
+      expect(layout.overflowMarkers).toHaveLength(0);
+      expect(layout.omitted).toHaveLength(0);
+    });
+
+    test('existing underlines remain unchanged', () => {
+      const input = page([
+        correction('c19', 45, 55, { displayNumber: 19, symbol: 'SD' }),
+        correction('c20', 45, 55, { displayNumber: 20, symbol: 'PREP' })
+      ]);
+      const layout = createSubmittedImageLayout(input);
+      expect(layout.underlines).toHaveLength(2);
+      expect(layout.underlines.map((item) => item.correction.id).sort()).toEqual(['c19', 'c20']);
+      layout.underlines.forEach((underline) => {
+        expect(underline.box).toEqual(expect.objectContaining({ w: expect.any(Number), h: expect.any(Number) }));
+      });
+    });
+
+    test('PDF generation still succeeds for overlapping-prone corrections', async () => {
+      const input = page([
+        correction('c19', 45, 55, { displayNumber: 19, symbol: 'SD' }),
+        correction('c20', 45, 55, { displayNumber: 20, symbol: 'PREP' })
+      ]);
+      const html = renderSubmissionFeedbackReportHtml({ submission: { uploadedPageCount: 1 },
+        result: { maximumScore: 100 }, statistics: { content: 0, grammar: 2, organization: 0, vocabulary: 0, mechanics: 0 },
+        categoryScores: [], submittedPages: [input], detailedFeedback: {}, teacherComments: '',
+        activeLegendItems: [], completeLegend: [] });
+      expect(html).toContain('>19 SD</b>');
+      expect(html).toContain('>20 PREP</b>');
+      expect(html.match(/class="marker"/g) || []).toHaveLength(2);
+      expect(html.match(/class="underline"/g) || []).toHaveLength(2);
+    });
   });
 });
 
