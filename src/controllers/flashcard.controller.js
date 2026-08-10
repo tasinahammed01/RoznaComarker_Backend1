@@ -978,7 +978,7 @@ async function shareFlashcardSet(req, res) {
     await set.save();
 
     const frontendUrl = (
-      process.env.FRONTEND_URL || "https://comarkers.roznahub.com"
+      process.env.FRONTEND_URL || "http://localhost:4200"
     ).replace(/\/$/, "");
     const shareUrl = `${frontendUrl}/shared/flashcards/${shareToken}`;
 

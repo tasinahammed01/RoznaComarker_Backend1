@@ -1,7 +1,7 @@
 # Production domain configuration
 
-The Angular production build is served at `https://comarkers.roznahub.com` and
-the public Express origin is `https://comarkerback.roznahub.com`. Keep origins
+The Angular build is served locally at `http://localhost:4200` and
+the Express origin is `http://localhost:5000`. Keep origins
 canonical (no trailing slash). The backend continues listening on its internal
 `PORT`; public URL variables must not point at that internal socket.
 
@@ -10,11 +10,11 @@ Set these values in the untracked production environment:
 ```text
 NODE_ENV=production
 PORT=5000
-PUBLIC_API_URL=https://comarkerback.roznahub.com
-BASE_URL=https://comarkerback.roznahub.com
-FRONTEND_URL=https://comarkers.roznahub.com
-CORS_ALLOWED_ORIGINS=https://comarkers.roznahub.com
-CORS_ORIGINS=https://comarkers.roznahub.com
+PUBLIC_API_URL=http://localhost:5000
+BASE_URL=http://localhost:5000
+FRONTEND_URL=http://localhost:4200
+CORS_ALLOWED_ORIGINS=http://localhost:4200
+CORS_ORIGINS=http://localhost:4200
 ```
 
 Terminate TLS at CloudPanel/Nginx and proxy the backend domain to the internal
@@ -38,7 +38,7 @@ public HTTPS backend origin. PDF rendering reads validated uploaded assets from
 the configured local upload root, so it does not depend on a localhost public
 URL.
 
-Add `comarkers.roznahub.com` in Firebase Authentication **Authorized domains**.
+Add `localhost` in Firebase Authentication **Authorized domains**.
 Do not add the backend domain unless a browser authentication redirect is later
 introduced there.
 

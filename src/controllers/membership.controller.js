@@ -40,8 +40,9 @@ async function joinClassByCode(req, res) {
       return sendError(res, 401, 'Unauthorized');
     }
 
+    const normalizedJoinCode = joinCode.trim();
     const classDoc = await Class.findOne({
-      joinCode: joinCode.trim(),
+      joinCode: { $in: [normalizedJoinCode, normalizedJoinCode.toUpperCase()] },
       isActive: true
     }).populate('teacher', '_id email displayName photoURL role');
 

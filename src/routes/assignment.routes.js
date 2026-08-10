@@ -346,6 +346,15 @@ router.get(
  */
 router.get('/my', verifyJwtToken, requireRole('student'), assignmentController.getMyAssignments);
 
+router.get(
+  '/qr/:qrToken',
+  verifyJwtToken,
+  requireRole('student'),
+  param('qrToken').isString().trim().notEmpty().withMessage('Invalid QR'),
+  handleValidationResult,
+  assignmentController.getAssignmentByQrToken
+);
+
 /**
  * @openapi
  * /api/assignments/{id}:

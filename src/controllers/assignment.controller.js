@@ -1178,6 +1178,28 @@ async function getClassAssignments(req, res) {
 
     const filteredAssignments = await filterAssignmentsWithAvailableResources(assignments);
 
+    // Backward-compatible lazy fill for historical assignments. Existing tokens
+    // are never changed, and the schema's unique index remains the final guard.
+    await Promise.all(filteredAssignments.map(async (assignment) => {
+      if (assignment.qrToken) return;
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        assignment.qrToken = uuidv4();
+        try {
+          await assignment.save();
+          return;
+        } catch (err) {
+          assignment.qrToken = undefined;
+          if (err && err.code === 11000 && err.keyPattern && err.keyPattern.qrToken) {
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      throw new Error('Failed to generate unique qr token');
+    }));
+
     // Add submission counts for each assignment
     const assignmentsWithCounts = await Promise.all(
       filteredAssignments.map(async (assignment) => {
@@ -1649,6 +1671,50 @@ async function getFlashcardAssignmentSubmissions(req, res) {
   }
 }
 
+async function getAssignmentByQrToken(req, res) {
+  try {
+    const qrToken = typeof req.params.qrToken === 'string' ? req.params.qrToken.trim() : '';
+    if (!qrToken) {
+      return sendError(res, 400, 'Invalid QR');
+    }
+
+    const studentId = req.user && req.user._id;
+    if (!studentId) {
+      return sendError(res, 401, 'Unauthorized');
+    }
+
+    const assignment = await Assignment.findOne({ qrToken, isActive: true })
+      .populate({
+        path: 'class',
+        populate: { path: 'teacher', select: '_id email displayName photoURL role' }
+      })
+      .populate('teacher', '_id email displayName photoURL role');
+
+    if (!assignment || !assignment.class || assignment.class.isActive === false) {
+      return sendError(res, 404, 'Assignment not found');
+    }
+
+    const [filteredAssignment] = await filterAssignmentsWithAvailableResources([assignment]);
+    if (!filteredAssignment) {
+      return sendError(res, 404, 'Assignment not found');
+    }
+
+    const membership = await Membership.findOne({
+      student: studentId,
+      class: filteredAssignment.class._id,
+      status: 'active'
+    });
+
+    if (!membership) {
+      return sendError(res, 403, 'Forbidden');
+    }
+
+    return sendSuccess(res, filteredAssignment);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to resolve assignment QR');
+  }
+}
+
 async function getStaleEvaluationSummary(req, res) {
   try {
     const assignment = await Assignment.findOne({
@@ -1690,6 +1756,7 @@ module.exports = {
   getClassAssignments,
   getMyAssignments,
   getAssignmentById,
+  getAssignmentByQrToken,
   getAssignmentByIdForTeacher,
   generateRubricDesignerFromPrompt,
   uploadRubricFileForAssignment,

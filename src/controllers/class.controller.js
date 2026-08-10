@@ -1,6 +1,5 @@
 const mongoose = require("mongoose");
 const QRCode = require("qrcode");
-const { v4: uuidv4 } = require("uuid");
 
 const Class = require("../models/class.model");
 const Membership = require("../models/membership.model");
@@ -11,6 +10,7 @@ const WorksheetSubmission = require("../models/WorksheetSubmission");
 const Invitation = require("../models/invitation.model");
 const User = require("../models/user.model");
 const { sendInvitationEmail } = require("../services/email.service");
+const { generateShortJoinCode } = require("../utils/joinCode");
 
 const {
   incrementUsage,
@@ -123,7 +123,7 @@ async function createClass(req, res) {
     }
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const joinCode = uuidv4();
+      const joinCode = generateShortJoinCode();
       const joinUrl = buildJoinUrl(req, joinCode);
       const qrCodeUrl = await QRCode.toDataURL(joinUrl);
 
@@ -305,8 +305,9 @@ async function joinByCode(req, res) {
       return sendError(res, 400, "joinCode is required");
     }
 
+    const normalizedJoinCode = joinCode.trim();
     const classDoc = await Class.findOne({
-      joinCode: joinCode.trim(),
+      joinCode: { $in: [normalizedJoinCode, normalizedJoinCode.toUpperCase()] },
       isActive: true,
     }).select("_id name description createdAt updatedAt");
 

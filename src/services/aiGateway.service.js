@@ -280,7 +280,7 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
         'Content-Type': 'application/json',
         ...(google ? { 'x-goog-api-key': credentialFor(entry.provider, env) } : {
           Authorization: `Bearer ${credentialFor(entry.provider, env)}`,
-          'HTTP-Referer': env.FRONTEND_URL || 'https://comarkers.roznahub.com',
+          'HTTP-Referer': env.FRONTEND_URL || 'http://localhost:4200',
           'X-Title': 'RoznaComarker'
         })
       },
