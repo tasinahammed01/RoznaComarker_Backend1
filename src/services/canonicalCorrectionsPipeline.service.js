@@ -5,6 +5,7 @@ const { buildCanonicalSubmissionTranscript, CANONICAL_TRANSCRIPT_LAYOUT_VERSION 
 const logger = require('../utils/logger');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 const canonicalEvaluation = require('./canonicalEvaluation.service');
+const semanticRubricAssessment = require('./semanticRubricAssessment.service');
 const { safeErrorCode } = require('./canonicalResultState.service');
 const { getSemanticAIConfig, getSemanticAIConfigStatus } = require('./semanticAIClient.service');
 const semanticMetrics = require('./semanticMetrics.service');
@@ -248,9 +249,13 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const totalCorrectionsMs = Date.now() - totalStartedAt;
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id),
     stage: semanticError ? 'aiOnlyFailed' : 'aiOnlyCompleted', durationMs: semanticAiMs,
+    ocrJobId: doc.ocrJobId || null, correctionSourceHash: hash,
     semanticProvider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
     semanticModel: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
+    fallbackIndex: Number.isInteger(terminalAttempt?.fallbackIndex) ? terminalAttempt.fallbackIndex : null,
     attemptCount: gatewayMetrics.attemptCount || 0, timeoutCount: gatewayMetrics.timeoutCount || 0,
+    temperature: semanticConfig.temperature, promptVersion: semantic.SEMANTIC_PROMPT_VERSION,
+    schemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
     promptInputTokenEstimate: semanticRun?.metrics?.promptInputTokenEstimate || null,
     outputTokenCount: semanticRun?.metrics?.outputTokenCount || null,
     semanticReturnedCount, semanticAcceptedCount: persistedSemanticMetrics.acceptedCorrectionCount,
@@ -284,7 +289,16 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
       : evaluationResult?.status === 'failed' ? 'evaluationFailed'
       : evaluationResult?.status === 'reused' ? 'evaluationReused' : 'evaluationSuperseded';
     logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: evaluationStage, durationMs: evaluationMs,
+      ocrJobId: doc.ocrJobId || null, correctionSourceHash: hash,
       provider: evaluationResult?.provider || null, model: evaluationResult?.model || null,
+      attemptCount: Array.isArray(evaluationResult?.attempts) ? evaluationResult.attempts.length : 0,
+      fallbackIndex: Array.isArray(evaluationResult?.attempts) && evaluationResult.attempts.length
+        ? evaluationResult.attempts[evaluationResult.attempts.length - 1].fallbackIndex : null,
+      categoryScores: evaluationResult?.categoryScores
+        ? Object.fromEntries(Object.entries(evaluationResult.categoryScores).map(([key, value]) => [key, value.score])) : null,
+      overallScore: evaluationResult?.overallScore ?? null,
+      promptVersion: semanticRubricAssessment.PROMPT_VERSION,
+      schemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
       errorCode: evaluationResult?.errorCode || null });
   } else {
     logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'evaluationSkipped',

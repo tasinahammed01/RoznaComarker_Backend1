@@ -33,6 +33,9 @@ const logger = require('../utils/logger');
 
 const { bytesToMB, ensureActivePlan, incrementUsage } = require('../middlewares/usage.middleware');
 const { getPublicApiUrl, buildPublicUploadUrl } = require('../utils/publicApiUrl');
+const { showMarksToStudent, redactStudentMarks } = require('../services/assignmentAccessPolicy.service');
+const { scopeCanonicalPages, scopeCanonicalCorrections } = require('../services/canonicalCorrectionResponse.service');
+const { pendingAnalysisState, resetSubmissionAnalysisState } = require('../services/submissionAnalysisLifecycle.service');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -116,10 +119,11 @@ async function uploadHandwrittenForOcr(req, res) {
   }
 }
 
-function sendError(res, statusCode, message) {
+function sendError(res, statusCode, message, code) {
   return res.status(statusCode).json({
     success: false,
-    message
+    message,
+    ...(code ? { code } : {})
   });
 }
 
@@ -371,6 +375,33 @@ async function assertStudentMembership(studentId, classId) {
   return Boolean(membership);
 }
 
+async function enforceResubmissionPermission(req, res, next) {
+  try {
+    const studentId = req.user && req.user._id;
+    if (!studentId) return sendError(res, 401, 'Unauthorized');
+
+    const assignment = req.params?.assignmentId
+      ? await Assignment.findOne({ _id: req.params.assignmentId, isActive: true }).select('allowResubmission')
+      : await Assignment.findOne({ qrToken: String(req.params?.qrToken || '').trim(), isActive: true }).select('allowResubmission');
+    if (!assignment) return next();
+
+    const existing = await Submission.exists({ student: studentId, assignment: assignment._id });
+    if (existing && assignment.allowResubmission !== true) {
+      return sendError(res, 403, 'Another draft is not allowed for this assignment', 'RESUBMISSION_NOT_ALLOWED');
+    }
+    return next();
+  } catch {
+    return sendError(res, 500, 'Failed to validate submission permission');
+  }
+}
+
+async function cleanupUnpersistedRequestFiles(req) {
+  const files = Array.isArray(req.files)
+    ? req.files
+    : Object.values(req.files || {}).flat().filter(Boolean);
+  await Promise.all(files.map((file) => file?.path ? fs.promises.unlink(file.path).catch(() => {}) : Promise.resolve()));
+}
+
 async function upsertSubmission({ req, res, assignment, qrToken }) {
   const studentId = req.user && req.user._id;
   if (!studentId) {
@@ -395,6 +426,11 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
     student: studentId,
     assignment: assignment._id
   });
+
+  if (existing && assignment.allowResubmission !== true) {
+    await cleanupUnpersistedRequestFiles(req);
+    return sendError(res, 403, 'Another draft is not allowed for this assignment', 'RESUBMISSION_NOT_ALLOWED');
+  }
 
   if (!existing) {
     const planDoc = await ensureActivePlan(req.user);
@@ -449,38 +485,9 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       existing.isLate = isLate;
       existing.qrToken = qrToken;
 
-      existing.ocrStatus = 'pending';
-      existing.ocrJobId = new mongoose.Types.ObjectId().toString();
-      existing.ocrText = undefined;
-      existing.rawOcrText = undefined;
-      existing.rawCombinedOcrText = undefined;
-      existing.ocrError = undefined;
-      existing.ocrData = undefined;
-      existing.ocrPages = [];
-      existing.combinedOcrText = undefined;
-      existing.transcriptText = undefined;
-      existing.writingCorrections = [];
-      existing.correctionStatistics = undefined;
-      existing.correctionStatus = 'pending';
-      existing.correctionSourceHash = undefined;
-      existing.correctionVersion = undefined;
-      existing.correctionTranscriptLayoutVersion = undefined;
-      existing.correctionError = undefined;
-      existing.correctionJobId = undefined;
-      existing.semanticSourceKey = undefined;
-      existing.semanticProvider = undefined;
-      existing.semanticModel = undefined;
-      existing.semanticPromptVersion = undefined;
-      existing.semanticMetrics = undefined;
-      existing.evaluationStatus = 'pending';
-      existing.evaluationJobId = undefined;
-      existing.evaluationSourceHash = undefined;
-      existing.evaluationVersion = undefined;
-      existing.evaluationRubricSourceHash = undefined;
-      existing.evaluationError = undefined;
-      existing.rawTranscriptText = undefined;
-      existing.correctionStatistics = undefined;
-      existing.ocrUpdatedAt = new Date();
+      resetSubmissionAnalysisState(existing, {
+        ocrJobId: new mongoose.Types.ObjectId().toString(), now: new Date()
+      });
 
       const saved = await existing.save();
 
@@ -498,7 +505,8 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
         ocrPromise
           .then(() => {
             // Auto-generate rubric after OCR completes
-            autoGenerateRubricDesignerForSubmission({ submissionId: saved._id })
+            autoGenerateRubricDesignerForSubmission({ submissionId: saved._id,
+              expectedOcrJobId: saved.ocrJobId })
               .catch(() => {}); // Ignore errors, don't block upload
           })
           .catch(() => {});
@@ -570,9 +578,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       submittedAt: now,
       isLate,
       qrToken,
-      ocrStatus: 'pending',
-      ocrJobId: new mongoose.Types.ObjectId().toString(),
-      ocrUpdatedAt: new Date()
+      ...pendingAnalysisState({ ocrJobId: new mongoose.Types.ObjectId().toString(), now: new Date() })
     });
 
     await incrementUsage(studentId, { submissions: 1, storageMB: uploadedMB });
@@ -589,7 +595,8 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       ocrPromise
         .then(() => {
           // Auto-generate rubric after OCR completes
-          autoGenerateRubricDesignerForSubmission({ submissionId: created._id })
+          autoGenerateRubricDesignerForSubmission({ submissionId: created._id,
+            expectedOcrJobId: created.ocrJobId })
             .catch(() => {}); // Ignore errors, don't block upload
         })
         .catch(() => {});
@@ -877,9 +884,14 @@ async function getOcrCorrections(req, res) {
       ocrStatus: doc.ocrStatus || null
     };
 
+    let marksVisible = true;
     if (user.role === 'student') {
       if (String(doc.student) !== String(user._id)) {
         return sendError(res, 403, 'Forbidden');
+      }
+      if (kind === 'submission') {
+        const assignmentPolicy = await Assignment.findById(doc.assignment).select('showMarksToStudent').lean();
+        marksVisible = showMarksToStudent(assignmentPolicy);
       }
     } else if (user.role === 'teacher') {
       if (kind !== 'submission') {
@@ -918,9 +930,7 @@ async function getOcrCorrections(req, res) {
     const hasRequestedFile = Boolean(requestedFileId);
 
     let pages = Array.isArray(doc.ocrPages) ? doc.ocrPages : [];
-    let activePages = hasRequestedFile
-      ? pages.filter((p) => p && p.fileId && String(p.fileId) === requestedFileId)
-      : pages;
+    let activePages = scopeCanonicalPages(pages, requestedFileId);
 
     if (hasRequestedFile && !activePages.length) {
       return res.status(409).json({ success: false, message: 'OCR data for the requested file is not available', data: {
@@ -944,13 +954,13 @@ async function getOcrCorrections(req, res) {
     const resultState = buildCanonicalResultState({ submission: doc, feedback: evaluationDoc });
     const hasCanonicalCorrections = resultState.correctionCurrent && Array.isArray(doc.writingCorrections);
     const allCorrections = hasCanonicalCorrections ? doc.writingCorrections : [];
-    const corrections = hasRequestedFile ? allCorrections.filter((c) => String(c.fileId || '') === requestedFileId) : allCorrections;
+    const corrections = scopeCanonicalCorrections(allCorrections, requestedFileId);
     const statistics = resultState.statistics || (hasCanonicalCorrections ? require('../services/correctionCanonical.service').statistics(allCorrections) : null);
     const evaluationCurrent = resultState.evaluationCurrent;
     res.set('Cache-Control', 'private, no-store');
     res.set('Pragma', 'no-cache');
 
-    return sendSuccess(res, {
+    const responseData = {
       processing: false,
       corrections,
       ocr,
@@ -1003,8 +1013,10 @@ async function getOcrCorrections(req, res) {
         strengths: evaluationDoc.detailedFeedback?.strengths || [], areasForImprovement: evaluationDoc.detailedFeedback?.areasForImprovement || [],
         actionSteps: evaluationDoc.detailedFeedback?.actionSteps || [], source: evaluationDoc.evaluationSource || null } : null,
       ocrError: doc.ocrError || null,
-      fileId: hasRequestedFile ? requestedFileId : null
-    });
+      fileId: hasRequestedFile ? requestedFileId : null,
+      marksVisible
+    };
+    return sendSuccess(res, marksVisible ? responseData : redactStudentMarks(responseData));
   } catch (err) {
     logger.error({ message: 'Failed to fetch OCR corrections', ...logContext, error: err?.message, stack: err?.stack });
     const message =
@@ -1106,6 +1118,7 @@ async function retryCanonicalEvaluation(req, res) {
 }
 
 module.exports = {
+  enforceResubmissionPermission,
   submitByAssignmentId,
   submitByQrToken,
   getSubmissionsByAssignment,

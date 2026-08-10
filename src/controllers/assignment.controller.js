@@ -627,7 +627,7 @@ async function createAssignment(req, res) {
   try {
     const {
       title, writingType, instructions, rubric, rubrics, deadline,
-      classId, allowLateResubmission,
+      classId, allowLateResubmission, showMarksToStudent, allowResubmission,
       /** PART 1 — resource fields for flashcard / worksheet assignments */
       resourceType, resourceId
     } = req.body || {};
@@ -665,6 +665,12 @@ async function createAssignment(req, res) {
 
     if (typeof allowLateResubmission !== 'undefined' && typeof allowLateResubmission !== 'boolean') {
       return sendError(res, 400, 'allowLateResubmission must be a boolean');
+    }
+    if (typeof showMarksToStudent !== 'undefined' && typeof showMarksToStudent !== 'boolean') {
+      return sendError(res, 400, 'showMarksToStudent must be a boolean');
+    }
+    if (typeof allowResubmission !== 'undefined' && typeof allowResubmission !== 'boolean') {
+      return sendError(res, 400, 'allowResubmission must be a boolean');
     }
 
     const teacherId = req.user && req.user._id;
@@ -713,7 +719,9 @@ async function createAssignment(req, res) {
           class: classDoc._id,
           teacher: teacherId,
           qrToken,
-          allowLateResubmission: typeof allowLateResubmission === 'boolean' ? allowLateResubmission : undefined
+          allowLateResubmission: typeof allowLateResubmission === 'boolean' ? allowLateResubmission : undefined,
+          showMarksToStudent: typeof showMarksToStudent === 'boolean' ? showMarksToStudent : undefined,
+          allowResubmission: typeof allowResubmission === 'boolean' ? allowResubmission : undefined
         });
 
         await incrementUsage(teacherId, { assignments: 1 });
@@ -792,7 +800,8 @@ async function createAssignment(req, res) {
 async function updateAssignment(req, res) {
   try {
     const { id } = req.params;
-    const { title, writingType, instructions, rubric, rubrics, deadline, allowLateResubmission } = req.body || {};
+    const { title, writingType, instructions, rubric, rubrics, deadline, allowLateResubmission,
+      showMarksToStudent, allowResubmission } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return sendError(res, 400, 'Invalid assignment id');
@@ -869,6 +878,20 @@ async function updateAssignment(req, res) {
         return sendError(res, 400, 'allowLateResubmission must be a boolean');
       }
       assignment.allowLateResubmission = allowLateResubmission;
+    }
+
+    if (typeof showMarksToStudent !== 'undefined') {
+      if (typeof showMarksToStudent !== 'boolean') {
+        return sendError(res, 400, 'showMarksToStudent must be a boolean');
+      }
+      assignment.showMarksToStudent = showMarksToStudent;
+    }
+
+    if (typeof allowResubmission !== 'undefined') {
+      if (typeof allowResubmission !== 'boolean') {
+        return sendError(res, 400, 'allowResubmission must be a boolean');
+      }
+      assignment.allowResubmission = allowResubmission;
     }
 
     const saved = await assignment.save();

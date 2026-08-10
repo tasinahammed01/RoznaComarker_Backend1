@@ -18,6 +18,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { v4: uuidv4 } = require("uuid");
+const { showMarksToStudent } = require("../services/assignmentAccessPolicy.service");
 
 async function getSubmissionWithPermissionsOrThrow({ user, submissionId }) {
   if (!mongoose.Types.ObjectId.isValid(submissionId)) {
@@ -65,13 +66,6 @@ async function downloadSubmissionPdf(req, res, next) {
   const requestStartedAt = Date.now();
   let outputPath = null;
   try {
-    if (process.env.NODE_ENV === "test" && process.env.ENABLE_TEST_PDF_HTTP !== "true") {
-      throw new ApiError(
-        501,
-        "PDF generation is not available in test environment",
-      );
-    }
-
     // Lazy-load the read-only browser report pipeline during an authorized download.
     // eslint-disable-next-line global-require
     const { generateSubmissionFeedbackPdf } = require("../modules/submissionFeedbackPdfGenerator");
@@ -87,6 +81,23 @@ async function downloadSubmissionPdf(req, res, next) {
       user: req.user,
       submissionId,
     });
+
+    if (req.user?.role === "student") {
+      const assignmentId = submission.assignment?._id || submission.assignment;
+      const assignmentPolicy = assignmentId
+        ? await Assignment.findById(assignmentId).select("showMarksToStudent").lean()
+        : null;
+      if (!showMarksToStudent(assignmentPolicy)) {
+        throw new ApiError(403, "Marks have not been released for this assignment.");
+      }
+    }
+
+    if (process.env.NODE_ENV === "test" && process.env.ENABLE_TEST_PDF_HTTP !== "true") {
+      throw new ApiError(
+        501,
+        "PDF generation is not available in test environment",
+      );
+    }
 
     // Feedback collection is the single source of truth.
     // Do not rely on `submission.feedback` being present/populated.

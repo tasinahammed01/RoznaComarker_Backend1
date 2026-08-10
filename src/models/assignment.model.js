@@ -88,6 +88,14 @@ const assignmentSchema = new Schema(
       type: Boolean,
       default: false
     },
+    showMarksToStudent: {
+      type: Boolean,
+      default: true
+    },
+    allowResubmission: {
+      type: Boolean,
+      default: false
+    },
     isActive: {
       type: Boolean,
       default: true

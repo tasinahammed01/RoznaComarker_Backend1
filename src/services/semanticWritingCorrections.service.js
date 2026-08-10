@@ -378,7 +378,9 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
 function semanticSourceKey({ correctionSourceHash, config = getSemanticAIConfig(), legendVersion = defaultLegend().version,
   legendContentHash = null, assignmentHash = null, deductionPolicyVersion = canonical.DEDUCTION_POLICY_VERSION }) {
   return crypto.createHash('sha256').update(JSON.stringify({ correctionSourceHash, provider: config.provider, model: config.model,
-    fallback: config.fallback, promptVersion: SEMANTIC_PROMPT_VERSION, schemaVersion: SEMANTIC_SCHEMA_VERSION,
+    chain: config.chain, fallback: config.fallback, maxOutputTokens: config.maxOutputTokens,
+    temperature: Number(config.temperature), responseFormat: config.responseFormat, thinkingLevel: config.thinkingLevel,
+    promptVersion: SEMANTIC_PROMPT_VERSION, schemaVersion: SEMANTIC_SCHEMA_VERSION,
     policyVersion: policy.POLICY_VERSION, categoryReviewPolicyVersion: CATEGORY_REVIEW_POLICY_VERSION,
     confidenceThresholds: policy.confidenceThresholds(), legendVersion, legendContentHash, assignmentHash,
     deductionPolicyVersion })).digest('hex');

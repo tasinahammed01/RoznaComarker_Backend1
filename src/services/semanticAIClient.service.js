@@ -8,6 +8,9 @@ const SEMANTIC_TRANSIENT_STATUSES = new Set([402, 408, 429, 500, 502, 503, 504])
 const GOOGLE_SEMANTIC_MODELS = new Set(); // retained export; models are no longer allowlisted
 const GOOGLE_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high']);
 const MAX_SEMANTIC_OUTPUT_TOKENS = 65536;
+const ASSESSMENT_TEMPERATURE = 0;
+const ASSESSMENT_RESPONSE_FORMAT = 'json';
+const ASSESSMENT_THINKING_LEVEL = 'minimal';
 
 const integer = (value, fallback, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) => {
   const parsed = Number.parseInt(value, 10);
@@ -29,6 +32,9 @@ function getSemanticAIConfig(env = process.env) {
     fallbackRetries: global.fallbackRetries,
     retryDelayMs: global.retryDelayMs,
     minAttemptBudgetMs: 1,
+    temperature: ASSESSMENT_TEMPERATURE,
+    responseFormat: ASSESSMENT_RESPONSE_FORMAT,
+    thinkingLevel: ASSESSMENT_THINKING_LEVEL,
     maxOutputTokens: integer(env.SEMANTIC_AI_MAX_OUTPUT_TOKENS, 8000, 256, MAX_SEMANTIC_OUTPUT_TOKENS),
     fallback: global.chain[1] || null,
     approvedModels: global.chain.map((entry) => entry.model)
@@ -62,8 +68,8 @@ function approvedFallback(config) { return Boolean(config?.chain?.[1] || config?
 
 async function providerAttempt(options) {
   const entry = { provider: options.provider, model: options.model, fallbackIndex: 0 };
-  const result = await gateway.providerAttempt({ ...options, entry, temperature: 0.1,
-    responseFormat: 'json', now: options.now || Date.now });
+  const result = await gateway.providerAttempt({ ...options, entry, temperature: ASSESSMENT_TEMPERATURE,
+    responseFormat: ASSESSMENT_RESPONSE_FORMAT, now: options.now || Date.now });
   return { ...result, provider: entry.provider, model: entry.model,
     hasText: Boolean(result.content), responseTextLength: result.content.length,
     timings: { semanticProviderMs: result.durationMs, semanticTimeToFirstByteMs: null,
@@ -72,11 +78,12 @@ async function providerAttempt(options) {
 
 async function runSemanticCompletion({ messages, config = getSemanticAIConfig(), fetchImpl = global.fetch,
   env = process.env, now = Date.now, sleepFn, validate, feature = 'semantic', responseSchema,
-  schemaName, onAttempt, onRetry } = {}) {
+  schemaName, metadata, onAttempt, onRetry } = {}) {
   const chain = config.chain || gateway.getAssessmentAIConfig(env).chain;
   const result = await gateway.generate({ feature, messages, maxOutputTokens: config.maxOutputTokens,
-    responseFormat: 'json', responseSchema, schemaName, googleThinkingLevel: 'minimal',
-    validate, fetchImpl, env, now, sleepFn, onAttempt, onRetry,
+    temperature: ASSESSMENT_TEMPERATURE, responseFormat: ASSESSMENT_RESPONSE_FORMAT,
+    responseSchema, schemaName, googleThinkingLevel: ASSESSMENT_THINKING_LEVEL,
+    validate, metadata, fetchImpl, env, now, sleepFn, onAttempt, onRetry,
     config: {
       chain,
       attemptTimeoutMs: config.attemptTimeoutMs,
@@ -101,6 +108,7 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
 }
 
 module.exports = { SEMANTIC_TRANSIENT_STATUSES, GOOGLE_SEMANTIC_MODELS, GOOGLE_THINKING_LEVELS,
-  MAX_SEMANTIC_OUTPUT_TOKENS, getSemanticAIConfig, getSemanticAIConfigStatus, credentialFor, endpointFor,
+  MAX_SEMANTIC_OUTPUT_TOKENS, ASSESSMENT_TEMPERATURE, ASSESSMENT_RESPONSE_FORMAT,
+  ASSESSMENT_THINKING_LEVEL, getSemanticAIConfig, getSemanticAIConfigStatus, credentialFor, endpointFor,
   retryAfterMs, classifyTransient, classifyProviderFailure, approvedFallback, providerAttempt,
   runSemanticCompletion };

@@ -44,6 +44,7 @@ describe('semantic assessment-chain facade', () => {
   test('reads the assessment chain and semantic token limit only', () => {
     expect(getSemanticAIConfig(env())).toMatchObject({
       provider: 'openrouter', model: 'openai/gpt-4.1', maxOutputTokens: 1800,
+      temperature: 0, responseFormat: 'json', thinkingLevel: 'minimal',
       chain: [
         { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 0 },
         { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 1 }
@@ -58,6 +59,7 @@ describe('semantic assessment-chain facade', () => {
     expect(result.content).toBe('{"ok":true}');
     expect(result.provider).toBe('openrouter');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).temperature).toBe(0);
   });
 
   test('payment failure selects the configured fallback', async () => {
@@ -72,6 +74,7 @@ describe('semantic assessment-chain facade', () => {
     expect(result.metrics.attempts).toHaveLength(2);
     expect(attempts).toHaveLength(2);
     expect(attempts.map((attempt) => attempt.model)).toEqual(['openai/gpt-4.1', 'openai/gpt-4.1-mini']);
+    expect(fetchImpl.mock.calls.map((call) => JSON.parse(call[1].body).temperature)).toEqual([0, 0]);
     expect(JSON.parse(fetchImpl.mock.calls[1][1].body)).not.toHaveProperty('thinkingConfig');
   });
 

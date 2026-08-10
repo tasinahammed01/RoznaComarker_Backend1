@@ -41,7 +41,8 @@ function statusFor(error) {
   return 502;
 }
 
-async function completeRubric({ systemInstruction, userPrompt, assignmentId, submissionId }, dependencies = {}) {
+async function completeRubric({ systemInstruction, userPrompt, assignmentId, submissionId, jobId,
+  ocrJobId, sourceHash, caller = 'explicit_rubric_request', purpose = 'rubric_designer' }, dependencies = {}) {
   const env = dependencies.env || process.env;
   const config = dependencies.config || getRubricAiConfig(env);
   if (!getSemanticAIConfigStatus(config, env).configured) throw new RubricCompletionError('AI_PROVIDER_NOT_CONFIGURED', 501, 'AI provider not configured');
@@ -60,7 +61,8 @@ async function completeRubric({ systemInstruction, userPrompt, assignmentId, sub
       messages: [{ role: 'system', content: systemInstruction }, { role: 'user', content: userPrompt }], config, env,
       fetchImpl: dependencies.fetchImpl || global.fetch, sleepFn: dependencies.sleepFn,
       validate: parseCandidate, feature: 'rubric_completion', responseSchema: RUBRIC_SCHEMA,
-      schemaName: 'rubric_generation'
+      schemaName: 'rubric_generation', metadata: { assignmentId, submissionId, jobId,
+        ocrJobId, sourceHash, caller, purpose }
     });
     let rubric = validateRubric(completion.value || parseCandidate(completion.content));
     if (!rubric) {
@@ -78,7 +80,8 @@ async function completeRubric({ systemInstruction, userPrompt, assignmentId, sub
             'Invalid or incomplete JSON rubric returned from AI');
           return repaired;
         }, feature: 'rubric_completion_repair', responseSchema: RUBRIC_SCHEMA,
-        schemaName: 'rubric_generation'
+        schemaName: 'rubric_generation', metadata: { assignmentId, submissionId, jobId,
+          ocrJobId, sourceHash, caller, purpose }
       });
       rubric = completion.value || validateRubric(parseCandidate(completion.content));
     }
@@ -88,7 +91,8 @@ async function completeRubric({ systemInstruction, userPrompt, assignmentId, sub
       attempt: completion.metrics?.attemptCount || 1, durationMs: Date.now() - startedAt, httpStatus: 200,
       finishReason: completion.finishReason || null, candidateCount: completion.candidateCount ?? null,
       responseTextLength: completion.responseTextLength ?? String(completion.content || '').length,
-      errorCode: null, assignmentId: assignmentId || null, submissionId: submissionId || null });
+      errorCode: null, assignmentId: assignmentId || null, submissionId: submissionId || null,
+      jobId: jobId || null, ocrJobId: ocrJobId || null, sourceHash: sourceHash || null, caller, purpose });
     return rubric;
   } catch (error) {
     const normalized = error instanceof RubricCompletionError ? error
@@ -103,7 +107,8 @@ async function completeRubric({ systemInstruction, userPrompt, assignmentId, sub
       attempt: error?.attempt || 0, durationMs: Date.now() - startedAt, httpStatus: normalized.httpStatus || null,
       finishReason: normalized.finishReason || null, candidateCount: normalized.candidateCount ?? null,
       responseTextLength: normalized.responseTextLength ?? null, errorCode: normalized.code,
-      assignmentId: assignmentId || null, submissionId: submissionId || null });
+      assignmentId: assignmentId || null, submissionId: submissionId || null,
+      jobId: jobId || null, ocrJobId: ocrJobId || null, sourceHash: sourceHash || null, caller, purpose });
     throw normalized;
   }
 }

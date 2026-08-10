@@ -10,6 +10,7 @@ const { getNormalizedSubmissionTranscript, normalizeOcrTranscript } = require('.
 const generationAI = require('./adaptivePracticeGenerationAI.service');
 const { DEFINITIONS } = require('./writingCategoryDefinitions.service');
 const logger = require('../utils/logger');
+const { showMarksToStudent, sanitizeAdaptiveSession } = require('./assignmentAccessPolicy.service');
 
 const {
   ADAPTIVE_PRACTICE_THRESHOLD,
@@ -109,8 +110,9 @@ async function loadOwnedSource(submissionId, studentId) {
     skills: assessedSkills,
     assessmentVersion: feedback.assessmentVersion
   });
-  const assignment = await Assignment.findById(submission.assignment).select('title instructions').lean();
-  return { submission, feedback, transcript, transcriptFingerprint, sourceFingerprint, assessedSkills, weakSkills, assignment };
+  const assignment = await Assignment.findById(submission.assignment).select('title instructions showMarksToStudent').lean();
+  return { submission, feedback, transcript, transcriptFingerprint, sourceFingerprint, assessedSkills, weakSkills, assignment,
+    marksVisible: showMarksToStudent(assignment) };
 }
 
 function sessionResponse(state, session = null) {
@@ -119,10 +121,10 @@ function sessionResponse(state, session = null) {
   return { state, session, eligibilityReason };
 }
 
-async function sessionResponseWithProgress(state, session = null) {
+async function sessionResponseWithProgress(state, session = null, marksVisible = true) {
   if (!session) return sessionResponse(state);
   const { getProgressSummary } = require('./adaptivePracticeAttempt.service');
-  return { state, session, progress: await getProgressSummary(session) };
+  return { state, session: sanitizeAdaptiveSession(session, marksVisible), progress: await getProgressSummary(session) };
 }
 
 async function getCurrentSession(submissionId, studentId) {
@@ -134,7 +136,7 @@ async function getCurrentSession(submissionId, studentId) {
     sourceFingerprint: source.sourceFingerprint
   }).lean();
   if (!session) return sessionResponse('idle');
-  return sessionResponseWithProgress(session.status === 'ready' ? 'ready' : session.status === 'failed' ? 'failed' : 'generating', session);
+  return sessionResponseWithProgress(session.status === 'ready' ? 'ready' : session.status === 'failed' ? 'failed' : 'generating', session, source.marksVisible);
 }
 
 function bounded(value, max) {
@@ -248,9 +250,9 @@ async function generateSession(submissionId, studentId, options = {}) {
   if (!source.weakSkills.length) return sessionResponse('no-weaknesses');
   const key = { submissionId: source.submission._id, studentId, sourceFingerprint: source.sourceFingerprint };
   let session = await AdaptivePracticeSession.findOne(key);
-  if (session?.status === 'ready') return sessionResponseWithProgress('ready', session.toObject());
-  if (session?.status === 'generating' && Date.now() - session.updatedAt.getTime() < ADAPTIVE_PRACTICE_STALE_MS) return sessionResponse('generating', session.toObject());
-  if (session?.status === 'failed' && !options.retry) return sessionResponse('failed', session.toObject());
+  if (session?.status === 'ready') return sessionResponseWithProgress('ready', session.toObject(), source.marksVisible);
+  if (session?.status === 'generating' && Date.now() - session.updatedAt.getTime() < ADAPTIVE_PRACTICE_STALE_MS) return sessionResponse('generating', sanitizeAdaptiveSession(session.toObject(), source.marksVisible));
+  if (session?.status === 'failed' && !options.retry) return sessionResponse('failed', sanitizeAdaptiveSession(session.toObject(), source.marksVisible));
 
   const promptStarted = Date.now();
   const messages = buildMessages(source);
@@ -277,10 +279,10 @@ async function generateSession(submissionId, studentId, options = {}) {
       { returnDocument: 'after', upsert: !session, setDefaultsOnInsert: true }
     );
   } catch (error) {
-    if (error?.code === 11000) return sessionResponse('generating', (await AdaptivePracticeSession.findOne(key).lean()));
+    if (error?.code === 11000) return sessionResponse('generating', sanitizeAdaptiveSession(await AdaptivePracticeSession.findOne(key).lean(), source.marksVisible));
     throw error;
   }
-  if (!session) return sessionResponse('generating', await AdaptivePracticeSession.findOne(key).lean());
+  if (!session) return sessionResponse('generating', sanitizeAdaptiveSession(await AdaptivePracticeSession.findOne(key).lean(), source.marksVisible));
 
   let providerAttemptCount = 0;
   let repairAttemptCount = 0;
@@ -351,7 +353,7 @@ async function generateSession(submissionId, studentId, options = {}) {
     session.generation.metrics.databasePersistenceMs = Date.now() - persistenceStarted;
     session.generation.metrics.totalMs = Date.now() - totalStarted;
     logger.metric({ event: 'adaptive_practice_generation_timing', feature: 'adaptive_practice_generation', outcome: 'ready', submissionId: String(source.submission._id), provider: session.generation.provider, model: session.generation.model, ...session.generation.metrics });
-    return sessionResponseWithProgress('ready', session.toObject());
+    return sessionResponseWithProgress('ready', session.toObject(), source.marksVisible);
   } catch (error) {
     const attempts = Array.isArray(error?.attempts) ? error.attempts : [];
     providerAttemptCount = Number(error?.attemptCount) || attempts.length || providerAttemptCount;

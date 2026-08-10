@@ -34,14 +34,17 @@ function sanitizeRubricDesignerCriteria(rubricDesigner) {
   return { ...d, criteria: filtered };
 }
 
-async function autoGenerateRubricDesignerForSubmission({ submissionId }) {
+async function autoGenerateRubricDesignerForSubmission({ submissionId, expectedOcrJobId = null }) {
   if (!mongoose.Types.ObjectId.isValid(submissionId)) {
     return { ok: false, skipped: true, reason: 'invalid_submission_id' };
   }
 
-  const submission = await Submission.findById(submissionId);
+  const submission = expectedOcrJobId
+    ? await Submission.findOne({ _id: submissionId, ocrJobId: expectedOcrJobId })
+    : await Submission.findById(submissionId);
   if (!submission) {
-    return { ok: false, skipped: true, reason: 'submission_not_found' };
+    return { ok: false, skipped: true,
+      reason: expectedOcrJobId ? 'ocr_job_superseded' : 'submission_not_found' };
   }
 
   const assignment = await Assignment.findById(submission.assignment);
@@ -111,13 +114,21 @@ Rules:
   let rubricDesigner;
   try {
     rubricDesigner = await completeRubric({ systemInstruction, userPrompt: prompt,
-      assignmentId: String(assignment._id), submissionId: String(submission._id) });
+      assignmentId: String(assignment._id), submissionId: String(submission._id),
+      jobId: expectedOcrJobId || submission.ocrJobId || null,
+      ocrJobId: expectedOcrJobId || submission.ocrJobId || null,
+      sourceHash: submission.correctionSourceHash || null,
+      caller: 'autoRubricDesignerForSubmission', purpose: 'independent_submission_rubric_designer' });
   } catch (error) {
     return { ok: false, skipped: error?.code === 'AI_PROVIDER_NOT_CONFIGURED',
       reason: error?.code === 'AI_PROVIDER_NOT_CONFIGURED' ? 'ai_not_configured' : 'ai_failed', errorCode: error?.code || 'RUBRIC_PROVIDER_FAILED' };
   }
 
   const sanitizedRubricDesigner = sanitizeRubricDesignerCriteria(rubricDesigner);
+
+  if (expectedOcrJobId && !(await Submission.exists({ _id: submission._id, ocrJobId: expectedOcrJobId }))) {
+    return { ok: false, skipped: true, reason: 'ocr_job_superseded' };
+  }
 
   await SubmissionFeedback.findOneAndUpdate(
     { submissionId: submission._id },

@@ -99,7 +99,7 @@ function getAssessmentAIConfig(env = process.env, options = {}) {
     AI_FALLBACK_1_PROVIDER: text(env.ASSESSMENT_AI_FALLBACK_1_PROVIDER) || 'openrouter',
     AI_FALLBACK_1_MODEL: text(env.ASSESSMENT_AI_FALLBACK_1_MODEL) || 'openai/gpt-4.1-mini',
     // Assessment is intentionally a closed paid chain. Never inherit or append
-    // global/free/Google fallbacks beyond the declared GPT-4.1-mini slot.
+    // global/free fallbacks beyond the one explicitly declared assessment fallback.
     AI_FALLBACK_2_PROVIDER: '',
     AI_FALLBACK_2_MODEL: '',
     AI_FALLBACK_3_PROVIDER: '',
@@ -336,6 +336,10 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
     throw new TypeError('AI gateway requires messages and fetch.');
   }
   const started = now();
+  const requestMetadata = metadata && typeof metadata === 'object'
+    ? Object.fromEntries(Object.entries(metadata).filter(([key]) =>
+      /^(?:submissionId|assignmentId|jobId|ocrJobId|sourceHash|caller|purpose|requestId)$/u.test(key)))
+    : {};
   const deadline = started + config.totalBudgetMs;
   const attempts = [];
   const legacyRetries = Number.isInteger(config.retriesPerModel) ? config.retriesPerModel : 0;
@@ -400,7 +404,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
         const gatewayMetadata = { provider: entry.provider, model: entry.model, attemptCount,
           fallbackIndex: entry.fallbackIndex, fallbackUsed: entry.fallbackIndex > 0,
           durationMs: now() - started, usage: result.usage || null, attempts };
-        logger.info({ message: 'AI gateway generation completed', feature, ...gatewayMetadata,
+        logger.info({ message: 'AI gateway generation completed', feature, ...requestMetadata, ...gatewayMetadata,
           usage: undefined, attempts: attempts.map((a) => ({ ...a })) });
         return { value, content: result.content, ...gatewayMetadata, metadata: gatewayMetadata };
       } catch (error) {
@@ -415,7 +419,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
           remainingBudgetMs: Math.max(0, deadline - now()), maxOutputTokens,
           retryDelayMs: null, ...failureMetadata };
         attempts.push(attemptRecord);
-        logger.warn({ message: 'AI gateway attempt failed', feature, attemptNumber: attemptCount,
+        logger.warn({ message: 'AI gateway attempt failed', feature, ...requestMetadata, attemptNumber: attemptCount,
           maxAttempts,
           provider: entry.provider, model: entry.model, fallbackIndex: entry.fallbackIndex,
           retryIndex: retry, durationMs: now() - attemptStarted, attemptTimeoutMs: timeout,
@@ -439,7 +443,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
             break;
           }
           attemptRecord.retryDelayMs = requested;
-          logger.info({ message: 'AI gateway retry scheduled', feature,
+          logger.info({ message: 'AI gateway retry scheduled', feature, ...requestMetadata,
             attemptNumber: attemptCount, maxAttempts, provider: entry.provider,
             model: entry.model, fallbackIndex: entry.fallbackIndex, retryIndex: retry,
             durationMs: attemptRecord.durationMs, attemptTimeoutMs: timeout,
@@ -472,9 +476,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
   error.finalFailureCode = attempts[attempts.length - 1]?.code || lastError?.code || error.code;
   error.validationDiagnostics = lastError?.cause?.diagnostics || lastError?.diagnostics || null;
   error.feature = feature;
-  error.metadata = metadata && typeof metadata === 'object'
-    ? Object.fromEntries(Object.entries(metadata).filter(([key]) => /^(?:submissionId|jobId|requestId)$/u.test(key)))
-    : {};
+  error.metadata = requestMetadata;
   throw error;
 }
 

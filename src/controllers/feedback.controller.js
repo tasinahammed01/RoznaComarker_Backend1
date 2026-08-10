@@ -25,6 +25,7 @@ const { buildSubmissionCorrectionStatistics, countSubmissionCorrections } = requ
 const { buildCanonicalResultState, buildPreviousEvaluation } = require("../services/canonicalResultState.service");
 const { currentEvaluationSettings } = require("../services/evaluationSettingsContext.service");
 const { resolveTeacherComments } = require("../services/teacherComments.service");
+const { showMarksToStudent, redactStudentMarks } = require("../services/assignmentAccessPolicy.service");
 const { TEACHER_COMMENTS_MAX_LENGTH } = require("../models/SubmissionFeedback");
 const aiGateway = require("../services/aiGateway.service");
 const { RUBRIC_SCHEMA, DETAILED_FEEDBACK_SCHEMA } = require("../services/structuredOutputSchemas.service");
@@ -883,6 +884,7 @@ async function getSubmissionFeedback(req, res) {
     });
     const assignment = await Assignment.findById(submission.assignment).lean();
     const currentSettings = assignment ? await currentEvaluationSettings(assignment) : null;
+    const marksVisible = role !== "student" || showMarksToStudent(assignment);
 
     // Normalize legacy feedback records if they exist
     if (feedback) {
@@ -919,20 +921,22 @@ async function getSubmissionFeedback(req, res) {
     res.set('Pragma', 'no-cache');
     if (!feedback) {
       const resultState = buildCanonicalResultState({ submission, feedback: null, currentSettings });
-      return sendSuccess(res, {
+      const responseData = {
         submissionId: String(submission._id),
         teacherComments,
         ...resultState, overallScore: null, grade: null, rubricScores: null, detailedFeedback: null,
         correctionStats: correctionStatistics, correctionStatistics,
-        evaluationSourceHash: null, correctionSourceHash: submission.correctionSourceHash || null
-      });
+        evaluationSourceHash: null, correctionSourceHash: submission.correctionSourceHash || null,
+        marksVisible
+      };
+      return sendSuccess(res, marksVisible ? responseData : redactStudentMarks(responseData));
     }
     const currentFeedback = withCanonicalStatistics(feedback);
     const resultState = buildCanonicalResultState({ submission, feedback: currentFeedback, currentSettings });
     const previousEvaluation = buildPreviousEvaluation(currentFeedback, resultState);
     const { teacherCommentsUpdatedBy: _internalTeacherCommentsUpdatedBy, ...publicFeedback } = currentFeedback;
     const safeFeedback = resultState.evaluationCurrent ? publicFeedback : {};
-    return sendSuccess(res, {
+    const responseData = {
       submissionId: String(submission._id),
       ...safeFeedback, ...resultState,
       previousEvaluation,
@@ -942,8 +946,10 @@ async function getSubmissionFeedback(req, res) {
       detailedFeedback: resultState.detailedFeedbackCurrent ? currentFeedback.detailedFeedback : null,
       correctionStats: correctionStatistics, correctionStatistics,
       evaluationSourceHash: resultState.evaluationCurrent ? (currentFeedback.evaluationSourceHash || submission.correctionSourceHash) : null,
-      correctionSourceHash: submission.correctionSourceHash || null
-    });
+      correctionSourceHash: submission.correctionSourceHash || null,
+      marksVisible
+    };
+    return sendSuccess(res, marksVisible ? responseData : redactStudentMarks(responseData));
 
     await Submission.updateOne(
       { _id: submission._id },
@@ -4087,7 +4093,9 @@ async function getFeedbackBySubmissionForStudent(req, res) {
 
     const populated = await populateFeedback(feedback._id);
     const withEval = await attachEvaluationToFeedbackDoc(populated);
-    return sendSuccess(res, withEval);
+    const assignment = await Assignment.findById(submission.assignment).select('showMarksToStudent').lean();
+    const marksVisible = showMarksToStudent(assignment);
+    return sendSuccess(res, marksVisible ? withEval : redactStudentMarks(withEval));
   } catch (err) {
     return sendError(res, 500, "Failed to fetch feedback");
   }
