@@ -91,6 +91,7 @@ router.post(
   body('allowLateResubmission').optional().isBoolean().withMessage('allowLateResubmission must be a boolean'),
   body('showMarksToStudent').optional().isBoolean().withMessage('showMarksToStudent must be a boolean'),
   body('allowResubmission').optional().isBoolean().withMessage('allowResubmission must be a boolean'),
+  body('requireAdaptiveBeforeResubmission').optional().isBoolean().withMessage('requireAdaptiveBeforeResubmission must be a boolean'),
   body('resourceType').optional().isIn(['essay', 'flashcard', 'worksheet']).withMessage('resourceType must be essay, flashcard, or worksheet'),
   body('resourceId').optional({ nullable: true }).isString().withMessage('resourceId must be a string'),
   handleValidationResult,
@@ -153,6 +154,7 @@ router.patch(
   body('allowLateResubmission').optional().isBoolean().withMessage('allowLateResubmission must be a boolean'),
   body('showMarksToStudent').optional().isBoolean().withMessage('showMarksToStudent must be a boolean'),
   body('allowResubmission').optional().isBoolean().withMessage('allowResubmission must be a boolean'),
+  body('requireAdaptiveBeforeResubmission').optional().isBoolean().withMessage('requireAdaptiveBeforeResubmission must be a boolean'),
   handleValidationResult,
   assignmentController.updateAssignment
 );

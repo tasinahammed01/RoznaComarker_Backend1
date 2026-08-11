@@ -12,6 +12,7 @@ describe('Phase 2 access policy units', () => {
     const assignment = new Assignment();
     expect(assignment.showMarksToStudent).toBe(true);
     expect(assignment.allowResubmission).toBe(false);
+    expect(assignment.requireAdaptiveBeforeResubmission).toBe(false);
     expect(showMarksToStudent(undefined)).toBe(true);
     expect(showMarksToStudent({})).toBe(true);
     expect(showMarksToStudent({ showMarksToStudent: false })).toBe(false);

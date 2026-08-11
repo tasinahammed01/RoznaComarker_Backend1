@@ -627,7 +627,7 @@ async function createAssignment(req, res) {
   try {
     const {
       title, writingType, instructions, rubric, rubrics, deadline,
-      classId, allowLateResubmission, showMarksToStudent, allowResubmission,
+      classId, allowLateResubmission, showMarksToStudent, allowResubmission, requireAdaptiveBeforeResubmission,
       /** PART 1 — resource fields for flashcard / worksheet assignments */
       resourceType, resourceId
     } = req.body || {};
@@ -671,6 +671,9 @@ async function createAssignment(req, res) {
     }
     if (typeof allowResubmission !== 'undefined' && typeof allowResubmission !== 'boolean') {
       return sendError(res, 400, 'allowResubmission must be a boolean');
+    }
+    if (typeof requireAdaptiveBeforeResubmission !== 'undefined' && typeof requireAdaptiveBeforeResubmission !== 'boolean') {
+      return sendError(res, 400, 'requireAdaptiveBeforeResubmission must be a boolean');
     }
 
     const teacherId = req.user && req.user._id;
@@ -721,7 +724,8 @@ async function createAssignment(req, res) {
           qrToken,
           allowLateResubmission: typeof allowLateResubmission === 'boolean' ? allowLateResubmission : undefined,
           showMarksToStudent: typeof showMarksToStudent === 'boolean' ? showMarksToStudent : undefined,
-          allowResubmission: typeof allowResubmission === 'boolean' ? allowResubmission : undefined
+          allowResubmission: typeof allowResubmission === 'boolean' ? allowResubmission : undefined,
+          requireAdaptiveBeforeResubmission: allowResubmission === true && requireAdaptiveBeforeResubmission === true
         });
 
         await incrementUsage(teacherId, { assignments: 1 });
@@ -801,7 +805,7 @@ async function updateAssignment(req, res) {
   try {
     const { id } = req.params;
     const { title, writingType, instructions, rubric, rubrics, deadline, allowLateResubmission,
-      showMarksToStudent, allowResubmission } = req.body || {};
+      showMarksToStudent, allowResubmission, requireAdaptiveBeforeResubmission } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return sendError(res, 400, 'Invalid assignment id');
@@ -893,6 +897,14 @@ async function updateAssignment(req, res) {
       }
       assignment.allowResubmission = allowResubmission;
     }
+
+    if (typeof requireAdaptiveBeforeResubmission !== 'undefined') {
+      if (typeof requireAdaptiveBeforeResubmission !== 'boolean') {
+        return sendError(res, 400, 'requireAdaptiveBeforeResubmission must be a boolean');
+      }
+      assignment.requireAdaptiveBeforeResubmission = requireAdaptiveBeforeResubmission;
+    }
+    if (assignment.allowResubmission !== true) assignment.requireAdaptiveBeforeResubmission = false;
 
     const saved = await assignment.save();
 

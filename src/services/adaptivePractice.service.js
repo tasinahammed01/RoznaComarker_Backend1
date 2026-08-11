@@ -158,6 +158,31 @@ function bounded(value, max) {
   return typeof value === 'string' && value.trim().length > 0 && value.trim().length <= max;
 }
 
+async function getAdaptiveCompletionForResubmission(submissionId, studentId) {
+  try {
+    const source = await loadOwnedSource(submissionId, studentId);
+    if (!source.weakSkills.length) {
+      return { completed: true, state: 'no-weaknesses', sourceFingerprint: source.sourceFingerprint, progress: null };
+    }
+    const session = await AdaptivePracticeSession.findOne({
+      submissionId: source.submission._id,
+      studentId,
+      sourceFingerprint: source.sourceFingerprint,
+      status: 'ready'
+    }).lean();
+    if (!session) return { completed: false, state: 'incomplete', sourceFingerprint: source.sourceFingerprint, progress: null };
+    const { getProgressSummary } = require('./adaptivePracticeAttempt.service');
+    const progress = await getProgressSummary(session);
+    return { completed: progress.completed === true, state: progress.completed === true ? 'completed' : 'incomplete',
+      sourceFingerprint: source.sourceFingerprint, progress };
+  } catch (error) {
+    if (error instanceof AdaptivePracticeError) {
+      return { completed: false, state: 'unavailable', sourceFingerprint: null, progress: null, reason: error.code };
+    }
+    throw error;
+  }
+}
+
 function buildTargets(weakSkills) {
   const preferences = {
     CONTENT: ['open_response', 'mcq'], ORGANIZATION: ['open_response', 'mcq'],
@@ -456,5 +481,5 @@ async function generateSession(submissionId, studentId, options = {}) {
 }
 
 module.exports = { AdaptivePracticeError, calculateSkills, serializeAdaptiveSkills, buildGenerationSourceFingerprint, loadOwnedSource,
-  getCurrentSession, generateSession, validateAiResponse, buildMessages, buildTargets, activitySchema,
+  getCurrentSession, getAdaptiveCompletionForResubmission, generateSession, validateAiResponse, buildMessages, buildTargets, activitySchema,
   targetDiagnostics };

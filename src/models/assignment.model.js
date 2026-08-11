@@ -96,6 +96,10 @@ const assignmentSchema = new Schema(
       type: Boolean,
       default: false
     },
+    requireAdaptiveBeforeResubmission: {
+      type: Boolean,
+      default: false
+    },
     isActive: {
       type: Boolean,
       default: true

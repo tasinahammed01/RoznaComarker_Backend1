@@ -37,6 +37,9 @@ const { showMarksToStudent, redactStudentMarks } = require('../services/assignme
 const { scopeCanonicalPages, scopeCanonicalCorrections } = require('../services/canonicalCorrectionResponse.service');
 const { pendingAnalysisState, resetSubmissionAnalysisState } = require('../services/submissionAnalysisLifecycle.service');
 const submissionRemoval = require('../services/submissionRemoval.service');
+const { getAdaptiveCompletionForResubmission } = require('../services/adaptivePractice.service');
+
+const ADAPTIVE_RESUBMISSION_MESSAGE = 'Complete the required Adaptive Learning activities before submitting another draft.';
 
 function sendSuccess(res, data) {
   return res.json({
@@ -382,13 +385,17 @@ async function enforceResubmissionPermission(req, res, next) {
     if (!studentId) return sendError(res, 401, 'Unauthorized');
 
     const assignment = req.params?.assignmentId
-      ? await Assignment.findOne({ _id: req.params.assignmentId, isActive: true }).select('allowResubmission')
-      : await Assignment.findOne({ qrToken: String(req.params?.qrToken || '').trim(), isActive: true }).select('allowResubmission');
+      ? await Assignment.findOne({ _id: req.params.assignmentId, isActive: true }).select('allowResubmission requireAdaptiveBeforeResubmission')
+      : await Assignment.findOne({ qrToken: String(req.params?.qrToken || '').trim(), isActive: true }).select('allowResubmission requireAdaptiveBeforeResubmission');
     if (!assignment) return next();
 
     const existing = await Submission.exists({ student: studentId, assignment: assignment._id });
     if (existing && assignment.allowResubmission !== true) {
       return sendError(res, 403, 'Another draft is not allowed for this assignment', 'RESUBMISSION_NOT_ALLOWED');
+    }
+    if (existing && assignment.requireAdaptiveBeforeResubmission === true) {
+      const completion = await getAdaptiveCompletionForResubmission(existing._id, studentId);
+      if (!completion.completed) return sendError(res, 403, ADAPTIVE_RESUBMISSION_MESSAGE, 'ADAPTIVE_PRACTICE_REQUIRED');
     }
     return next();
   } catch {
@@ -431,6 +438,13 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
   if (existing && assignment.allowResubmission !== true) {
     await cleanupUnpersistedRequestFiles(req);
     return sendError(res, 403, 'Another draft is not allowed for this assignment', 'RESUBMISSION_NOT_ALLOWED');
+  }
+  if (existing && assignment.requireAdaptiveBeforeResubmission === true) {
+    const completion = await getAdaptiveCompletionForResubmission(existing._id, studentId);
+    if (!completion.completed) {
+      await cleanupUnpersistedRequestFiles(req);
+      return sendError(res, 403, ADAPTIVE_RESUBMISSION_MESSAGE, 'ADAPTIVE_PRACTICE_REQUIRED');
+    }
   }
 
   if (!existing) {
