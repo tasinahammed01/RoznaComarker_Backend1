@@ -56,6 +56,105 @@ describe('adaptive practice', () => {
     expect(result.find((item) => item.id === 'GRAMMAR').assessed).toBe(false);
   });
 
+  it('keeps historical activities backward compatible as open responses', () => {
+    const activityPath = AdaptivePracticeSession.schema.path('activities').schema.path('questionType');
+    expect(activityPath.defaultValue).toBe('open_response');
+    const session = new AdaptivePracticeSession({ activities: [{
+      activityId: 'legacy', skillId: 'CONTENT', category: 'Task Achievement', title: 'Legacy',
+      description: 'Legacy activity.', evidence: 'Text.', task: 'Revise this text.', tip: 'Be clear.',
+      checklist: ['Clear', 'Relevant'], modelAnswer: 'Revised text.', difficulty: 'developing'
+    }] });
+    expect(session.activities[0].questionType).toBe('open_response');
+  });
+
+  it('validates typed MCQ and fill-blank answer keys before persistence', () => {
+    const weakness = [{ id: 'GRAMMAR', category: 'Grammar', percentage: 40 }];
+    const base = { targetId: 'adaptive:grammar', skillId: 'GRAMMAR', category: 'Grammar',
+      title: 'Agreement', description: 'Practice agreement.', evidence: 'The students is preparing.',
+      task: 'Choose the correct form.', tip: 'Match subject and verb.', checklist: ['Plural subject', 'Correct verb'],
+      modelAnswer: 'The students are preparing.', difficulty: 'foundational' };
+    const mcq = service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questionType: 'mcq',
+      options: [{ id: 'A', text: 'is' }, { id: 'B', text: 'are' }], correctOptionId: 'B', acceptedAnswers: [] }] }),
+    weakness, 'The students is preparing.');
+    const blank = service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questionType: 'fill_blank',
+      task: 'The students ___ preparing.', options: [], correctOptionId: '', acceptedAnswers: ['are'] }] }), weakness, 'The students is preparing.');
+    const open = service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questionType: 'open_response',
+      options: [], correctOptionId: '', acceptedAnswers: [] }] }), weakness, 'The students is preparing.');
+    expect(mcq[0]).toMatchObject({ questionType: 'mcq', correctOptionId: 'B' });
+    expect(blank[0]).toMatchObject({ questionType: 'fill_blank', acceptedAnswers: ['are'] });
+    expect(open[0]).toMatchObject({ questionType: 'open_response', options: [], acceptedAnswers: [] });
+    expect(() => service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questionType: 'mcq',
+      options: [{ id: 'A', text: 'is' }, { id: 'A', text: 'are' }], correctOptionId: 'B' }] }),
+    weakness, 'The students is preparing.')).toThrow(expect.objectContaining({ code: 'INVALID_MCQ' }));
+    expect(() => service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questionType: 'fill_blank',
+      task: 'The students ___ preparing.', options: [], correctOptionId: '', acceptedAnswers: [] }] }),
+    weakness, 'The students is preparing.')).toThrow(expect.objectContaining({ code: 'INVALID_FILL_BLANK' }));
+  });
+
+  it('generates typed practice with hidden marks while redacting scores and answer keys', async () => {
+    const { studentId, assignment, submission } = await seed({
+      CONTENT: { score: 8, maxScore: 20 }, VOCABULARY: { score: 8, maxScore: 20 },
+      GRAMMAR: { score: 8, maxScore: 25 }
+    });
+    assignment.showMarksToStudent = false;
+    await assignment.save();
+    const weakSkills = service.calculateSkills({
+      CONTENT: { score: 8, maxScore: 20 }, ORGANIZATION: { score: 14, maxScore: 20 },
+      VOCABULARY: { score: 8, maxScore: 20 }, GRAMMAR: { score: 8, maxScore: 25 },
+      MECHANICS: { score: 7, maxScore: 10 }
+    }).filter((skill) => skill.assessed && skill.percentage < 70);
+    const targets = service.buildTargets(weakSkills);
+    expect(targets.map((target) => target.questionType).sort()).toEqual(['fill_blank', 'mcq', 'open_response']);
+    const activities = targets.map((target) => ({
+      targetId: target.targetId, skillId: target.skillId, category: target.category,
+      questionType: target.questionType, title: `Practice ${target.category}`,
+      description: 'Practice this skill.', evidence: 'This is the student writing.',
+      task: target.questionType === 'fill_blank' ? 'This ___ the student writing.' : 'Improve or select the answer.',
+      tip: 'Use the target skill.', checklist: ['Be accurate.', 'Use the target skill.'],
+      modelAnswer: 'This is the student writing.', difficulty: 'foundational',
+      options: target.questionType === 'mcq' ? [{ id: 'A', text: 'Incorrect' }, { id: 'B', text: 'Correct' }] : [],
+      correctOptionId: target.questionType === 'mcq' ? 'B' : '',
+      acceptedAnswers: target.questionType === 'fill_blank' ? ['is'] : []
+    }));
+    jest.spyOn(generationAI, 'generate').mockImplementation(async (_messages, options) => {
+      const content = JSON.stringify({ activities });
+      return { content, value: await options.validate(content), provider: 'openrouter', model: 'openai/gpt-4.1-mini' };
+    });
+    const result = await service.generateSession(submission._id, studentId);
+    expect(result.state).toBe('ready');
+    expect(result.adaptiveSkills.find((skill) => skill.skillId === 'CONTENT')).toEqual({
+      skillId: 'CONTENT', skillLabel: 'Task Achievement', adaptivePercentage: 40, status: 'priority'
+    });
+    expect(result.session.sourceSnapshot.skills).toBeUndefined();
+    expect(result.session.activities.map((activity) => activity.questionType).sort())
+      .toEqual(['fill_blank', 'mcq', 'open_response']);
+    expect(result.session.activities.every((activity) => activity.correctOptionId === undefined
+      && activity.acceptedAnswers === undefined && activity.modelAnswer === undefined)).toBe(true);
+  });
+
+  it('returns only the approved adaptive analysis percentages when marks are hidden', async () => {
+    const { studentId, assignment, submission } = await seed({
+      CONTENT: { score: 3.6, maxScore: 20 }, ORGANIZATION: { score: 2.6, maxScore: 20 },
+      VOCABULARY: { score: 1, maxScore: 20 }, GRAMMAR: { score: 25, maxScore: 25 },
+      MECHANICS: { score: 10, maxScore: 10 }
+    });
+    assignment.showMarksToStudent = false;
+    await assignment.save();
+
+    const result = await service.getCurrentSession(submission._id, studentId);
+
+    expect(result).toMatchObject({ state: 'idle', session: null });
+    expect(result.adaptiveSkills).toEqual([
+      { skillId: 'CONTENT', skillLabel: 'Task Achievement', adaptivePercentage: 18, status: 'priority' },
+      { skillId: 'ORGANIZATION', skillLabel: 'Coherence & Flow', adaptivePercentage: 13, status: 'priority' },
+      { skillId: 'VOCABULARY', skillLabel: 'Lexical Resource', adaptivePercentage: 5, status: 'priority' },
+      { skillId: 'GRAMMAR', skillLabel: 'Grammar', adaptivePercentage: 100, status: 'on-track' },
+      { skillId: 'MECHANICS', skillLabel: 'Mechanics', adaptivePercentage: 100, status: 'on-track' }
+    ]);
+    expect(result.adaptiveSkills.every((skill) => Object.keys(skill).sort().join(',')
+      === 'adaptivePercentage,skillId,skillLabel,status')).toBe(true);
+  });
+
   it('builds a stable fingerprint and changes it for rubric, transcript, or prompt-source changes', () => {
     const base = { transcript: '  Student   text.\r\n', assessmentVersion: 'rubric-v1', skills: [
       { id: 'ORGANIZATION', earnedPoints: 11, maximumPoints: 20, percentage: 55 },
@@ -67,6 +166,7 @@ describe('adaptive practice', () => {
     expect(service.buildGenerationSourceFingerprint({ ...base, skills: [{ ...base.skills[0], earnedPoints: 10 }, base.skills[1]] }).sourceFingerprint).not.toBe(first);
     expect(service.buildGenerationSourceFingerprint({ ...base, transcript: 'Changed student text.' }).sourceFingerprint).not.toBe(first);
     expect(service.buildGenerationSourceFingerprint({ ...base, assessmentVersion: 'rubric-v2' }).sourceFingerprint).not.toBe(first);
+    expect(service.buildGenerationSourceFingerprint({ ...base, sourceRevision: 'draft-2-job' }).sourceFingerprint).not.toBe(first);
   });
 
   it('does not call AI when there are no weaknesses', async () => {

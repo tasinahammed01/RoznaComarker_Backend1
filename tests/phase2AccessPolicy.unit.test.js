@@ -60,4 +60,17 @@ describe('Phase 2 access policy units', () => {
     expect(session.sourceSnapshot.skills).toBeUndefined();
     expect(session.activities).toHaveLength(1);
   });
+
+  test('redacts adaptive answer keys and unrevealed model answers from student sessions', () => {
+    const session = sanitizeAdaptiveSession({ activities: [
+      { activityId: 'mcq', questionType: 'mcq', options: [{ id: 'A', text: 'One' }], correctOptionId: 'A', modelAnswer: 'One' },
+      { activityId: 'blank', questionType: 'fill_blank', acceptedAnswers: ['answer'], modelAnswer: 'answer' },
+      { activityId: 'open', modelAnswer: 'Safe after attempt' }
+    ] }, true, ['open']);
+    expect(session.activities[0]).toEqual(expect.objectContaining({ options: [{ id: 'A', text: 'One' }] }));
+    expect(session.activities[0].correctOptionId).toBeUndefined();
+    expect(session.activities[1].acceptedAnswers).toBeUndefined();
+    expect(session.activities[0].modelAnswer).toBeUndefined();
+    expect(session.activities[2].modelAnswer).toBe('Safe after attempt');
+  });
 });

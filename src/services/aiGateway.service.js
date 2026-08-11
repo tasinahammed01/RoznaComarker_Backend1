@@ -173,7 +173,8 @@ function safeFailureMetadata(error) {
     'expected', 'actualType', 'category', 'symbol', 'candidateIndex', 'transcriptHashMatch',
     'requiredPropertyMissing', 'unexpectedPropertyPresent', 'expectedSymbolCount',
     'receivedSymbolCount', 'missingSymbols', 'duplicateSymbols', 'unexpectedSymbols',
-    'providerErrorCode', 'providerErrorMessage', 'providerErrorParameter', 'schemaName', 'schemaPath'];
+    'providerErrorCode', 'providerErrorMessage', 'providerErrorParameter', 'providerErrorMetadata',
+    'schemaName', 'schemaPath'];
   return Object.fromEntries(allowed.filter((key) => error?.[key] !== undefined && error?.[key] !== null)
     .map((key) => [key, error[key]]));
 }
@@ -227,6 +228,34 @@ function safeSchemaName(value) {
 }
 const boundedProviderField = (value, maximum = 240) => typeof value === 'string'
   ? value.replace(/[\r\n\t]+/gu, ' ').trim().slice(0, maximum) : null;
+
+function safeProviderErrorDetails(payloadError) {
+  const outer = payloadError && typeof payloadError === 'object' ? payloadError : {};
+  let inner = null;
+  const raw = outer?.metadata?.raw;
+  if (typeof raw === 'string' && raw.length <= 12000) {
+    try {
+      const parsed = JSON.parse(raw);
+      inner = parsed?.error && typeof parsed.error === 'object' ? parsed.error : null;
+    } catch {
+      inner = null;
+    }
+  }
+  const specific = inner || outer;
+  const metadata = {
+    provider: boundedProviderField(outer?.metadata?.provider_name, 80),
+    type: boundedProviderField(specific?.type, 80),
+    reason: boundedProviderField(specific?.metadata?.reason || specific?.reason, 240)
+  };
+  return {
+    code: boundedProviderField(String(specific?.code || outer?.code || specific?.type || ''), 80),
+    message: boundedProviderField(specific?.message || outer?.message, 800),
+    parameter: boundedProviderField(specific?.param || outer?.param, 160),
+    path: boundedProviderField(specific?.metadata?.path || specific?.path || specific?.param
+      || outer?.metadata?.path || outer?.path || outer?.param, 240),
+    metadata: Object.fromEntries(Object.entries(metadata).filter(([, value]) => value))
+  };
+}
 
 function googleBody(messages, maxOutputTokens, temperature, responseFormat, thinkingLevel, model,
   responseSchema) {
@@ -300,16 +329,17 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
       const payloadStatus = Number(payloadError?.status || payloadError?.code);
       const status = Number.isInteger(payloadStatus) && payloadStatus >= 400 && payloadStatus <= 599
         ? payloadStatus : response.ok ? 500 : response.status;
+      const providerDetails = safeProviderErrorDetails(payloadError);
       throw attemptError(safeCode({ status }), 'AI provider request failed.', {
         status, retryAfterMs: retryAfterMs(response, now()),
-        providerErrorCode: boundedProviderField(String(payloadError?.code || payloadError?.type || ''), 80),
+        providerErrorCode: providerDetails.code,
         // Provider text is retained only for schema/invalid-request failures;
         // other error messages may contain billing or account details.
-        providerErrorMessage: status === 400 ? boundedProviderField(payloadError?.message) : null,
-        providerErrorParameter: status === 400 ? boundedProviderField(payloadError?.param, 120) : null,
+        providerErrorMessage: status === 400 ? providerDetails.message : null,
+        providerErrorParameter: status === 400 ? providerDetails.parameter : null,
+        providerErrorMetadata: status === 400 ? providerDetails.metadata : null,
         schemaName: safeSchemaName(schemaName || feature),
-        schemaPath: status === 400
-          ? boundedProviderField(payloadError?.metadata?.path || payloadError?.path || payloadError?.param, 160) : null
+        schemaPath: status === 400 ? providerDetails.path : null
       });
     }
     const extracted = google ? extractGoogle(payload, { maxOutputTokens })
@@ -493,5 +523,5 @@ module.exports = {
   SUPPORTED_PROVIDERS, DEFAULTS, MAX_RETRIES, MAX_RETRY_DELAY_MS, credentialFor, endpointFor,
   getAIConfig, getAssessmentAIConfig, sanitizedAssessmentChain, validateAIConfig,
   retryAfterMs, safeCode, extractGoogle, extractOpenRouter, googleUsage, safeFailureMetadata,
-  safeSchemaName, googleBody, providerAttempt, generate
+  safeSchemaName, safeProviderErrorDetails, googleBody, providerAttempt, generate
 };

@@ -1,6 +1,7 @@
 'use strict';
 
 const service = require('../src/services/adaptivePracticeGenerationAI.service');
+const adaptive = require('../src/services/adaptivePractice.service');
 
 const env = {
   ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter',
@@ -49,5 +50,42 @@ describe('Adaptive Practice generation assessment transport', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl.mock.calls.map((call) => JSON.parse(call[1].body).model))
       .toEqual(['openai/gpt-4.1', 'openai/gpt-4.1-mini']);
+  });
+
+  it('sends a flat strict adaptive schema accepted by the OpenRouter request builder', async () => {
+    const targets = adaptive.buildTargets([
+      { id: 'CONTENT', category: 'Task Achievement', percentage: 40 },
+      { id: 'GRAMMAR', category: 'Grammar', percentage: 40 },
+      { id: 'VOCABULARY', category: 'Lexical Resource', percentage: 40 }
+    ]);
+    const schema = adaptive.activitySchema(targets);
+    const unsupported = new Set(['oneOf', 'anyOf', 'allOf', 'if', 'then', 'else', '$ref', 'default', 'nullable']);
+    const inspect = (value) => {
+      if (!value || typeof value !== 'object') return;
+      expect(Object.keys(value).filter((key) => unsupported.has(key))).toEqual([]);
+      if (value.type === 'object' && value.properties) {
+        expect(value.additionalProperties).toBe(false);
+        expect(new Set(value.required)).toEqual(new Set(Object.keys(value.properties)));
+      }
+      Object.values(value).forEach(inspect);
+    };
+    inspect(schema);
+
+    const configured = { ...env, ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1-mini',
+      ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1' };
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(response({ error: { code: 400, message: 'first model rejected for a non-schema reason' } }, 400))
+      .mockResolvedValueOnce(response({ choices: [{ finish_reason: 'stop', message: { content: '{"activities":[]}' } }] }));
+    await service.generate([], { env: configured, fetchImpl, responseSchema: schema, validate: JSON.parse });
+    const bodies = fetchImpl.mock.calls.map((call) => JSON.parse(call[1].body));
+    expect(bodies.map((body) => body.model)).toEqual(['openai/gpt-4.1-mini', 'openai/gpt-4.1']);
+    expect(bodies[0].response_format).toEqual(bodies[1].response_format);
+    expect(bodies[0].response_format).toMatchObject({ type: 'json_schema', json_schema: {
+      name: 'adaptive_practice_activities', strict: true, schema
+    } });
+    const item = schema.properties.activities.items;
+    expect(item.required).toEqual(expect.arrayContaining(['questionType', 'options', 'correctOptionId', 'acceptedAnswers']));
+    expect(item.properties.options.minItems).toBe(0);
+    expect(item.properties.acceptedAnswers.minItems).toBe(0);
   });
 });

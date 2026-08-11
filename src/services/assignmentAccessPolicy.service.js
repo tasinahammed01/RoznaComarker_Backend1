@@ -47,10 +47,18 @@ function redactStudentMarks(payload) {
   return redacted;
 }
 
-function sanitizeAdaptiveSession(session, marksVisible) {
-  if (!session || marksVisible) return session;
+function sanitizeAdaptiveSession(session, marksVisible, revealedActivityIds = []) {
+  if (!session) return session;
   const safe = session && typeof session.toObject === 'function' ? session.toObject() : { ...session };
-  if (safe.sourceSnapshot) {
+  const revealed = new Set(Array.from(revealedActivityIds || [], String));
+  safe.activities = Array.isArray(safe.activities) ? safe.activities.map((activity) => {
+    const publicActivity = { ...activity };
+    delete publicActivity.correctOptionId;
+    delete publicActivity.acceptedAnswers;
+    if (!revealed.has(String(activity.activityId))) delete publicActivity.modelAnswer;
+    return publicActivity;
+  }) : [];
+  if (!marksVisible && safe.sourceSnapshot) {
     safe.sourceSnapshot = {
       transcriptFingerprint: safe.sourceSnapshot.transcriptFingerprint,
       feedbackId: safe.sourceSnapshot.feedbackId,

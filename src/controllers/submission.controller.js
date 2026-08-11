@@ -36,6 +36,7 @@ const { getPublicApiUrl, buildPublicUploadUrl } = require('../utils/publicApiUrl
 const { showMarksToStudent, redactStudentMarks } = require('../services/assignmentAccessPolicy.service');
 const { scopeCanonicalPages, scopeCanonicalCorrections } = require('../services/canonicalCorrectionResponse.service');
 const { pendingAnalysisState, resetSubmissionAnalysisState } = require('../services/submissionAnalysisLifecycle.service');
+const submissionRemoval = require('../services/submissionRemoval.service');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -851,6 +852,25 @@ async function getMySubmissions(req, res) {
   }
 }
 
+async function removeSubmission(req, res) {
+  try {
+    const result = await submissionRemoval.removeSubmissionForTeacher(
+      req.params.submissionId,
+      req.user && req.user._id
+    );
+    return res.json({ success: true, message: 'Submission removed successfully.', data: result });
+  } catch (error) {
+    if (error instanceof submissionRemoval.SubmissionRemovalError) {
+      return sendError(res, error.statusCode, error.message, error.code);
+    }
+    logger.error({ message: 'Teacher submission removal failed',
+      submissionId: String(req.params?.submissionId || ''),
+      teacherId: String(req.user?._id || ''), errorCode: error?.code || 'SUBMISSION_REMOVAL_FAILED',
+      errorMessage: String(error?.message || 'Unknown removal failure').slice(0, 500) });
+    return sendError(res, 500, 'Failed to remove submission', 'SUBMISSION_REMOVAL_FAILED');
+  }
+}
+
 async function getOcrCorrections(req, res) {
   let logContext = {};
   try {
@@ -1124,6 +1144,7 @@ module.exports = {
   getSubmissionsByAssignment,
   getMySubmissions,
   getMySubmissionByAssignmentId,
+  removeSubmission,
   getOcrCorrections,
   regenerateCanonicalCorrections,
   retryCanonicalEvaluation,

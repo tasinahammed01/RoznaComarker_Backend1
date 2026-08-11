@@ -270,6 +270,15 @@ router.get(
  */
 router.get('/my', noStore, verifyJwtToken, requireRole('student'), submissionController.getMySubmissions);
 
+router.delete(
+  '/:submissionId',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  submissionController.removeSubmission
+);
+
 const getOcrCorrectionsMiddleware = [
   noStore,
   verifyJwtToken,

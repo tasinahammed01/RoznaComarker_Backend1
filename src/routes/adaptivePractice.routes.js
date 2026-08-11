@@ -29,7 +29,7 @@ router.post('/submissions/:submissionId/generate', createSensitiveRateLimiter(),
 router.post('/sessions/:sessionId/activities/:activityId/check', createSensitiveRateLimiter(), verifyJwtToken, requireRole('student'),
   param('sessionId').isMongoId().withMessage('Invalid session id'),
   param('activityId').isString().trim().notEmpty().isLength({ max: 100 }),
-  body('response').isString().isLength({ min: 10, max: 5000 }),
+  body('response').isString().isLength({ min: 1, max: 5000 }),
   body('retry').optional().isBoolean(), handleValidationResult, controller.checkResponse);
 router.get('/sessions/:sessionId/attempts', verifyJwtToken, requireRole('student'),
   param('sessionId').isMongoId().withMessage('Invalid session id'),

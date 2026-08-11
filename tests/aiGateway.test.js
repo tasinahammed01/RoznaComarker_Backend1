@@ -82,6 +82,25 @@ describe('global AI gateway', () => {
     expect(JSON.stringify(result.attempts[0])).not.toContain('router-secret');
   });
 
+  test('extracts sanitized nested OpenRouter provider schema errors', async () => {
+    const raw = JSON.stringify({ error: { code: 'invalid_json_schema', type: 'invalid_request_error',
+      message: "Invalid schema: required is missing 'options'.", param: 'text.format.schema' } });
+    await expect(gateway.providerAttempt({ entry: { provider: 'openrouter', model: 'openai/gpt-4.1-mini' },
+      messages: [{ role: 'user', content: 'private essay text' }], maxOutputTokens: 100, temperature: 0,
+      responseFormat: 'json', responseSchema: strictSchema, schemaName: 'adaptive_practice_activities',
+      attemptTimeoutMs: 1000, fetchImpl: async () => response(400, { error: {
+        code: 400, message: 'Provider returned error', metadata: { provider_name: 'Azure', raw, secret: 'do-not-log' }
+      } }), env: env(), now: Date.now, feature: 'adaptive_practice_generation' }))
+      .rejects.toMatchObject({ code: 'AI_PROVIDER_INVALID_REQUEST',
+        providerErrorCode: 'invalid_json_schema',
+        providerErrorMessage: "Invalid schema: required is missing 'options'.",
+        providerErrorParameter: 'text.format.schema', schemaPath: 'text.format.schema',
+        providerErrorMetadata: { provider: 'Azure', type: 'invalid_request_error' } });
+    const details = gateway.safeProviderErrorDetails({ metadata: { raw, secret: 'do-not-log' } });
+    expect(JSON.stringify(details)).not.toContain('private essay text');
+    expect(JSON.stringify(details)).not.toContain('do-not-log');
+  });
+
   test('serializes the empty-catalog rubric schema unchanged without empty enums', async () => {
     const schema = semanticRubricAssessmentSchema('hash');
     const fetchImpl = jest.fn().mockResolvedValueOnce(router('{"sourceHash":"hash"}'));

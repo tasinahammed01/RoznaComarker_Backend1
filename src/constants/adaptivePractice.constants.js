@@ -1,7 +1,7 @@
 'use strict';
 
 const ADAPTIVE_PRACTICE_THRESHOLD = 70;
-const ADAPTIVE_PRACTICE_PROMPT_VERSION = 'adaptive-practice-v1';
+const ADAPTIVE_PRACTICE_PROMPT_VERSION = 'adaptive-practice-v2-typed-activities';
 const ADAPTIVE_PRACTICE_STALE_MS = 2 * 60 * 1000;
 const ADAPTIVE_PRACTICE_MAX_TRANSCRIPT_CHARS = 12000;
 const ADAPTIVE_PRACTICE_CHECK_PROMPT_VERSION = 'adaptive-practice-check-v1';

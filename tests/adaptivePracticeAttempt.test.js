@@ -27,6 +27,27 @@ async function seed() {
   return { studentId, submissionId, session, activityId };
 }
 
+async function seedTyped(questionType, answerKey) {
+  const studentId = new mongoose.Types.ObjectId();
+  const activityId = `activity-${questionType}`;
+  const activity = {
+    activityId, questionType, skillId: 'GRAMMAR', category: 'Grammar', title: 'Grammar practice',
+    description: 'Choose or enter the correct form.', evidence: 'The students is preparing.',
+    task: questionType === 'fill_blank' ? 'The students ___ preparing.' : 'Which form is correct?',
+    tip: 'Match the plural subject.', checklist, modelAnswer: 'The students are preparing.',
+    difficulty: 'foundational', ...answerKey
+  };
+  const session = await AdaptivePracticeSession.create({
+    submissionId: new mongoose.Types.ObjectId(), studentId, assignmentId: new mongoose.Types.ObjectId(),
+    status: 'ready', sourceFingerprint: `source-${questionType}`,
+    sourceSnapshot: { transcriptFingerprint: 'transcript', feedbackId: new mongoose.Types.ObjectId(),
+      feedbackUpdatedAt: new Date(), skills: [{ id: 'GRAMMAR', category: 'Grammar', earnedPoints: 10,
+        maximumPoints: 25, percentage: 40, status: 'priority' }] },
+    targetSkills: ['GRAMMAR'], activities: [activity]
+  });
+  return { studentId, activityId, session };
+}
+
 describe('adaptive practice attempts', () => {
   beforeAll(async () => {
     process.env.ASSESSMENT_AI_PRIMARY_PROVIDER = 'openrouter';
@@ -153,5 +174,34 @@ describe('adaptive practice attempts', () => {
     expect(checked.attempt.checking).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-4.1' });
     expect(geminiSpy).toHaveBeenCalledTimes(1);
     expect(globalSpy).not.toHaveBeenCalled();
+  });
+
+  it('checks MCQ answers deterministically and rejects forged options without AI', async () => {
+    const { session, studentId, activityId } = await seedTyped('mcq', {
+      options: [{ id: 'A', text: 'is' }, { id: 'B', text: 'are' }], correctOptionId: 'B'
+    });
+    const spy = jest.spyOn(checkAI, 'generateCheckCompletion');
+    const wrong = await service.checkResponse(session._id, activityId, studentId, { response: 'A' });
+    const correct = await service.checkResponse(session._id, activityId, studentId, { response: 'B' });
+    await expect(service.checkResponse(session._id, activityId, studentId, { response: 'FORGED' }))
+      .rejects.toMatchObject({ code: 'INVALID_MCQ_OPTION' });
+    expect(wrong.attempt.result).toMatchObject({ passed: false, summary: 'Not quite' });
+    expect(correct.attempt.result).toMatchObject({ passed: true, summary: 'Correct' });
+    expect(correct.progress).toMatchObject({ completed: true, completedActivities: 1, requiredActivityCount: 1 });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('normalizes fill-blank answers, supports alternatives, and keeps matching deterministic', async () => {
+    const { session, studentId, activityId } = await seedTyped('fill_blank', {
+      acceptedAnswers: ['are', 'have been']
+    });
+    const spy = jest.spyOn(checkAI, 'generateCheckCompletion');
+    const exact = await service.checkResponse(session._id, activityId, studentId, { response: 'are' });
+    const normalized = await service.checkResponse(session._id, activityId, studentId, { response: '  ARE  ' });
+    const alternative = await service.checkResponse(session._id, activityId, studentId, { response: 'Have   Been' });
+    const wrong = await service.checkResponse(session._id, activityId, studentId, { response: 'is' });
+    expect([exact, normalized, alternative].every((item) => item.attempt.result.passed)).toBe(true);
+    expect(wrong.attempt.result.passed).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
   });
 });

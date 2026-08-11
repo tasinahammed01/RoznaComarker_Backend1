@@ -26,6 +26,7 @@ const adaptivePracticeAttemptSchema = new Schema({
     nextImprovement: { type: String, trim: true },
     checklist: { type: [checklistResultSchema], default: undefined },
     suggestedRevision: { type: String, trim: true },
+    modelAnswer: { type: String, trim: true },
     scoring: {
       taskFulfillment: { type: Number, min: 0, max: 30 },
       targetSkillApplication: { type: Number, min: 0, max: 50 },

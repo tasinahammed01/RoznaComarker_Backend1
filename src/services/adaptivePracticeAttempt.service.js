@@ -22,6 +22,17 @@ function normalizeResponse(value) {
     : '';
 }
 
+function normalizeFillBlankResponse(value) {
+  return typeof value === 'string'
+    ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en')
+    : '';
+}
+
+function questionTypeOf(activity) {
+  return ['mcq', 'fill_blank'].includes(String(activity?.questionType))
+    ? String(activity.questionType) : 'open_response';
+}
+
 function responseFingerprint({ sessionId, activityId, studentId, response }) {
   return crypto.createHash('sha256').update(JSON.stringify({
     promptVersion: ADAPTIVE_PRACTICE_CHECK_PROMPT_VERSION,
@@ -29,12 +40,42 @@ function responseFingerprint({ sessionId, activityId, studentId, response }) {
   }), 'utf8').digest('hex');
 }
 
-function validateResponse(value) {
+function validateResponse(value, activity = null) {
   const response = normalizeResponse(value);
-  if (response.length < 10 || response.length > ADAPTIVE_PRACTICE_MAX_RESPONSE_CHARS || !/[\p{L}\p{N}]/u.test(response)) {
-    throw new AttemptError(400, 'INVALID_PRACTICE_RESPONSE', 'Enter a meaningful response between 10 and 5000 characters.');
+  const minimum = questionTypeOf(activity) === 'open_response' ? 10 : 1;
+  if (response.length < minimum || response.length > ADAPTIVE_PRACTICE_MAX_RESPONSE_CHARS || !/[\p{L}\p{N}]/u.test(response)) {
+    throw new AttemptError(400, 'INVALID_PRACTICE_RESPONSE', minimum === 1
+      ? 'Enter or select an answer.' : 'Enter a meaningful response between 10 and 5000 characters.');
+  }
+  if (questionTypeOf(activity) === 'mcq'
+    && !activity.options.some((option) => String(option.id) === response)) {
+    throw new AttemptError(400, 'INVALID_MCQ_OPTION', 'Select one of the available options.');
   }
   return response;
+}
+
+function deterministicResult(activity, response) {
+  const questionType = questionTypeOf(activity);
+  let passed = false;
+  if (questionType === 'mcq') passed = response === String(activity.correctOptionId);
+  else if (questionType === 'fill_blank') {
+    const normalized = normalizeFillBlankResponse(response);
+    passed = activity.acceptedAnswers.some((answer) => normalizeFillBlankResponse(answer) === normalized);
+  } else {
+    throw new AttemptError(500, 'INVALID_DETERMINISTIC_ACTIVITY', 'This activity requires semantic checking.');
+  }
+  const score = passed ? 100 : 0;
+  return {
+    score, passed,
+    summary: passed ? 'Correct' : 'Not quite',
+    strength: passed ? 'You selected a valid answer.' : 'You completed an attempt.',
+    nextImprovement: passed ? 'Continue to the next activity.' : 'Review the prompt and tip, then try again.',
+    checklist: activity.checklist.map((item) => ({
+      item, met: passed, feedback: passed ? 'Met.' : 'Review this point before retrying.'
+    })),
+    suggestedRevision: passed ? 'Your answer is correct.' : 'Try a different answer using the activity tip.',
+    scoring: { taskFulfillment: passed ? 30 : 0, targetSkillApplication: passed ? 50 : 0, checklistCompletion: passed ? 20 : 0 }
+  };
 }
 
 async function loadOwnedSession(sessionId, studentId, activityId) {
@@ -103,7 +144,7 @@ async function allocateAttempt(base, response, fingerprint) {
 }
 
 async function getProgressSummary(session) {
-  if (!session) return { improvedActivities: 0, totalActivities: 0, percentage: 0, activities: [] };
+  if (!session) return { improvedActivities: 0, completedActivities: 0, totalActivities: 0, requiredActivityCount: 0, completed: false, percentage: 0, activities: [] };
   const attempts = await AdaptivePracticeAttempt.find({ sessionId: session._id, studentId: session.studentId, status: 'ready' }).sort({ attemptNumber: 1 }).lean();
   const activities = session.activities.map((activity) => {
     const matching = attempts.filter((attempt) => attempt.activityId === activity.activityId);
@@ -113,12 +154,15 @@ async function getProgressSummary(session) {
     return { activityId: activity.activityId, attemptCount: matching.length, improved: Boolean(best?.result?.passed), bestScore: best?.result?.score ?? null, latestScore: latest?.result?.score ?? null, latestResponse: latest?.response ?? '', latestAttempt };
   });
   const improvedActivities = activities.filter((item) => item.improved).length;
-  return { improvedActivities, totalActivities: session.activities.length, percentage: session.activities.length ? Math.round(improvedActivities / session.activities.length * 100) : 0, activities };
+  const totalActivities = session.activities.length;
+  return { improvedActivities, completedActivities: improvedActivities, totalActivities,
+    requiredActivityCount: totalActivities, completed: totalActivities > 0 && improvedActivities >= totalActivities,
+    percentage: totalActivities ? Math.round(improvedActivities / totalActivities * 100) : 0, activities };
 }
 
 async function checkResponse(sessionId, activityId, studentId, body = {}) {
   const { session, activity } = await loadOwnedSession(sessionId, studentId, activityId);
-  const response = validateResponse(body.response);
+  const response = validateResponse(body.response, activity);
   const fingerprint = responseFingerprint({ sessionId, activityId, studentId, response });
   const base = { sessionId: session._id, submissionId: session.submissionId, studentId, activityId };
   let attempt = await AdaptivePracticeAttempt.findOne({ ...base, responseFingerprint: fingerprint });
@@ -140,10 +184,19 @@ async function checkResponse(sessionId, activityId, studentId, body = {}) {
   if (attempt.status !== 'checking' || String(attempt.responseFingerprint) !== fingerprint) return { state: attempt.status, attempt, progress: await getProgressSummary(session), reused: true };
 
   try {
-    const checked = await checkAI.generateCheckCompletion(buildCheckMessages(activity, response), {
-      validate: (raw) => validateCheckResult(raw, activity)
-    });
-    const result = typeof checked === 'string' ? validateCheckResult(checked, activity) : checked;
+    const questionType = questionTypeOf(activity);
+    let result;
+    if (questionType === 'open_response') {
+      const checked = await checkAI.generateCheckCompletion(buildCheckMessages(activity, response), {
+        validate: (raw) => validateCheckResult(raw, activity)
+      });
+      result = typeof checked === 'string' ? validateCheckResult(checked, activity) : checked;
+      result.modelAnswer = activity.modelAnswer;
+    } else {
+      result = deterministicResult(activity, response);
+      attempt.checking.provider = 'deterministic';
+      attempt.checking.model = questionType;
+    }
     attempt.status = 'ready'; attempt.result = result; attempt.checking.completedAt = new Date(); await attempt.save();
     return { state: 'ready', attempt, progress: await getProgressSummary(session), reused };
   } catch (error) {
@@ -158,4 +211,5 @@ async function listAttempts(sessionId, studentId, activityId) {
   return { attempts, progress: await getProgressSummary(session) };
 }
 
-module.exports = { AttemptError, normalizeResponse, responseFingerprint, validateResponse, validateCheckResult, buildCheckMessages, getProgressSummary, checkResponse, listAttempts };
+module.exports = { AttemptError, normalizeResponse, normalizeFillBlankResponse, questionTypeOf, responseFingerprint,
+  validateResponse, deterministicResult, validateCheckResult, buildCheckMessages, getProgressSummary, checkResponse, listAttempts };
