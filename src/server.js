@@ -6,7 +6,6 @@ const pdfBrowserManager = require("./services/pdfBrowserManager.service");
 const { runtimeContractFingerprint } = require("./services/runtimeContractFingerprint.service");
 const { sanitizedAssessmentChain } = require("./services/aiGateway.service");
 
-const Plan = require("./models/Plan");
 
 const app = require("./app");
 
@@ -84,16 +83,6 @@ async function start() {
     );
   } else {
     logger.info("Groq API key configured: true");
-  }
-
-  if (process.env.SEED_DEFAULT_PLANS === "true") {
-    try {
-      await Plan.seedDefaults();
-    } catch (err) {
-      logger.error("Failed to seed default plans");
-      logger.error(err);
-      throw err;
-    }
   }
 
   const port = process.env.PORT || env.PORT || 5000;

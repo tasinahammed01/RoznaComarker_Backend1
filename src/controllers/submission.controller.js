@@ -31,7 +31,7 @@ const {
 const { createNotification } = require('../services/notification.service');
 const logger = require('../utils/logger');
 
-const { bytesToMB, ensureActivePlan, incrementUsage } = require('../middlewares/usage.middleware');
+const { bytesToMB, ensureActivePlan, getLimit, incrementUsage } = require('../middlewares/usage.middleware');
 const { getPublicApiUrl, buildPublicUploadUrl } = require('../utils/publicApiUrl');
 const { showMarksToStudent, redactStudentMarks } = require('../services/assignmentAccessPolicy.service');
 const { scopeCanonicalPages, scopeCanonicalCorrections } = require('../services/canonicalCorrectionResponse.service');
@@ -449,7 +449,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
 
   if (!existing) {
     const planDoc = await ensureActivePlan(req.user);
-    const limit = planDoc && planDoc.limits ? planDoc.limits.submissions : null;
+    const limit = getLimit(planDoc, 'submissions');
     const current = req.user && req.user.usage && typeof req.user.usage.submissions === 'number'
       ? req.user.usage.submissions
       : 0;

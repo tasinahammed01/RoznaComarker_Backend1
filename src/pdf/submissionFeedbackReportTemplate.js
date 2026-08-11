@@ -38,8 +38,11 @@ function feedbackCard(item, type, correctionRefs) {
 
 function overallFeedback(vm) {
   const teacher = typeof vm.teacherComments === 'string' ? vm.teacherComments.trim() : '';
-  if (!teacher) return '';
-  return `<div class="overall-feedback"><h2>Overall Feedback</h2><h3>Teacher Overall Feedback</h3><div class="teacher overall-feedback-text">${esc(teacher)}</div></div>`;
+  const aiFeedback = list(vm.aiEvaluationFeedback).filter((item) => typeof item?.feedback === 'string' && item.feedback.trim());
+  if (!teacher && !aiFeedback.length) return '';
+  const teacherSection = teacher ? `<h3>Teacher Overall Feedback</h3><div class="teacher overall-feedback-text">${esc(teacher)}</div>` : '';
+  const aiSection = aiFeedback.length ? `<h3>AI Feedback</h3>${aiFeedback.map((item) => `<p class="overall-feedback-text"><b>${esc(item.category || '')}</b><br>${esc(item.feedback.trim())}</p>`).join('')}` : '';
+  return `<div class="overall-feedback"><h2>Overall Feedback</h2>${teacherSection}${aiSection}</div>`;
 }
 
 function renderSubmissionFeedbackReportHtml(vm) {

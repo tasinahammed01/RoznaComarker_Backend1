@@ -6,7 +6,7 @@ const User = require('../models/user.model');
 const { createNotification } = require('../services/notification.service');
 const { publishToUser } = require('../services/notificationRealtime.service');
 
-const { ensureActivePlan, incrementUsage } = require('../middlewares/usage.middleware');
+const { ensureActivePlan, getLimit, incrementUsage } = require('../middlewares/usage.middleware');
 const logger = require('../utils/logger');
 
 function sendSuccess(res, data) {
@@ -57,7 +57,7 @@ async function joinClassByCode(req, res) {
     }
 
     const planDoc = await ensureActivePlan(teacher);
-    const studentLimit = planDoc && planDoc.limits ? planDoc.limits.students : null;
+    const studentLimit = getLimit(planDoc, 'students');
     const currentStudents = teacher.usage && typeof teacher.usage.students === 'number' ? teacher.usage.students : 0;
 
     if (typeof studentLimit === 'number' && currentStudents + 1 > studentLimit) {

@@ -103,6 +103,8 @@ fs.mkdirSync(path.join(uploadsRoot, "class-banners"), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, "flashcards"), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, "templates"), { recursive: true });
 
+// Stripe signature verification must see the exact bytes. Mount this before JSON parsing.
+app.use('/api/stripe', require('./routes/stripeWebhook.routes'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

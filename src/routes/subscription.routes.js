@@ -32,6 +32,29 @@ const router = express.Router();
  *         description: Unauthorized
  */
 router.get('/me', verifyJwtToken, subscriptionController.getMySubscription);
+router.get('/checkout-plan', verifyJwtToken, requireRole('teacher'), subscriptionController.getCheckoutPlan);
+router.post(
+  '/checkout-session',
+  verifyJwtToken,
+  requireRole('teacher'),
+  body('planSlug').isString().trim().notEmpty(),
+  body('checkoutAttemptId').isString().isLength({ min: 36, max: 36 }).isUUID(4)
+    .withMessage('checkoutAttemptId must be a valid UUID v4'),
+  body('priceId').not().exists().withMessage('priceId is not accepted'),
+  body('amount').not().exists().withMessage('amount is not accepted'),
+  body('successUrl').not().exists().withMessage('successUrl is not accepted'),
+  body('cancelUrl').not().exists().withMessage('cancelUrl is not accepted'),
+  handleValidationResult,
+  subscriptionController.createCheckoutSession
+);
+router.post(
+  '/customer-portal',
+  verifyJwtToken,
+  requireRole('teacher'),
+  body('returnUrl').not().exists().withMessage('returnUrl is not accepted'),
+  handleValidationResult,
+  subscriptionController.createCustomerPortal
+);
 
 /**
  * @openapi

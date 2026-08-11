@@ -16,55 +16,48 @@ function sendError(res, statusCode, message) {
 
 async function getActivePlans(req, res) {
   try {
-    const rawPlans = await Plan.find({ isActive: true })
-      .sort({ price: 1, createdAt: 1 })
-      .lean();
+    const rawPlans = await Plan.find({ isActive: true }).lean();
+    const preferredOrder = new Map([
+      ['free', 0],
+      ['starter_monthly', 1],
+      ['custom', 2]
+    ]);
 
-    const toSlug = (p) => {
-      const name = typeof p?.name === 'string' ? p.name.trim().toLowerCase() : '';
-      if (name === 'free') return 'free';
-      if (name.includes('starter') && String(p?.billingType).toLowerCase() === 'monthly') return 'expert';
-      if (String(p?.billingType).toLowerCase() === 'custom' || name === 'custom') return 'researcher';
-      if (name.includes('starter') && String(p?.billingType).toLowerCase() === 'yearly') return 'researcher';
-      return name.replace(/\s+/g, '-');
-    };
-
-    const mapped = rawPlans.map((p) => {
-      const slug = toSlug(p);
-      const limits = p && typeof p.limits === 'object' ? p.limits : {};
-
-      const isPaid = typeof p.price === 'number' && p.price > 0;
-
-      return {
-        name: p.name,
-        slug,
-        price: typeof p.price === 'number' ? p.price : null,
-        currency: 'USD',
-        description: p.description ?? null,
-        badgeText: p.badgeText ?? null,
-        isPopular: !!p.isPopular,
+    const ordered = rawPlans
+      .map((plan) => ({
+        name: plan.name,
+        slug: plan.slug,
+        price: typeof plan.price === 'number' ? plan.price : null,
+        currency: plan.currency || 'USD',
+        billingInterval: plan.billingInterval ?? null,
+        popular: !!plan.popular,
         features: {
-          classes: typeof limits.classes === 'number' ? limits.classes : null,
-          maxStudentsPerClass: typeof limits.students === 'number' ? limits.students : null,
-          essaysPerMonth: typeof limits.submissions === 'number' ? limits.submissions : null,
-          storageMB: typeof limits.storageMB === 'number' ? limits.storageMB : null,
-          storageGB: null,
-          aiTokens: isPaid ? 'unlimited' : 'limited',
-          priorityProcessing: isPaid,
-          analyticsAccess: isPaid
+          maxClasses: plan.features?.maxClasses ?? null,
+          maxStudents: plan.features?.maxStudents ?? null,
+          essayAnalysesPerMonth: plan.features?.essayAnalysesPerMonth ?? null,
+          storageMB: plan.features?.storageMB ?? null,
+          aiFlashcards: !!plan.features?.aiFlashcards,
+          aiFlashcardsLimit: plan.features?.aiFlashcardsLimit ?? null,
+          aiWorksheets: !!plan.features?.aiWorksheets,
+          aiWorksheetsLimit: plan.features?.aiWorksheetsLimit ?? null,
+          adaptiveLearning: !!plan.features?.adaptiveLearning,
+          adaptiveLearningLimit: plan.features?.adaptiveLearningLimit ?? null,
+          priorityAIProcessing: !!plan.features?.priorityAIProcessing,
+          analyticsAccess: !!plan.features?.analyticsAccess,
+          dedicatedSupport: !!plan.features?.dedicatedSupport
+        },
+        display: {
+          title: plan.display?.title ?? plan.name,
+          description: plan.display?.description ?? null,
+          priceLabel: plan.display?.priceLabel ?? null,
+          cta: plan.display?.cta ?? null
         }
-      };
-    });
-
-    const bySlug = new Map();
-    for (const p of mapped) {
-      if (!p || !p.slug) continue;
-      if (!bySlug.has(p.slug)) bySlug.set(p.slug, p);
-    }
-
-    const ordered = ['free', 'expert', 'researcher']
-      .map((slug) => bySlug.get(slug))
-      .filter(Boolean);
+      }))
+      .sort((left, right) => {
+        const leftOrder = preferredOrder.get(left.slug) ?? Number.MAX_SAFE_INTEGER;
+        const rightOrder = preferredOrder.get(right.slug) ?? Number.MAX_SAFE_INTEGER;
+        return leftOrder - rightOrder || String(left.slug).localeCompare(String(right.slug));
+      });
 
     return sendSuccess(res, ordered);
   } catch (err) {

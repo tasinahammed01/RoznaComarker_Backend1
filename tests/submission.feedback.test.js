@@ -4,6 +4,7 @@ process.env.NODE_ENV = process.env.NODE_ENV || 'test';
 const request = require('supertest');
 
 const Plan = require('../src/models/Plan');
+const { seedTestPlans } = require('./helpers/seedTestPlans');
 const User = require('../src/models/user.model');
 const Class = require('../src/models/class.model');
 const Assignment = require('../src/models/assignment.model');
@@ -19,7 +20,7 @@ const { signTestJwt } = require('./helpers/auth');
 describe('Submissions & Feedback APIs', () => {
   beforeAll(async () => {
     await connectInMemoryMongo();
-    await Plan.seedDefaults();
+    await seedTestPlans();
   });
 
   afterAll(async () => {
@@ -28,7 +29,7 @@ describe('Submissions & Feedback APIs', () => {
 
   beforeEach(async () => {
     await clearDatabase();
-    await Plan.seedDefaults();
+    await seedTestPlans();
   });
 
   test('RBAC: student cannot access teacher submissions list', async () => {

@@ -69,6 +69,7 @@ const fs = require('fs');
 const path = require('path');
 const request = require('supertest');
 const Plan = require('../src/models/Plan');
+const { seedTestPlans } = require('./helpers/seedTestPlans');
 const User = require('../src/models/user.model');
 const Class = require('../src/models/class.model');
 const Assignment = require('../src/models/assignment.model');
@@ -174,7 +175,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
 
   beforeAll(async () => {
     await connectInMemoryMongo();
-    await Plan.seedDefaults();
+    await seedTestPlans();
     global.fetch = jest.fn(async (url, options) => {
       if (String(url).includes(':generateContent')) {
         rubricProviderRequestCount += 1;

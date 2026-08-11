@@ -10,11 +10,12 @@ const app = require('../src/app');
 
 const { connectInMemoryMongo, disconnectInMemoryMongo, clearDatabase } = require('./helpers/testServer');
 const { signTestJwt } = require('./helpers/auth');
+const { seedTestPlans } = require('./helpers/seedTestPlans');
 
 describe('Subscription & usage limits', () => {
   beforeAll(async () => {
     await connectInMemoryMongo();
-    await Plan.seedDefaults();
+    await seedTestPlans();
   });
 
   afterAll(async () => {
@@ -23,7 +24,7 @@ describe('Subscription & usage limits', () => {
 
   beforeEach(async () => {
     await clearDatabase();
-    await Plan.seedDefaults();
+    await seedTestPlans();
   });
 
   test('Free plan blocks creating more than 1 class', async () => {

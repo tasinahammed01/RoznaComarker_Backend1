@@ -9,6 +9,11 @@ const planSchema = new mongoose.Schema(
       unique: true,
       index: true
     },
+    slug: {
+      type: String,
+      trim: true,
+      index: true
+    },
     price: {
       type: Number,
       min: 0,
@@ -18,6 +23,37 @@ const planSchema = new mongoose.Schema(
       type: Number,
       min: 0,
       default: null
+    },
+    currency: {
+      type: String,
+      trim: true,
+      default: 'USD'
+    },
+    billingInterval: {
+      type: String,
+      trim: true,
+      default: null
+    },
+    features: {
+      maxClasses: { type: Number, min: 0, default: null },
+      maxStudents: { type: Number, min: 0, default: null },
+      essayAnalysesPerMonth: { type: Number, min: 0, default: null },
+      storageMB: { type: Number, min: 0, default: null },
+      aiFlashcards: { type: Boolean, default: false },
+      aiFlashcardsLimit: { type: Number, min: 0, default: null },
+      aiWorksheets: { type: Boolean, default: false },
+      aiWorksheetsLimit: { type: Number, min: 0, default: null },
+      adaptiveLearning: { type: Boolean, default: false },
+      adaptiveLearningLimit: { type: Number, min: 0, default: null },
+      priorityAIProcessing: { type: Boolean, default: false },
+      analyticsAccess: { type: Boolean, default: false },
+      dedicatedSupport: { type: Boolean, default: false }
+    },
+    display: {
+      title: { type: String, trim: true, default: null },
+      description: { type: String, trim: true, default: null },
+      priceLabel: { type: String, trim: true, default: null },
+      cta: { type: String, trim: true, default: null }
     },
     limits: {
       classes: { type: Number, min: 0, default: null },
@@ -34,15 +70,18 @@ const planSchema = new mongoose.Schema(
       type: Boolean,
       default: false
     },
+    popular: {
+      type: Boolean,
+      default: false
+    },
     billingType: {
       type: String,
       enum: ['monthly', 'yearly', 'custom'],
-      required: [true, 'billingType is required']
+      default: null
     },
-    stripePriceId: {
-      type: String,
-      default: null,
-      trim: true
+    stripe: {
+      productId: { type: String, trim: true },
+      priceId: { type: String, trim: true }
     },
     badgeText: {
       type: String,
@@ -64,92 +103,10 @@ const planSchema = new mongoose.Schema(
   }
 );
 
+planSchema.index(
+  { 'stripe.priceId': 1 },
+  { unique: true, partialFilterExpression: { 'stripe.priceId': { $type: 'string' } } }
+);
 
-planSchema.statics.seedDefaults = async function seedDefaults() {
-  const existingCount = await this.countDocuments({});
-  if (existingCount > 0) {
-    return;
-  }
-
-  const createdAt = new Date('2026-02-14T00:00:00Z');
-  const defaults = [
-    {
-      name: 'Free',
-      price: 0,
-      durationDays: 30,
-      limits: {
-        classes: 5,
-        assignments: 20,
-        students: 50,
-        submissions: 100,
-        storageMB: 500
-      },
-      createdAt,
-      isActive: true,
-      isPopular: false,
-      billingType: 'monthly',
-      stripePriceId: null
-    },
-    {
-      name: 'Starter Monthly',
-      price: 9.99,
-      durationDays: 30,
-      limits: {
-        classes: 20,
-        assignments: 200,
-        students: 500,
-        submissions: 5000,
-        storageMB: 2048
-      },
-      createdAt,
-      isActive: true,
-      isPopular: true,
-      billingType: 'monthly',
-      stripePriceId: 'price_monthly_XXXX'
-    },
-    {
-      name: 'Starter Yearly',
-      price: 99.99,
-      durationDays: 365,
-      limits: {
-        classes: 20,
-        assignments: 200,
-        students: 500,
-        submissions: 5000,
-        storageMB: 2048
-      },
-      createdAt,
-      isActive: true,
-      isPopular: false,
-      billingType: 'yearly',
-      stripePriceId: 'price_yearly_XXXX'
-    },
-    {
-      name: 'Custom',
-      price: null,
-      durationDays: null,
-      limits: {
-        classes: null,
-        assignments: null,
-        students: null,
-        submissions: null,
-        storageMB: null
-      },
-      createdAt,
-      isActive: true,
-      isPopular: false,
-      billingType: 'custom',
-      stripePriceId: null
-    }
-  ];
-
-  for (const def of defaults) {
-    await this.updateOne(
-      { name: def.name },
-      { $set: def },
-      { upsert: true }
-    );
-  }
-};
 
 module.exports = mongoose.model('Plan', planSchema);

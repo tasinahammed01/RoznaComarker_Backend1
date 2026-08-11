@@ -17,17 +17,9 @@ function bytesToMB(bytes) {
 }
 
 async function getFreePlan() {
-  let freePlan = await Plan.findOne({ name: 'Free', isActive: true });
-  if (freePlan) return freePlan;
-
-  try {
-    await Plan.seedDefaults();
-  } catch (err) {
-    // ignore seeding errors here; caller will handle missing plan
-  }
-
-  freePlan = await Plan.findOne({ name: 'Free', isActive: true });
-  return freePlan;
+  return Plan.findOne({ slug: 'free', isActive: true }).then((plan) =>
+    plan || Plan.findOne({ name: 'Free', isActive: true })
+  );
 }
 
 function toEmptyUsage() {
@@ -81,6 +73,19 @@ async function ensureActivePlan(user) {
 }
 
 function getLimit(planDoc, metric) {
+  const featureKeyByMetric = {
+    classes: 'maxClasses',
+    students: 'maxStudents',
+    submissions: 'essayAnalysesPerMonth',
+    storageMB: 'storageMB'
+  };
+  const featureKey = featureKeyByMetric[metric];
+  const featureValue = featureKey && planDoc?.features
+    ? planDoc.features[featureKey]
+    : undefined;
+  if (typeof featureValue === 'number') return featureValue;
+
+  // Keep the legacy shape as a compatibility fallback for existing test/dev data.
   const limits = planDoc && planDoc.limits ? planDoc.limits : null;
   const value = limits ? limits[metric] : undefined;
   return typeof value === 'number' ? value : null;
@@ -232,6 +237,7 @@ async function incrementUsage(userId, increments) {
 
 module.exports = {
   bytesToMB,
+  getLimit,
   ensureActivePlan,
   assignPlanToUser,
   enforceUsageLimit,

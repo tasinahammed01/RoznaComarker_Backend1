@@ -73,6 +73,22 @@ const userSchema = new mongoose.Schema(
     planExpiresAt: {
       type: Date
     },
+    stripeCustomerId: { type: String, trim: true, index: true, unique: true, sparse: true },
+    stripeSubscriptionId: { type: String, trim: true, index: true, unique: true, sparse: true },
+    stripePriceId: { type: String, trim: true },
+    stripeProductId: { type: String, trim: true },
+    stripeSubscriptionStatus: {
+      type: String,
+      enum: ['active', 'trialing', 'past_due', 'unpaid', 'canceled', 'incomplete', 'incomplete_expired', 'paused'],
+      default: null
+    },
+    stripeCurrentPeriodStart: { type: Date },
+    stripeCurrentPeriodEnd: { type: Date },
+    stripeCancelAtPeriodEnd: { type: Boolean, default: false },
+    stripeCanceledAt: { type: Date },
+    stripeLatestInvoiceId: { type: String, trim: true },
+    stripeLatestInvoiceStatus: { type: String, trim: true },
+    stripeLastPaymentFailedAt: { type: Date },
     usage: {
       classes: { type: Number, default: 0, min: 0 },
       assignments: { type: Number, default: 0, min: 0 },

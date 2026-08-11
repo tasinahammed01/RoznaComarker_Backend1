@@ -44,6 +44,7 @@
     "puppeteer": "^24.39.1",
     "qrcode": "^1.5.4",
     "sharp": "^0.34.5",
+    "stripe": "^22.5.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "undici": "^6.27.0",
