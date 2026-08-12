@@ -5,6 +5,12 @@ const logger = require('../utils/logger');
 const ENTITLED_STATUSES = new Set(['active', 'trialing']);
 const CHECKOUT_BLOCKING_STATUSES = new Set(['active', 'trialing', 'past_due', 'unpaid', 'incomplete', 'paused']);
 
+function isSubscriptionEntitled(status, currentPeriodEnd, now = Date.now()) {
+  if (ENTITLED_STATUSES.has(status)) return true;
+  const end = currentPeriodEnd instanceof Date ? currentPeriodEnd : new Date(currentPeriodEnd || 0);
+  return status === 'past_due' && !Number.isNaN(end.getTime()) && end.getTime() > now;
+}
+
 function idOf(value) {
   if (!value) return null;
   return typeof value === 'string' ? value : value.id || null;
@@ -49,11 +55,7 @@ async function syncSubscription(subscription, invoice) {
     : null;
   const freePlan = await Plan.findOne({ slug: 'free', isActive: true });
   const period = getPeriod(subscription);
-  const periodStillCurrent = !!period.end && period.end.getTime() > Date.now();
-  const entitled = !!paidPlan && (
-    ENTITLED_STATUSES.has(subscription.status) ||
-    (subscription.status === 'past_due' && periodStillCurrent)
-  );
+  const entitled = !!paidPlan && isSubscriptionEntitled(subscription.status, period.end);
 
   user.stripeCustomerId = idOf(subscription.customer) || user.stripeCustomerId;
   user.stripeSubscriptionId = idOf(subscription);
@@ -99,4 +101,12 @@ async function associateCheckoutSession(session) {
   );
 }
 
-module.exports = { ENTITLED_STATUSES, CHECKOUT_BLOCKING_STATUSES, idOf, getPriceId, syncSubscription, associateCheckoutSession };
+module.exports = {
+  ENTITLED_STATUSES,
+  CHECKOUT_BLOCKING_STATUSES,
+  isSubscriptionEntitled,
+  idOf,
+  getPriceId,
+  syncSubscription,
+  associateCheckoutSession
+};

@@ -25,6 +25,7 @@ const { ASSESSMENT_VERSION, EVALUATION_VERSION } = require('../src/services/rubr
 const { loadOwnedSource } = require('../src/services/adaptivePractice.service');
 const { connectInMemoryMongo, disconnectInMemoryMongo, clearDatabase } = require('./helpers/testServer');
 const { signTestJwt } = require('./helpers/auth');
+const { seedTestPlans } = require('./helpers/seedTestPlans');
 
 describe('Phase 2 assignment controls', () => {
   let teacher;
@@ -37,6 +38,7 @@ describe('Phase 2 assignment controls', () => {
   afterAll(disconnectInMemoryMongo);
   beforeEach(async () => {
     await clearDatabase();
+    await seedTestPlans();
     teacher = await User.create({ firebaseUid: 'phase2-teacher', email: 'phase2-teacher@example.com', role: 'teacher' });
     student = await User.create({ firebaseUid: 'phase2-student', email: 'phase2-student@example.com', role: 'student' });
     classDoc = await Class.create({ name: 'Phase 2 Class', teacher: teacher._id, joinCode: 'PHASE2', qrCodeUrl: 'data:,' });

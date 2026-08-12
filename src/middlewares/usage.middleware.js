@@ -3,6 +3,7 @@ const fs = require('fs');
 const Plan = require('../models/Plan');
 const User = require('../models/user.model');
 const logger = require('../utils/logger');
+const { isSubscriptionEntitled } = require('../services/stripeSubscription.service');
 
 function sendError(res, statusCode, message) {
   return res.status(statusCode).json({
@@ -41,18 +42,52 @@ async function assignPlanToUser(user, planDoc, startedAt) {
   user.plan = planDoc._id;
   user.planStartedAt = start;
   user.planExpiresAt =
-    planDoc.durationDays && planDoc.durationDays > 0
+    planDoc.slug !== 'free' && planDoc.durationDays && planDoc.durationDays > 0
       ? new Date(start.getTime() + planDoc.durationDays * 24 * 60 * 60 * 1000)
       : null;
-  user.usage = toEmptyUsage();
+  // Plan repair and upgrades must never erase already-consumed quota/storage.
+  if (!user.usage) user.usage = toEmptyUsage();
 
   await user.save();
 }
 
 async function ensureActivePlan(user) {
   const freePlan = await getFreePlan();
-  if (!freePlan) {
-    throw new Error('Free plan is not configured');
+
+  // Synchronized Stripe fields are authoritative for paid entitlements. This
+  // also repairs a missing/stale plan ObjectId without trusting browser input.
+  if (
+    user.role === 'teacher' &&
+    user.stripePriceId &&
+    isSubscriptionEntitled(
+      user.stripeSubscriptionStatus,
+      user.stripeCurrentPeriodEnd
+    )
+  ) {
+    const paidPlan = await Plan.findOne({
+      isActive: true,
+      'stripe.priceId': user.stripePriceId
+    });
+    if (paidPlan) {
+      if (String(user.plan || '') !== String(paidPlan._id)) {
+        user.plan = paidPlan._id;
+        user.planStartedAt = user.stripeCurrentPeriodStart || user.planStartedAt || new Date();
+        user.planExpiresAt = user.stripeCurrentPeriodEnd || null;
+        await user.save();
+      }
+      return paidPlan;
+    }
+  }
+
+  if (!freePlan) throw new Error('Free plan is not configured');
+
+  // A definitive non-entitled Stripe state always resolves to Free, even if a
+  // historical paid plan reference remains on the user.
+  if (user.role === 'teacher' && user.stripeSubscriptionStatus) {
+    if (String(user.plan || '') !== String(freePlan._id) || user.planExpiresAt) {
+      await assignPlanToUser(user, freePlan, new Date());
+    }
+    return freePlan;
   }
 
   if (!user.plan) {
@@ -61,7 +96,7 @@ async function ensureActivePlan(user) {
   }
 
   let planDoc = await Plan.findById(user.plan);
-  if (!planDoc) {
+  if (!planDoc || planDoc.isActive !== true) {
     await assignPlanToUser(user, freePlan, new Date());
     return freePlan;
   }
@@ -78,6 +113,10 @@ async function ensureActivePlan(user) {
 function getLimit(planDoc, metric) {
   const featureKeyByMetric = {
     classes: 'maxClasses',
+    // The current Plan schema defines the writing allowance under the
+    // canonical essayAnalysesPerMonth feature. Assignment creation uses the
+    // existing assignments usage counter against that MongoDB-owned value.
+    assignments: 'essayAnalysesPerMonth',
     students: 'maxStudents',
     submissions: 'essayAnalysesPerMonth',
     aiFlashcards: 'aiFlashcardsLimit',
