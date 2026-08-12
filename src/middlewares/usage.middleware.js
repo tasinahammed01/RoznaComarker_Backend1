@@ -2,6 +2,7 @@ const fs = require('fs');
 
 const Plan = require('../models/Plan');
 const User = require('../models/user.model');
+const logger = require('../utils/logger');
 
 function sendError(res, statusCode, message) {
   return res.status(statusCode).json({
@@ -28,6 +29,8 @@ function toEmptyUsage() {
     assignments: 0,
     students: 0,
     submissions: 0,
+    aiFlashcards: 0,
+    aiWorksheets: 0,
     storageMB: 0
   };
 }
@@ -77,6 +80,8 @@ function getLimit(planDoc, metric) {
     classes: 'maxClasses',
     students: 'maxStudents',
     submissions: 'essayAnalysesPerMonth',
+    aiFlashcards: 'aiFlashcardsLimit',
+    aiWorksheets: 'aiWorksheetsLimit',
     storageMB: 'storageMB'
   };
   const featureKey = featureKeyByMetric[metric];
@@ -235,6 +240,68 @@ async function incrementUsage(userId, increments) {
   await User.updateOne({ _id: userId }, { $inc: inc });
 }
 
+function reserveAiFeatureUsage({ metric, featureFlag, label }) {
+  return async function aiFeatureUsageMiddleware(req, res, next) {
+    try {
+      const user = req.user;
+      if (!user) return sendError(res, 401, 'Unauthorized');
+
+      const planDoc = await ensureActivePlan(user);
+      req.plan = planDoc;
+      if (planDoc?.features?.[featureFlag] !== true) {
+        return sendError(res, 403, `${label} are not available on this plan`);
+      }
+
+      const limit = getLimit(planDoc, metric);
+      let reserved = false;
+      if (typeof limit === 'number') {
+        if (limit <= 0) {
+          logger.warn({ event: 'QUOTA_EXCEEDED', userId: String(user._id), role: user.role, operation: metric });
+          return sendError(res, 403, `Limit exceeded: ${metric}`);
+        }
+        const result = await User.updateOne(
+          {
+            _id: user._id,
+            $or: [
+              { [`usage.${metric}`]: { $lt: limit } },
+              { [`usage.${metric}`]: { $exists: false } }
+            ]
+          },
+          { $inc: { [`usage.${metric}`]: 1 } }
+        );
+        if (!result.modifiedCount) {
+          logger.warn({ event: 'QUOTA_EXCEEDED', userId: String(user._id), role: user.role, operation: metric });
+          return sendError(res, 403, `Limit exceeded: ${metric}`);
+        }
+        reserved = true;
+      } else {
+        await incrementUsage(user._id, { [metric]: 1 });
+        reserved = true;
+      }
+
+      res.once('finish', () => {
+        if (reserved && res.statusCode >= 400) {
+          User.updateOne(
+            { _id: user._id, [`usage.${metric}`]: { $gt: 0 } },
+            { $inc: { [`usage.${metric}`]: -1 } }
+          ).catch(() => {});
+        }
+      });
+      return next();
+    } catch (err) {
+      return sendError(res, 500, `Failed to validate ${label} entitlement`);
+    }
+  };
+}
+
+function reserveAiWorksheetUsage() {
+  return reserveAiFeatureUsage({ metric: 'aiWorksheets', featureFlag: 'aiWorksheets', label: 'AI worksheets' });
+}
+
+function reserveAiFlashcardUsage() {
+  return reserveAiFeatureUsage({ metric: 'aiFlashcards', featureFlag: 'aiFlashcards', label: 'AI flashcards' });
+}
+
 module.exports = {
   bytesToMB,
   getLimit,
@@ -243,6 +310,8 @@ module.exports = {
   enforceUsageLimit,
   enforceStorageLimitFromUploadedFile,
   enforceStorageLimitFromUploadedFiles,
+  reserveAiFlashcardUsage,
+  reserveAiWorksheetUsage,
   incrementUsage,
   tryDeleteUploadedFile
 };

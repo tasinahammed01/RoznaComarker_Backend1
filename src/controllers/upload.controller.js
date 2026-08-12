@@ -1,5 +1,6 @@
 const logger = require('../utils/logger');
 const path = require('path');
+const crypto = require('crypto');
 
 const uploadService = require('../services/upload.service');
 
@@ -78,7 +79,7 @@ async function uploadFlashcardImage(req, res) {
 
     // Generate unique filename
     const timestamp = Date.now();
-    const randomString = Math.random().toString(36).substring(2, 15);
+    const randomString = crypto.randomBytes(12).toString('hex');
     const ext = path.extname(req.file.originalname);
     const filename = `flashcard-${timestamp}-${randomString}${ext}`;
 

@@ -30,11 +30,11 @@ describe('localhost CORS configuration', () => {
     return instance;
   }
 
-  test('allows the configured Angular development origin with credentials', async () => {
+  test('allows the configured Angular development origin without cookie credentials', async () => {
     const response = await request(app()).get('/health').set('Origin', 'http://localhost:4200');
     expect(response.status).toBe(200);
     expect(response.headers['access-control-allow-origin']).toBe('http://localhost:4200');
-    expect(response.headers['access-control-allow-credentials']).toBe('true');
+    expect(response.headers['access-control-allow-credentials']).toBeUndefined();
   });
 
   test('rejects an unconfigured browser origin in development', async () => {
@@ -57,13 +57,18 @@ describe('localhost CORS configuration', () => {
     expect(response.headers['access-control-allow-headers']).toMatch(/Authorization/i);
   });
 
-  test('allows the configured production frontend without adding localhost', async () => {
+  test('allows only the configured production frontend without adding localhost', async () => {
     process.env.NODE_ENV = 'production';
-    process.env.FRONTEND_URL = 'http://localhost:4200';
+    process.env.FRONTEND_URL = 'https://comarkers.roznahub.com';
     const productionApp = app();
-    const accepted = await request(productionApp).get('/health').set('Origin', 'http://localhost:4200');
+    const accepted = await request(productionApp).get('/health').set('Origin', 'https://comarkers.roznahub.com');
     expect(accepted.status).toBe(200);
-    const rejected = await request(productionApp).get('/health').set('Origin', 'http://localhost:4300');
+    const rejected = await request(productionApp).get('/health').set('Origin', 'http://localhost:4200');
     expect(rejected.status).toBe(403);
+  });
+
+  test('rejects a literal null browser origin', async () => {
+    const response = await request(app()).get('/health').set('Origin', 'null');
+    expect(response.status).toBe(403);
   });
 });

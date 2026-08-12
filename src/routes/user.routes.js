@@ -97,7 +97,8 @@ router.post(
  */
 router.get(
   '/firebase/:firebaseUid',
-  param('firebaseUid').isString().trim().notEmpty().withMessage('firebaseUid is required'),
+  verifyJwtToken,
+  param('firebaseUid').isString().trim().notEmpty().isLength({ max: 256 }).withMessage('Invalid firebaseUid'),
   handleValidationResult,
   userController.getUserByFirebaseUid
 );
@@ -149,6 +150,7 @@ router.post(
  */
 router.get(
   '/:id',
+  verifyJwtToken,
   param('id').isMongoId().withMessage('Invalid user id'),
   handleValidationResult,
   userController.getUserById

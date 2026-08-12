@@ -1,0 +1,79 @@
+# CloudPanel/Nginx merge template -- not a drop-in complete vhost.
+# Keep CloudPanel-managed listen/certificate directives and replace APP_USER.
+# Validate with `sudo nginx -t` before a reload.
+
+# Add once in the nginx http{} context if CloudPanel does not already define it.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# FRONTEND HTTPS server{} additions: comarkers.roznahub.com
+server_tokens off;
+autoindex off;
+root /home/APP_USER/htdocs/comarkers.roznahub.com/dist/rozna-comarker-fe/browser;
+index index.html;
+
+location / {
+    try_files $uri $uri/ /index.html;
+}
+
+location ~ /\.(?!well-known(?:/|$)) {
+    deny all;
+}
+
+add_header Strict-Transport-Security "max-age=15552000; includeSubDomains" always;
+add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' https://js.stripe.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; img-src 'self' data: blob: https://images.unsplash.com; font-src 'self' data: https://fonts.gstatic.com https://unpkg.com; connect-src 'self' https://comarkerback.roznahub.com https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://api.stripe.com https://r.stripe.com https://errors.stripe.com; frame-src https://js.stripe.com https://hooks.stripe.com https://accounts.google.com https://rozna-comaker.firebaseapp.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; trusted-types angular angular#bundler; require-trusted-types-for 'script'" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "DENY" always;
+add_header Permissions-Policy 'camera=(self), microphone=(), geolocation=(), payment=(self "https://js.stripe.com")' always;
+add_header Cross-Origin-Opener-Policy "same-origin-allow-popups" always;
+
+# BACKEND HTTPS server{} additions: comarkerback.roznahub.com
+server_tokens off;
+autoindex off;
+client_max_body_size 52m; # Express still enforces 10 MB/file and 50 MB aggregate.
+
+# Nginx owns the single external HSTS value; discard Helmet's duplicate only here.
+proxy_hide_header Strict-Transport-Security;
+add_header Strict-Transport-Security "max-age=15552000; includeSubDomains" always;
+
+location = /api/notifications/stream {
+    proxy_pass http://127.0.0.1:5000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_buffering off;
+    proxy_cache off;
+    add_header X-Accel-Buffering no;
+    proxy_read_timeout 1h;
+    proxy_send_timeout 1h;
+}
+
+location / {
+    proxy_pass http://127.0.0.1:5000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    # Overwrite, rather than append, to prevent client-supplied XFF spoofing.
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_connect_timeout 10s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+}
+
+# Each HTTP server{} should keep ACME reachable and redirect everything else:
+# location ^~ /.well-known/acme-challenge/ { root <CloudPanel ACME webroot>; }
+# location / { return 301 https://$host$request_uri; }
+
+# If Cloudflare is enabled, configure Nginx real_ip_from with every current,
+# official Cloudflare network and `real_ip_header CF-Connecting-IP`. Never trust
+# that header until direct origin traffic is blocked and the allowlist is active.

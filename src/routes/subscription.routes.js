@@ -6,6 +6,7 @@ const { requireRole } = require('../middlewares/role.middleware');
 
 const { body } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
+const { createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
 
 const router = express.Router();
 
@@ -37,6 +38,7 @@ router.post(
   '/checkout-session',
   verifyJwtToken,
   requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'checkout_user' }),
   body('planSlug').isString().trim().notEmpty(),
   body('checkoutAttemptId').isString().isLength({ min: 36, max: 36 }).isUUID(4)
     .withMessage('checkoutAttemptId must be a valid UUID v4'),
@@ -51,6 +53,7 @@ router.post(
   '/customer-portal',
   verifyJwtToken,
   requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'portal_user' }),
   body('returnUrl').not().exists().withMessage('returnUrl is not accepted'),
   handleValidationResult,
   subscriptionController.createCustomerPortal

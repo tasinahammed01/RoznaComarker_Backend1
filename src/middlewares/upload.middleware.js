@@ -7,6 +7,7 @@ const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 
 const DEFAULT_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MAX_TOTAL_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 const ALLOWED_MIME_TYPES = new Set([
   'application/pdf',
@@ -20,6 +21,12 @@ const ALLOWED_EXTENSIONS = new Set(['.pdf', '.jpg', '.jpeg', '.png', '.webp']);
 function getMaxFileSizeBytes() {
   const parsed = Number(process.env.MAX_FILE_SIZE);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_FILE_SIZE_BYTES;
+  return parsed;
+}
+
+function getMaxTotalUploadBytes() {
+  const parsed = Number(process.env.MAX_TOTAL_UPLOAD_SIZE);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_TOTAL_UPLOAD_BYTES;
   return parsed;
 }
 
@@ -171,7 +178,10 @@ function collectUploadedFiles(req) {
 const upload = multer({
   storage,
   limits: {
-    fileSize: getMaxFileSizeBytes()
+    fileSize: getMaxFileSizeBytes(),
+    files: 20,
+    fields: 50,
+    parts: 70
   },
   fileFilter: (req, file, cb) => {
     const ext = normalizeExtension(path.extname(String(file && file.originalname)));
@@ -195,16 +205,30 @@ function setUploadType(type) {
 
 function validateUploadedFileSignature(req, res, next) {
   const files = collectUploadedFiles(req);
-  const candidates = files.filter((f) => f && f.path);
+  const totalBytes = files.reduce((sum, file) => sum + (Number(file?.size) || 0), 0);
+  if (totalBytes > getMaxTotalUploadBytes()) {
+    for (const file of files) tryDeleteLocalUpload(file);
+    return res.status(413).json({
+      success: false,
+      message: 'Upload payload is too large.'
+    });
+  }
+  const candidates = files.filter((f) => f && (f.path || Buffer.isBuffer(f.buffer)));
   if (!candidates.length) return next();
 
   try {
     for (const file of candidates) {
-      const fd = fs.openSync(file.path, 'r');
+      let fd = null;
       try {
-        const buf = Buffer.alloc(16);
-        const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
-        const snippet = buf.subarray(0, bytesRead);
+        let snippet;
+        if (Buffer.isBuffer(file.buffer)) {
+          snippet = file.buffer.subarray(0, 16);
+        } else {
+          fd = fs.openSync(file.path, 'r');
+          const buf = Buffer.alloc(16);
+          const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+          snippet = buf.subarray(0, bytesRead);
+        }
 
         const detectedMime = detectSignatureKind(snippet);
         if (!detectedMime || !ALLOWED_MIME_TYPES.has(detectedMime)) {
@@ -229,7 +253,7 @@ function validateUploadedFileSignature(req, res, next) {
           });
         }
       } finally {
-        fs.closeSync(fd);
+        if (fd !== null) fs.closeSync(fd);
       }
     }
 
@@ -259,6 +283,14 @@ function validateUploadedFileSignature(req, res, next) {
   }
 }
 
+function tryDeleteLocalUpload(file) {
+  try {
+    if (file?.path) fs.unlinkSync(file.path);
+  } catch {
+    // Best-effort cleanup for rejected uploads.
+  }
+}
+
 function handleUploadError(err, req, res, next) {
   if (!err) return next();
 
@@ -275,6 +307,13 @@ function handleUploadError(err, req, res, next) {
     return res.status(413).json({
       success: false,
       message: `File too large. Max size is ${maxMB} MB.`
+    });
+  }
+
+  if (err && ['LIMIT_FILE_COUNT', 'LIMIT_PART_COUNT', 'LIMIT_FIELD_COUNT'].includes(err.code)) {
+    return res.status(413).json({
+      success: false,
+      message: 'Upload payload is too large.'
     });
   }
 

@@ -329,6 +329,7 @@ async function downloadWorksheetSubmissionPdf(req, res, next) {
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
+    res.setHeader("X-Content-Type-Options", "nosniff");
 
     return res.download(savedPath, safeFilename, async (err) => {
       try {
@@ -434,6 +435,7 @@ async function downloadWorksheetReportPdf(req, res, next) {
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
+    res.setHeader("X-Content-Type-Options", "nosniff");
 
     return res.download(savedPath, safeFilename, async (err) => {
       try {
@@ -573,6 +575,7 @@ async function downloadFlashcardReportPdf(req, res, next) {
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
+    res.setHeader("X-Content-Type-Options", "nosniff");
 
     return res.download(savedPath, safeFilename, async (err) => {
       try {

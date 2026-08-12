@@ -8,6 +8,12 @@ import { generateWorksheetFromFile } from "../services/worksheetFileService";
 import { WorksheetDocumentModel } from "../models/WorksheetDocument";
 
 const router = Router();
+const { verifyJwtToken } = require("../middlewares/jwtAuth.middleware");
+const { requireRole } = require("../middlewares/role.middleware");
+const { createSensitiveRateLimiter, createUserRateLimiter } = require("../middlewares/rateLimit.middleware");
+const { createUserConcurrencyGuard } = require("../middlewares/concurrency.middleware");
+const { reserveAiWorksheetUsage } = require("../middlewares/usage.middleware");
+const { validateUploadedFileSignature } = require("../middlewares/upload.middleware");
 
 // ─────────────────────────────────────────────
 // MULTER CONFIG
@@ -36,7 +42,14 @@ const upload = multer({
 // ─────────────────────────────────────────────
 router.post(
   "/",
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole("teacher"),
+  createUserRateLimiter({ event: "AI_GENERATION_RATE_LIMITED", reason: "worksheet_file_user" }),
+  createUserConcurrencyGuard({ operation: "worksheet_generation", maxConcurrent: 2 }),
+  reserveAiWorksheetUsage(),
   upload.single("file"),
+  validateUploadedFileSignature,
   async (req: Request, res: Response) => {
     try {
       if (!req.file) {
@@ -46,17 +59,10 @@ router.post(
         });
       }
 
-      const { teacherId, gradeLevel, topic, subject } = req.body as Record<
+      const { gradeLevel, topic, subject } = req.body as Record<
         string,
         unknown
       >;
-
-      if (!teacherId || typeof teacherId !== "string") {
-        return res.status(400).json({
-          error: "MISSING_FIELD",
-          message: "teacherId is required.",
-        });
-      }
 
       if (!gradeLevel || typeof gradeLevel !== "string") {
         return res.status(400).json({
@@ -80,7 +86,7 @@ router.post(
             ? subject.trim()
             : undefined,
         gradeLevel: gradeLevel.trim(),
-        teacherId: teacherId.trim(),
+        teacherId: String((req as Request & { user: { _id: unknown } }).user._id),
       });
 
       // DB SAVE (non-blocking)
@@ -90,10 +96,12 @@ router.post(
 
       return res.status(201).json(worksheet);
     } catch (err: unknown) {
-      console.error("[worksheetFileRoute] Error:", err);
-
       const error = err as Error & { status?: number };
       const message = error?.message || "";
+      console.error("[worksheetFileRoute] Generation failed", {
+        name: error?.name || "Error",
+        status: typeof error?.status === "number" ? error.status : undefined,
+      });
 
       // ─────────────────────────────────────────────
       // FILE TYPE ERROR
@@ -148,8 +156,7 @@ router.post(
       // ─────────────────────────────────────────────
       return res.status(500).json({
         error: "GENERATION_FAILED",
-        message:
-          message || "Worksheet generation failed. Please try again.",
+        message: "Worksheet generation failed. Please try again.",
       });
     }
   }

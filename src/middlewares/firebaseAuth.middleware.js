@@ -74,7 +74,9 @@ async function verifyFirebaseToken(req, res, next) {
       });
     }
 
-    const decodedToken = await admin.auth().verifyIdToken(token);
+    // checkRevoked=true also rejects disabled Firebase users and revoked ID
+    // tokens when creating a new backend session.
+    const decodedToken = await admin.auth().verifyIdToken(token, true);
 
     const intendedRole = req.body && req.body.intendedRole;
     const { user, isNew } = await createOrGetUserFromFirebase(decodedToken, intendedRole);
@@ -116,5 +118,6 @@ async function verifyFirebaseToken(req, res, next) {
 }
 
 module.exports = {
+  createOrGetUserFromFirebase,
   verifyFirebaseToken
 };

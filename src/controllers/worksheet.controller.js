@@ -200,6 +200,12 @@ function sendError(res, statusCode, message) {
   return res.status(statusCode).json({ success: false, message });
 }
 
+function boundedPositiveInt(value, fallback, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(max, Math.floor(parsed));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER: Parse AI Worksheet Response with JSON Repair & Validation
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1410,8 +1416,8 @@ async function getMyWorksheets(req, res) {
       : "updatedAt";
     const sort = { [sortField]: sortDir };
 
-    const pageNum = Math.max(1, Number(page));
-    const limitNum = Math.min(100, Math.max(1, Number(limit)));
+    const pageNum = boundedPositiveInt(page, 1, 100000);
+    const limitNum = boundedPositiveInt(limit, 50, 100);
     const skip = (pageNum - 1) * limitNum;
 
     const [total, worksheets] = await Promise.all([
@@ -2171,8 +2177,8 @@ async function getWorksheetReport(req, res) {
       if (dateTo) filter.submittedAt.$lte = new Date(dateTo);
     }
 
-    const pageNum = Math.max(1, Number(page));
-    const limitNum = Math.min(100, Math.max(1, Number(limit)));
+    const pageNum = boundedPositiveInt(page, 1, 100000);
+    const limitNum = boundedPositiveInt(limit, 20, 100);
     const skip = (pageNum - 1) * limitNum;
 
     // Paginated submissions for the display table, plus a lightweight all-submissions

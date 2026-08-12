@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const User = require('../models/user.model');
 const Class = require('../models/class.model');
+const Membership = require('../models/membership.model');
 const Submission = require('../models/Submission');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 const { evaluationPolicyHash } = require('../services/teacherEvaluationPolicy.service');
@@ -21,6 +22,32 @@ function sendError(res, statusCode, message) {
     success: false,
     message
   });
+}
+
+function toUserLookupDto(user) {
+  return {
+    _id: user._id,
+    email: user.email,
+    displayName: user.displayName,
+    institution: user.institution,
+    bio: user.bio,
+    photoURL: user.photoURL,
+    role: user.role
+  };
+}
+
+async function mayLookupUser(requester, target) {
+  if (!requester || !target) return false;
+  if (requester.role === 'admin' || String(requester._id) === String(target._id)) return true;
+  if (requester.role !== 'teacher' || target.role !== 'student') return false;
+
+  const classIds = await Class.find({ teacher: requester._id, isActive: true }).distinct('_id');
+  if (!classIds.length) return false;
+  return Boolean(await Membership.exists({
+    student: target._id,
+    class: { $in: classIds },
+    status: 'active'
+  }));
 }
 
 function isNonEmptyString(value) {
@@ -336,15 +363,8 @@ async function getUserById(req, res) {
       return sendError(res, 404, 'User not found');
     }
 
-    return sendSuccess(res, {
-      _id: user._id,
-      email: user.email,
-      displayName: user.displayName,
-      institution: user.institution,
-      bio: user.bio,
-      photoURL: user.photoURL,
-      role: user.role
-    });
+    if (!(await mayLookupUser(req.user, user))) return sendError(res, 403, 'Forbidden');
+    return sendSuccess(res, toUserLookupDto(user));
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch user');
   }
@@ -358,12 +378,14 @@ async function getUserByFirebaseUid(req, res) {
       return sendError(res, 400, 'firebaseUid is required');
     }
 
-    const user = await User.findOne({ firebaseUid: firebaseUid.trim() });
+    const user = await User.findOne({ firebaseUid: firebaseUid.trim() })
+      .select('email displayName institution bio photoURL role');
     if (!user) {
       return sendError(res, 404, 'User not found');
     }
 
-    return sendSuccess(res, user);
+    if (!(await mayLookupUser(req.user, user))) return sendError(res, 403, 'Forbidden');
+    return sendSuccess(res, toUserLookupDto(user));
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch user');
   }

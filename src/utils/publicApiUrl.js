@@ -13,7 +13,9 @@ function getPublicApiUrl(req) {
 }
 
 function buildPublicUploadUrl(req, type, filename) {
-  return `${getPublicApiUrl(req)}/uploads/${type}/${encodeURIComponent(filename)}`;
+  const privateTypes = new Set(['assignments', 'submissions', 'feedback']);
+  const prefix = privateTypes.has(String(type)) ? 'files' : 'uploads';
+  return `${getPublicApiUrl(req)}/${prefix}/${type}/${encodeURIComponent(filename)}`;
 }
 
 module.exports = { getPublicApiUrl, buildPublicUploadUrl };

@@ -1,6 +1,7 @@
 const { body, validationResult } = require('express-validator');
 const emailService = require('../services/emailService');
 const logger = require('../utils/logger');
+const crypto = require('crypto');
 
 class AuthController {
   async sendOTP(req, res) {
@@ -117,25 +118,28 @@ class AuthController {
       const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${this.generateToken()}`;
       const result = await emailService.sendResetPasswordEmail(email, resetLink);
 
-      if (result.success) {
-        res.status(200).json({
-          success: true,
-          message: 'Password reset email sent successfully',
-          messageId: result.messageId
-        });
-      } else {
-        res.status(500).json({
-          success: false,
-          message: 'Failed to send password reset email',
-          error: result.error
+      if (!result.success) {
+        logger.warn({
+          event: 'PASSWORD_RESET_DELIVERY_FAILED',
+          reason: 'email_provider_failure',
+          timestamp: new Date().toISOString()
         });
       }
+      // Keep the public response independent of account existence and provider
+      // delivery state. Operators retain the actual outcome in safe telemetry.
+      return res.status(200).json({
+        success: true,
+        message: 'If an account matches that information, reset instructions will be sent.'
+      });
     } catch (error) {
-      logger.error(`Error in resetPassword controller: ${error.message}`);
-      res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-        error: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+      logger.error({
+        event: 'PASSWORD_RESET_DELIVERY_FAILED',
+        reason: 'internal_or_provider_error',
+        timestamp: new Date().toISOString()
+      });
+      return res.status(200).json({
+        success: true,
+        message: 'If an account matches that information, reset instructions will be sent.'
       });
     }
   }
@@ -200,11 +204,11 @@ class AuthController {
   }
 
   generateOTP() {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    return crypto.randomInt(100000, 1000000).toString();
   }
 
   generateToken() {
-    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    return crypto.randomBytes(32).toString('base64url');
   }
 }
 

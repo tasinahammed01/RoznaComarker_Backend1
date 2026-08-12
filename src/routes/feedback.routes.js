@@ -15,11 +15,14 @@ const { enforceStorageLimitFromUploadedFile } = require('../middlewares/usage.mi
 const { param } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
 
-const { createSensitiveRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createSensitiveRateLimiter, createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createUserConcurrencyGuard } = require('../middlewares/concurrency.middleware');
 
 const multer = require('multer');
 
 const router = express.Router();
+const aiUserLimiter = createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'feedback_ai_user' });
+const aiConcurrency = createUserConcurrencyGuard({ operation: 'feedback_ai_generation', maxConcurrent: 2 });
 const noStore = (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
   res.set('Pragma', 'no-cache');
@@ -114,6 +117,8 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('teacher'),
+  aiUserLimiter,
+  aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
   feedbackController.generateAiFeedbackFromOcr
@@ -136,6 +141,8 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('teacher'),
+  aiUserLimiter,
+  aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
   feedbackController.generateAiSubmissionFeedback
@@ -147,6 +154,8 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('teacher'),
+  aiUserLimiter,
+  aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
   feedbackController.generateAiRubricDesigner
@@ -159,6 +168,8 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('teacher'),
+  aiUserLimiter,
+  aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
   feedbackController.generateAiRubricFromDesigner
@@ -170,6 +181,8 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('teacher'),
+  aiUserLimiter,
+  aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
   feedbackController.generateRubricDesignerFromPrompt
@@ -180,6 +193,8 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('teacher'),
+  aiUserLimiter,
+  aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
   feedbackController.generateRubricDesignerFromContext
@@ -191,6 +206,8 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('teacher'),
+  aiUserLimiter,
+  aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
   rubricUpload.single('file'),

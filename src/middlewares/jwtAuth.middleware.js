@@ -15,41 +15,33 @@ function getBearerToken(req) {
   return token.trim();
 }
 
+function authError(res, status, code, message) {
+  return res.status(status).json({ success: false, code, message });
+}
+
 async function verifyJwtToken(req, res, next) {
   try {
     const token = getBearerToken(req);
 
     if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authorization token missing'
-      });
+      return authError(res, 401, 'AUTH_REQUIRED', 'Authentication is required');
     }
 
     const payload = verifyJwt(token);
     const userId = payload && payload.id;
 
     if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid or expired token'
-      });
+      return authError(res, 401, 'AUTH_INVALID', 'Authentication is invalid');
     }
 
     const user = await User.findById(userId);
 
     if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'User not found'
-      });
+      return authError(res, 401, 'AUTH_INVALID', 'Authentication is invalid');
     }
 
     if (user.isActive === false) {
-      return res.status(403).json({
-        success: false,
-        message: 'User is inactive'
-      });
+      return authError(res, 403, 'ACCOUNT_INACTIVE', 'Account is inactive');
     }
 
     try {
@@ -66,13 +58,14 @@ async function verifyJwtToken(req, res, next) {
 
     return next();
   } catch (err) {
-    return res.status(401).json({
-      success: false,
-      message: 'Invalid or expired token'
-    });
+    const expired = err && err.name === 'TokenExpiredError';
+    return authError(
+      res,
+      401,
+      expired ? 'AUTH_EXPIRED' : 'AUTH_INVALID',
+      expired ? 'Authentication has expired' : 'Authentication is invalid'
+    );
   }
 }
 
-module.exports = {
-  verifyJwtToken
-};
+module.exports = { getBearerToken, verifyJwtToken };

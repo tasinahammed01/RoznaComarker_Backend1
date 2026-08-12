@@ -7,11 +7,12 @@ class ApiError extends Error {
 
 function errorHandler(err, req, res, next) {
   const logger = require('../utils/logger');
-  const statusCode = err.statusCode || 500;
+  const statusCode = err.statusCode || err.status || 500;
   const isProd = process.env.NODE_ENV === 'production';
 
-  const message =
-    statusCode === 500 && isProd
+  const message = statusCode === 413
+    ? 'Request payload is too large.'
+    : statusCode === 500 && isProd
       ? 'Internal Server Error'
       : err.message || 'Internal Server Error';
 
@@ -31,6 +32,7 @@ function errorHandler(err, req, res, next) {
 
   res.status(statusCode).json({
     success: false,
+    ...(statusCode === 413 ? { code: 'PAYLOAD_TOO_LARGE' } : {}),
     message
   });
 }

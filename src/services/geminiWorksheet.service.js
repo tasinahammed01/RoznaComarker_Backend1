@@ -3,6 +3,7 @@
 const mammoth = require('mammoth');
 const path = require('path');
 const aiGateway = require('./aiGateway.service');
+const { sanitizeWorksheetHtml } = require('./worksheetHtmlSanitizer.service');
 
 function cleanHtmlResponse(raw) {
   return String(raw || '').trim()
@@ -81,15 +82,15 @@ function validateHtml(rawHtml, activityTypes) {
   const html = cleanHtmlResponse(rawHtml);
   if (html.length < 100 || !/^<!doctype html>/iu.test(html)
     || !/<html\b/iu.test(html) || !/<body\b/iu.test(html)
-    || !/class=["'][^"']*\bworksheet-container\b/iu.test(html)
-    || containsExecutableHtml(html)) {
+    || !/class=["'][^"']*\bworksheet-container\b/iu.test(html)) {
     const error = new Error('AI returned an invalid worksheet.');
     error.code = 'WORKSHEET_HTML_INVALID';
     throw error;
   }
+  const sanitizedHtml = sanitizeWorksheetHtml(html);
   const requested = Array.isArray(activityTypes) ? activityTypes.filter(Boolean) : [];
   if (requested.length) {
-    const normalized = html.toLowerCase();
+    const normalized = sanitizedHtml.toLowerCase();
     const labels = {
       ordering: ['ordering', 'sequencing'], classification: ['classification', 'sorting'],
       multipleChoice: ['multiple choice'], fillBlanks: ['fill in the blank', 'fill-in-the-blank'],
@@ -103,7 +104,7 @@ function validateHtml(rawHtml, activityTypes) {
       throw error;
     }
   }
-  return html;
+  return sanitizedHtml;
 }
 
 async function generateHtmlWorksheetFromFile(fileBuffer, mimeType, fileName, options = {}) {

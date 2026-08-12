@@ -6,7 +6,8 @@ const controller = require('../controllers/adaptivePractice.controller');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { requireRole } = require('../middlewares/role.middleware');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
-const { createSensitiveRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createSensitiveRateLimiter, createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createUserConcurrencyGuard } = require('../middlewares/concurrency.middleware');
 
 const router = express.Router();
 const validateSubmission = [
@@ -25,8 +26,20 @@ router.get('/teacher/sessions/:sessionId/activities/:activityId/attempts', verif
   handleValidationResult, controller.getTeacherAttempts);
 
 router.get('/submissions/:submissionId', ...validateSubmission, controller.getSession);
-router.post('/submissions/:submissionId/generate', createSensitiveRateLimiter(), ...validateSubmission, controller.generateSession);
-router.post('/sessions/:sessionId/activities/:activityId/check', createSensitiveRateLimiter(), verifyJwtToken, requireRole('student'),
+router.post('/submissions/:submissionId/generate',
+  createSensitiveRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'adaptive_generation_ip' }),
+  ...validateSubmission,
+  createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'adaptive_generation_user' }),
+  createUserConcurrencyGuard({ operation: 'adaptive_generation', maxConcurrent: 2 }),
+  controller.generateSession);
+// Answer checks are intentionally much more generous than generation because
+// MCQ/fill-blank checks are deterministic. Existing attempt/job identity still
+// deduplicates the open-response provider call.
+router.post('/sessions/:sessionId/activities/:activityId/check',
+  createSensitiveRateLimiter({ windowMs: 60 * 1000, limit: 120, event: 'AI_GENERATION_RATE_LIMITED', reason: 'adaptive_check_ip' }),
+  verifyJwtToken, requireRole('student'),
+  createUserRateLimiter({ windowMs: 60 * 1000, limit: 60, event: 'AI_GENERATION_RATE_LIMITED', reason: 'adaptive_check_user' }),
+  createUserConcurrencyGuard({ operation: 'adaptive_answer_check', maxConcurrent: 3 }),
   param('sessionId').isMongoId().withMessage('Invalid session id'),
   param('activityId').isString().trim().notEmpty().isLength({ max: 100 }),
   body('response').isString().isLength({ min: 1, max: 5000 }),

@@ -18,9 +18,15 @@ const { body } = require('express-validator');
 const { validationResult } = require('express-validator');
 const { tryDeleteUploadedFile } = require('../middlewares/usage.middleware');
 
-const { createSensitiveRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createSensitiveRateLimiter, createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
 
 const router = express.Router();
+const uploadUserLimiter = createUserRateLimiter({
+  windowMs: process.env.UPLOAD_USER_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000,
+  limit: process.env.UPLOAD_USER_RATE_LIMIT_MAX || 30,
+  event: 'UPLOAD_RATE_LIMITED',
+  reason: 'upload_user'
+});
 
 function handleUploadValidationResult(req, res, next) {
   const result = validationResult(req);
@@ -45,6 +51,7 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('student'),
+  uploadUserLimiter,
   setUploadType('original'),
   upload.single('file'),
   handleUploadError,
@@ -61,6 +68,7 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('teacher'),
+  uploadUserLimiter,
   setUploadType('processed'),
   upload.single('file'),
   handleUploadError,
@@ -76,6 +84,7 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('teacher'),
+  uploadUserLimiter,
   body('submissionId').isMongoId().withMessage('Invalid submission id'),
   body('transcriptText').isString().trim().notEmpty().withMessage('transcriptText is required'),
   handleUploadValidationResult,
@@ -84,10 +93,13 @@ router.post(
 
 router.post(
   '/flashcard-image',
+  createSensitiveRateLimiter({ event: 'UPLOAD_RATE_LIMITED', reason: 'upload_ip' }),
   verifyJwtToken,
+  uploadUserLimiter,
   setUploadType('flashcard'),
   upload.single('file'),
   handleUploadError,
+  validateUploadedFileSignature,
   uploadController.uploadFlashcardImage
 );
 

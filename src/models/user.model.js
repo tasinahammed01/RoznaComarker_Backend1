@@ -94,6 +94,8 @@ const userSchema = new mongoose.Schema(
       assignments: { type: Number, default: 0, min: 0 },
       students: { type: Number, default: 0, min: 0 },
       submissions: { type: Number, default: 0, min: 0 },
+      aiFlashcards: { type: Number, default: 0, min: 0 },
+      aiWorksheets: { type: Number, default: 0, min: 0 },
       storageMB: { type: Number, default: 0, min: 0 }
     },
     photoURL: {

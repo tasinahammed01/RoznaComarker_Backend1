@@ -5,7 +5,10 @@ const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { signJwt } = require('../utils/jwt');
 const { issueToken: issueSseToken } = require('../services/sseToken.service');
 
-const { createSensitiveRateLimiter } = require('../middlewares/rateLimit.middleware');
+const {
+  createAuthIpRateLimiter,
+  createUserRateLimiter
+} = require('../middlewares/rateLimit.middleware');
 
 const router = express.Router();
 
@@ -48,7 +51,21 @@ const router = express.Router();
  *                   success: false
  *                   message: Authorization token missing
  */
-router.post('/login', createSensitiveRateLimiter(), verifyFirebaseToken, async (req, res) => {
+router.post(
+  '/login',
+  createAuthIpRateLimiter({
+    limit: process.env.LOGIN_IP_RATE_LIMIT_MAX || 20,
+    event: 'AUTH_RATE_LIMITED',
+    reason: 'login_ip'
+  }),
+  verifyFirebaseToken,
+  createUserRateLimiter({
+    windowMs: process.env.LOGIN_ACCOUNT_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000,
+    limit: process.env.LOGIN_ACCOUNT_RATE_LIMIT_MAX || 10,
+    event: 'AUTH_RATE_LIMITED',
+    reason: 'login_account'
+  }),
+  async (req, res) => {
   const { intendedRole } = req.body || {};
 
   // For EXISTING users, verify the selected role matches their DB role
@@ -77,7 +94,8 @@ router.post('/login', createSensitiveRateLimiter(), verifyFirebaseToken, async (
       role: req.user.role
     }
   });
-});
+  }
+);
 
 /**
  * @openapi
@@ -163,7 +181,12 @@ router.get('/jwt-test', verifyJwtToken, async (req, res) => {
  *       401:
  *         description: Unauthorized
  */
-router.post('/sse-token', verifyJwtToken, async (req, res) => {
+router.post('/sse-token', verifyJwtToken, createUserRateLimiter({
+  windowMs: process.env.SSE_TOKEN_RATE_LIMIT_WINDOW_MS || 60 * 1000,
+  limit: process.env.SSE_TOKEN_RATE_LIMIT_MAX || 12,
+  event: 'SSE_RECONNECT_RATE_LIMITED',
+  reason: 'sse_token_user'
+}), async (req, res) => {
   const sseToken = issueSseToken(req.user._id);
   return res.json({
     success: true,

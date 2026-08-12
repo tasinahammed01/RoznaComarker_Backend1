@@ -3,6 +3,9 @@ const worksheetController = require("../controllers/worksheet.controller");
 const { verifyJwtToken } = require("../middlewares/jwtAuth.middleware");
 const { requireRole } = require("../middlewares/role.middleware");
 const multer = require("multer");
+const { createSensitiveRateLimiter, createUserRateLimiter } = require("../middlewares/rateLimit.middleware");
+const { createUserConcurrencyGuard } = require("../middlewares/concurrency.middleware");
+const { reserveAiWorksheetUsage } = require("../middlewares/usage.middleware");
 
 // Configure multer for in-memory file storage
 const upload = multer({
@@ -13,12 +16,18 @@ const upload = multer({
 });
 
 const router = express.Router();
+const worksheetUserLimiter = createUserRateLimiter({ event: "AI_GENERATION_RATE_LIMITED", reason: "worksheet_user" });
+const worksheetConcurrency = createUserConcurrencyGuard({ operation: "worksheet_generation", maxConcurrent: 2 });
 
 /* ── AI Generation (teacher only, no save) ─────────────────── */
 router.post(
   "/generate",
   verifyJwtToken,
   requireRole("teacher"),
+  createSensitiveRateLimiter(),
+  worksheetUserLimiter,
+  worksheetConcurrency,
+  reserveAiWorksheetUsage(),
   worksheetController.generateWorksheet,
 );
 
@@ -27,6 +36,10 @@ router.post(
   "/upload-and-generate",
   verifyJwtToken,
   requireRole("teacher"),
+  createSensitiveRateLimiter(),
+  worksheetUserLimiter,
+  worksheetConcurrency,
+  reserveAiWorksheetUsage(),
   upload.single("file"),
   worksheetController.uploadAndGenerate,
 );
@@ -36,6 +49,10 @@ router.post(
   "/extract-structure",
   verifyJwtToken,
   requireRole("teacher"),
+  createSensitiveRateLimiter(),
+  worksheetUserLimiter,
+  worksheetConcurrency,
+  reserveAiWorksheetUsage(),
   upload.single("file"),
   worksheetController.extractWorksheetStructure,
 );
@@ -45,6 +62,10 @@ router.post(
   "/gemini-html-generate",
   verifyJwtToken,
   requireRole("teacher"),
+  createSensitiveRateLimiter(),
+  worksheetUserLimiter,
+  worksheetConcurrency,
+  reserveAiWorksheetUsage(),
   upload.single("file"),
   worksheetController.generateHtmlWorksheet,
 );
@@ -54,6 +75,10 @@ router.post(
   "/generate-from-file",
   verifyJwtToken,
   requireRole("teacher"),
+  createSensitiveRateLimiter(),
+  worksheetUserLimiter,
+  worksheetConcurrency,
+  reserveAiWorksheetUsage(),
   upload.single("worksheetFile"),
   worksheetController.generateFromFile,
 );
@@ -63,6 +88,10 @@ router.post(
   "/analyze-template",
   verifyJwtToken,
   requireRole("teacher"),
+  createSensitiveRateLimiter(),
+  worksheetUserLimiter,
+  worksheetConcurrency,
+  reserveAiWorksheetUsage(),
   upload.single("templateFile"),
   worksheetController.analyzeTemplate,
 );
@@ -158,6 +187,10 @@ router.post(
   "/:id/regenerate-theme",
   verifyJwtToken,
   requireRole("teacher"),
+  createSensitiveRateLimiter(),
+  worksheetUserLimiter,
+  worksheetConcurrency,
+  reserveAiWorksheetUsage(),
   worksheetController.regenerateTheme,
 );
 

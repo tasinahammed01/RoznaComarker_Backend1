@@ -7,21 +7,43 @@ import { v4 as uuidv4 } from "uuid";
 import { WorksheetDocumentModel } from "../models/WorksheetDocument";
 
 const router = Router();
+const { verifyJwtToken } = require("../middlewares/jwtAuth.middleware");
+const { requireRole } = require("../middlewares/role.middleware");
+
+router.use(verifyJwtToken, requireRole("teacher"));
+
+function teacherId(req: Request): string {
+  return String((req as Request & { user: { _id: unknown } }).user._id);
+}
+
+function isUuid(value: unknown): boolean {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function invalidId(res: Response): Response | null {
+  return res.status(400).json({ error: "INVALID_ID", message: "Invalid worksheet id." });
+}
+
+function editablePatch(body: Record<string, unknown>): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  for (const key of ["version", "sourceFileUrl", "meta", "design", "sections", "answerKey"]) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) patch[key] = body[key];
+  }
+  return patch;
+}
 
 // ─── GET /   List all WorksheetDocuments for a teacher ──────────────────────
 router.get("/", async (req: Request, res: Response) => {
   try {
-    const { teacherId, subject, page = "1", limit = "20" } = req.query as Record<string, string>;
+    const subject = typeof req.query.subject === "string" ? req.query.subject.trim().slice(0, 100) : "";
+    const page = typeof req.query.page === "string" ? req.query.page : "1";
+    const limit = typeof req.query.limit === "string" ? req.query.limit : "20";
 
-    if (!teacherId) {
-      return res.status(400).json({ error: "MISSING_FIELD", message: "teacherId is required." });
-    }
-
-    const filter: Record<string, unknown> = { createdBy: teacherId };
+    const filter: Record<string, unknown> = { createdBy: teacherId(req) };
     if (subject) filter["meta.subject"] = subject;
 
-    const pageNum  = Math.max(1, parseInt(page));
-    const limitNum = Math.min(50, parseInt(limit));
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, Math.min(50, parseInt(limit, 10) || 20));
 
     const [worksheets, total] = await Promise.all([
       WorksheetDocumentModel.find(filter)
@@ -35,31 +57,31 @@ router.get("/", async (req: Request, res: Response) => {
 
     return res.json({ worksheets, total, page: pageNum, limit: limitNum });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return res.status(500).json({ error: "SERVER_ERROR", message: msg });
+    return res.status(500).json({ error: "SERVER_ERROR", message: "Failed to list worksheets." });
   }
 });
 
 // ─── GET /:id   Single worksheet ────────────────────────────────────────────
 router.get("/:id", async (req: Request, res: Response) => {
   try {
-    const worksheet = await WorksheetDocumentModel.findById(req.params.id).lean();
+    if (!isUuid(req.params.id)) return invalidId(res);
+    const worksheet = await WorksheetDocumentModel.findOne({ _id: req.params.id, createdBy: teacherId(req) }).lean();
     if (!worksheet) {
       return res.status(404).json({ error: "NOT_FOUND", message: "Worksheet not found." });
     }
     return res.json(worksheet);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return res.status(500).json({ error: "SERVER_ERROR", message: msg });
+    return res.status(500).json({ error: "SERVER_ERROR", message: "Failed to fetch worksheet." });
   }
 });
 
 // ─── PUT /:id   Update worksheet (partial fields) ───────────────────────────
 router.put("/:id", async (req: Request, res: Response) => {
   try {
-    const updated = await WorksheetDocumentModel.findByIdAndUpdate(
-      req.params.id,
-      { $set: req.body as Record<string, unknown> },
+    if (!isUuid(req.params.id)) return invalidId(res);
+    const updated = await WorksheetDocumentModel.findOneAndUpdate(
+      { _id: req.params.id, createdBy: teacherId(req) },
+      { $set: editablePatch(req.body as Record<string, unknown>) },
       { new: true, lean: true }
     );
     if (!updated) {
@@ -67,29 +89,29 @@ router.put("/:id", async (req: Request, res: Response) => {
     }
     return res.json(updated);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return res.status(500).json({ error: "SERVER_ERROR", message: msg });
+    return res.status(500).json({ error: "SERVER_ERROR", message: "Failed to update worksheet." });
   }
 });
 
 // ─── DELETE /:id   Remove worksheet ─────────────────────────────────────────
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
-    const deleted = await WorksheetDocumentModel.findByIdAndDelete(req.params.id).lean();
+    if (!isUuid(req.params.id)) return invalidId(res);
+    const deleted = await WorksheetDocumentModel.findOneAndDelete({ _id: req.params.id, createdBy: teacherId(req) }).lean();
     if (!deleted) {
       return res.status(404).json({ error: "NOT_FOUND", message: "Worksheet not found." });
     }
     return res.json({ success: true, id: req.params.id });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return res.status(500).json({ error: "SERVER_ERROR", message: msg });
+    return res.status(500).json({ error: "SERVER_ERROR", message: "Failed to delete worksheet." });
   }
 });
 
 // ─── POST /:id/duplicate   Copy with new ID and "(Copy)" title suffix ────────
 router.post("/:id/duplicate", async (req: Request, res: Response) => {
   try {
-    const original = await WorksheetDocumentModel.findById(req.params.id).lean();
+    if (!isUuid(req.params.id)) return invalidId(res);
+    const original = await WorksheetDocumentModel.findOne({ _id: req.params.id, createdBy: teacherId(req) }).lean();
     if (!original) {
       return res.status(404).json({ error: "NOT_FOUND", message: "Worksheet not found." });
     }
@@ -97,6 +119,7 @@ router.post("/:id/duplicate", async (req: Request, res: Response) => {
     const copy = {
       ...original,
       _id: uuidv4(),
+      createdBy: teacherId(req),
       createdAt: new Date().toISOString(),
       meta: {
         ...(original.meta as Record<string, unknown>),
@@ -107,8 +130,7 @@ router.post("/:id/duplicate", async (req: Request, res: Response) => {
     await WorksheetDocumentModel.create(copy);
     return res.status(201).json(copy);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return res.status(500).json({ error: "SERVER_ERROR", message: msg });
+    return res.status(500).json({ error: "SERVER_ERROR", message: "Failed to duplicate worksheet." });
   }
 });
 

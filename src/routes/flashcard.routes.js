@@ -6,15 +6,32 @@ const flashcardProgressController = require('../controllers/flashcardProgress.co
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { requireRole } = require('../middlewares/role.middleware');
 const { upload, setUploadType, handleUploadError, validateUploadedFileSignature } = require('../middlewares/upload.middleware');
+const { createSensitiveRateLimiter, createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createUserConcurrencyGuard } = require('../middlewares/concurrency.middleware');
+const { reserveAiFlashcardUsage } = require('../middlewares/usage.middleware');
 
 const router = express.Router();
 
-router.post('/generate',     verifyJwtToken, requireRole('teacher'), flashcardController.generateFlashcards);
-router.post('/grade-answer', verifyJwtToken, flashcardController.gradeAnswer);
+router.post('/generate',
+  createSensitiveRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'flashcard_ip' }),
+  verifyJwtToken,
+  requireRole('teacher'),
+  createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'flashcard_user' }),
+  createUserConcurrencyGuard({ operation: 'flashcard_generation', maxConcurrent: 2 }),
+  reserveAiFlashcardUsage(),
+  flashcardController.generateFlashcards);
+router.post('/grade-answer',
+  createSensitiveRateLimiter({ windowMs: 60 * 1000, limit: 120, event: 'AI_GENERATION_RATE_LIMITED', reason: 'flashcard_grade_ip' }),
+  verifyJwtToken,
+  createUserRateLimiter({ windowMs: 60 * 1000, limit: 60, event: 'AI_GENERATION_RATE_LIMITED', reason: 'flashcard_grade_user' }),
+  createUserConcurrencyGuard({ operation: 'flashcard_answer_check', maxConcurrent: 2 }),
+  flashcardController.gradeAnswer);
 
 router.post(
   '/upload/flashcard-image',
+  createSensitiveRateLimiter({ event: 'UPLOAD_RATE_LIMITED', reason: 'flashcard_upload_ip' }),
   verifyJwtToken,
+  createUserRateLimiter({ windowMs: 15 * 60 * 1000, limit: 30, event: 'UPLOAD_RATE_LIMITED', reason: 'flashcard_upload_user' }),
   setUploadType('flashcards'),
   upload.single('file'),
   handleUploadError,

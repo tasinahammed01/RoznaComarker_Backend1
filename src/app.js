@@ -69,6 +69,7 @@ const { createCorsMiddleware } = require("./middlewares/cors.middleware");
 const {
   createGlobalRateLimiter,
   createSensitiveRateLimiter,
+  createUserRateLimiter,
 } = require("./middlewares/rateLimit.middleware");
 
 const app = express();
@@ -105,8 +106,14 @@ fs.mkdirSync(path.join(uploadsRoot, "templates"), { recursive: true });
 
 // Stripe signature verification must see the exact bytes. Mount this before JSON parsing.
 app.use('/api/stripe', require('./routes/stripeWebhook.routes'));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Keep ordinary JSON/form requests bounded. Multipart uploads are parsed by
+// Multer on their individual routes and retain their feature-specific limits.
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "1mb" }));
+app.use(express.urlencoded({
+  extended: true,
+  limit: process.env.URLENCODED_BODY_LIMIT || "256kb",
+  parameterLimit: 1000,
+}));
 
 app.use(createCorsMiddleware());
 
@@ -125,7 +132,7 @@ app.use(
     frameguard: { action: "deny" },
     hsts:
       process.env.NODE_ENV === "production"
-        ? { maxAge: 15552000, includeSubDomains: true, preload: true }
+        ? { maxAge: 15552000, includeSubDomains: true, preload: false }
         : false,
     xXssProtection: true,
   }),
@@ -136,41 +143,20 @@ app.use(hpp());
 
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
-// Ordinary reads, health checks, polling, static assets, and SSE are intentionally
-// not globally limited. Expensive/mutating routes use createSensitiveRateLimiter.
-// The default memory store is process-local; production clusters should use a
-// shared express-rate-limit store at the reverse proxy or application layer.
+// Generous baseline protection for ordinary API traffic. Stripe's raw-body
+// webhook is mounted above this middleware. Health and long-lived SSE traffic
+// have different semantics and are excluded here; SSE reconnection is limited
+// separately at its token-issuance boundary.
+app.use("/api", createGlobalRateLimiter({
+  skip: (req) => req.path === "/health" || req.path === "/notifications/stream",
+}));
 
-// Serve legacy static files with CORS support
-app.use(
-  "/uploads/assignments",
-  createCorsMiddleware(),
-  express.static(path.join(uploadsRoot, "assignments")),
-);
-app.use(
-  "/uploads/submissions",
-  createCorsMiddleware(),
-  express.static(path.join(uploadsRoot, "submissions")),
-);
-app.use(
-  "/uploads/feedback",
-  createCorsMiddleware(),
-  express.static(path.join(uploadsRoot, "feedback")),
-);
+// Public presentation assets only. Student/teacher artifacts are served by
+// authenticated /files routes below after an ownership/relationship check.
 app.use(
   "/uploads/avatars",
   createCorsMiddleware(),
   express.static(path.join(uploadsRoot, "avatars")),
-);
-app.use(
-  "/uploads/original",
-  createCorsMiddleware(),
-  express.static(path.join(uploadsRoot, "original")),
-);
-app.use(
-  "/uploads/processed",
-  createCorsMiddleware(),
-  express.static(path.join(uploadsRoot, "processed")),
 );
 app.use(
   "/uploads/class-banners",
@@ -222,6 +208,12 @@ app.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole("student"),
+  createUserRateLimiter({
+    windowMs: process.env.UPLOAD_USER_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000,
+    limit: process.env.UPLOAD_USER_RATE_LIMIT_MAX || 30,
+    event: "UPLOAD_RATE_LIMITED",
+    reason: "legacy_submission_upload_user",
+  }),
   setUploadType("submissions"),
   upload.fields([
     { name: "files", maxCount: 20 },
@@ -256,19 +248,9 @@ app.post(
 );
 
 app.use("/files", secureFileRoutes);
-
-app.get("/files/submissions/:filename", (req, res) => {
-  const filename =
-    req.params && req.params.filename ? String(req.params.filename) : "";
-  if (!filename) {
-    return res.status(404).json({
-      success: false,
-      message: "Route not found",
-    });
-  }
-
-  return res.redirect(`/uploads/submissions/${encodeURIComponent(filename)}`);
-});
+// Authenticated compatibility aliases for records that still contain legacy
+// /uploads URLs. These are controlled handlers, not static directory mounts.
+app.use("/uploads", secureFileRoutes);
 
 if (process.env.NODE_ENV !== "production") {
   const swaggerSpec = createSwaggerSpec();

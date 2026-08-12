@@ -8,5 +8,6 @@ const router = express.Router();
 
 router.get('/original/:filename', verifyJwtToken, secureFileController.serveOriginal);
 router.get('/processed/:filename', verifyJwtToken, secureFileController.serveProcessed);
+router.get('/:type/:filename', verifyJwtToken, secureFileController.servePrivateFile);
 
 module.exports = router;

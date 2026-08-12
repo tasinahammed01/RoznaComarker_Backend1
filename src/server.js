@@ -86,8 +86,11 @@ async function start() {
   }
 
   const port = process.env.PORT || env.PORT || 5000;
-  server = app.listen(port, "0.0.0.0", () => {
-    logger.info(`Server running on port ${port} (${env.NODE_ENV})`);
+  // Production traffic must enter through the single trusted Nginx hop. Keep
+  // development reachable on the LAN unless HOST is explicitly configured.
+  const host = process.env.HOST || (env.NODE_ENV === "production" ? "127.0.0.1" : "0.0.0.0");
+  server = app.listen(port, host, () => {
+    logger.info(`Server running on ${host}:${port} (${env.NODE_ENV})`);
     logger.metric({ event: "runtime_contract_fingerprint", ...runtimeContractFingerprint() });
   });
 }

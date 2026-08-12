@@ -8,6 +8,11 @@ import { WorksheetDocumentModel } from "../models/WorksheetDocument";
 import { ActivityType, MAX_ACTIVITY_TYPES } from "../types/worksheet";
 
 const router = Router();
+const { verifyJwtToken } = require("../middlewares/jwtAuth.middleware");
+const { requireRole } = require("../middlewares/role.middleware");
+const { createSensitiveRateLimiter, createUserRateLimiter } = require("../middlewares/rateLimit.middleware");
+const { createUserConcurrencyGuard } = require("../middlewares/concurrency.middleware");
+const { reserveAiWorksheetUsage } = require("../middlewares/usage.middleware");
 
 /**
  * POST /api/worksheets/generate/text
@@ -29,7 +34,15 @@ const router = Router();
  *
  * Response: WorksheetDocument JSON (201)
  */
-router.post("/", async (req: Request, res: Response) => {
+router.post(
+  "/",
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole("teacher"),
+  createUserRateLimiter({ event: "AI_GENERATION_RATE_LIMITED", reason: "worksheet_text_user" }),
+  createUserConcurrencyGuard({ operation: "worksheet_generation", maxConcurrent: 2 }),
+  reserveAiWorksheetUsage(),
+  async (req: Request, res: Response) => {
   try {
     const {
       topic,
@@ -44,7 +57,6 @@ router.post("/", async (req: Request, res: Response) => {
       activityTypes,
       customSelection,
       questionCount,
-      teacherId,
     } = req.body as Record<string, unknown>;
 
     // ── Required field validation ─────────────────────────────────
@@ -70,12 +82,6 @@ router.post("/", async (req: Request, res: Response) => {
       return res.status(400).json({
         error: "MISSING_FIELD",
         message: "gradeLevel is required.",
-      });
-    }
-    if (!teacherId || typeof teacherId !== "string") {
-      return res.status(400).json({
-        error: "MISSING_FIELD",
-        message: "teacherId is required.",
       });
     }
 
@@ -117,7 +123,7 @@ router.post("/", async (req: Request, res: Response) => {
         typeof cefrLevel === "string" && cefrLevel ? cefrLevel : undefined,
       gradeCategory: gradeCategory.trim(),
       gradeLevel: gradeLevel.trim(),
-      teacherId: teacherId.trim(),
+      teacherId: String((req as Request & { user: { _id: unknown } }).user._id),
       activityTypes: resolvedTypes,
       questionCount: resolvedCount,
       difficulty: resolvedDifficulty,
@@ -133,9 +139,11 @@ router.post("/", async (req: Request, res: Response) => {
 
     return res.status(201).json(worksheet);
   } catch (err: unknown) {
-    console.error("[worksheetTextRoute] Error:", err);
-
     const error = err as Record<string, unknown>;
+    console.error("[worksheetTextRoute] Generation failed", {
+      name: typeof error?.name === "string" ? error.name : "Error",
+      status: typeof error?.status === "number" ? error.status : undefined,
+    });
 
     // Handle Gemini rate limiting
     if (error?.status === 429) {
@@ -147,12 +155,10 @@ router.post("/", async (req: Request, res: Response) => {
 
     return res.status(500).json({
       error: "GENERATION_FAILED",
-      message:
-        typeof error?.message === "string"
-          ? error.message
-          : "Worksheet generation failed. Please try again.",
+      message: "Worksheet generation failed. Please try again.",
     });
   }
-});
+  },
+);
 
 export default router;

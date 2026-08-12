@@ -1,4 +1,8 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+
+const JWT_ALGORITHM = 'HS256';
+const JWT_EXPIRES_IN = '7d';
 
 function getJwtSecret() {
   const secret = process.env.JWT_SECRET;
@@ -19,7 +23,12 @@ function signJwt(user) {
     role: user.role
   };
 
-  return jwt.sign(payload, getJwtSecret(), { expiresIn: '7d' });
+  return jwt.sign(payload, getJwtSecret(), {
+    algorithm: JWT_ALGORITHM,
+    expiresIn: JWT_EXPIRES_IN,
+    subject: String(user._id || user.id),
+    jwtid: crypto.randomUUID()
+  });
 }
 
 function verifyJwt(token) {
@@ -27,10 +36,15 @@ function verifyJwt(token) {
     throw new Error('Token is required');
   }
 
-  return jwt.verify(token, getJwtSecret());
+  return jwt.verify(token, getJwtSecret(), {
+    algorithms: [JWT_ALGORITHM],
+    maxAge: JWT_EXPIRES_IN
+  });
 }
 
 module.exports = {
   signJwt,
-  verifyJwt
+  verifyJwt,
+  JWT_ALGORITHM,
+  JWT_EXPIRES_IN
 };

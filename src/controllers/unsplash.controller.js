@@ -29,7 +29,7 @@ async function searchUnsplashImages(req, res) {
     }
 
     const perPage = Math.min(Math.max(parseInt(per_page, 10) || 12, 1), 30);
-    const query = String(q).trim();
+    const query = String(q).normalize('NFKC').trim().slice(0, 120);
 
     logger.info(
       `[UNSPLASH] Search start — query="${query}" per_page=${perPage}`,

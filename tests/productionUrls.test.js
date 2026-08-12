@@ -13,11 +13,11 @@ describe('production URL and CORS configuration', () => {
   beforeAll(() => {
     for (const key of ['NODE_ENV', 'FRONTEND_URL', 'CORS_ALLOWED_ORIGINS', 'CORS_ORIGINS', 'PUBLIC_API_URL', 'BASE_URL']) previous[key] = process.env[key];
     process.env.NODE_ENV = 'production';
-    process.env.FRONTEND_URL = 'http://localhost:4200';
-    process.env.CORS_ALLOWED_ORIGINS = ' http://localhost:4200/ ';
+    process.env.FRONTEND_URL = 'https://comarkers.roznahub.com';
+    process.env.CORS_ALLOWED_ORIGINS = ' https://comarkers.roznahub.com/ ';
     delete process.env.CORS_ORIGINS;
-    process.env.PUBLIC_API_URL = 'http://localhost:5000/';
-    process.env.BASE_URL = 'http://localhost:5000';
+    process.env.PUBLIC_API_URL = 'https://comarkerback.roznahub.com/';
+    process.env.BASE_URL = 'https://comarkerback.roznahub.com';
   });
   afterAll(() => {
     for (const [key, value] of Object.entries(previous)) {
@@ -34,12 +34,12 @@ describe('production URL and CORS configuration', () => {
 
   test('allows the exact frontend origin and required preflight headers', async () => {
     const response = await request(app()).options('/api/assignments/my')
-      .set('Origin', 'http://localhost:4200')
+      .set('Origin', 'https://comarkers.roznahub.com')
       .set('Access-Control-Request-Method', 'GET')
       .set('Access-Control-Request-Headers', 'authorization,content-type');
     expect(response.status).toBe(204);
-    expect(response.headers['access-control-allow-origin']).toBe('http://localhost:4200');
-    expect(response.headers['access-control-allow-credentials']).toBe('true');
+    expect(response.headers['access-control-allow-origin']).toBe('https://comarkers.roznahub.com');
+    expect(response.headers['access-control-allow-credentials']).toBeUndefined();
     expect(response.headers['access-control-allow-headers'].toLowerCase()).toContain('authorization');
     expect(response.headers['access-control-allow-headers'].toLowerCase()).toContain('content-type');
   });
@@ -54,7 +54,7 @@ describe('production URL and CORS configuration', () => {
   test('never combines credentials with a wildcard allow-origin header', async () => {
     const responses = await Promise.all([
       request(app()).get('/api/assignments/my'),
-      request(app()).get('/api/assignments/my').set('Origin', 'http://localhost:4200'),
+      request(app()).get('/api/assignments/my').set('Origin', 'https://comarkers.roznahub.com'),
     ]);
 
     for (const response of responses) {
@@ -73,27 +73,27 @@ describe('production URL and CORS configuration', () => {
   });
 
   test('builds public and upload URLs from the canonical backend origin', () => {
-    const req = { protocol: 'http', get: () => '127.0.0.1:5000' };
-    expect(getPublicApiUrl(req)).toBe('http://localhost:5000');
+    const req = { protocol: 'https', get: () => 'comarkerback.roznahub.com' };
+    expect(getPublicApiUrl(req)).toBe('https://comarkerback.roznahub.com');
     expect(buildPublicUploadUrl(req, 'submissions', 'page one.png')).toBe(
-      'http://localhost:5000/uploads/submissions/page%20one.png'
+      'https://comarkerback.roznahub.com/files/submissions/page%20one.png'
     );
   });
 
   test('normalizes legacy upload URLs in production and leaves other URLs unchanged', () => {
-    const req = { protocol: 'http', get: () => '127.0.0.1:5000' };
+    const req = { protocol: 'https', get: () => 'comarkerback.roznahub.com' };
 
     expect(normalizePublicUploadsUrlForDev(
       req,
       'http://localhost:5000/uploads/submissions/example.png'
-    )).toBe('http://localhost:5000/uploads/submissions/example.png');
+    )).toBe('https://comarkerback.roznahub.com/uploads/submissions/example.png');
     expect(normalizePublicUploadsUrlForDev(
       req,
       'https://assets.example.com/submissions/example.png'
     )).toBe('https://assets.example.com/submissions/example.png');
   });
 
-  test('serves an existing submitted image without an Origin header', async () => {
+  test('does not serve an existing submitted image without authentication', async () => {
     const submissionsRoot = path.resolve(__dirname, '../uploads/submissions');
     const filename = fs.readdirSync(submissionsRoot).find((name) => /\.(?:jpe?g|png)$/i.test(name));
     expect(filename).toBeDefined();
@@ -101,14 +101,14 @@ describe('production URL and CORS configuration', () => {
     const productionApp = require('../src/app');
     const response = await request(productionApp).get(`/uploads/submissions/${encodeURIComponent(filename)}`);
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(401);
     expect(response.headers['access-control-allow-origin']).toBeUndefined();
   }, 15000);
 
-  test('returns 404 instead of a CORS 403 for a missing submitted image without Origin', async () => {
+  test('does not reveal whether a submitted image exists without authentication', async () => {
     const productionApp = require('../src/app');
     const response = await request(productionApp).get('/uploads/submissions/cors-regression-missing-image.jpg');
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(401);
   });
 });

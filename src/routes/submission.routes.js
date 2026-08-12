@@ -13,7 +13,8 @@ const {
 const { param } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
 
-const { createSensitiveRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createSensitiveRateLimiter, createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createUserConcurrencyGuard } = require('../middlewares/concurrency.middleware');
 
 const {
   enforceStorageLimitFromUploadedFile
@@ -21,6 +22,12 @@ const {
 } = require('../middlewares/usage.middleware');
 
 const router = express.Router();
+const uploadUserLimiter = createUserRateLimiter({
+  windowMs: process.env.UPLOAD_USER_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000,
+  limit: process.env.UPLOAD_USER_RATE_LIMIT_MAX || 30,
+  event: 'UPLOAD_RATE_LIMITED',
+  reason: 'submission_upload_user'
+});
 const noStore = (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
   res.set('Pragma', 'no-cache');
@@ -83,6 +90,7 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('student'),
+  uploadUserLimiter,
   param('qrToken').isString().trim().notEmpty().withMessage('Invalid QR'),
   handleValidationResult,
   submissionController.enforceResubmissionPermission,
@@ -112,6 +120,7 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('student'),
+  uploadUserLimiter,
   setUploadType('submissions'),
   upload.fields([
     { name: 'files', maxCount: 20 },
@@ -180,6 +189,7 @@ router.post(
   createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('student'),
+  uploadUserLimiter,
   param('assignmentId').isMongoId().withMessage('Invalid assignment id'),
   handleValidationResult,
   submissionController.enforceResubmissionPermission,
@@ -300,11 +310,15 @@ router.post(
 );
 
 router.post('/:submissionId/ocr-corrections/regenerate', createSensitiveRateLimiter(), verifyJwtToken, requireRole('teacher'),
+  createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'ocr_correction_retry_user' }),
+  createUserConcurrencyGuard({ operation: 'ocr_correction_retry', maxConcurrent: 2 }),
   param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult,
   submissionController.regenerateCanonicalCorrections);
 
 router.post('/:submissionId/evaluation/retry', verifyJwtToken, requireRole('teacher'),
   createSensitiveRateLimiter(),
+  createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'evaluation_retry_user' }),
+  createUserConcurrencyGuard({ operation: 'evaluation_retry', maxConcurrent: 2 }),
   param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult,
   submissionController.retryCanonicalEvaluation);
 

@@ -61,7 +61,9 @@ function createCorsMiddleware() {
       err.statusCode = 403;
       return callback(err);
     },
-    credentials: true,
+    // Authentication is an explicit Authorization bearer header, not a
+    // browser-managed cookie. Do not opt private APIs into credentialed CORS.
+    credentials: false,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     exposedHeaders: ['Content-Length', 'Content-Type']
