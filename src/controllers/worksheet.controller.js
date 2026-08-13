@@ -17,6 +17,12 @@ const WorksheetDraft = require("../models/WorksheetDraft");
 const Assignment = require("../models/assignment.model");
 const Class = require("../models/class.model");
 const Membership = require("../models/membership.model");
+const User = require("../models/user.model");
+const {
+  escapeRegExp,
+  parseDateOnlyUtc,
+  startOfNextUtcDay,
+} = require("../utils/worksheetReportQuery.utils");
 const { createNotification } = require("../services/notification.service");
 const {
   gradeWorksheetAnswers,
@@ -2131,7 +2137,7 @@ async function getSubmissions(req, res) {
  * Auth: teacher only (must own worksheet)
  * Returns comprehensive report with overview, per-student data, and analytics.
  * Supports pagination and filtering via query params.
- * @query { page, limit, classId, status, dateFrom, dateTo }
+ * @query { page, limit, search, classId, status, dateFrom, dateTo }
  */
 async function getWorksheetReport(req, res) {
   try {
@@ -2139,6 +2145,7 @@ async function getWorksheetReport(req, res) {
     const {
       page = 1,
       limit = 20,
+      search,
       classId,
       status,
       dateFrom,
@@ -2171,10 +2178,42 @@ async function getWorksheetReport(req, res) {
           .then((a) => a.map((x) => x._id)),
       };
     if (status) filter.status = status;
-    if (dateFrom || dateTo) {
+    const parsedDateFrom = dateFrom ? parseDateOnlyUtc(dateFrom) : null;
+    const parsedDateTo = dateTo ? parseDateOnlyUtc(dateTo) : null;
+    if (dateFrom && !parsedDateFrom)
+      return sendError(res, 400, "Invalid dateFrom; expected YYYY-MM-DD");
+    if (dateTo && !parsedDateTo)
+      return sendError(res, 400, "Invalid dateTo; expected YYYY-MM-DD");
+    if (
+      parsedDateFrom &&
+      parsedDateTo &&
+      parsedDateFrom >= startOfNextUtcDay(parsedDateTo)
+    )
+      return sendError(res, 400, "dateFrom must be on or before dateTo");
+
+    if (parsedDateFrom || parsedDateTo) {
       filter.submittedAt = {};
-      if (dateFrom) filter.submittedAt.$gte = new Date(dateFrom);
-      if (dateTo) filter.submittedAt.$lte = new Date(dateTo);
+      if (parsedDateFrom) filter.submittedAt.$gte = parsedDateFrom;
+      if (parsedDateTo)
+        filter.submittedAt.$lt = startOfNextUtcDay(parsedDateTo);
+    }
+
+    const searchTerm = typeof search === "string" ? search.trim() : "";
+    if (searchTerm.length > 100)
+      return sendError(res, 400, "Search must be 100 characters or fewer");
+    if (searchTerm) {
+      // Restrict identity lookup to students already inside the teacher-authorized,
+      // worksheet/filter-scoped submission set. Search is applied before count/skip/limit.
+      const eligibleStudentIds = await WorksheetSubmission.distinct(
+        "studentId",
+        filter,
+      );
+      const safeSearch = new RegExp(escapeRegExp(searchTerm), "i");
+      const matchingStudentIds = await User.find({
+        _id: { $in: eligibleStudentIds },
+        $or: [{ displayName: safeSearch }, { email: safeSearch }],
+      }).distinct("_id");
+      filter.studentId = { $in: matchingStudentIds };
     }
 
     const pageNum = boundedPositiveInt(page, 1, 100000);
