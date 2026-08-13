@@ -2,10 +2,10 @@
 
 const mongoose = require('mongoose');
 const { ADAPTIVE_PRACTICE_THRESHOLD } = require('../constants/adaptivePractice.constants');
+const { CANONICAL_QUESTION_TYPES, normalizeQuestionType } = require('../utils/adaptivePracticeQuestionTypes');
 
 const { Schema } = mongoose;
 const skillIds = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'];
-const questionTypes = ['open_response', 'mcq', 'fill_blank'];
 
 const sourceSkillSchema = new Schema({
   id: { type: String, enum: skillIds, required: true },
@@ -18,7 +18,7 @@ const sourceSkillSchema = new Schema({
 
 const activitySchema = new Schema({
   activityId: { type: String, required: true, trim: true },
-  questionType: { type: String, enum: questionTypes, default: 'open_response' },
+  questionType: { type: String, enum: CANONICAL_QUESTION_TYPES, default: 'open_response', set: normalizeQuestionType },
   skillId: { type: String, enum: skillIds, required: true },
   category: { type: String, required: true, trim: true },
   title: { type: String, required: true, trim: true },
@@ -38,6 +38,7 @@ const activitySchema = new Schema({
   },
   correctOptionId: { type: String, trim: true, default: undefined },
   acceptedAnswers: { type: [String], default: undefined },
+  caseSensitive: { type: Boolean, default: false },
   difficulty: { type: String, enum: ['foundational', 'developing', 'proficient'], required: true },
   createdAt: { type: Date, default: Date.now }
 }, { _id: false });

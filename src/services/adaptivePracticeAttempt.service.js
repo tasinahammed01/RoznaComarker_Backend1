@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const AdaptivePracticeSession = require('../models/AdaptivePracticeSession');
 const AdaptivePracticeAttempt = require('../models/AdaptivePracticeAttempt');
 const checkAI = require('./adaptivePracticeCheckAI.service');
+const { normalizeQuestionType } = require('../utils/adaptivePracticeQuestionTypes');
 const {
   ADAPTIVE_PRACTICE_CHECK_PROMPT_VERSION,
   ADAPTIVE_PRACTICE_PASS_THRESHOLD,
@@ -22,15 +23,14 @@ function normalizeResponse(value) {
     : '';
 }
 
-function normalizeFillBlankResponse(value) {
-  return typeof value === 'string'
-    ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en')
-    : '';
+function normalizeFillBlankResponse(value, caseSensitive = false) {
+  if (typeof value !== 'string') return '';
+  const normalized = value.normalize('NFKC').trim().replace(/\s+/gu, ' ');
+  return caseSensitive ? normalized : normalized.toLocaleLowerCase('en');
 }
 
 function questionTypeOf(activity) {
-  return ['mcq', 'fill_blank'].includes(String(activity?.questionType))
-    ? String(activity.questionType) : 'open_response';
+  return normalizeQuestionType(activity?.questionType);
 }
 
 function responseFingerprint({ sessionId, activityId, studentId, response }) {
@@ -59,8 +59,8 @@ function deterministicResult(activity, response) {
   let passed = false;
   if (questionType === 'mcq') passed = response === String(activity.correctOptionId);
   else if (questionType === 'fill_blank') {
-    const normalized = normalizeFillBlankResponse(response);
-    passed = activity.acceptedAnswers.some((answer) => normalizeFillBlankResponse(answer) === normalized);
+    const normalized = normalizeFillBlankResponse(response, activity.caseSensitive === true);
+    passed = activity.acceptedAnswers.some((answer) => normalizeFillBlankResponse(answer, activity.caseSensitive === true) === normalized);
   } else {
     throw new AttemptError(500, 'INVALID_DETERMINISTIC_ACTIVITY', 'This activity requires semantic checking.');
   }
@@ -73,7 +73,7 @@ function deterministicResult(activity, response) {
     checklist: activity.checklist.map((item) => ({
       item, met: passed, feedback: passed ? 'Met.' : 'Review this point before retrying.'
     })),
-    suggestedRevision: passed ? 'Your answer is correct.' : 'Try a different answer using the activity tip.',
+    suggestedRevision: activity.modelAnswer || (passed ? 'Your answer is correct.' : 'Review the activity explanation and try again.'),
     scoring: { taskFulfillment: passed ? 30 : 0, targetSkillApplication: passed ? 50 : 0, checklistCompletion: passed ? 20 : 0 }
   };
 }

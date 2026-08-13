@@ -204,4 +204,21 @@ describe('adaptive practice attempts', () => {
     expect(wrong.attempt.result.passed).toBe(false);
     expect(spy).not.toHaveBeenCalled();
   });
+
+  it('honors case sensitivity only when the generated fill blank requests it', async () => {
+    const { session, studentId, activityId } = await seedTyped('fill_blank', {
+      acceptedAnswers: ['London'], caseSensitive: true
+    });
+    const exact = await service.checkResponse(session._id, activityId, studentId, { response: 'London' });
+    const wrongCase = await service.checkResponse(session._id, activityId, studentId, { response: 'london' });
+    expect(exact.attempt.result.passed).toBe(true);
+    expect(wrongCase.attempt.result.passed).toBe(false);
+  });
+
+  it('normalizes legacy interaction aliases before choosing the grading path', () => {
+    expect(service.questionTypeOf({ questionType: 'multiple_choice' })).toBe('mcq');
+    expect(service.questionTypeOf({ questionType: 'fillInBlank' })).toBe('fill_blank');
+    expect(service.questionTypeOf({ questionType: 'rewrite' })).toBe('open_response');
+    expect(service.questionTypeOf({ questionType: 'unknown' })).toBe('open_response');
+  });
 });
