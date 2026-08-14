@@ -14,6 +14,8 @@ const adaptivePracticeAttemptSchema = new Schema({
   submissionId: { type: Schema.Types.ObjectId, ref: 'Submission', required: true, index: true },
   studentId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   activityId: { type: String, required: true, trim: true },
+  practiceId: { type: String, trim: true, index: true },
+  questionId: { type: String, trim: true },
   attemptNumber: { type: Number, required: true, min: 1 },
   status: { type: String, enum: ['checking', 'ready', 'failed'], required: true, index: true },
   response: { type: String, required: true },

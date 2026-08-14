@@ -1,5 +1,7 @@
 'use strict';
 
+const { normalizePractice, questionAttemptKey } = require('../utils/adaptivePracticeQuestions');
+
 const MARK_KEYS = new Set([
   'score',
   'scoreOutOf5',
@@ -47,15 +49,30 @@ function redactStudentMarks(payload) {
   return redacted;
 }
 
-function sanitizeAdaptiveSession(session, marksVisible, revealedActivityIds = []) {
+function sanitizeAdaptiveSession(session, marksVisible, revealedQuestionKeys = []) {
   if (!session) return session;
   const safe = session && typeof session.toObject === 'function' ? session.toObject() : { ...session };
-  const revealed = new Set(Array.from(revealedActivityIds || [], String));
+  const revealed = new Set(Array.from(revealedQuestionKeys || [], String));
   safe.activities = Array.isArray(safe.activities) ? safe.activities.map((activity) => {
-    const publicActivity = { ...activity };
+    const normalized = normalizePractice(activity);
+    const legacy = !(Array.isArray(activity.questions) && activity.questions.length);
+    const publicActivity = { ...normalized };
     delete publicActivity.correctOptionId;
     delete publicActivity.acceptedAnswers;
-    if (!revealed.has(String(activity.activityId))) delete publicActivity.modelAnswer;
+    delete publicActivity.modelAnswer;
+    publicActivity.questions = normalized.questions.map((question) => {
+      const publicQuestion = { ...question };
+      delete publicQuestion.correctOptionId;
+      delete publicQuestion.acceptedAnswers;
+      if (!revealed.has(questionAttemptKey(activity.activityId, question.questionId, legacy))) delete publicQuestion.modelAnswer;
+      return publicQuestion;
+    });
+    // Temporary response-only bridge for older frontends; canonical persistence is never duplicated.
+    const first = publicActivity.questions[0];
+    for (const field of ['questionType', 'task', 'tip', 'checklist', 'options', 'caseSensitive']) {
+      if (publicActivity[field] === undefined && first?.[field] !== undefined) publicActivity[field] = first[field];
+    }
+    if (first?.modelAnswer !== undefined && publicActivity.modelAnswer === undefined) publicActivity.modelAnswer = first.modelAnswer;
     return publicActivity;
   }) : [];
   if (!marksVisible && safe.sourceSnapshot) {

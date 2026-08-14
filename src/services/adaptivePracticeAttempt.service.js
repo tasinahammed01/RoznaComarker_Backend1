@@ -6,6 +6,7 @@ const AdaptivePracticeSession = require('../models/AdaptivePracticeSession');
 const AdaptivePracticeAttempt = require('../models/AdaptivePracticeAttempt');
 const checkAI = require('./adaptivePracticeCheckAI.service');
 const { normalizeQuestionType } = require('../utils/adaptivePracticeQuestionTypes');
+const { normalizePractice, resolvePracticeQuestion, questionAttemptKey } = require('../utils/adaptivePracticeQuestions');
 const {
   ADAPTIVE_PRACTICE_CHECK_PROMPT_VERSION,
   ADAPTIVE_PRACTICE_PASS_THRESHOLD,
@@ -33,10 +34,11 @@ function questionTypeOf(activity) {
   return normalizeQuestionType(activity?.questionType);
 }
 
-function responseFingerprint({ sessionId, activityId, studentId, response }) {
+function responseFingerprint({ sessionId, activityId, questionId, studentId, response }) {
   return crypto.createHash('sha256').update(JSON.stringify({
-    promptVersion: ADAPTIVE_PRACTICE_CHECK_PROMPT_VERSION,
-    sessionId: String(sessionId), activityId, studentId: String(studentId), response: normalizeResponse(response)
+    promptVersion: ADAPTIVE_PRACTICE_CHECK_PROMPT_VERSION, sessionId: String(sessionId), activityId,
+    ...(questionId ? { questionId: String(questionId) } : {}),
+    studentId: String(studentId), response: normalizeResponse(response)
   }), 'utf8').digest('hex');
 }
 
@@ -78,7 +80,7 @@ function deterministicResult(activity, response) {
   };
 }
 
-async function loadOwnedSession(sessionId, studentId, activityId) {
+async function loadOwnedSession(sessionId, studentId, activityId, questionId) {
   if (!mongoose.Types.ObjectId.isValid(sessionId)) throw new AttemptError(400, 'INVALID_SESSION_ID', 'Invalid practice session id.');
   const session = await AdaptivePracticeSession.findById(sessionId);
   if (!session) throw new AttemptError(404, 'SESSION_NOT_FOUND', 'Practice session not found.');
@@ -86,7 +88,9 @@ async function loadOwnedSession(sessionId, studentId, activityId) {
   if (session.status !== 'ready') throw new AttemptError(409, 'SESSION_NOT_READY', 'Practice is not ready for checking.');
   const activity = session.activities.find((item) => item.activityId === activityId);
   if (!activity) throw new AttemptError(404, 'ACTIVITY_NOT_FOUND', 'Practice activity not found.');
-  return { session, activity };
+  const resolved = resolvePracticeQuestion(activity, questionId);
+  if (!resolved) throw new AttemptError(404, 'QUESTION_NOT_FOUND', 'Practice question not found.');
+  return { session, activity, ...resolved };
 }
 
 function buildCheckMessages(activity, response) {
@@ -146,25 +150,46 @@ async function allocateAttempt(base, response, fingerprint) {
 async function getProgressSummary(session) {
   if (!session) return { improvedActivities: 0, completedActivities: 0, totalActivities: 0, requiredActivityCount: 0, completed: false, percentage: 0, activities: [] };
   const attempts = await AdaptivePracticeAttempt.find({ sessionId: session._id, studentId: session.studentId, status: 'ready' }).sort({ attemptNumber: 1 }).lean();
-  const activities = session.activities.map((activity) => {
-    const matching = attempts.filter((attempt) => attempt.activityId === activity.activityId);
-    const latest = matching.at(-1) || null;
-    const best = matching.reduce((current, attempt) => !current || attempt.result.score > current.result.score ? attempt : current, null);
-    const latestAttempt = latest ? { _id: latest._id, activityId: latest.activityId, attemptNumber: latest.attemptNumber, status: latest.status, response: latest.response, result: latest.result } : null;
-    return { activityId: activity.activityId, attemptCount: matching.length, improved: Boolean(best?.result?.passed), bestScore: best?.result?.score ?? null, latestScore: latest?.result?.score ?? null, latestResponse: latest?.response ?? '', latestAttempt };
+  const activities = session.activities.map((rawActivity) => {
+    const activity = normalizePractice(rawActivity);
+    const legacy = !(Array.isArray(rawActivity.questions) && rawActivity.questions.length);
+    const questions = activity.questions.map((question) => {
+      const attemptActivityId = questionAttemptKey(activity.activityId, question.questionId, legacy);
+      const matching = attempts.filter((attempt) => attempt.activityId === attemptActivityId);
+      const latest = matching.at(-1) || null;
+      const best = matching.reduce((current, attempt) => !current || attempt.result.score > current.result.score ? attempt : current, null);
+      const latestAttempt = latest ? { _id: latest._id, activityId: activity.activityId, questionId: question.questionId,
+        attemptNumber: latest.attemptNumber, status: latest.status, response: latest.response, result: latest.result } : null;
+      return { questionId: question.questionId, attemptActivityId, attemptCount: matching.length,
+        improved: Boolean(best?.result?.passed), bestScore: best?.result?.score ?? null,
+        latestScore: latest?.result?.score ?? null, latestResponse: latest?.response ?? '', latestAttempt };
+    });
+    const attempted = questions.filter((question) => question.bestScore !== null);
+    const score = attempted.length ? Math.round(attempted.reduce((sum, question) => sum + question.bestScore, 0) / questions.length) : null;
+    const latestScore = questions.every((question) => question.latestScore !== null)
+      ? Math.round(questions.reduce((sum, question) => sum + question.latestScore, 0) / questions.length) : null;
+    return { activityId: activity.activityId, attemptCount: questions.reduce((sum, item) => sum + item.attemptCount, 0),
+      improved: questions.length > 0 && questions.every((question) => question.improved), bestScore: score, latestScore,
+      latestResponse: questions.length === 1 ? questions[0].latestResponse : '',
+      latestAttempt: questions.length === 1 ? questions[0].latestAttempt : null, questions };
   });
   const improvedActivities = activities.filter((item) => item.improved).length;
   const totalActivities = session.activities.length;
-  return { improvedActivities, completedActivities: improvedActivities, totalActivities,
+  const totalQuestions = activities.reduce((sum, activity) => sum + activity.questions.length, 0);
+  const completedQuestions = activities.reduce((sum, activity) => sum + activity.questions.filter((question) => question.improved).length, 0);
+  return { improvedActivities, completedActivities: improvedActivities, totalActivities, totalQuestions, completedQuestions,
     requiredActivityCount: totalActivities, completed: totalActivities > 0 && improvedActivities >= totalActivities,
-    percentage: totalActivities ? Math.round(improvedActivities / totalActivities * 100) : 0, activities };
+    percentage: totalQuestions ? Math.round(completedQuestions / totalQuestions * 100) : 0, activities };
 }
 
 async function checkResponse(sessionId, activityId, studentId, body = {}) {
-  const { session, activity } = await loadOwnedSession(sessionId, studentId, activityId);
-  const response = validateResponse(body.response, activity);
-  const fingerprint = responseFingerprint({ sessionId, activityId, studentId, response });
-  const base = { sessionId: session._id, submissionId: session.submissionId, studentId, activityId };
+  const { session, activity, question, legacy, attemptActivityId } = await loadOwnedSession(sessionId, studentId, activityId, body.questionId);
+  const gradingQuestion = { ...question, category: activity.category };
+  const response = validateResponse(body.response, gradingQuestion);
+  const fingerprint = responseFingerprint({ sessionId, activityId,
+    questionId: legacy ? undefined : question.questionId, studentId, response });
+  const base = { sessionId: session._id, submissionId: session.submissionId, studentId,
+    activityId: attemptActivityId, ...(legacy ? {} : { practiceId: activityId, questionId: question.questionId }) };
   let attempt = await AdaptivePracticeAttempt.findOne({ ...base, responseFingerprint: fingerprint });
   let reused = Boolean(attempt);
   if (attempt?.status === 'ready' || (attempt?.status === 'checking' && Date.now() - attempt.updatedAt.getTime() < ADAPTIVE_PRACTICE_CHECK_STALE_MS)) return { state: attempt.status, attempt, progress: await getProgressSummary(session), reused: true };
@@ -184,16 +209,16 @@ async function checkResponse(sessionId, activityId, studentId, body = {}) {
   if (attempt.status !== 'checking' || String(attempt.responseFingerprint) !== fingerprint) return { state: attempt.status, attempt, progress: await getProgressSummary(session), reused: true };
 
   try {
-    const questionType = questionTypeOf(activity);
+    const questionType = questionTypeOf(gradingQuestion);
     let result;
     if (questionType === 'open_response') {
-      const checked = await checkAI.generateCheckCompletion(buildCheckMessages(activity, response), {
-        validate: (raw) => validateCheckResult(raw, activity)
+      const checked = await checkAI.generateCheckCompletion(buildCheckMessages(gradingQuestion, response), {
+        validate: (raw) => validateCheckResult(raw, gradingQuestion)
       });
-      result = typeof checked === 'string' ? validateCheckResult(checked, activity) : checked;
-      result.modelAnswer = activity.modelAnswer;
+      result = typeof checked === 'string' ? validateCheckResult(checked, gradingQuestion) : checked;
+      result.modelAnswer = gradingQuestion.modelAnswer;
     } else {
-      result = deterministicResult(activity, response);
+      result = deterministicResult(gradingQuestion, response);
       attempt.checking.provider = 'deterministic';
       attempt.checking.model = questionType;
     }
@@ -205,9 +230,9 @@ async function checkResponse(sessionId, activityId, studentId, body = {}) {
   }
 }
 
-async function listAttempts(sessionId, studentId, activityId) {
-  const { session } = await loadOwnedSession(sessionId, studentId, activityId);
-  const attempts = await AdaptivePracticeAttempt.find({ sessionId, studentId, activityId }).sort({ attemptNumber: 1 }).lean();
+async function listAttempts(sessionId, studentId, activityId, questionId) {
+  const { session, attemptActivityId } = await loadOwnedSession(sessionId, studentId, activityId, questionId);
+  const attempts = await AdaptivePracticeAttempt.find({ sessionId, studentId, activityId: attemptActivityId }).sort({ attemptNumber: 1 }).lean();
   return { attempts, progress: await getProgressSummary(session) };
 }
 

@@ -8,6 +8,7 @@ const AdaptivePracticeSession = require('../models/AdaptivePracticeSession');
 const AdaptivePracticeAttempt = require('../models/AdaptivePracticeAttempt');
 const adaptivePractice = require('./adaptivePractice.service');
 const { ADAPTIVE_PRACTICE_PASS_THRESHOLD } = require('../constants/adaptivePractice.constants');
+const { normalizePractice, questionAttemptKey } = require('../utils/adaptivePracticeQuestions');
 
 class TeacherAdaptivePracticeError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
@@ -53,7 +54,7 @@ async function getProgress(submissionId, teacherId) {
   const { submission } = await loadAuthorizedSubmission(submissionId, teacherId);
   const sessions = await AdaptivePracticeSession.find({ submissionId: submission._id, studentId: submission.student })
     .sort({ createdAt: -1, _id: -1 })
-    .select('_id submissionId studentId assignmentId status sourceFingerprint sourceSnapshot targetSkills activities.activityId activities.skillId activities.category createdAt updatedAt')
+    .select('_id submissionId studentId assignmentId status sourceFingerprint sourceSnapshot targetSkills activities.activityId activities.skillId activities.category activities.questions.questionId createdAt updatedAt')
     .lean();
   const selected = await selectSession(submission, sessions);
   if (!selected.session) return emptyProgress(submission._id);
@@ -63,16 +64,25 @@ async function getProgress(submissionId, teacherId) {
     .select('_id activityId attemptNumber status result.score result.passed createdAt updatedAt')
     .lean();
   const sourceSkills = new Map((session.sourceSnapshot?.skills || []).map((skill) => [skill.id, skill]));
-  const skills = (session.activities || []).map((activity) => {
-    const matching = attempts.filter((attempt) => attempt.activityId === activity.activityId);
+  const skills = (session.activities || []).map((rawActivity) => {
+    const activity = normalizePractice(rawActivity);
+    const legacy = !(Array.isArray(rawActivity.questions) && rawActivity.questions.length);
+    const keys = new Set(activity.questions.map((question) => questionAttemptKey(activity.activityId, question.questionId, legacy)));
+    const matching = attempts.filter((attempt) => keys.has(attempt.activityId));
     const ready = matching.filter((attempt) => attempt.status === 'ready' && Number.isFinite(Number(attempt.result?.score)));
     const latest = ready.at(-1) || null;
-    const bestScore = ready.length ? Math.max(...ready.map((attempt) => Number(attempt.result.score))) : null;
+    const questionScores = activity.questions.map((question) => {
+      const key = questionAttemptKey(activity.activityId, question.questionId, legacy);
+      const questionAttempts = ready.filter((attempt) => attempt.activityId === key);
+      return questionAttempts.length ? Math.max(...questionAttempts.map((attempt) => Number(attempt.result.score))) : null;
+    });
+    const bestScore = questionScores.some((score) => score !== null)
+      ? Math.round(questionScores.reduce((sum, score) => sum + (score || 0), 0) / questionScores.length) : null;
     const source = sourceSkills.get(activity.skillId);
     return { skillId: activity.skillId, label: activity.category, originalEarnedPoints: source?.earnedPoints ?? null,
       originalMaximumPoints: source?.maximumPoints ?? null, originalPercentage: source?.percentage ?? null,
       activityId: activity.activityId, attemptCount: matching.length, latestScore: latest ? Number(latest.result.score) : null,
-      bestScore, improved: bestScore !== null && bestScore >= ADAPTIVE_PRACTICE_PASS_THRESHOLD,
+      bestScore, improved: questionScores.length > 0 && questionScores.every((score) => score !== null && score >= ADAPTIVE_PRACTICE_PASS_THRESHOLD),
       lastAttemptAt: matching.length ? (matching.at(-1).createdAt || matching.at(-1).updatedAt) : null };
   });
   const improvedActivities = skills.filter((skill) => skill.improved).length;
@@ -92,13 +102,14 @@ async function getAttempts(sessionId, activityId, teacherId, pageValue, limitVal
   if (!(session.activities || []).some((activity) => activity.activityId === activityId)) throw new TeacherAdaptivePracticeError(404, 'ACTIVITY_NOT_FOUND', 'Practice activity not found.');
   const page = Math.max(1, Number(pageValue) || 1);
   const limit = Math.min(25, Math.max(1, Number(limitValue) || 10));
-  const filter = { sessionId: session._id, studentId: session.studentId, activityId };
+  const filter = { sessionId: session._id, studentId: session.studentId,
+    $or: [{ activityId }, { practiceId: activityId }] };
   const [total, attempts] = await Promise.all([
     AdaptivePracticeAttempt.countDocuments(filter),
     AdaptivePracticeAttempt.find(filter).sort({ createdAt: -1, attemptNumber: -1 }).skip((page - 1) * limit).limit(limit)
-      .select('_id attemptNumber status response result.score result.passed result.summary result.strength result.nextImprovement result.checklist result.suggestedRevision createdAt').lean()
+      .select('_id questionId attemptNumber status response result.score result.passed result.summary result.strength result.nextImprovement result.checklist result.suggestedRevision createdAt').lean()
   ]);
-  return { sessionId: String(session._id), activityId, attempts: attempts.map((attempt) => ({ id: String(attempt._id), attemptNumber: attempt.attemptNumber,
+  return { sessionId: String(session._id), activityId, attempts: attempts.map((attempt) => ({ id: String(attempt._id), questionId: attempt.questionId || null, attemptNumber: attempt.attemptNumber,
     status: attempt.status, response: attempt.response, practiceScore: attempt.status === 'ready' ? attempt.result?.score ?? null : null,
     improved: attempt.status === 'ready' && Number(attempt.result?.score) >= ADAPTIVE_PRACTICE_PASS_THRESHOLD,
     summary: attempt.status === 'ready' ? attempt.result?.summary || '' : '', strength: attempt.status === 'ready' ? attempt.result?.strength || '' : '',

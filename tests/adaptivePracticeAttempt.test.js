@@ -48,6 +48,21 @@ async function seedTyped(questionType, answerKey) {
   return { studentId, activityId, session };
 }
 
+async function seedMulti() {
+  const studentId = new mongoose.Types.ObjectId(); const activityId = 'activity-multi';
+  const makeQuestion = (questionId) => ({ questionId, questionType: 'mcq', task: `Choose ${questionId}.`,
+    tip: 'Choose carefully.', checklist, modelAnswer: 'B is correct.', options: [{ id: 'A', text: 'Wrong' }, { id: 'B', text: 'Correct' }],
+    correctOptionId: 'B', acceptedAnswers: [], caseSensitive: false });
+  const session = await AdaptivePracticeSession.create({ submissionId: new mongoose.Types.ObjectId(), studentId,
+    assignmentId: new mongoose.Types.ObjectId(), status: 'ready', sourceFingerprint: 'source-multi',
+    sourceSnapshot: { transcriptFingerprint: 'transcript', feedbackId: new mongoose.Types.ObjectId(), feedbackUpdatedAt: new Date(),
+      skills: [{ id: 'GRAMMAR', category: 'Grammar', earnedPoints: 10, maximumPoints: 25, percentage: 40, status: 'priority' }] },
+    targetSkills: ['GRAMMAR'], activities: [{ activityId, skillId: 'GRAMMAR', category: 'Grammar', title: 'Set',
+      description: 'Three related questions.', evidence: 'The students is preparing.', difficulty: 'foundational',
+      questions: ['q1', 'q2', 'q3'].map(makeQuestion) }] });
+  return { studentId, activityId, session };
+}
+
 describe('adaptive practice attempts', () => {
   beforeAll(async () => {
     process.env.ASSESSMENT_AI_PRIMARY_PROVIDER = 'openrouter';
@@ -213,6 +228,33 @@ describe('adaptive practice attempts', () => {
     const wrongCase = await service.checkResponse(session._id, activityId, studentId, { response: 'london' });
     expect(exact.attempt.result.passed).toBe(true);
     expect(wrongCase.attempt.result.passed).toBe(false);
+  });
+
+  it('keeps question attempts independent and aggregates a three-question practice', async () => {
+    const { session, studentId, activityId } = await seedMulti();
+    await service.checkResponse(session._id, activityId, studentId, { questionId: 'q1', response: 'B' });
+    await service.checkResponse(session._id, activityId, studentId, { questionId: 'q2', response: 'B' });
+    const third = await service.checkResponse(session._id, activityId, studentId, { questionId: 'q3', response: 'A' });
+    expect(third.progress).toMatchObject({ completed: false, percentage: 67, completedQuestions: 2, totalQuestions: 3 });
+    expect(third.progress.activities[0]).toMatchObject({ bestScore: 67, improved: false });
+    expect(third.progress.activities[0].questions.map((item) => item.attemptCount)).toEqual([1, 1, 1]);
+    const attempts = await AdaptivePracticeAttempt.find().sort({ questionId: 1 }).lean();
+    expect(attempts.map((attempt) => attempt.questionId)).toEqual(['q1', 'q2', 'q3']);
+    expect(new Set(attempts.map((attempt) => attempt.activityId)).size).toBe(3);
+    const retried = await service.checkResponse(session._id, activityId, studentId, { questionId: 'q3', response: 'B', retry: true });
+    expect(retried.progress).toMatchObject({ completed: true, percentage: 100, completedQuestions: 3 });
+    expect(retried.progress.activities[0].questions.map((item) => item.attemptCount)).toEqual([1, 1, 2]);
+  });
+
+  it('requires question identity for a multi-question practice but maps legacy attempts implicitly', async () => {
+    const multi = await seedMulti();
+    await expect(service.checkResponse(multi.session._id, multi.activityId, multi.studentId, { response: 'B' }))
+      .rejects.toMatchObject({ code: 'QUESTION_NOT_FOUND' });
+    const legacy = await seed();
+    jest.spyOn(checkAI, 'generateCheckCompletion').mockResolvedValue(result());
+    const checked = await service.checkResponse(legacy.session._id, legacy.activityId, legacy.studentId,
+      { response: 'However, these ideas connect clearly.' });
+    expect(checked.progress.activities[0].questions[0]).toMatchObject({ questionId: 'legacy-q1', attemptCount: 1 });
   });
 
   it('normalizes legacy interaction aliases before choosing the grading path', () => {

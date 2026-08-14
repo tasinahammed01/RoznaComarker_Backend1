@@ -9,9 +9,21 @@ const AdaptivePracticeSession = require('../src/models/AdaptivePracticeSession')
 const generationAI = require('../src/services/adaptivePracticeGenerationAI.service');
 const service = require('../src/services/adaptivePractice.service');
 const { buildAdaptiveEvidenceCandidates } = require('../src/utils/adaptivePracticeEvidenceCandidates');
+const { sanitizeAdaptiveSession } = require('../src/services/assignmentAccessPolicy.service');
 
 function candidates(transcript = 'This is the student writing.') {
   return buildAdaptiveEvidenceCandidates(transcript);
+}
+
+function question(questionType = 'open_response', overrides = {}) {
+  return {
+    questionType, task: questionType === 'fill_blank' ? 'This ___ the student writing.' : 'Revise or select the best answer.',
+    tip: 'Make one clear and purposeful improvement.', checklist: ['The meaning is clear.', 'The target skill is applied.'],
+    modelAnswer: 'This is the student writing, revised clearly.', explanation: 'Review the target skill.',
+    options: questionType === 'mcq' ? [{ id: 'A', text: 'Less accurate' }, { id: 'B', text: 'More accurate' }] : [],
+    correctOptionId: questionType === 'mcq' ? 'B' : '',
+    acceptedAnswers: questionType === 'fill_blank' ? ['is'] : [], caseSensitive: false, ...overrides
+  };
 }
 
 function aiPayload(targets, evidenceId = 'e1') {
@@ -22,11 +34,7 @@ function aiPayload(targets, evidenceId = 'e1') {
     title: `Practice ${category}`,
     description: 'Build this writing skill with one focused revision.',
     evidenceId,
-    task: 'Revise this excerpt while preserving its meaning.',
-    tip: 'Make one clear and purposeful improvement.',
-    checklist: ['The meaning is clear.', 'The revision targets the named skill.'],
-    modelAnswer: 'This is the student writing, revised clearly.',
-    questionType: 'open_response', options: [], correctOptionId: '', acceptedAnswers: [], caseSensitive: false,
+    questions: (id === 'CONTENT' ? [question(), question('mcq')] : [question(), question('mcq'), question('fill_blank')]),
     difficulty: 'developing'
   })) });
 }
@@ -62,15 +70,36 @@ describe('adaptive practice', () => {
     expect(result.find((item) => item.id === 'GRAMMAR').assessed).toBe(false);
   });
 
+  it('keeps ordinary micro-practices at three questions even at the produce stage', () => {
+    const microSkills = ['ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'].map((id) => ({
+      id, category: { ORGANIZATION: 'Coherence & Flow', VOCABULARY: 'Lexical Resource',
+        GRAMMAR: 'Grammar', MECHANICS: 'Mechanics' }[id], percentage: 68
+    }));
+    const targets = service.buildTargets([...microSkills, { id: 'CONTENT', category: 'Task Achievement', percentage: 68 }]);
+    expect(targets.filter((target) => target.skillId !== 'CONTENT').every((target) =>
+      target.progressionStage === 'produce' && target.questionCount === 3)).toBe(true);
+    expect(targets.find((target) => target.skillId === 'CONTENT')).toMatchObject({
+      progressionStage: 'produce', questionCount: 2
+    });
+
+    const grammar = [{ id: 'GRAMMAR', category: 'Grammar', percentage: 68 }];
+    const tooShort = JSON.parse(aiPayload(grammar));
+    tooShort.activities[0].questions = tooShort.activities[0].questions.slice(0, 1);
+    expect(() => service.validateAiResponse(JSON.stringify(tooShort), grammar,
+      candidates('The students is preparing.'))).toThrow(expect.objectContaining({ code: 'INVALID_QUESTION_COUNT' }));
+    expect(service.validateAiResponse(aiPayload(grammar), grammar,
+      candidates('The students is preparing.'))[0].questions).toHaveLength(3);
+  });
+
   it('keeps historical activities backward compatible as open responses', () => {
-    const activityPath = AdaptivePracticeSession.schema.path('activities').schema.path('questionType');
-    expect(activityPath.defaultValue).toBe('open_response');
     const session = new AdaptivePracticeSession({ activities: [{
       activityId: 'legacy', skillId: 'CONTENT', category: 'Task Achievement', title: 'Legacy',
       description: 'Legacy activity.', evidence: 'Text.', task: 'Revise this text.', tip: 'Be clear.',
       checklist: ['Clear', 'Relevant'], modelAnswer: 'Revised text.', difficulty: 'developing'
     }] });
-    expect(session.activities[0].questionType).toBe('open_response');
+    expect(service.validateQuestion).toBeDefined();
+    const { normalizePractice } = require('../src/utils/adaptivePracticeQuestions');
+    expect(normalizePractice(session.activities[0]).questions[0].questionType).toBe('open_response');
     session.activities[0].questionType = 'written_response';
     expect(session.activities[0].questionType).toBe('open_response');
   });
@@ -78,29 +107,51 @@ describe('adaptive practice', () => {
   it('validates typed MCQ and fill-blank answer keys before persistence', () => {
     const weakness = [{ id: 'GRAMMAR', category: 'Grammar', percentage: 40 }];
     const base = { targetId: 'adaptive:grammar', skillId: 'GRAMMAR', category: 'Grammar',
-      title: 'Agreement', description: 'Practice agreement.', evidenceId: 'e1',
-      task: 'Choose the correct form.', tip: 'Match subject and verb.', checklist: ['Plural subject', 'Correct verb'],
-      modelAnswer: 'The students are preparing.', caseSensitive: false, difficulty: 'foundational' };
-    const mcq = service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questionType: 'mcq',
-      options: [{ id: 'A', text: 'is' }, { id: 'B', text: 'are' }], correctOptionId: 'B', acceptedAnswers: [] }] }),
+      title: 'Agreement', description: 'Practice agreement.', evidenceId: 'e1', difficulty: 'foundational' };
+    const triple = (item) => [item, { ...item }, { ...item }];
+    const mcqQuestion = question('mcq', { options: [{ id: 'A', text: 'is' }, { id: 'B', text: 'are' }], correctOptionId: 'B' });
+    const blankQuestion = question('fill_blank', { task: 'The students ___ preparing.', acceptedAnswers: ['are'] });
+    const openQuestion = question('open_response');
+    const mcq = service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questions: triple(mcqQuestion) }] }),
     weakness, candidates('The students is preparing.'));
-    const blank = service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questionType: 'fill_blank',
-      task: 'The students ___ preparing.', options: [], correctOptionId: '', acceptedAnswers: ['are'] }] }), weakness, candidates('The students is preparing.'));
-    const open = service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questionType: 'open_response',
-      options: [], correctOptionId: '', acceptedAnswers: [] }] }), weakness, candidates('The students is preparing.'));
-    expect(mcq[0]).toMatchObject({ questionType: 'mcq', correctOptionId: 'B' });
-    expect(blank[0]).toMatchObject({ questionType: 'fill_blank', acceptedAnswers: ['are'] });
-    expect(open[0]).toMatchObject({ questionType: 'open_response', options: [], acceptedAnswers: [] });
-    const legacyRewrite = service.validateAiResponse(JSON.stringify({ activities: [{ ...base,
-      questionType: 'rewrite', options: [], correctOptionId: '', acceptedAnswers: [] }] }),
+    const blank = service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questions: triple(blankQuestion) }] }), weakness, candidates('The students is preparing.'));
+    const open = service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questions: triple(openQuestion) }] }), weakness, candidates('The students is preparing.'));
+    expect(mcq[0].questions[0]).toMatchObject({ questionType: 'mcq', correctOptionId: 'B' });
+    expect(blank[0].questions[0]).toMatchObject({ questionType: 'fill_blank', acceptedAnswers: ['are'] });
+    expect(open[0].questions[0]).toMatchObject({ questionType: 'open_response', options: [], acceptedAnswers: [] });
+    const legacyRewrite = service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questions: triple(question('rewrite')) }] }),
     weakness, candidates('The students is preparing.'));
-    expect(legacyRewrite[0].questionType).toBe('open_response');
-    expect(() => service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questionType: 'mcq',
-      options: [{ id: 'A', text: 'is' }, { id: 'A', text: 'are' }], correctOptionId: 'B' }] }),
+    expect(legacyRewrite[0].questions[0].questionType).toBe('open_response');
+    expect(() => service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questions: triple(question('mcq', {
+      options: [{ id: 'A', text: 'is' }, { id: 'A', text: 'are' }], correctOptionId: 'B' })) }] }),
     weakness, candidates('The students is preparing.'))).toThrow(expect.objectContaining({ code: 'INVALID_MCQ' }));
-    expect(() => service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questionType: 'fill_blank',
-      task: 'The students ___ preparing.', options: [], correctOptionId: '', acceptedAnswers: [] }] }),
+    expect(() => service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questions: triple(question('fill_blank', {
+      task: 'The students ___ preparing.', acceptedAnswers: [] })) }] }),
     weakness, candidates('The students is preparing.'))).toThrow(expect.objectContaining({ code: 'INVALID_FILL_BLANK' }));
+  });
+
+  it('rejects empty, oversized, and malformed question sets', () => {
+    const weak = [{ id: 'GRAMMAR', category: 'Grammar', percentage: 40 }];
+    const base = JSON.parse(aiPayload(weak)).activities[0];
+    base.targetId = 'adaptive:grammar'; base.skillId = 'GRAMMAR'; base.category = 'Grammar';
+    for (const questions of [[], [question(), question(), question(), question()]]) {
+      expect(() => service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questions }] }), weak,
+        candidates('The students is preparing.'))).toThrow(expect.objectContaining({ code: 'INVALID_QUESTION_COUNT' }));
+    }
+    const invalid = [question(), question(), { ...question(), questionType: 'unsupported' }];
+    expect(() => service.validateAiResponse(JSON.stringify({ activities: [{ ...base, questions: invalid }] }), weak,
+      candidates('The students is preparing.'))).toThrow(expect.objectContaining({ code: 'INVALID_QUESTION_TYPE' }));
+  });
+
+  it('recursively removes every nested answer key and reveals only attempted model answers', () => {
+    const raw = { activities: [{ activityId: 'a1', skillId: 'GRAMMAR', category: 'Grammar', title: 'Set',
+      description: 'Set description.', evidence: 'Text.', difficulty: 'foundational', questions: [
+        { questionId: 'q1', ...question('mcq') }, { questionId: 'q2', ...question('fill_blank') },
+        { questionId: 'q3', ...question('open_response') }
+      ] }] };
+    const safe = sanitizeAdaptiveSession(raw, true, ['a1::q2']);
+    expect(safe.activities[0].questions.every((item) => item.correctOptionId === undefined && item.acceptedAnswers === undefined)).toBe(true);
+    expect(safe.activities[0].questions.map((item) => item.modelAnswer !== undefined)).toEqual([false, true, false]);
   });
 
   it('generates typed practice with hidden marks while redacting scores and answer keys', async () => {
@@ -121,14 +172,9 @@ describe('adaptive practice', () => {
     const selectedTypes = ['open_response', 'fill_blank', 'mcq'];
     const activities = targets.map((target, index) => ({
       targetId: target.targetId, skillId: target.skillId, category: target.category,
-      questionType: selectedTypes[index], title: `Practice ${target.category}`,
+      title: `Practice ${target.category}`,
       description: 'Practice this skill.', evidenceId: 'e1',
-      task: selectedTypes[index] === 'fill_blank' ? 'This ___ the student writing.' : 'Improve or select the answer.',
-      tip: 'Use the target skill.', checklist: ['Be accurate.', 'Use the target skill.'],
-      modelAnswer: 'This is the student writing.', difficulty: 'foundational',
-      options: selectedTypes[index] === 'mcq' ? [{ id: 'A', text: 'Incorrect' }, { id: 'B', text: 'Correct' }] : [],
-      correctOptionId: selectedTypes[index] === 'mcq' ? 'B' : '',
-      acceptedAnswers: selectedTypes[index] === 'fill_blank' ? ['is'] : [], caseSensitive: false
+      difficulty: 'foundational', questions: Array.from({ length: target.questionCount }, () => question(selectedTypes[index]))
     }));
     jest.spyOn(generationAI, 'generate').mockImplementation(async (_messages, options) => {
       const content = JSON.stringify({ activities });
@@ -140,12 +186,12 @@ describe('adaptive practice', () => {
       skillId: 'CONTENT', skillLabel: 'Task Achievement', adaptivePercentage: 40, status: 'priority'
     });
     expect(result.session.sourceSnapshot.skills).toBeUndefined();
-    expect(result.session.activities.map((activity) => activity.questionType).sort())
+    expect(result.session.activities.map((activity) => activity.questions[0].questionType).sort())
       .toEqual(['fill_blank', 'mcq', 'open_response']);
     expect(result.session.activities.every((activity) => activity.evidence === 'This is the student writing.'
       && activity.evidenceId === undefined)).toBe(true);
-    expect(result.session.activities.every((activity) => activity.correctOptionId === undefined
-      && activity.acceptedAnswers === undefined && activity.modelAnswer === undefined)).toBe(true);
+    expect(result.session.activities.every((activity) => activity.questions.every((item) => item.correctOptionId === undefined
+      && item.acceptedAnswers === undefined && item.modelAnswer === undefined))).toBe(true);
   });
 
   it('returns only the approved adaptive analysis percentages when marks are hidden', async () => {
@@ -268,9 +314,9 @@ describe('adaptive practice', () => {
     expect(() => service.validateAiResponse(JSON.stringify(paraphrased), weak, evidenceCandidates))
       .toThrow(expect.objectContaining({ code: 'INVALID_ACTIVITY_FIELDS' }));
     const unknownType = JSON.parse(aiPayload(weak));
-    unknownType.activities[0].questionType = 'unknown_type';
+    unknownType.activities[0].questions[0].questionType = 'unknown_type';
     expect(() => service.validateAiResponse(JSON.stringify(unknownType), weak, evidenceCandidates))
-      .toThrow(expect.objectContaining({ code: 'INVALID_ACTIVITY_TARGET' }));
+      .toThrow(expect.objectContaining({ code: 'INVALID_QUESTION_TYPE' }));
   });
 
   it('delimits transcript instructions as untrusted content', () => {

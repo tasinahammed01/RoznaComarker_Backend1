@@ -49,7 +49,7 @@ async function checkResponse(req, res) {
 }
 
 async function listAttempts(req, res) {
-  try { return send(res, 200, await attemptService.listAttempts(req.params.sessionId, req.user._id, req.query.activityId)); }
+  try { return send(res, 200, await attemptService.listAttempts(req.params.sessionId, req.user._id, req.query.activityId, req.query.questionId)); }
   catch (error) { return handleError(res, error); }
 }
 

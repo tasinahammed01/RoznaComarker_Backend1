@@ -88,8 +88,11 @@ describe('Adaptive Practice generation assessment transport', () => {
     const item = schema.properties.activities.items;
     expect(item.properties.evidenceId.enum).toEqual(['e1']);
     expect(item.properties.evidence).toBeUndefined();
-    expect(item.required).toEqual(expect.arrayContaining(['questionType', 'options', 'correctOptionId', 'acceptedAnswers']));
-    expect(item.properties.options.minItems).toBe(0);
-    expect(item.properties.acceptedAnswers.minItems).toBe(0);
+    expect(item.required).toEqual(expect.arrayContaining(['evidenceId', 'questions']));
+    expect(item.properties.questions).toMatchObject({ minItems: 1, maxItems: 3 });
+    const question = item.properties.questions.items;
+    expect(question.required).toEqual(expect.arrayContaining(['questionType', 'options', 'correctOptionId', 'acceptedAnswers']));
+    expect(question.properties.options.minItems).toBe(0);
+    expect(question.properties.acceptedAnswers.minItems).toBe(0);
   });
 });

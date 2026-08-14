@@ -43,9 +43,12 @@ router.post('/sessions/:sessionId/activities/:activityId/check',
   param('sessionId').isMongoId().withMessage('Invalid session id'),
   param('activityId').isString().trim().notEmpty().isLength({ max: 100 }),
   body('response').isString().isLength({ min: 1, max: 5000 }),
+  body('questionId').optional().isString().trim().notEmpty().isLength({ max: 100 }),
   body('retry').optional().isBoolean(), handleValidationResult, controller.checkResponse);
 router.get('/sessions/:sessionId/attempts', verifyJwtToken, requireRole('student'),
   param('sessionId').isMongoId().withMessage('Invalid session id'),
-  query('activityId').isString().trim().notEmpty().isLength({ max: 100 }), handleValidationResult, controller.listAttempts);
+  query('activityId').isString().trim().notEmpty().isLength({ max: 100 }),
+  query('questionId').optional().isString().trim().notEmpty().isLength({ max: 100 }),
+  handleValidationResult, controller.listAttempts);
 
 module.exports = router;
