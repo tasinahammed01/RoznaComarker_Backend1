@@ -2,6 +2,7 @@
 
 const service = require('../src/services/adaptivePracticeGenerationAI.service');
 const adaptive = require('../src/services/adaptivePractice.service');
+const { buildAdaptiveEvidenceCandidates } = require('../src/utils/adaptivePracticeEvidenceCandidates');
 
 const env = {
   ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter',
@@ -58,7 +59,8 @@ describe('Adaptive Practice generation assessment transport', () => {
       { id: 'GRAMMAR', category: 'Grammar', percentage: 40 },
       { id: 'VOCABULARY', category: 'Lexical Resource', percentage: 40 }
     ]);
-    const schema = adaptive.activitySchema(targets);
+    const evidenceCandidates = buildAdaptiveEvidenceCandidates('This is canonical student writing.');
+    const schema = adaptive.activitySchema(targets, evidenceCandidates);
     const unsupported = new Set(['oneOf', 'anyOf', 'allOf', 'if', 'then', 'else', '$ref', 'default', 'nullable']);
     const inspect = (value) => {
       if (!value || typeof value !== 'object') return;
@@ -84,6 +86,8 @@ describe('Adaptive Practice generation assessment transport', () => {
       name: 'adaptive_practice_activities', strict: true, schema
     } });
     const item = schema.properties.activities.items;
+    expect(item.properties.evidenceId.enum).toEqual(['e1']);
+    expect(item.properties.evidence).toBeUndefined();
     expect(item.required).toEqual(expect.arrayContaining(['questionType', 'options', 'correctOptionId', 'acceptedAnswers']));
     expect(item.properties.options.minItems).toBe(0);
     expect(item.properties.acceptedAnswers.minItems).toBe(0);
