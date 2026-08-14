@@ -117,7 +117,7 @@ describe('adaptive practice', () => {
     const activities = targets.map((target, index) => ({
       targetId: target.targetId, skillId: target.skillId, category: target.category,
       questionType: selectedTypes[index], title: `Practice ${target.category}`,
-      description: 'Practice this skill.', evidence: 'This is the student writing.',
+      description: 'Practice this skill.', evidence: index === 0 ? 'This is the student\nwriting.' : 'This is the student writing.',
       task: selectedTypes[index] === 'fill_blank' ? 'This ___ the student writing.' : 'Improve or select the answer.',
       tip: 'Use the target skill.', checklist: ['Be accurate.', 'Use the target skill.'],
       modelAnswer: 'This is the student writing.', difficulty: 'foundational',

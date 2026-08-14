@@ -11,6 +11,7 @@ const generationAI = require('./adaptivePracticeGenerationAI.service');
 const { DEFINITIONS } = require('./writingCategoryDefinitions.service');
 const logger = require('../utils/logger');
 const { showMarksToStudent, sanitizeAdaptiveSession } = require('./assignmentAccessPolicy.service');
+const { groundAdaptiveEvidence } = require('../utils/adaptivePracticeEvidenceGrounding');
 const {
   allowedQuestionTypes,
   isCompatibleQuestionType,
@@ -295,8 +296,13 @@ function validateAiResponse(raw, weakSkills, transcript) {
     const fieldLimits = { title: 100, description: 240, evidence: 500, task: 500, tip: 400, modelAnswer: 1000 };
     const invalidField = Object.entries(fieldLimits).find(([field, limit]) => !bounded(activity[field], limit));
     if (invalidField) throw new AdaptivePracticeError(502, 'INVALID_ACTIVITY_FIELD_LENGTH', `Activity ${activity.skillId || 'unknown'} has an invalid ${invalidField[0]} field.`);
-    const evidence = normalizeOcrTranscript(activity.evidence);
-    if (!evidence || !normalizeOcrTranscript(transcript).includes(evidence)) throw new AdaptivePracticeError(502, 'UNGROUNDED_EVIDENCE', `Activity ${activity.skillId} evidence was not grounded in the transcript.`);
+    const grounding = groundAdaptiveEvidence(transcript, activity.evidence);
+    const evidence = grounding.evidence;
+    if (!grounding.grounded) {
+      const error = new AdaptivePracticeError(502, 'UNGROUNDED_EVIDENCE', `Activity ${activity.skillId} evidence was not grounded in the transcript.`);
+      error.groundingDiagnostics = { skillId: activity.skillId, ...grounding.diagnostics };
+      throw error;
+    }
     if (!Array.isArray(activity.checklist) || activity.checklist.length < 2 || activity.checklist.length > 5 || activity.checklist.some((item) => !bounded(item, 180))) throw new AdaptivePracticeError(502, 'INVALID_ACTIVITY_CHECKLIST', `Activity ${activity.skillId} checklist was invalid.`);
     if (!['foundational', 'developing', 'proficient'].includes(activity.difficulty)) throw new AdaptivePracticeError(502, 'INVALID_ACTIVITY_DIFFICULTY', `Activity ${activity.skillId} difficulty was invalid.`);
     if (activity.caseSensitive !== undefined && typeof activity.caseSensitive !== 'boolean') throw new AdaptivePracticeError(502, 'INVALID_ACTIVITY_FIELDS', `Activity ${activity.skillId} had an invalid caseSensitive value.`);
@@ -415,6 +421,13 @@ async function generateSession(submissionId, studentId, options = {}) {
     const validateWithRepair = (content, attemptMeta = {}) => {
       try { return validateAiResponse(content, source.weakSkills, source.transcript); }
       catch (error) {
+        if (error?.code === 'UNGROUNDED_EVIDENCE') {
+          logger.warn({ message: 'Adaptive practice evidence grounding failed',
+            submissionId: String(source.submission._id), sourceHashPrefix: source.sourceFingerprint.slice(0, 12),
+            provider: attemptMeta.provider || null, model: attemptMeta.model || null,
+            attemptNumber: attemptMeta.attemptNumber || null, failureCode: error.code,
+            ...(error.groundingDiagnostics || {}) });
+        }
         if (error?.code !== 'INVALID_ACTIVITY_COUNT' || repairedAttempts.has(attemptMeta.attemptNumber)) throw error;
         repairedAttempts.add(attemptMeta.attemptNumber); repairAttemptCount += 1;
         logger.warn({ message: 'Adaptive practice activity count repair requested',
