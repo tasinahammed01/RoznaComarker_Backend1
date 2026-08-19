@@ -4,6 +4,7 @@ const User = require('../models/user.model');
 const { verifyJwt } = require('../utils/jwt');
 
 const { ensureActivePlan } = require('./usage.middleware');
+const logger = require('../utils/logger');
 
 function getBearerToken(req) {
   const header = req.headers.authorization;
@@ -47,6 +48,18 @@ async function verifyJwtToken(req, res, next) {
     try {
       await ensureActivePlan(user);
     } catch (err) {
+      logger.error({
+        event: 'auth.ensureActivePlan.failed',
+        userId: String(user._id),
+        role: user.role,
+        error: err instanceof Error ? {
+          name: err.name,
+          message: err.message,
+          code: err.code,
+          errors: err.errors,
+          stack: err.stack
+        } : err
+      });
       return res.status(500).json({
         success: false,
         message: 'Failed to initialize subscription'

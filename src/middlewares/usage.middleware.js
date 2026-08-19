@@ -48,7 +48,7 @@ async function assignPlanToUser(user, planDoc, startedAt) {
   // Plan repair and upgrades must never erase already-consumed quota/storage.
   if (!user.usage) user.usage = toEmptyUsage();
 
-  await user.save();
+  await user.save({ validateModifiedOnly: true });
 }
 
 async function ensureActivePlan(user) {
@@ -73,7 +73,7 @@ async function ensureActivePlan(user) {
         user.plan = paidPlan._id;
         user.planStartedAt = user.stripeCurrentPeriodStart || user.planStartedAt || new Date();
         user.planExpiresAt = user.stripeCurrentPeriodEnd || null;
-        await user.save();
+        await user.save({ validateModifiedOnly: true });
       }
       return paidPlan;
     }

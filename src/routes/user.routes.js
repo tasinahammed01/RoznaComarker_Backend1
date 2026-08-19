@@ -112,6 +112,11 @@ router.patch(
   body('institution').optional({ nullable: true }).isString(),
   body('bio').optional({ nullable: true }).isString(),
   body('aiConfig').optional({ nullable: true }).isObject(),
+  body('aiConfig.strictness').optional().isIn(['friendly', 'balanced', 'strict']),
+  body('aiConfig.checks').optional().isObject(),
+  body('aiConfig.checks.grammarSpelling').optional().isBoolean(),
+  body('aiConfig.checks.coherenceLogic').optional().isBoolean(),
+  body('aiConfig.checks.factChecking').optional().isBoolean(),
   body('classroomDefaults').optional({ nullable: true }).isObject(),
   handleValidationResult,
   userController.updateMe

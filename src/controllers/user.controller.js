@@ -6,6 +6,7 @@ const Membership = require('../models/membership.model');
 const Submission = require('../models/Submission');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 const { evaluationPolicyHash } = require('../services/teacherEvaluationPolicy.service');
+const logger = require('../utils/logger');
 
 const { ensureActivePlan } = require('../middlewares/usage.middleware');
 const { signJwt } = require('../utils/jwt');
@@ -63,11 +64,21 @@ function clampNumber(value, { min, max, fallback }) {
 function normalizeAiConfigPayload(payload) {
   const obj = payload && typeof payload === 'object' ? payload : {};
 
-  const strictnessRaw = typeof obj.strictness === 'string' ? obj.strictness.trim().toLowerCase() : null;
+  const strictnessRaw = typeof obj.strictness === 'string'
+    ? obj.strictness.trim().toLowerCase()
+    : typeof obj.mode === 'string'
+      ? obj.mode.trim().toLowerCase()
+      : null;
   const strictnessAllowed = ['friendly', 'balanced', 'strict'];
   const strictness = strictnessAllowed.includes(String(strictnessRaw)) ? String(strictnessRaw) : undefined;
 
-  const checksObj = obj.checks && typeof obj.checks === 'object' ? obj.checks : {};
+  const checksObj = obj.checks && typeof obj.checks === 'object'
+    ? obj.checks
+    : {
+        grammarSpelling: obj.grammarSpelling,
+        coherenceLogic: obj.coherenceLogic,
+        factChecking: obj.factChecking
+      };
   const checks = {
     grammarSpelling: typeof checksObj.grammarSpelling === 'boolean' ? checksObj.grammarSpelling : undefined,
     coherenceLogic: typeof checksObj.coherenceLogic === 'boolean' ? checksObj.coherenceLogic : undefined,
@@ -191,6 +202,7 @@ async function getMe(req, res) {
 }
 
 async function updateMe(req, res) {
+  let failureStage = 'request_processing';
   try {
     const user = req && req.user;
     if (!user) {
@@ -214,11 +226,14 @@ async function updateMe(req, res) {
     const previousPolicyHash = evaluationPolicyHash(user.aiConfig);
     const nextAiConfig = normalizeAiConfigPayload(aiConfig);
     if (nextAiConfig) {
+      const currentAiConfig = user.aiConfig && typeof user.aiConfig === 'object'
+        ? user.aiConfig.toObject?.() || user.aiConfig
+        : {};
       user.aiConfig = {
-        ...(user.aiConfig && typeof user.aiConfig === 'object' ? user.aiConfig.toObject?.() || user.aiConfig : {}),
+        ...currentAiConfig,
         ...nextAiConfig,
         checks: {
-          ...(user.aiConfig && user.aiConfig.checks ? user.aiConfig.checks.toObject?.() || user.aiConfig.checks : {}),
+          ...(currentAiConfig.checks || {}),
           ...(nextAiConfig.checks || {})
         }
       };
@@ -232,34 +247,60 @@ async function updateMe(req, res) {
       };
     }
 
-    const saved = await user.save();
+    failureStage = 'user_validation_and_save';
+    // Older records can contain unrelated fields that no longer satisfy the current schema.
+    // Validate every field changed by this request without blocking on untouched legacy data.
+    const saved = await user.save({ validateModifiedOnly: true });
     const nextPolicyHash = evaluationPolicyHash(saved.aiConfig);
     if (nextAiConfig && previousPolicyHash !== nextPolicyHash && saved.role === 'teacher') {
-      const classIds = (await Class.find({ teacher: saved._id }).select('_id').lean()).map((item) => item._id);
-      const submissions = await Submission.find({ class: { $in: classIds } })
-        .select('_id evaluationStatus evaluationPolicyHash').lean();
-      const submissionIds = submissions.map((item) => item._id);
-      const feedback = await SubmissionFeedback.find({ submissionId: { $in: submissionIds } })
-        .select('submissionId overriddenByTeacher evaluationSourceHash evaluationPolicyHash').lean();
-      const feedbackById = new Map(feedback.map((item) => [String(item.submissionId), item]));
-      const staleIds = submissions.filter((submission) => {
-        const savedFeedback = feedbackById.get(String(submission._id));
-        if (savedFeedback?.overriddenByTeacher) return false;
-        if (!['completed', 'partial', 'stale'].includes(String(submission.evaluationStatus))) return false;
-        const storedHash = submission.evaluationPolicyHash || savedFeedback?.evaluationPolicyHash || null;
-        return Boolean((storedHash || savedFeedback?.evaluationSourceHash) && storedHash
-          && storedHash !== nextPolicyHash);
-      }).map((submission) => submission._id);
-      await Submission.updateMany({ _id: { $in: staleIds } }, {
-        $set: { evaluationStatus: 'stale' }
-      });
-      await SubmissionFeedback.updateMany({
-        submissionId: { $in: staleIds }, overriddenByTeacher: { $ne: true }
-      }, {
-        $set: { evaluationStatus: 'pending' }
-      });
+      try {
+        failureStage = 'class_lookup';
+        const classIds = (await Class.find({ teacher: saved._id }).select('_id').lean()).map((item) => item._id);
+        failureStage = 'submission_lookup';
+        const submissions = await Submission.find({ class: { $in: classIds } })
+          .select('_id evaluationStatus evaluationPolicyHash').lean();
+        const submissionIds = submissions.map((item) => item._id);
+        failureStage = 'submission_feedback_lookup';
+        const feedback = await SubmissionFeedback.find({ submissionId: { $in: submissionIds } })
+          .select('submissionId overriddenByTeacher evaluationSourceHash evaluationPolicyHash').lean();
+        const feedbackById = new Map(feedback.map((item) => [String(item.submissionId), item]));
+        const staleIds = submissions.filter((submission) => {
+          const savedFeedback = feedbackById.get(String(submission._id));
+          if (savedFeedback?.overriddenByTeacher) return false;
+          if (!['completed', 'partial', 'stale'].includes(String(submission.evaluationStatus))) return false;
+          const storedHash = submission.evaluationPolicyHash || savedFeedback?.evaluationPolicyHash || null;
+          return Boolean((storedHash || savedFeedback?.evaluationSourceHash) && storedHash
+            && storedHash !== nextPolicyHash);
+        }).map((submission) => submission._id);
+        failureStage = 'submission_stale_update';
+        await Submission.updateMany({ _id: { $in: staleIds } }, {
+          $set: { evaluationStatus: 'stale' }
+        });
+        failureStage = 'submission_feedback_pending_update';
+        await SubmissionFeedback.updateMany({
+          submissionId: { $in: staleIds }, overriddenByTeacher: { $ne: true }
+        }, {
+          $set: { evaluationStatus: 'pending' }
+        });
+      } catch (err) {
+        logger.error({
+          event: 'users.updateMe.evaluationPropagationFailed',
+          stage: failureStage,
+          userId: String(saved._id),
+          error: err instanceof Error ? {
+            name: err.name,
+            message: err.message,
+            code: err.code,
+            errors: err.errors,
+            stack: err.stack
+          } : err
+        });
+        if (err && typeof err === 'object') err.updateMePropagationLogged = true;
+        throw err;
+      }
     }
 
+    failureStage = 'response_serialization';
     return sendSuccess(res, {
       id: saved._id,
       email: saved.email,
@@ -272,7 +313,29 @@ async function updateMe(req, res) {
       role: saved.role
     });
   } catch (err) {
-    return sendError(res, 500, 'Failed to update profile');
+    if (!err?.updateMePropagationLogged) {
+      logger.error({
+        event: 'users.updateMe.failed',
+        stage: failureStage,
+        userId: req?.user?._id ? String(req.user._id) : null,
+        role: req?.user?.role || null,
+        bodyKeys: Object.keys(req?.body || {}),
+        error: err instanceof Error ? {
+          name: err.name,
+          message: err.message,
+          code: err.code,
+          errors: err.errors,
+          stack: err.stack
+        } : err
+      });
+    }
+    return sendError(
+      res,
+      500,
+      process.env.NODE_ENV === 'production'
+        ? 'Failed to update profile'
+        : (err?.message || 'Failed to update profile')
+    );
   }
 }
 
