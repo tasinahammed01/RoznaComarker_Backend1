@@ -308,12 +308,49 @@ describe('safe hybrid correction policy', () => {
       languageToolCorrections: []
     });
     const prompt = request.messages[1].content;
+    expect(request.messages[0].content).toContain('strict academic writing correction examiner');
+    expect(request.messages[0].content).toContain('localized error detection, not general essay evaluation');
+    expect(request.messages[0].content).toContain('sentence by sentence from the first page through the final page');
+    expect(request.messages[0].content).toContain('Do not stop after finding several examples.');
     expect(prompt).toContain('Pass 1 CONTENT: REL, DEV, TA, CL, SD');
     expect(prompt).toContain('Pass 2 ORGANIZATION: COH, CO, PU, TS, CONC');
     expect(prompt).toContain('Pass 3 GRAMMAR: T, VF, AGR, FRAG, RO, WO, ART, PREP');
     expect(prompt).toContain('Pass 4 VOCABULARY: WC, WF, REP, FORM, COL');
     expect(prompt).toContain('Pass 5 MECHANICS: SP, P, CAP, SPC, FMT');
+    expect(prompt).toContain('inspect every finite verb and verb phrase in every sentence');
+    expect(prompt).toContain('modal + base verb');
+    expect(prompt).toContain('auxiliary + verb form');
+    expect(prompt).toContain('missing copula or auxiliary');
+    expect(prompt).toContain('infinitive/gerund construction');
+    expect(prompt).toContain('Do not use Grammar as a fallback category for lexical problems.');
+    expect(prompt).toContain('Complete this pass independently even if many Grammar findings already exist.');
+    expect(prompt).toContain('Zero findings are permitted only after that category has been fully inspected');
+    expect(prompt).toContain('do not invent findings merely to avoid zero');
     expect(prompt).not.toContain('LanguageTool');
+  });
+
+  test('keeps the complete multi-page transcript and page manifest in the examiner prompt', () => {
+    const first = 'Students can follows companies.';
+    const final = 'People needs actual conversations.';
+    const transcript = `${first} ${final}`;
+    const request = semantic.buildSemanticRequest({ transcript, transcriptHash: 'pages-hash', pageManifest: [
+      { fileId: 'first-page', pageNumber: 1, startChar: 0, endChar: first.length },
+      { fileId: 'final-page', pageNumber: 1, startChar: first.length + 1, endChar: transcript.length }
+    ] });
+    expect(request.pages).toEqual([
+      { fileId: 'first-page', page: 1, startChar: 0, endChar: first.length },
+      { fileId: 'final-page', page: 1, startChar: first.length + 1, endChar: transcript.length }
+    ]);
+    expect(request.messages[1].content).toContain(`transcript=${transcript}`);
+  });
+
+  test('adds category-specific procedures only to the existing targeted audit prompt', () => {
+    const input = { transcript: 'Students can watching lessons.', transcriptHash: 'audit-prompt-hash' };
+    const request = semantic.buildSemanticRequest(input);
+    const prompt = semantic.buildCategoryAuditRequest(input, request, ['GRAMMAR', 'VOCABULARY'])[1].content;
+    expect(prompt).toContain('GRAMMAR audit: inspect every sentence, every finite verb, and every verb phrase');
+    expect(prompt).toContain('VOCABULARY audit: inspect word choice, lexical word form, collocation');
+    expect(prompt).toContain('exact minimal canonical OCR quotations');
   });
 
   test('accepts a grounded global organization finding without fabricated replacement text', () => {
@@ -336,42 +373,182 @@ describe('safe hybrid correction policy', () => {
     }));
   });
 
+  test('triggers the existing audit for the exact 0/39/0/0/9 production coverage shape', () => {
+    const diagnostics = { acceptedByCategory: {
+      CONTENT: 0, GRAMMAR: 39, ORGANIZATION: 0, VOCABULARY: 0, MECHANICS: 9
+    } };
+    expect(semantic.suspiciousCoverageCategories({ diagnostics }, 'x'.repeat(401)))
+      .toEqual(['CONTENT', 'ORGANIZATION', 'VOCABULARY']);
+  });
+
+  test('audits every zero category for substantial two-zero and one-zero coverage shapes', () => {
+    const twoZero = { diagnostics: { acceptedByCategory: {
+      CONTENT: 0, GRAMMAR: 20, ORGANIZATION: 0, VOCABULARY: 4, MECHANICS: 7
+    } } };
+    const realTwoZero = { diagnostics: { acceptedByCategory: {
+      CONTENT: 0, GRAMMAR: 39, ORGANIZATION: 0, VOCABULARY: 6, MECHANICS: 8
+    } } };
+    const oneZero = { diagnostics: { acceptedByCategory: {
+      CONTENT: 2, GRAMMAR: 39, ORGANIZATION: 0, VOCABULARY: 6, MECHANICS: 8
+    } } };
+    expect(semantic.suspiciousCoverageCategories(twoZero, 'x'.repeat(401))).toEqual(['CONTENT', 'ORGANIZATION']);
+    expect(semantic.suspiciousCoverageCategories(realTwoZero, 'x'.repeat(401))).toEqual(['CONTENT', 'ORGANIZATION']);
+    expect(semantic.suspiciousCoverageCategories(oneZero, 'x'.repeat(401))).toEqual(['ORGANIZATION']);
+  });
+
+  test('does not audit short-transcript or all-healthy coverage', () => {
+    const threeZero = { diagnostics: { acceptedByCategory: {
+      CONTENT: 0, GRAMMAR: 39, ORGANIZATION: 0, VOCABULARY: 0, MECHANICS: 9
+    } } };
+    const healthy = { diagnostics: { acceptedByCategory: {
+      CONTENT: 1, GRAMMAR: 20, ORGANIZATION: 1, VOCABULARY: 4, MECHANICS: 7
+    } } };
+    expect(semantic.suspiciousCoverageCategories(threeZero, 'x'.repeat(399))).toEqual([]);
+    expect(semantic.suspiciousCoverageCategories(healthy, 'x'.repeat(401))).toEqual([]);
+  });
+
   test('runs one bounded missing-category audit and merges grounded findings into canonical diagnostics', async () => {
-    const transcript = `students is unclear ${'supporting context '.repeat(30)}`.trim();
-    const initial = structuredFor([finding({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'students is',
-      suggestedText: 'students are', message: 'Correct subject-verb agreement.' })], { transcriptHash: 'audit-hash' });
-    const auditCategories = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'MECHANICS'];
+    const grammarFindings = Array.from({ length: 39 }, (_, index) => finding({ category: 'GRAMMAR', symbol: 'AGR',
+      quotedText: `students${index} is`, suggestedText: `students${index} are`, message: 'Correct subject-verb agreement.' }));
+    const mechanicsFindings = Array.from({ length: 8 }, (_, index) => finding({ category: 'MECHANICS', symbol: 'SP',
+      quotedText: `mispell${index}`, suggestedText: `misspell${index}`, message: 'Correct the spelling.' }));
+    const vocabularyFindings = Array.from({ length: 6 }, (_, index) => finding({ category: 'VOCABULARY', symbol: 'WC',
+      quotedText: `imprecise${index}`, suggestedText: `precise${index}`, message: 'Use a more precise lexical choice.' }));
+    const transcript = `${grammarFindings.map((item) => `${item.quotedText} mistaken.`).join(' ')} ${mechanicsFindings
+      .map((item) => item.quotedText).join(' ')} ${vocabularyFindings.map((item) => item.quotedText).join(' ')} central claim weak transition ${'context '.repeat(20)}`.trim();
+    const initial = structuredFor([...grammarFindings, ...mechanicsFindings, ...vocabularyFindings], { transcriptHash: 'audit-hash' });
+    const auditCategories = ['CONTENT', 'ORGANIZATION'];
+    const auditedFindings = {
+      CONTENT: finding({ category: 'CONTENT', symbol: 'DEV', correctionKind: 'global', quotedText: 'central claim',
+        suggestedText: '', message: 'Develop this point with specific support.' }),
+      ORGANIZATION: finding({ category: 'ORGANIZATION', symbol: 'CO', correctionKind: 'global', quotedText: 'weak transition',
+        suggestedText: '', message: 'Clarify the transition between these ideas.' })
+    };
     const audit = { transcriptHash: 'audit-hash', categories: Object.fromEntries(auditCategories.map((category) => [category, {
       reviewed: true,
       reviewedSymbols: [...CATEGORY_SYMBOLS[category]],
-      noFindingReason: category === 'CONTENT' ? '' : 'No grounded finding after the targeted review.',
-      corrections: category === 'CONTENT' ? [(({ category: _category, ...item }) => item)(finding({
-        category: 'CONTENT', symbol: 'DEV', correctionKind: 'global', quotedText: 'supporting context', suggestedText: '',
-        message: 'Develop this point with specific support.'
-      }))] : []
+      noFindingReason: '',
+      corrections: [(({ category: _category, ...item }) => item)(auditedFindings[category])]
     }])) };
     const payloads = [initial, audit];
+    const configs = []; const prompts = [];
     const runCompletion = jest.fn(async (options) => {
+      configs.push(options.config); prompts.push(options.messages[1].content);
       const content = JSON.stringify(payloads.shift());
       return { content, value: options.validate(content, { provider: 'openrouter', model: 'openai/gpt-4.1', attemptIndex: 0 }),
         provider: 'openrouter', model: 'openai/gpt-4.1', usage: {}, metrics: { attemptCount: 1 } };
     });
     const result = await semantic.analyze({ transcript, transcriptHash: 'audit-hash' }, {
       runCompletion, env: { OPENROUTER_API_KEY: 'test-only' }, config: {
-        provider: 'openrouter', model: 'openai/gpt-4.1', fallback: []
+        provider: 'openrouter', model: 'openai/gpt-4.1-mini',
+        chain: [
+          { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 0 },
+          { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 1 }
+        ], fallback: { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 1 }
       }
     });
     expect(runCompletion).toHaveBeenCalledTimes(2);
+    expect(configs[0].model).toBe('openai/gpt-4.1-mini');
+    expect(configs[1].model).toBe('openai/gpt-4.1');
+    expect(configs[1].chain.map((entry) => entry.model)).toEqual(['openai/gpt-4.1', 'openai/gpt-4.1-mini']);
+    expect(prompts[1]).toContain('previous pass produced unexpectedly sparse coverage');
+    expect(prompts[1]).toContain('Re-read the COMPLETE canonical transcript independently');
+    expect(prompts[1]).toContain('CONTENT boundaries: REL=relevance, DEV=idea development');
+    expect(prompts[1]).toContain('ORGANIZATION boundaries: COH=logical progression/coherence');
+    expect(prompts[1]).toContain('Zero is allowed only after complete review');
     expect(result.corrections).toEqual(expect.arrayContaining([
       expect.objectContaining({ category: 'GRAMMAR', symbol: 'AGR' }),
-      expect.objectContaining({ category: 'CONTENT', symbol: 'DEV' })
+      expect.objectContaining({ category: 'MECHANICS', symbol: 'SP' }),
+      expect.objectContaining({ category: 'CONTENT', symbol: 'DEV' }),
+      expect.objectContaining({ category: 'ORGANIZATION', symbol: 'CO' }),
+      expect.objectContaining({ category: 'VOCABULARY', symbol: 'WC' })
     ]));
-    expect(result.diagnostics).toMatchObject({ rawCorrectionCount: 2, acceptedCorrectionCount: 2,
+    expect(result.corrections.filter((item) => item.category === 'GRAMMAR')).toHaveLength(39);
+    expect(result.corrections.filter((item) => item.category === 'MECHANICS')).toHaveLength(8);
+    expect(result.corrections.filter((item) => item.category === 'VOCABULARY')).toHaveLength(6);
+    expect(canonical.statistics(result.corrections)).toEqual({ content: 1, organization: 1, grammar: 39,
+      vocabulary: 6, mechanics: 8, total: 55 });
+    expect(result.diagnostics).toMatchObject({ rawCorrectionCount: 55, acceptedCorrectionCount: 55,
       categoryAudit: { requested: true, categories: auditCategories },
       allCategoriesReviewed: true, totalExpectedSymbols: 28, totalReceivedUniqueSymbols: 28,
       incompleteReviewCategories: [],
-      returnedByCategory: { CONTENT: 1, GRAMMAR: 1 }, acceptedByCategory: { CONTENT: 1, GRAMMAR: 1 } });
+      returnedByCategory: { CONTENT: 1, ORGANIZATION: 1, VOCABULARY: 6, GRAMMAR: 39, MECHANICS: 8 },
+      acceptedByCategory: { CONTENT: 1, ORGANIZATION: 1, VOCABULARY: 6, GRAMMAR: 39, MECHANICS: 8 } });
     expect(result.diagnostics.symbolReviewCoverage.CONTENT.sources).toEqual(['initial', 'targeted-repair']);
+  });
+
+  test('does not audit a healthy category result', async () => {
+    const transcript = 'A complete response with grounded findings. '.repeat(15);
+    const corrections = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'].map((category) => finding({
+      category, symbol: CATEGORY_SYMBOLS[category][0], correctionKind: ['CONTENT', 'ORGANIZATION'].includes(category) ? 'global' : 'localized',
+      quotedText: 'grounded findings', suggestedText: ['CONTENT', 'ORGANIZATION'].includes(category) ? '' : 'grounded improvements'
+    }));
+    const payload = structuredFor(corrections, { transcriptHash: 'healthy-audit-hash' });
+    const runCompletion = jest.fn(async (options) => {
+      const content = JSON.stringify(payload);
+      return { content, value: options.validate(content), provider: 'openrouter', model: 'openai/gpt-4.1-mini', usage: {}, metrics: {} };
+    });
+    const result = await semantic.analyze({ transcript, transcriptHash: 'healthy-audit-hash' }, {
+      runCompletion, env: { OPENROUTER_API_KEY: 'test-only' },
+      config: { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallback: [] }
+    });
+    expect(runCompletion).toHaveBeenCalledTimes(1);
+    expect(result.diagnostics.categoryAudit).toEqual({ requested: false, categories: [] });
+  });
+
+  test('allows the stronger audit to confirm legitimate zero findings without fabricating corrections', async () => {
+    const transcript = `students is present mispell vagueword ${'substantial context '.repeat(30)}`.trim();
+    const primary = structuredFor([
+      finding({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'students is', suggestedText: 'students are' }),
+      finding({ category: 'MECHANICS', symbol: 'SP', quotedText: 'mispell', suggestedText: 'misspell' }),
+      finding({ category: 'VOCABULARY', symbol: 'WC', quotedText: 'vagueword', suggestedText: 'precise word' })
+    ], { transcriptHash: 'audit-zero-hash' });
+    const categories = ['CONTENT', 'ORGANIZATION'];
+    const audit = { transcriptHash: 'audit-zero-hash', categories: Object.fromEntries(categories.map((category) => [category, {
+      reviewed: true, reviewedSymbols: [...CATEGORY_SYMBOLS[category]],
+      noFindingReason: 'No defensible localized finding after complete review.', corrections: []
+    }])) };
+    const payloads = [primary, audit];
+    const runCompletion = jest.fn(async (options) => {
+      const content = JSON.stringify(payloads.shift());
+      return { content, value: options.validate(content), provider: 'openrouter', model: options.config.model, usage: {}, metrics: {} };
+    });
+    const result = await semantic.analyze({ transcript, transcriptHash: 'audit-zero-hash' }, {
+      runCompletion, env: { OPENROUTER_API_KEY: 'test-only' },
+      config: { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallback: [] }
+    });
+    expect(runCompletion).toHaveBeenCalledTimes(2);
+    expect(result.corrections).toHaveLength(3);
+    expect(canonical.statistics(result.corrections)).toEqual({ content: 0, organization: 0, grammar: 1,
+      vocabulary: 1, mechanics: 1, total: 3 });
+    expect(result.diagnostics.categoryAudit).toMatchObject({ requested: true, categories: ['CONTENT', 'ORGANIZATION'] });
+  });
+
+  test('keeps existing quote validation on the category audit and preserves valid primary corrections', async () => {
+    const transcript = `students is unclear ${'supporting context '.repeat(30)}`.trim();
+    const primary = structuredFor([finding({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'students is',
+      suggestedText: 'students are' })], { transcriptHash: 'audit-invalid-hash' });
+    const categories = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'MECHANICS'];
+    const invalidAudit = { transcriptHash: 'audit-invalid-hash', categories: Object.fromEntries(categories.map((category) => [category, {
+      reviewed: true, reviewedSymbols: [...CATEGORY_SYMBOLS[category]],
+      noFindingReason: category === 'CONTENT' ? '' : 'No defensible finding after complete review.',
+      corrections: category === 'CONTENT' ? [(({ category: _category, ...item }) => item)(finding({
+        category: 'CONTENT', symbol: 'DEV', correctionKind: 'global', quotedText: 'invented passage absent from OCR', suggestedText: ''
+      }))] : []
+    }])) };
+    const payloads = [primary, invalidAudit];
+    const runCompletion = jest.fn(async (options) => {
+      const content = JSON.stringify(payloads.shift());
+      return { content, value: options.validate(content), provider: 'openrouter', model: options.config.model, usage: {}, metrics: {} };
+    });
+    const result = await semantic.analyze({ transcript, transcriptHash: 'audit-invalid-hash' }, {
+      runCompletion, env: { OPENROUTER_API_KEY: 'test-only' },
+      config: { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallback: [] }
+    });
+    expect(result.corrections).toHaveLength(1);
+    expect(result.corrections[0]).toMatchObject({ category: 'GRAMMAR', quotedText: 'students is' });
+    expect(result.diagnostics.categoryAudit).toMatchObject({ requested: true, failed: true,
+      errorCode: 'SEMANTIC_SCHEMA_INVALID' });
   });
 });
 
