@@ -172,5 +172,5 @@ async function buildPersistedSubmissionFeedbackReport({ submission, submissionFe
     timings: { normalizationMs: normalizedAt - startedAt, assetResolutionMs: assetsAt - normalizedAt, viewModelMs: Date.now() - assetsAt, totalMs: Date.now() - startedAt } };
 }
 
-module.exports = { safeFilePath, resolvePersistedPageAssets, buildPersistedSubmissionFeedbackReport,
+module.exports = { safeFilePath, rasterPdf, resolvePersistedPageAssets, buildPersistedSubmissionFeedbackReport,
   _test: { rasterPdf, optimizeImageBuffer, assetConfig, throwIfAborted } };

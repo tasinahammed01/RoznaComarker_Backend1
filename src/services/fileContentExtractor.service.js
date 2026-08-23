@@ -1,198 +1,133 @@
 /**
- * fileContentExtractor.service.js
- *
- * Extracts text content from various file types for worksheet generation.
- * Supports: PDF, DOCX, TXT, and images (OCR).
+ * Extracts worksheet text from PDF, DOCX, TXT, PNG, and JPEG uploads.
+ * Text PDFs keep the inexpensive pdf-parse path; image-only PDFs are
+ * rasterized page-by-page and passed through the worksheet OCR chain.
  */
+'use strict';
 
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
-const vision = require('@google-cloud/vision');
-const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
+const { MIN_TEXT_LENGTH, WorksheetOcrError, extractTextFromPages } = require('./worksheetOcr.service');
 
-// Initialize Google Cloud Vision client
-const visionClient = process.env.GOOGLE_CLOUD_KEY_FILE
-  ? new vision.ImageAnnotatorClient({ keyFilename: process.env.GOOGLE_CLOUD_KEY_FILE })
-  : null;
+const SAFE_PDF_OCR_MESSAGE = "We couldn't read enough text from this PDF. Please try a text-based PDF, a clearer scan, or another file.";
+const SAFE_FILE_MESSAGE = "We couldn't read enough text from this file. Please try a clearer image, a text-based PDF, or another file.";
 
-/**
- * Extract text from a PDF file buffer.
- * @param {Buffer} buffer - PDF file buffer
- * @returns {Promise<string>} Extracted text
- */
-async function extractFromPDF(buffer) {
+function extractionError(code, internalMessage, userMessage = SAFE_FILE_MESSAGE) {
+  return new WorksheetOcrError(code, internalMessage, userMessage);
+}
+
+async function extractFromPDF(buffer, options = {}) {
+  let parsed;
   try {
-    const data = await pdfParse(buffer);
-    return data.text || '';
+    parsed = await (options.pdfParse || pdfParse)(buffer);
   } catch (error) {
-    logger.error('[PDF EXTRACTION] Failed:', error.message);
-    throw new Error('Could not extract text from PDF. The file may be corrupted or password-protected.');
+    logger.warn({ message: 'Worksheet PDF text parsing failed', feature: 'worksheet_extract_structure', code: 'WORKSHEET_PDF_PARSE_FAILED' });
+    throw extractionError('WORKSHEET_PDF_PARSE_FAILED', `PDF parsing failed: ${error?.code || error?.name || 'unknown'}`,
+      'Could not read this PDF. It may be corrupted or password-protected.');
+  }
+  const text = String(parsed?.text || '').trim();
+  if (text.length >= MIN_TEXT_LENGTH) return text;
+
+  logger.info({ message: 'Worksheet PDF has insufficient embedded text; starting scanned-PDF OCR',
+    feature: 'worksheet_extract_structure', code: 'WORKSHEET_PDF_TEXT_EMPTY' });
+  let pages;
+  try {
+    // Keep the native canvas dependency off the normal upload path. This reuses
+    // the production rasterizer already used by submission feedback reports.
+    const rasterPdf = options.rasterPdf || require('./submissionFeedbackReport.service').rasterPdf;
+    pages = await rasterPdf(buffer, options.rasterOptions || {});
+  } catch (error) {
+    logger.error({ message: 'Worksheet scanned-PDF rasterization failed', feature: 'worksheet_extract_structure', code: 'WORKSHEET_PDF_RASTER_FAILED' });
+    throw extractionError('WORKSHEET_PDF_RASTER_FAILED', `PDF rasterization failed: ${error?.code || error?.name || 'unknown'}`,
+      SAFE_PDF_OCR_MESSAGE);
+  }
+  if (!Array.isArray(pages) || !pages.length) {
+    throw extractionError('WORKSHEET_PDF_RASTER_EMPTY', 'PDF rasterizer returned no pages.', SAFE_PDF_OCR_MESSAGE);
+  }
+  const ocrPages = pages.map((page, index) => ({
+    pageNumber: Number(page.pageNumber) || index + 1,
+    buffer: page.buffer,
+    mimeType: page.mime || page.mimeType || 'image/jpeg',
+  })).sort((a, b) => a.pageNumber - b.pageNumber);
+  try {
+    return await (options.extractTextFromPages || extractTextFromPages)(ocrPages, options.ocrOptions || {});
+  } catch (error) {
+    throw extractionError(error?.code || 'WORKSHEET_OCR_FAILED',
+      `Scanned PDF OCR failed: ${error?.code || error?.name || 'unknown'}`, SAFE_PDF_OCR_MESSAGE);
   }
 }
 
-/**
- * Extract text from a DOCX file buffer.
- * @param {Buffer} buffer - DOCX file buffer
- * @returns {Promise<string>} Extracted text
- */
 async function extractFromDOCX(buffer) {
   try {
     const result = await mammoth.extractRawText({ buffer });
     return result.value || '';
   } catch (error) {
-    logger.error('[DOCX EXTRACTION] Failed:', error.message);
-    throw new Error('Could not extract text from DOCX. The file may be corrupted.');
+    logger.warn({ message: 'Worksheet DOCX extraction failed', feature: 'worksheet_extract_structure', code: 'WORKSHEET_DOCX_PARSE_FAILED' });
+    throw extractionError('WORKSHEET_DOCX_PARSE_FAILED', `DOCX parsing failed: ${error?.code || error?.name || 'unknown'}`,
+      'Could not read this DOCX. It may be corrupted.');
   }
 }
 
-/**
- * Extract text from a TXT file buffer.
- * @param {Buffer} buffer - TXT file buffer
- * @returns {Promise<string>} Extracted text
- */
 async function extractFromTXT(buffer) {
-  try {
-    return buffer.toString('utf-8');
-  } catch (error) {
-    logger.error('[TXT EXTRACTION] Failed:', error.message);
-    throw new Error('Could not read text file. The encoding may not be supported.');
+  try { return buffer.toString('utf-8'); }
+  catch (error) {
+    throw extractionError('WORKSHEET_TXT_PARSE_FAILED', `Text decoding failed: ${error?.code || error?.name || 'unknown'}`,
+      'Could not read this text file. Its encoding may not be supported.');
   }
 }
 
-/**
- * Extract text from an image using OCR (Google Cloud Vision).
- * @param {Buffer} buffer - Image file buffer
- * @returns {Promise<string>} Extracted text
- */
-async function extractFromImage(buffer) {
-  if (!visionClient) {
-    throw new Error('Google Cloud Vision is not configured. Please set GOOGLE_CLOUD_KEY_FILE environment variable.');
-  }
-
-  try {
-    const [result] = await visionClient.documentTextDetection({ image: { content: buffer } });
-    const fullTextAnnotation = result.fullTextAnnotation;
-    return fullTextAnnotation.text || '';
-  } catch (error) {
-    logger.error('[IMAGE OCR] Failed:', error.message);
-    throw new Error('Could not extract text from image. The image may be unclear or OCR failed.');
-  }
+async function extractFromImage(buffer, options = {}) {
+  return (options.extractTextFromPages || extractTextFromPages)([{
+    pageNumber: 1, buffer, mimeType: options.mimeType || 'image/jpeg',
+  }], options.ocrOptions || {});
 }
 
-/**
- * Main extraction function that routes to the appropriate extractor.
- * @param {Buffer} buffer - File buffer
- * @param {string} mimeType - File MIME type
- * @param {string} originalName - Original file name (for extension fallback)
- * @returns {Promise<string>} Extracted text
- */
-async function extractContent(buffer, mimeType, originalName) {
-  // Determine file type from MIME type or extension
-  const ext = path.extname(originalName).toLowerCase();
-  
+async function extractContent(buffer, mimeType, originalName, options = {}) {
+  const ext = path.extname(originalName || '').toLowerCase();
   let extractor;
   let fileType;
-
-  switch (mimeType) {
-    case 'application/pdf':
-      extractor = extractFromPDF;
-      fileType = 'PDF';
-      break;
-    case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-    case 'application/msword':
-      extractor = extractFromDOCX;
-      fileType = 'DOCX';
-      break;
-    case 'text/plain':
-      extractor = extractFromTXT;
-      fileType = 'TXT';
-      break;
-    case 'image/png':
-    case 'image/jpeg':
-    case 'image/jpg':
-      extractor = extractFromImage;
-      fileType = 'Image (OCR)';
-      break;
-    default:
-      // Fallback to extension
-      if (ext === '.pdf') {
-        extractor = extractFromPDF;
-        fileType = 'PDF';
-      } else if (ext === '.docx' || ext === '.doc') {
-        extractor = extractFromDOCX;
-        fileType = 'DOCX';
-      } else if (ext === '.txt') {
-        extractor = extractFromTXT;
-        fileType = 'TXT';
-      } else if (['.png', '.jpg', '.jpeg'].includes(ext)) {
-        extractor = extractFromImage;
-        fileType = 'Image (OCR)';
-      } else {
-        throw new Error(`Unsupported file type: ${mimeType}. Supported formats: PDF, DOCX, TXT, PNG, JPG.`);
-      }
+  if (mimeType === 'application/pdf' || ext === '.pdf') {
+    extractor = extractFromPDF; fileType = 'PDF';
+  } else if (['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword'].includes(mimeType)
+      || ['.docx', '.doc'].includes(ext)) {
+    extractor = extractFromDOCX; fileType = 'DOCX';
+  } else if (mimeType === 'text/plain' || ext === '.txt') {
+    extractor = extractFromTXT; fileType = 'TXT';
+  } else if (['image/png', 'image/jpeg', 'image/jpg'].includes(mimeType)
+      || ['.png', '.jpg', '.jpeg'].includes(ext)) {
+    extractor = extractFromImage; fileType = 'Image (OCR)';
+  } else {
+    throw extractionError('WORKSHEET_FILE_TYPE_UNSUPPORTED', `Unsupported file type: ${mimeType}.`,
+      'Invalid file type. Supported formats: PDF, DOCX, TXT, PNG, JPG.');
   }
 
-  logger.info(`[FILE EXTRACTION] Extracting from ${fileType}: ${originalName}`);
-  const text = await extractor(buffer);
-  
-  // Validate extracted content
-  const trimmedText = text.trim();
-  if (!trimmedText || trimmedText.length < 10) {
-    throw new Error(`Could not extract enough educational content from this ${fileType}. The file may be empty, an image without text, or use an unsupported format.`);
+  logger.info({ message: 'Worksheet file extraction started', feature: 'worksheet_extract_structure', fileType, mimeType });
+  const text = await extractor(buffer, { ...options, mimeType });
+  const trimmedText = String(text || '').trim();
+  if (trimmedText.length < MIN_TEXT_LENGTH) {
+    throw extractionError('WORKSHEET_TEXT_INSUFFICIENT', `${fileType} extraction returned insufficient text.`,
+      fileType === 'PDF' ? SAFE_PDF_OCR_MESSAGE : SAFE_FILE_MESSAGE);
   }
-
-  logger.info(`[FILE EXTRACTION] Extracted ${trimmedText.length} characters from ${fileType}`);
+  logger.info({ message: 'Worksheet file extraction completed', feature: 'worksheet_extract_structure',
+    fileType, characterCount: trimmedText.length });
   return trimmedText;
 }
 
-/**
- * Validate file before extraction.
- * @param {Object} file - File object with originalname, mimetype, size
- * @param {number} maxSizeMB - Maximum file size in MB (default: 10)
- * @returns {Object} Validation result { valid: boolean, error?: string }
- */
 function validateFile(file, maxSizeMB = 10) {
   const { originalname, mimetype, size } = file;
-
-  // Check file size
-  const maxSizeBytes = maxSizeMB * 1024 * 1024;
-  if (size > maxSizeBytes) {
-    return { valid: false, error: `File size exceeds ${maxSizeMB}MB limit.` };
-  }
-
-  // Check file size minimum (avoid empty files)
-  if (size === 0) {
-    return { valid: false, error: 'File is empty.' };
-  }
-
-  // Check allowed MIME types
-  const allowedMimeTypes = [
-    'application/pdf',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/msword',
-    'text/plain',
-    'image/png',
-    'image/jpeg',
-    'image/jpg',
-  ];
-
+  if (size > maxSizeMB * 1024 * 1024) return { valid: false, error: `File size exceeds ${maxSizeMB}MB limit.` };
+  if (size === 0) return { valid: false, error: 'File is empty.' };
+  const allowedMimeTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/msword', 'text/plain', 'image/png', 'image/jpeg', 'image/jpg'];
   const allowedExtensions = ['.pdf', '.docx', '.doc', '.txt', '.png', '.jpg', '.jpeg'];
   const ext = path.extname(originalname).toLowerCase();
-
   if (!allowedMimeTypes.includes(mimetype) && !allowedExtensions.includes(ext)) {
     return { valid: false, error: 'Invalid file type. Supported formats: PDF, DOCX, TXT, PNG, JPG.' };
   }
-
   return { valid: true };
 }
 
-module.exports = {
-  extractContent,
-  validateFile,
-  extractFromPDF,
-  extractFromDOCX,
-  extractFromTXT,
-  extractFromImage,
-};
+module.exports = { extractContent, validateFile, extractFromPDF, extractFromDOCX,
+  extractFromTXT, extractFromImage, SAFE_PDF_OCR_MESSAGE, SAFE_FILE_MESSAGE };

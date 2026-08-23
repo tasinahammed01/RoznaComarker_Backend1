@@ -900,11 +900,18 @@ async function extractWorksheetStructureController(req, res) {
         req.file.originalname
       );
     } catch (extractionError) {
-      console.error(
-        "[EXTRACT STRUCTURE] Extraction failed:",
-        extractionError.message
+      logger.warn({
+        message: "Worksheet structure file extraction failed",
+        feature: "worksheet_extract_structure",
+        code: extractionError?.code || "WORKSHEET_FILE_EXTRACTION_FAILED",
+        mimeType: req.file.mimetype,
+      });
+      return sendError(
+        res,
+        400,
+        extractionError?.userMessage ||
+          "We couldn't read enough text from this file. Please try a clearer image, a text-based PDF, or another file."
       );
-      return sendError(res, 400, extractionError.message);
     }
 
     console.log(
