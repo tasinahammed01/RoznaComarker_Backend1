@@ -88,7 +88,16 @@ const adaptivePracticeSessionSchema = new Schema({
     transcriptFingerprint: { type: String, required: true },
     feedbackId: { type: Schema.Types.ObjectId, ref: 'SubmissionFeedback', required: true },
     feedbackUpdatedAt: { type: Date, required: true },
-    skills: { type: [sourceSkillSchema], required: true }
+    skills: { type: [sourceSkillSchema], required: true },
+    sourceEvaluation: {
+      correctionSourceHash: { type: String, default: '' },
+      evaluationSourceHash: { type: String, default: '' },
+      evaluationPolicyHash: { type: String, default: '' },
+      evaluationRubricSourceHash: { type: String, default: '' },
+      assessmentVersion: { type: String, default: '' },
+      evaluationVersion: { type: String, default: '' },
+      teacherOverride: { type: Boolean, default: false }
+    }
   },
   targetSkills: [{ type: String, enum: skillIds }],
   activities: { type: [activitySchema], default: [] },

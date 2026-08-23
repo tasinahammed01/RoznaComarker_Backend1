@@ -217,6 +217,39 @@ describe('Submissions & Feedback APIs', () => {
     expect(feedback.detailedFeedbackStatus).toBe('pending');
   });
 
+  test('teacher review marker is authorized, persisted, and idempotent', async () => {
+    const teacher = await User.create({ firebaseUid: 'review-teacher', email: 'review-teacher@example.com', role: 'teacher' });
+    const otherTeacher = await User.create({ firebaseUid: 'other-review-teacher', email: 'other-review@example.com', role: 'teacher' });
+    const student = await User.create({ firebaseUid: 'review-student', email: 'review-student@example.com', role: 'student' });
+    const classDoc = await Class.create({ name: 'Review Class', teacher: teacher._id, joinCode: 'review-1', qrCodeUrl: 'data:,' });
+    const assignment = await Assignment.create({
+      title: 'Review Essay', writingType: 'essay', deadline: new Date(Date.now() + 86400000),
+      class: classDoc._id, teacher: teacher._id, qrToken: 'review-token-1'
+    });
+    const submission = await Submission.create({
+      student: student._id, assignment: assignment._id, class: classDoc._id,
+      status: 'submitted', submittedAt: new Date()
+    });
+    const teacherToken = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
+    const otherToken = signTestJwt({ id: otherTeacher._id, firebaseUid: otherTeacher.firebaseUid, role: otherTeacher.role });
+
+    const unauthorized = await request(app).patch(`/api/feedback/${submission._id}/reviewed`)
+      .set('Authorization', `Bearer ${otherToken}`).send({});
+    expect(unauthorized.status).toBe(403);
+
+    const first = await request(app).patch(`/api/feedback/${submission._id}/reviewed`)
+      .set('Authorization', `Bearer ${teacherToken}`).send({});
+    const second = await request(app).patch(`/api/feedback/${submission._id}/reviewed`)
+      .set('Authorization', `Bearer ${teacherToken}`).send({});
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body.data.teacherReviewedAt).toBe(first.body.data.teacherReviewedAt);
+    const saved = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
+    expect(String(saved.teacherReviewedBy)).toBe(String(teacher._id));
+    expect(await SubmissionFeedback.countDocuments({ submissionId: submission._id })).toBe(1);
+  });
+
   test('GET /api/feedback/:submissionId handles missing PRESENTATION category', async () => {
     const teacher = await User.create({ firebaseUid: 't4', email: 't4@example.com', role: 'teacher' });
     const student = await User.create({ firebaseUid: 's4', email: 's4@example.com', role: 'student' });

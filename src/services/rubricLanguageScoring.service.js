@@ -10,7 +10,7 @@ const RUBRIC_MAX = Object.freeze({
 });
 
 const ASSESSMENT_VERSION = 'writing-rubric-100-v5-teacher-policy';
-const EVALUATION_VERSION = 'canonical-evaluation-8-policy-custom-rubric';
+const EVALUATION_VERSION = 'canonical-evaluation-9-fixed-skill-isolation';
 const SCORING_AUDIT_VERSION = 'canonical-scoring-audit-v1';
 const STRICTNESS_THRESHOLDS = Object.freeze({
   friendly: Object.freeze({ multiplier: 0.60, lowImpactTolerance: 2.0, maxDeductionRatio: 0.35 }),

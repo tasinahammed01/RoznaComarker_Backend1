@@ -941,6 +941,8 @@ async function getSubmissionFeedback(req, res) {
       ...safeFeedback, ...resultState,
       previousEvaluation,
       teacherComments,
+      teacherReviewedAt: currentFeedback.teacherReviewedAt || null,
+      teacherReviewedBy: currentFeedback.teacherReviewedBy ? String(currentFeedback.teacherReviewedBy) : null,
       overallScore: resultState.score, grade: resultState.grade,
       rubricScores: resultState.evaluationCurrent ? currentFeedback.rubricScores : null,
       detailedFeedback: resultState.detailedFeedbackCurrent ? currentFeedback.detailedFeedback : null,
@@ -2709,6 +2711,64 @@ async function updateTeacherComments(req, res) {
   }
 }
 
+async function markSubmissionReviewed(req, res) {
+  try {
+    const { submissionId } = req.params;
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) return sendError(res, 401, "Unauthorized");
+
+    const submission = await Submission.findById(submissionId).select('_id class student');
+    if (!submission) return sendError(res, 404, "Submission not found");
+    const classDoc = await Class.findOne({
+      _id: submission.class,
+      teacher: teacherId,
+      isActive: true,
+    }).select('_id');
+    if (!classDoc) return sendError(res, 403, "No permission");
+
+    const now = new Date();
+    let saved = await SubmissionFeedback.findOneAndUpdate(
+      { submissionId: submission._id, teacherReviewedAt: null },
+      { $set: { teacherReviewedAt: now, teacherReviewedBy: teacherId } },
+      { new: true, runValidators: true }
+    );
+
+    if (!saved) {
+      saved = await SubmissionFeedback.findOne({ submissionId: submission._id });
+    }
+    if (!saved) {
+      try {
+        saved = await SubmissionFeedback.findOneAndUpdate(
+          { submissionId: submission._id },
+          {
+            $setOnInsert: {
+              submissionId: submission._id,
+              classId: submission.class,
+              studentId: submission.student,
+              teacherId,
+              teacherReviewedAt: now,
+              teacherReviewedBy: teacherId,
+            },
+          },
+          { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
+        );
+      } catch (error) {
+        if (error?.code !== 11000) throw error;
+        saved = await SubmissionFeedback.findOne({ submissionId: submission._id });
+      }
+    }
+    if (!saved?.teacherReviewedAt) return sendError(res, 500, "Failed to mark submission reviewed");
+
+    return sendSuccess(res, {
+      submissionId: String(submission._id),
+      teacherReviewedAt: saved.teacherReviewedAt,
+      teacherReviewedBy: String(saved.teacherReviewedBy),
+    });
+  } catch (err) {
+    return sendError(res, 500, "Failed to mark submission reviewed");
+  }
+}
+
 async function callGeminiGenerateRubricFromFile({
   promptText,
   fileMime,
@@ -4182,6 +4242,7 @@ module.exports = {
   generateRubricDesignerFromFile,
   updateFeedback,
   getSubmissionFeedback,
+  markSubmissionReviewed,
   updateTeacherComments,
   upsertSubmissionFeedback,
   getFeedbackBySubmissionForStudent,

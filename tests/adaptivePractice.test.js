@@ -54,7 +54,9 @@ async function seed(scores) {
     MECHANICS: { score: 7, maxScore: 10 }, ...scores
   };
   const feedback = await SubmissionFeedback.create({ submissionId: submission._id, classId, studentId, teacherId, rubricScores,
-    evaluationSourceHash: correctionSourceHash });
+    evaluationSourceHash: correctionSourceHash, evaluationPolicyHash: 'policy-v1',
+    evaluationRubricSourceHash: 'rubric-source-v1', assessmentVersion: 'writing-rubric-v1',
+    evaluationVersion: 'evaluation-v1' });
   return { studentId, assignment, submission, feedback };
 }
 
@@ -217,6 +219,120 @@ describe('adaptive practice', () => {
       === 'adaptivePercentage,skillId,skillLabel,status')).toBe(true);
   });
 
+  it('keeps fixed Adaptive percentages identical when custom rubric scores or overall score exist', async () => {
+    const { studentId, submission, feedback } = await seed({
+      CONTENT: { score: 13.5, maxScore: 20 }, ORGANIZATION: { score: 15, maxScore: 20 },
+      VOCABULARY: { score: 13.5, maxScore: 20 }, GRAMMAR: { score: 24.5, maxScore: 25 },
+      MECHANICS: { score: 9.5, maxScore: 10 }
+    });
+    const expectedPercentages = [68, 75, 68, 98, 95];
+    const withoutCustomRubric = await service.getCurrentSession(submission._id, studentId);
+    expect(withoutCustomRubric.adaptiveSkills.map((skill) => skill.adaptivePercentage)).toEqual(expectedPercentages);
+
+    await SubmissionFeedback.updateOne({ _id: feedback._id }, { $set: {
+      customRubricScores: { overallScore: 64, criteria: [
+        { criterionId: 'criterion-1', title: 'Task Achievement', weightedPoints: 22.5 },
+        { criterionId: 'criterion-2', title: 'Coherence', weightedPoints: 18.8 },
+        { criterionId: 'criterion-3', title: 'Lexical Resource', weightedPoints: 10 },
+        { criterionId: 'criterion-4', title: 'Grammar', weightedPoints: 12.5 }
+      ] }, overallScore: 64
+    } });
+    const withCustomRubric = await service.getCurrentSession(submission._id, studentId);
+    expect(withCustomRubric.adaptiveSkills.map((skill) => skill.adaptivePercentage)).toEqual(expectedPercentages);
+    expect(withCustomRubric.sourceFingerprint).toBe(withoutCustomRubric.sourceFingerprint);
+
+    await SubmissionFeedback.updateOne({ _id: feedback._id }, { $set: { overallScore: 51,
+      'customRubricScores.overallScore': 51 } });
+    const changedOverallOnly = await service.getCurrentSession(submission._id, studentId);
+    expect(changedOverallOnly.adaptiveSkills).toEqual(withCustomRubric.adaptiveSkills);
+    expect(changedOverallOnly.sourceFingerprint).toBe(withCustomRubric.sourceFingerprint);
+  });
+
+  it('locks the confirmed QA skill vector across a custom-rubric toggle', async () => {
+    const { studentId, submission, feedback } = await seed({
+      CONTENT: { score: 15, maxScore: 20 }, ORGANIZATION: { score: 16, maxScore: 20 },
+      VOCABULARY: { score: 17, maxScore: 20 }, GRAMMAR: { score: 16.5, maxScore: 25 },
+      MECHANICS: { score: 9.5, maxScore: 10 }
+    });
+    const expectedPercentages = [75, 80, 85, 66, 95];
+    const withoutCustomRubric = await service.getCurrentSession(submission._id, studentId);
+    expect(withoutCustomRubric.adaptiveSkills.map((skill) => skill.adaptivePercentage)).toEqual(expectedPercentages);
+    expect(withoutCustomRubric.adaptiveSkills.find((skill) => skill.skillId === 'GRAMMAR')?.status)
+      .toBe('needs-practice');
+
+    await SubmissionFeedback.updateOne({ _id: feedback._id }, { $set: {
+      customRubricScores: { overallScore: 58, criteria: [
+        { criterionId: 'criterion-1', title: 'Teacher-defined outcome', weightedPoints: 58 }
+      ] }, overallScore: 58
+    } });
+    const withCustomRubric = await service.getCurrentSession(submission._id, studentId);
+    expect(withCustomRubric.adaptiveSkills.map((skill) => skill.adaptivePercentage)).toEqual(expectedPercentages);
+    expect(withCustomRubric.adaptiveSkills.find((skill) => skill.skillId === 'GRAMMAR')?.status)
+      .toBe('needs-practice');
+    expect(withCustomRubric.sourceFingerprint).toBe(withoutCustomRubric.sourceFingerprint);
+  });
+
+  it('changes Adaptive percentages when a policy reevaluation legitimately changes persisted built-in scores', async () => {
+    const { studentId, submission, feedback } = await seed({
+      CONTENT: { score: 13.5, maxScore: 20 }, ORGANIZATION: { score: 15, maxScore: 20 },
+      VOCABULARY: { score: 13.5, maxScore: 20 }, GRAMMAR: { score: 24.5, maxScore: 25 },
+      MECHANICS: { score: 9.5, maxScore: 10 }
+    });
+    const first = await service.getCurrentSession(submission._id, studentId);
+    await SubmissionFeedback.updateOne({ _id: feedback._id }, { $set: {
+      'rubricScores.CONTENT.score': 17, 'rubricScores.ORGANIZATION.score': 17,
+      'rubricScores.VOCABULARY.score': 15, evaluationPolicyHash: 'policy-v2'
+    } });
+    const second = await service.getCurrentSession(submission._id, studentId);
+    expect(second.adaptiveSkills.map((skill) => skill.adaptivePercentage)).toEqual([85, 85, 75, 98, 95]);
+    expect(second.sourceFingerprint).not.toBe(first.sourceFingerprint);
+  });
+
+  it('returns stable percentages and canonical source identity across repeated reads and review-only updates', async () => {
+    const { studentId, submission, feedback } = await seed({
+      CONTENT: { score: 3.6, maxScore: 20 }, ORGANIZATION: { score: 2.6, maxScore: 20 },
+      VOCABULARY: { score: 1, maxScore: 20 }, GRAMMAR: { score: 25, maxScore: 25 },
+      MECHANICS: { score: 10, maxScore: 10 }
+    });
+    const expected = (await service.getCurrentSession(submission._id, studentId));
+    const repeated = await Promise.all(Array.from({ length: 9 }, () =>
+      service.getCurrentSession(submission._id, studentId)));
+    expect(repeated.every((result) => JSON.stringify(result.adaptiveSkills) === JSON.stringify(expected.adaptiveSkills))).toBe(true);
+    expect(new Set(repeated.map((result) => result.sourceFingerprint))).toEqual(new Set([expected.sourceFingerprint]));
+    expect(expected.sourceEvaluation).toEqual({
+      correctionSourceHash: 'current-canonical-source-hash',
+      evaluationSourceHash: 'current-canonical-source-hash',
+      evaluationPolicyHash: 'policy-v1', evaluationRubricSourceHash: 'rubric-source-v1',
+      assessmentVersion: 'writing-rubric-v1', evaluationVersion: 'evaluation-v1', teacherOverride: false
+    });
+
+    await SubmissionFeedback.updateOne({ _id: feedback._id }, { $set: {
+      teacherComments: 'A review-only comment.', reviewed: true, reviewedAt: new Date()
+    } });
+    const afterReview = await service.getCurrentSession(submission._id, studentId);
+    expect(afterReview.adaptiveSkills).toEqual(expected.adaptiveSkills);
+    expect(afterReview.sourceFingerprint).toBe(expected.sourceFingerprint);
+    expect(afterReview.sourceEvaluation).toEqual(expected.sourceEvaluation);
+  });
+
+  it('invalidates adaptive identity for canonical policy, rubric, assessment, and evaluator revisions', async () => {
+    const { studentId, submission, feedback } = await seed({ CONTENT: { score: 10, maxScore: 20 } });
+    let previous = await service.loadOwnedSource(submission._id, studentId);
+    for (const [field, value] of [
+      ['evaluationPolicyHash', 'policy-v2'],
+      ['evaluationRubricSourceHash', 'rubric-source-v2'],
+      ['assessmentVersion', 'writing-rubric-v2'],
+      ['evaluationVersion', 'evaluation-v2'],
+      ['overriddenByTeacher', true]
+    ]) {
+      await SubmissionFeedback.updateOne({ _id: feedback._id }, { $set: { [field]: value } });
+      const current = await service.loadOwnedSource(submission._id, studentId);
+      expect(current.assessedSkills).toEqual(previous.assessedSkills);
+      expect(current.sourceFingerprint).not.toBe(previous.sourceFingerprint);
+      previous = current;
+    }
+  });
+
   it('builds a stable fingerprint and changes it for rubric, transcript, or prompt-source changes', () => {
     const base = { transcript: '  Student   text.\r\n', assessmentVersion: 'rubric-v1', skills: [
       { id: 'ORGANIZATION', earnedPoints: 11, maximumPoints: 20, percentage: 55 },
@@ -229,6 +345,9 @@ describe('adaptive practice', () => {
     expect(service.buildGenerationSourceFingerprint({ ...base, transcript: 'Changed student text.' }).sourceFingerprint).not.toBe(first);
     expect(service.buildGenerationSourceFingerprint({ ...base, assessmentVersion: 'rubric-v2' }).sourceFingerprint).not.toBe(first);
     expect(service.buildGenerationSourceFingerprint({ ...base, sourceRevision: 'draft-2-job' }).sourceFingerprint).not.toBe(first);
+    expect(service.buildGenerationSourceFingerprint({ ...base, sourceEvaluation: {
+      correctionSourceHash: 'source-1', evaluationSourceHash: 'source-1', evaluationPolicyHash: 'policy-2'
+    } }).sourceFingerprint).not.toBe(first);
   });
 
   it('does not call AI when there are no weaknesses', async () => {
@@ -255,7 +374,34 @@ describe('adaptive practice', () => {
     const second = await service.generateSession(submission._id, studentId);
     expect(first.state).toBe('ready');
     expect(second.session._id.toString()).toBe(first.session._id.toString());
+    expect(second.adaptiveSkills).toEqual(first.adaptiveSkills);
+    expect(second.sourceFingerprint).toBe(first.sourceFingerprint);
+    expect(second.sourceEvaluation).toEqual(first.sourceEvaluation);
     expect(spy).toHaveBeenCalledTimes(1);
+    expect(await AdaptivePracticeSession.countDocuments()).toBe(1);
+  });
+
+  it('safely upgrades a provably unchanged legacy session without deleting its history', async () => {
+    const { studentId, submission, feedback } = await seed({ CONTENT: { score: 10, maxScore: 20 } });
+    const source = await service.loadOwnedSource(submission._id, studentId);
+    const legacy = await AdaptivePracticeSession.create({
+      submissionId: submission._id, studentId, assignmentId: submission.assignment, status: 'ready',
+      sourceFingerprint: source.legacySourceFingerprint,
+      sourceSnapshot: { transcriptFingerprint: source.transcriptFingerprint, feedbackId: feedback._id,
+        feedbackUpdatedAt: feedback.updatedAt, skills: source.assessedSkills },
+      targetSkills: ['CONTENT'], activities: [{ activityId: 'legacy-activity', skillId: 'CONTENT',
+        category: 'Task Achievement', title: 'Legacy practice', description: 'Existing practice.',
+        evidence: 'This is the student writing.', difficulty: 'developing', questions: [
+          { questionId: 'q1', ...question() }, { questionId: 'q2', ...question('mcq') }
+        ] }]
+    });
+
+    const result = await service.getCurrentSession(submission._id, studentId);
+    const migrated = await AdaptivePracticeSession.findById(legacy._id).lean();
+    expect(result.state).toBe('ready');
+    expect(String(result.session._id)).toBe(String(legacy._id));
+    expect(migrated.sourceFingerprint).toBe(source.sourceFingerprint);
+    expect(migrated.sourceSnapshot.sourceEvaluation).toEqual(source.sourceEvaluation);
     expect(await AdaptivePracticeSession.countDocuments()).toBe(1);
   });
 

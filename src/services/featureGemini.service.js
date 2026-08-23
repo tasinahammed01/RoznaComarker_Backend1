@@ -83,13 +83,34 @@ async function generateFeatureJson(feature, messages, {
   if (!config.configured) throw configurationError(config);
   const startedAt = now();
   try {
+      const worksheetReliability = config.feature === 'worksheet';
+      const executionConfig = worksheetReliability
+        ? { ...config.global, primaryRetries: Math.max(1, Number(config.global.primaryRetries) || 0) }
+        : config.global;
       const result = await aiGateway.generate({
         feature: config.feature, messages, maxOutputTokens: config.maxOutputTokens,
         responseFormat: 'json', validate: (content) => {
           const parsed = strictJson(content);
           return typeof validateValue === 'function' ? validateValue(parsed) : parsed;
         }, fetchImpl, env, now, sleepFn,
-        config: config.global
+        config: executionConfig,
+        retryableSameModelCodes: worksheetReliability ? [
+          'AI_OUTPUT_VALIDATION_FAILED',
+          'AI_RESPONSE_INVALID',
+          'AI_RESPONSE_EMPTY',
+          'AI_RESPONSE_TRUNCATED',
+          'AI_ATTEMPT_TIMEOUT',
+          'AI_PROVIDER_UNAVAILABLE',
+          'AI_PROVIDER_RATE_LIMIT'
+        ] : [],
+        terminalCodes: worksheetReliability ? [
+          'AI_CHAIN_NOT_CONFIGURED',
+          'AI_PROVIDER_AUTH_ERROR',
+          'AI_PROVIDER_PAYMENT_REQUIRED',
+          'AI_PROVIDER_PERMISSION_DENIED',
+          'AI_PROVIDER_INVALID_REQUEST',
+          'AI_RESPONSE_BLOCKED'
+        ] : []
       });
       const value = result.value;
       logger.info({

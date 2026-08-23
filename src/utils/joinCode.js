@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 
-const JOIN_CODE_LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ';
-const JOIN_CODE_DIGITS = '23456789';
+const JOIN_CODE_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const JOIN_CODE_DIGITS = '0123456789';
 const JOIN_CODE_ALPHABET = `${JOIN_CODE_LETTERS}${JOIN_CODE_DIGITS}`;
 
 function randomCharacter(characters) {
@@ -14,7 +14,7 @@ function generateShortJoinCode() {
     randomCharacter(JOIN_CODE_DIGITS)
   ];
 
-  while (characters.length < 6) {
+  while (characters.length < 7) {
     characters.push(randomCharacter(JOIN_CODE_ALPHABET));
   }
 

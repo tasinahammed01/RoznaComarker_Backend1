@@ -39,7 +39,7 @@ const router = express.Router();
  *             properties:
  *               joinCode:
  *                 type: string
- *                 example: "<uuid>"
+ *                 example: "A7K92Q4"
  *     responses:
  *       200:
  *         description: Joined or re-activated membership

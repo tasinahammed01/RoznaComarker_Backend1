@@ -20,6 +20,9 @@ const hashRubric = (assignment) => crypto.createHash('sha256').update(JSON.strin
   rubric: assignment?.rubric || assignment?.rubrics || null,
   title: assignment?.title || '', instructions: assignment?.instructions || assignment?.description || ''
 }))).digest('hex');
+const hashBuiltInContext = (assignment) => crypto.createHash('sha256').update(JSON.stringify(stable({
+  title: assignment?.title || '', instructions: assignment?.instructions || assignment?.description || ''
+}))).digest('hex');
 
 function synchronizedRubricScores(scores, stats) {
   const map = { CONTENT: 'content', ORGANIZATION: 'organization', GRAMMAR: 'grammar', VOCABULARY: 'vocabulary', MECHANICS: 'mechanics' };
@@ -63,6 +66,7 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
   const policyHash = evaluationPolicyHash(policy);
   const customRubricResult = normalizeAssignmentRubric(assignment || {});
   const rubricHash = customRubricResult.status === 'valid' ? hashNormalizedRubric(customRubricResult) : hashRubric(assignment);
+  const builtInContextHash = hashBuiltInContext(assignment);
   if (customRubricResult.status === 'invalid') {
     console.warn('[canonical-evaluation] invalid assignment rubric', {
       submissionId: String(submission._id), diagnostics: customRubricResult.diagnostics
@@ -143,6 +147,13 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     const transcript = normalizedTranscript(submission);
     const wordCount = countWords(transcript);
     const corrections = correctionsAllowedByPolicy(submission.writingCorrections || [], policy);
+    const reusableBuiltInScores = Boolean(persistedFeedback && !persistedFeedback.overriddenByTeacher
+      && persistedFeedback.evaluationSourceHash === sourceHash
+      && persistedFeedback.evaluationPolicyHash === policyHash
+      && persistedFeedback.evaluationBuiltInContextHash === builtInContextHash
+      && persistedFeedback.assessmentVersion === ASSESSMENT_VERSION
+      && persistedFeedback.evaluationVersion === VERSION
+      && hasValidRubricScores(persistedFeedback.rubricScores));
     console.info('[canonical-evaluation] semantic rubric assessment started', { submissionId: String(submission._id),
       sourceHashMatch: true, correctionCounts: stats });
     const semantic = await semanticRubricAssessment.assess({ transcript, sourceHash, assignment,
@@ -161,7 +172,7 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       provider: semantic.provider, model: semantic.model, sourceHashMatch: semantic.sourceHash === sourceHash,
       categoryScores: Object.fromEntries(Object.entries(semantic.categories).map(([key, value]) => [key, value.score])),
       duration: semantic.metrics?.semanticRubricAssessmentMs });
-    const rubricScores = synchronizedRubricScores({
+    const generatedRubricScores = synchronizedRubricScores({
       CONTENT: semantic.categories.CONTENT,
       ORGANIZATION: semantic.categories.ORGANIZATION,
       VOCABULARY: semantic.categories.VOCABULARY,
@@ -171,6 +182,9 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
         enabled: policy.checks.grammarSpelling }),
       PRESENTATION: scorePresentation(submission)
     }, stats);
+    const rubricScores = reusableBuiltInScores
+      ? synchronizedRubricScores(persistedFeedback.rubricScores, stats)
+      : generatedRubricScores;
     if (!hasValidRubricScores(rubricScores)) throw new Error('Canonical assessment is missing required rubric categories');
     const customRubricScores = customRubricResult.status === 'valid'
       ? calculateCustomRubricScore(customRubricResult.rubric, semantic.customCriteria) : null;
@@ -183,6 +197,8 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       policy: { ...policy, scoringPolicyVersion: SCORING_POLICY_VERSION },
       policyHash,
       rubricHash,
+      builtInContextHash,
+      builtInScoresReused: reusableBuiltInScores,
       overallMethod: customRubricScores ? 'custom_rubric_weighted_total' : 'fixed_six_category_sum',
       ...(customRubricScores ? {
         customRubric: {
@@ -216,6 +232,7 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       submissionId: submission._id, classId: submission.class, studentId: submission.student, teacherId: classDoc?.teacher,
       assessmentVersion: ASSESSMENT_VERSION, evaluationVersion: VERSION, evaluationSourceHash: sourceHash,
       evaluationRubricSourceHash: rubricHash, evaluationPolicyHash: policyHash,
+      evaluationBuiltInContextHash: builtInContextHash,
       evaluationPolicy: { ...policy, scoringPolicyVersion: SCORING_POLICY_VERSION },
       evaluationSource: 'ai', evaluationStatus: semantic.status,
       evaluationProvider: semantic.provider, evaluationModel: semantic.model, evaluationErrorCode: null, correctionStats: stats,
@@ -239,7 +256,7 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     if (completed.modifiedCount !== 1) throw supersededEvaluationError();
     console.info('[canonical-evaluation] canonical evaluation persisted', { submissionId: String(submission._id),
       sourceHashMatch: true, correctionCounts: stats, categoryScores: Object.fromEntries(Object.entries(rubricScores).map(([key, value]) => [key, value.score])),
-      overallScore });
+      customRubricPresent: Boolean(customRubricScores), builtInScoresReused: reusableBuiltInScores, overallScore });
     console.info('[canonical-evaluation] detailed feedback persisted', { submissionId: String(submission._id),
       sourceHashMatch: true, duration: detailedFeedbackMs });
     return { status: semantic.status === 'partial' ? 'partial' : 'completed', sourceHash, rubricHash, policyHash, stats,
@@ -308,5 +325,5 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
   }
 }
 
-module.exports = { VERSION, stable, hashRubric, synchronizedRubricScores, hasValidRubricScores,
+module.exports = { VERSION, stable, hashRubric, hashBuiltInContext, synchronizedRubricScores, hasValidRubricScores,
   isEvaluationFresh, generate };

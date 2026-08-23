@@ -225,6 +225,15 @@ router.put(
 );
 
 router.patch(
+  '/:submissionId/reviewed',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  feedbackController.markSubmissionReviewed
+);
+
+router.patch(
   '/:submissionId/teacher-comments',
   createSensitiveRateLimiter(),
   verifyJwtToken,

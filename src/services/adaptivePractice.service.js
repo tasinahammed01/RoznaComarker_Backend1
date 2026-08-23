@@ -42,7 +42,20 @@ function hash(value) {
   return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-function buildGenerationSourceFingerprint({ transcript, skills, assessmentVersion, sourceRevision }) {
+function normalizeSourceEvaluation(value = {}) {
+  const text = (field) => typeof value?.[field] === 'string' ? value[field].trim() : '';
+  return {
+    correctionSourceHash: text('correctionSourceHash'),
+    evaluationSourceHash: text('evaluationSourceHash'),
+    evaluationPolicyHash: text('evaluationPolicyHash'),
+    evaluationRubricSourceHash: text('evaluationRubricSourceHash'),
+    assessmentVersion: text('assessmentVersion'),
+    evaluationVersion: text('evaluationVersion'),
+    teacherOverride: value?.teacherOverride === true
+  };
+}
+
+function buildGenerationSourceFingerprint({ transcript, skills, assessmentVersion, sourceRevision, sourceEvaluation }) {
   const normalizedTranscript = normalizeOcrTranscript(transcript || '');
   const skillOrder = new Map(ADAPTIVE_SKILLS.map((skill, index) => [skill.id, index]));
   const normalizedSkills = (Array.isArray(skills) ? skills : [])
@@ -57,10 +70,27 @@ function buildGenerationSourceFingerprint({ transcript, skills, assessmentVersio
     promptVersion: ADAPTIVE_PRACTICE_PROMPT_VERSION,
     rubricVersion: typeof assessmentVersion === 'string' ? assessmentVersion.trim() : '',
     sourceRevision: typeof sourceRevision === 'string' ? sourceRevision.trim() : '',
+    sourceEvaluation: normalizeSourceEvaluation(sourceEvaluation),
     transcript: normalizedTranscript,
     skills: normalizedSkills
   };
   return { sourceFingerprint: hash(JSON.stringify(source)), transcriptFingerprint: hash(normalizedTranscript) };
+}
+
+function buildLegacySourceFingerprint({ transcript, skills, assessmentVersion, sourceRevision }) {
+  const normalizedTranscript = normalizeOcrTranscript(transcript || '');
+  const skillOrder = new Map(ADAPTIVE_SKILLS.map((skill, index) => [skill.id, index]));
+  const normalizedSkills = (Array.isArray(skills) ? skills : []).map((skill) => ({
+    id: String(skill.id), earnedPoints: Number(skill.earnedPoints),
+    maximumPoints: Number(skill.maximumPoints), percentage: Number(skill.percentage)
+  })).sort((a, b) => (skillOrder.get(a.id) ?? 999) - (skillOrder.get(b.id) ?? 999));
+  return hash(JSON.stringify({
+    promptVersion: ADAPTIVE_PRACTICE_PROMPT_VERSION,
+    rubricVersion: typeof assessmentVersion === 'string' ? assessmentVersion.trim() : '',
+    sourceRevision: typeof sourceRevision === 'string' ? sourceRevision.trim() : '',
+    transcript: normalizedTranscript,
+    skills: normalizedSkills
+  }));
 }
 
 function calculateSkills(rubricScores) {
@@ -132,14 +162,26 @@ async function loadOwnedSource(submissionId, studentId) {
   const weakSkills = assessedSkills
     .filter((skill) => skill.percentage < ADAPTIVE_PRACTICE_THRESHOLD)
     .map((skill) => ({ ...skill, weakness: weaknessContext(feedback, skill) }));
+  const sourceEvaluation = normalizeSourceEvaluation({
+    correctionSourceHash,
+    evaluationSourceHash,
+    evaluationPolicyHash: feedback.evaluationPolicyHash,
+    evaluationRubricSourceHash: feedback.evaluationRubricSourceHash,
+    assessmentVersion: feedback.assessmentVersion,
+    evaluationVersion: feedback.evaluationVersion,
+    teacherOverride: feedback.overriddenByTeacher
+  });
   const { transcriptFingerprint, sourceFingerprint } = buildGenerationSourceFingerprint({
     transcript,
     skills: assessedSkills,
-    assessmentVersion: feedback.assessmentVersion,
-    sourceRevision: String(submission.ocrJobId || correctionSourceHash)
+    sourceEvaluation
   });
+  const legacySourceFingerprint = buildLegacySourceFingerprint({ transcript, skills: assessedSkills,
+    assessmentVersion: feedback.assessmentVersion,
+    sourceRevision: String(submission.ocrJobId || correctionSourceHash) });
   const assignment = await Assignment.findById(submission.assignment).select('title instructions showMarksToStudent').lean();
-  return { submission, feedback, transcript, transcriptFingerprint, sourceFingerprint, assessedSkills, weakSkills, assignment,
+  return { submission, feedback, transcript, transcriptFingerprint, sourceFingerprint, legacySourceFingerprint,
+    sourceEvaluation, assessedSkills, weakSkills, assignment,
     marksVisible: showMarksToStudent(assignment) };
 }
 
@@ -152,31 +194,50 @@ function serializeAdaptiveSkills(skills) {
   }));
 }
 
-function sessionResponse(state, session = null, skills = []) {
+function sessionResponse(state, session = null, skills = [], source = null) {
   const eligibilityReason = ({ idle: 'READY', generating: 'GENERATING', ready: 'ALREADY_GENERATED',
     failed: 'RETRYABLE_FAILURE', 'no-weaknesses': 'NO_WEAK_SKILLS' })[state] || 'ANALYSIS_PROCESSING';
-  return { state, session, eligibilityReason, adaptiveSkills: serializeAdaptiveSkills(skills) };
+  return { state, session, eligibilityReason, adaptiveSkills: serializeAdaptiveSkills(skills),
+    sourceFingerprint: source?.sourceFingerprint || null,
+    sourceEvaluation: source?.sourceEvaluation || null };
 }
 
-async function sessionResponseWithProgress(state, session = null, marksVisible = true, skills = []) {
-  if (!session) return sessionResponse(state, null, skills);
+async function sessionResponseWithProgress(state, session = null, marksVisible = true, skills = [], source = null) {
+  if (!session) return sessionResponse(state, null, skills, source);
   const { getProgressSummary } = require('./adaptivePracticeAttempt.service');
   const progress = await getProgressSummary(session);
   const revealedQuestionKeys = progress.activities.flatMap((activity) => activity.questions || [])
     .filter((question) => question.attemptCount > 0).map((question) => question.attemptActivityId);
-  return { ...sessionResponse(state, sanitizeAdaptiveSession(session, marksVisible, revealedQuestionKeys), skills), progress };
+  return { ...sessionResponse(state, sanitizeAdaptiveSession(session, marksVisible, revealedQuestionKeys), skills, source), progress };
+}
+
+async function findReusableSession(source, studentId, options = {}) {
+  const query = { submissionId: source.submission._id, studentId };
+  if (options.status) query.status = options.status;
+  let session = await AdaptivePracticeSession.findOne({ ...query, sourceFingerprint: source.sourceFingerprint });
+  if (session || source.legacySourceFingerprint === source.sourceFingerprint) return session;
+
+  const legacy = await AdaptivePracticeSession.findOne({ ...query, sourceFingerprint: source.legacySourceFingerprint });
+  const sameFeedback = legacy && String(legacy.sourceSnapshot?.feedbackId || '') === String(source.feedback._id);
+  const sameFeedbackRevision = sameFeedback && legacy.sourceSnapshot?.feedbackUpdatedAt?.getTime?.()
+    === new Date(source.feedback.updatedAt).getTime();
+  if (!sameFeedbackRevision) return null;
+  legacy.sourceFingerprint = source.sourceFingerprint;
+  legacy.sourceSnapshot.sourceEvaluation = source.sourceEvaluation;
+  try { await legacy.save(); } catch (error) {
+    if (error?.code !== 11000) throw error;
+  }
+  session = await AdaptivePracticeSession.findOne({ ...query, sourceFingerprint: source.sourceFingerprint });
+  return session;
 }
 
 async function getCurrentSession(submissionId, studentId) {
   const source = await loadOwnedSource(submissionId, studentId);
-  if (!source.weakSkills.length) return sessionResponse('no-weaknesses', null, source.assessedSkills);
-  const session = await AdaptivePracticeSession.findOne({
-    submissionId: source.submission._id,
-    studentId,
-    sourceFingerprint: source.sourceFingerprint
-  }).lean();
-  if (!session) return sessionResponse('idle', null, source.assessedSkills);
-  return sessionResponseWithProgress(session.status === 'ready' ? 'ready' : session.status === 'failed' ? 'failed' : 'generating', session, source.marksVisible, source.assessedSkills);
+  if (!source.weakSkills.length) return sessionResponse('no-weaknesses', null, source.assessedSkills, source);
+  const sessionDocument = await findReusableSession(source, studentId);
+  const session = sessionDocument?.toObject();
+  if (!session) return sessionResponse('idle', null, source.assessedSkills, source);
+  return sessionResponseWithProgress(session.status === 'ready' ? 'ready' : session.status === 'failed' ? 'failed' : 'generating', session, source.marksVisible, source.assessedSkills, source);
 }
 
 function bounded(value, max) {
@@ -189,12 +250,8 @@ async function getAdaptiveCompletionForResubmission(submissionId, studentId) {
     if (!source.weakSkills.length) {
       return { completed: true, state: 'no-weaknesses', sourceFingerprint: source.sourceFingerprint, progress: null };
     }
-    const session = await AdaptivePracticeSession.findOne({
-      submissionId: source.submission._id,
-      studentId,
-      sourceFingerprint: source.sourceFingerprint,
-      status: 'ready'
-    }).lean();
+    const sessionDocument = await findReusableSession(source, studentId, { status: 'ready' });
+    const session = sessionDocument?.toObject();
     if (!session) return { completed: false, state: 'incomplete', sourceFingerprint: source.sourceFingerprint, progress: null };
     const { getProgressSummary } = require('./adaptivePracticeAttempt.service');
     const progress = await getProgressSummary(session);
@@ -392,12 +449,12 @@ async function generateSession(submissionId, studentId, options = {}) {
   const dbLookupStarted = Date.now();
   const source = await loadOwnedSource(submissionId, studentId);
   timings.databaseLookupMs = Date.now() - dbLookupStarted;
-  if (!source.weakSkills.length) return sessionResponse('no-weaknesses', null, source.assessedSkills);
+  if (!source.weakSkills.length) return sessionResponse('no-weaknesses', null, source.assessedSkills, source);
   const key = { submissionId: source.submission._id, studentId, sourceFingerprint: source.sourceFingerprint };
-  let session = await AdaptivePracticeSession.findOne(key);
-  if (session?.status === 'ready') return sessionResponseWithProgress('ready', session.toObject(), source.marksVisible, source.assessedSkills);
-  if (session?.status === 'generating' && Date.now() - session.updatedAt.getTime() < ADAPTIVE_PRACTICE_STALE_MS) return sessionResponse('generating', sanitizeAdaptiveSession(session.toObject(), source.marksVisible), source.assessedSkills);
-  if (session?.status === 'failed' && !options.retry) return sessionResponse('failed', sanitizeAdaptiveSession(session.toObject(), source.marksVisible), source.assessedSkills);
+  let session = await findReusableSession(source, studentId);
+  if (session?.status === 'ready') return sessionResponseWithProgress('ready', session.toObject(), source.marksVisible, source.assessedSkills, source);
+  if (session?.status === 'generating' && Date.now() - session.updatedAt.getTime() < ADAPTIVE_PRACTICE_STALE_MS) return sessionResponse('generating', sanitizeAdaptiveSession(session.toObject(), source.marksVisible), source.assessedSkills, source);
+  if (session?.status === 'failed' && !options.retry) return sessionResponse('failed', sanitizeAdaptiveSession(session.toObject(), source.marksVisible), source.assessedSkills, source);
 
   const promptStarted = Date.now();
   const canonicalTranscript = source.transcript.slice(0, ADAPTIVE_PRACTICE_MAX_TRANSCRIPT_CHARS);
@@ -419,7 +476,9 @@ async function generateSession(submissionId, studentId, options = {}) {
     assignmentId: source.submission.assignment,
     status: 'generating',
     threshold: ADAPTIVE_PRACTICE_THRESHOLD,
-    sourceSnapshot: { transcriptFingerprint: source.transcriptFingerprint, feedbackId: source.feedback._id, feedbackUpdatedAt: source.feedback.updatedAt, skills: source.assessedSkills },
+    sourceSnapshot: { transcriptFingerprint: source.transcriptFingerprint, feedbackId: source.feedback._id,
+      feedbackUpdatedAt: source.feedback.updatedAt, skills: source.assessedSkills,
+      sourceEvaluation: source.sourceEvaluation },
     targetSkills: source.weakSkills.map((skill) => skill.id),
     activities: [],
     generation: { provider: aiConfig.provider, model: aiConfig.model, promptVersion: ADAPTIVE_PRACTICE_PROMPT_VERSION, startedAt: new Date(), metrics: { ...timings, promptCharacters, inputTokenEstimate, retryCount: 0, retryDelayMs: 0 } }
@@ -431,10 +490,10 @@ async function generateSession(submissionId, studentId, options = {}) {
       { returnDocument: 'after', upsert: !session, setDefaultsOnInsert: true }
     );
   } catch (error) {
-    if (error?.code === 11000) return sessionResponse('generating', sanitizeAdaptiveSession(await AdaptivePracticeSession.findOne(key).lean(), source.marksVisible), source.assessedSkills);
+    if (error?.code === 11000) return sessionResponse('generating', sanitizeAdaptiveSession(await AdaptivePracticeSession.findOne(key).lean(), source.marksVisible), source.assessedSkills, source);
     throw error;
   }
-  if (!session) return sessionResponse('generating', sanitizeAdaptiveSession(await AdaptivePracticeSession.findOne(key).lean(), source.marksVisible), source.assessedSkills);
+  if (!session) return sessionResponse('generating', sanitizeAdaptiveSession(await AdaptivePracticeSession.findOne(key).lean(), source.marksVisible), source.assessedSkills, source);
 
   let providerAttemptCount = 0;
   let repairAttemptCount = 0;
@@ -517,7 +576,7 @@ async function generateSession(submissionId, studentId, options = {}) {
     session.generation.metrics.databasePersistenceMs = Date.now() - persistenceStarted;
     session.generation.metrics.totalMs = Date.now() - totalStarted;
     logger.metric({ event: 'adaptive_practice_generation_timing', feature: 'adaptive_practice_generation', outcome: 'ready', submissionId: String(source.submission._id), provider: session.generation.provider, model: session.generation.model, ...session.generation.metrics });
-    return sessionResponseWithProgress('ready', session.toObject(), source.marksVisible, source.assessedSkills);
+    return sessionResponseWithProgress('ready', session.toObject(), source.marksVisible, source.assessedSkills, source);
   } catch (error) {
     const attempts = Array.isArray(error?.attempts) ? error.attempts : [];
     providerAttemptCount = Number(error?.attemptCount) || attempts.length || providerAttemptCount;

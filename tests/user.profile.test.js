@@ -196,4 +196,86 @@ describe('User profile updates', () => {
     expect(updatedSubmission.evaluationStatus).toBe('stale');
     expect(updatedFeedback.evaluationStatus).toBe('pending');
   });
+
+  test.each([
+    ['friendly', true, false, true],
+    ['balanced', false, true, false],
+    ['strict', true, true, false]
+  ])('persists %s mode and all boolean check values', async (strictness, grammarSpelling, coherenceLogic, factChecking) => {
+    const teacher = await User.create({
+      firebaseUid: `teacher-${strictness}`,
+      email: `teacher-${strictness}@example.com`,
+      role: 'teacher'
+    });
+    const token = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
+
+    const response = await request(app).patch('/api/users/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ aiConfig: { strictness, checks: { grammarSpelling, coherenceLogic, factChecking } } });
+
+    expect(response.status).toBe(200);
+    expect((await User.findById(teacher._id).lean()).aiConfig).toMatchObject({
+      strictness, checks: { grammarSpelling, coherenceLogic, factChecking }
+    });
+  });
+
+  test('merges a partial AI config update without resetting existing checks', async () => {
+    const teacher = await User.create({
+      firebaseUid: 'teacher-partial-ai-config', email: 'teacher-partial@example.com', role: 'teacher',
+      aiConfig: { strictness: 'friendly', checks: { grammarSpelling: false, coherenceLogic: false, factChecking: true } }
+    });
+    const token = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
+
+    const response = await request(app).patch('/api/users/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ aiConfig: { checks: { coherenceLogic: true } } });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.aiConfig).toMatchObject({
+      strictness: 'friendly',
+      checks: { grammarSpelling: false, coherenceLogic: true, factChecking: true }
+    });
+  });
+
+  test('returns saved settings when eager evaluation propagation fails', async () => {
+    const teacher = await User.create({
+      firebaseUid: 'teacher-propagation-failure', email: 'teacher-propagation-failure@example.com', role: 'teacher',
+      aiConfig: { strictness: 'balanced' }
+    });
+    const classDoc = await Class.create({
+      name: 'Propagation Class', teacher: teacher._id,
+      joinCode: `P${new mongoose.Types.ObjectId().toString().slice(-7)}`, qrCodeUrl: 'data:,'
+    });
+    const student = await User.create({ firebaseUid: 'student-propagation', email: 'student-propagation@example.com', role: 'student' });
+    const assignment = await Assignment.create({
+      title: 'Essay', deadline: new Date(Date.now() + 86400000), class: classDoc._id,
+      teacher: teacher._id, qrToken: `p-${new mongoose.Types.ObjectId().toString().slice(-8)}`
+    });
+    const submission = await Submission.create({
+      student: student._id, assignment: assignment._id, class: classDoc._id,
+      status: 'submitted', submittedAt: new Date(), evaluationStatus: 'completed',
+      evaluationPolicyHash: evaluationPolicyHash(teacher.aiConfig)
+    });
+    await SubmissionFeedback.create({
+      submissionId: submission._id, classId: classDoc._id, studentId: student._id, teacherId: teacher._id,
+      evaluationStatus: 'completed', evaluationSourceHash: 'source', evaluationPolicyHash: evaluationPolicyHash(teacher.aiConfig)
+    });
+    const token = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
+    const propagationFailure = jest.spyOn(SubmissionFeedback, 'updateMany').mockRejectedValueOnce(
+      Object.assign(new Error('simulated propagation failure'), { code: 'SIMULATED_DB_FAILURE' })
+    );
+
+    try {
+      const response = await request(app).patch('/api/users/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ aiConfig: { strictness: 'strict' } });
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.aiConfig.strictness).toBe('strict');
+      expect(response.body.data.evaluationPropagation.status).toBe('pending');
+      expect((await User.findById(teacher._id).lean()).aiConfig.strictness).toBe('strict');
+    } finally {
+      propagationFailure.mockRestore();
+    }
+  });
 });

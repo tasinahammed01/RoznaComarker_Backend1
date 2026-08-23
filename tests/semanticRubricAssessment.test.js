@@ -62,6 +62,7 @@ describe('semantic rubric assessment validation', () => {
     expect(prompt).toContain('For every custom criterion, do not deduct specifically for spelling, grammar, punctuation, capitalization, spacing, formatting');
     expect(prompt).toContain('For every custom criterion, do not deduct specifically for organization, coherence, flow, transitions, or logical sequencing');
     expect(prompt).toContain('copy that level’s configured percentage exactly');
+    expect(prompt).toContain('Evaluate CONTENT, ORGANIZATION, and VOCABULARY independently from customRubric');
   });
 
   test('accepts the exact configured percentage for the selected custom-rubric level', () => {

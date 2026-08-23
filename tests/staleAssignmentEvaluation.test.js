@@ -47,7 +47,7 @@ const readySubmission = (id, overrides = {}) => ({
   },
   evaluationRubricSourceHash: 'old-rubric',
   evaluationPolicyHash: 'old-policy',
-  evaluationVersion: 'canonical-evaluation-8-policy-custom-rubric',
+  evaluationVersion: 'canonical-evaluation-9-fixed-skill-isolation',
   ...overrides
 });
 
@@ -77,7 +77,7 @@ describe('assignment stale evaluation service', () => {
       { submissionId: 'current', evaluationSourceHash: 'source', overallScore: 70,
         evaluationRubricSourceHash: 'current-rubric', evaluationPolicyHash: 'current-policy',
         assessmentVersion: 'writing-rubric-100-v5-teacher-policy',
-        evaluationVersion: 'canonical-evaluation-8-policy-custom-rubric' }
+        evaluationVersion: 'canonical-evaluation-9-fixed-skill-isolation' }
     ]) });
 
     const summary = await service.summarize(assignment);
@@ -105,7 +105,7 @@ describe('assignment stale evaluation service', () => {
       evaluationRubricSourceHash: 'current-rubric',
       evaluationPolicyHash: 'current-policy',
       assessmentVersion: 'writing-rubric-100-v5-teacher-policy',
-      evaluationVersion: 'canonical-evaluation-8-policy-custom-rubric',
+      evaluationVersion: 'canonical-evaluation-9-fixed-skill-isolation',
       overallScore: 81
     }]) });
 
@@ -129,7 +129,7 @@ describe('assignment stale evaluation service', () => {
       evaluationRubricSourceHash: 'current-rubric',
       evaluationPolicyHash: 'current-policy',
       assessmentVersion: 'writing-rubric-100-v5-teacher-policy',
-      evaluationVersion: 'canonical-evaluation-8-policy-custom-rubric',
+      evaluationVersion: 'canonical-evaluation-9-fixed-skill-isolation',
       overallScore: 81,
       ...feedbackOverride
     }]) });

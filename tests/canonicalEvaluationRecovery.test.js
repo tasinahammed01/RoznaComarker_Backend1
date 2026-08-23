@@ -26,7 +26,7 @@ describe('canonical evaluation interrupted-finalization recovery', () => {
       jest.doMock('../src/models/SubmissionFeedback', () => ({
         findOne: jest.fn(() => ({ lean: jest.fn().mockResolvedValue({
           submissionId: 'submission-1', evaluationJobId: 'job-1', evaluationSourceHash: sourceHash,
-          assessmentVersion: 'writing-rubric-100-v5-teacher-policy', evaluationVersion: 'canonical-evaluation-8-policy-custom-rubric',
+          assessmentVersion: 'writing-rubric-100-v5-teacher-policy', evaluationVersion: 'canonical-evaluation-9-fixed-skill-isolation',
           evaluationRubricSourceHash: require('../src/services/canonicalEvaluation.service').hashRubric(assignment),
           evaluationPolicyHash: policyHash,
           detailedFeedbackSourceHash: sourceHash, detailedFeedbackVersion: 'canonical-detailed-feedback-2',

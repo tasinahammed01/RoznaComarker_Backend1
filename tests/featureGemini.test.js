@@ -121,6 +121,37 @@ describe('strict Gemini JSON handling', () => {
 });
 
 describe('feature output validation', () => {
+  test('worksheet generation retries one malformed validated response and returns one valid result', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(googleResponse('{"title":"incomplete"}'))
+      .mockResolvedValueOnce(googleResponse(JSON.stringify(worksheet(['ordering']))));
+
+    const result = await generateFeatureJson('worksheet', [{ role: 'user', content: 'plants' }], {
+      env: envFor('WORKSHEET'),
+      fetchImpl,
+      sleepFn: async () => {},
+      validateValue: (value) => validateWorksheetOutput(value, ['ordering'])
+    });
+
+    expect(result.value.title).toBe('Plants Worksheet');
+    expect(result.metadata.attemptCount).toBe(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('worksheet generation does not retry authentication failures', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ error: { code: 401 } })
+    });
+
+    await expect(generateFeatureJson('worksheet', [{ role: 'user', content: 'plants' }], {
+      env: envFor('WORKSHEET'), fetchImpl, sleepFn: async () => {}
+    })).rejects.toMatchObject({ code: 'GEMINI_AUTHENTICATION_FAILED' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test.each(['term-def', 'qa', 'concept'])('flashcard template %s retains the front/back contract', () => {
     const cards = validateFlashcardOutput([
       { front: 'Photosynthesis', back: 'Plants convert light into chemical energy.' },

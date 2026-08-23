@@ -117,7 +117,10 @@ describe('adaptive practice attempts', () => {
     expect(checked.progress).toMatchObject({ improvedActivities: 1, percentage: 100 });
     const after = await AdaptivePracticeSession.findById(session._id).lean();
     expect(after.activities).toEqual(expect.arrayContaining([expect.objectContaining({ task: before.activities[0].task })]));
-    expect(after.sourceSnapshot).toEqual(expect.objectContaining({ transcriptFingerprint: 'transcript' }));
+    expect(after.sourceFingerprint).toBe(before.sourceFingerprint);
+    expect(after.sourceSnapshot).toEqual(expect.objectContaining({
+      transcriptFingerprint: 'transcript', skills: before.sourceSnapshot.skills
+    }));
   });
 
   it('reuses an identical response and makes only one AI call', async () => {

@@ -106,6 +106,53 @@ describe('canonical evaluation write guards', () => {
       .reduce((sum, criterion) => sum + criterion.weightedPoints, 0)).toBe(persisted.overallScore);
   });
 
+  test('a custom-rubric-only reevaluation preserves the canonical built-in skill snapshot', async () => {
+    const record = submission(true);
+    const assignment = { title: 'Essay', instructions: 'Write a supported response.', rubrics: {
+      totalPoints: 100, criteria: [{ name: 'Teacher criterion', weight: 100, levels: [
+        { title: 'Strong', score: 100, description: 'Strong response.' },
+        { title: 'Developing', score: 60, description: 'Developing response.' }
+      ] }]
+    } };
+    const canonical = require('../src/services/canonicalEvaluation.service');
+    const { ASSESSMENT_VERSION, EVALUATION_VERSION } = require('../src/services/rubricLanguageScoring.service');
+    const { evaluationPolicyHash } = require('../src/services/teacherEvaluationPolicy.service');
+    const priorScores = {
+      CONTENT: { score: 13.5, maxScore: 20, comment: 'Prior content.' },
+      ORGANIZATION: { score: 15, maxScore: 20, comment: 'Prior organization.' },
+      VOCABULARY: { score: 13.5, maxScore: 20, comment: 'Prior vocabulary.' },
+      GRAMMAR: { score: 24.5, maxScore: 25, comment: 'Prior grammar.' },
+      MECHANICS: { score: 9.5, maxScore: 10, comment: 'Prior mechanics.' },
+      PRESENTATION: { score: 5, maxScore: 5, comment: 'Prior presentation.' }
+    };
+    const priorFeedback = {
+      evaluationSourceHash: 'hash', evaluationPolicyHash: evaluationPolicyHash(null),
+      evaluationBuiltInContextHash: canonical.hashBuiltInContext(assignment),
+      assessmentVersion: ASSESSMENT_VERSION, evaluationVersion: EVALUATION_VERSION,
+      overriddenByTeacher: false, rubricScores: priorScores
+    };
+    mockFindOne.mockReturnValue({ lean: jest.fn().mockResolvedValue(priorFeedback) });
+    const changedSemantic = await mockAssess();
+    mockAssess.mockResolvedValueOnce({ ...changedSemantic, categories: {
+      ...changedSemantic.categories,
+      CONTENT: { ...changedSemantic.categories.CONTENT, score: 17 },
+      ORGANIZATION: { ...changedSemantic.categories.ORGANIZATION, score: 17 },
+      VOCABULARY: { ...changedSemantic.categories.VOCABULARY, score: 15 }
+    }, customCriteria: [{ criterionId: 'criterion-1', percentage: 60,
+      levelTitle: 'Developing', comment: 'Developing against the teacher criterion.', evidence: [] }] });
+
+    await generate({ submission: record.value, assignment });
+    const persisted = mockFindOneAndUpdate.mock.calls.at(-1)[1].$set;
+    expect(Object.fromEntries(Object.entries(persisted.rubricScores)
+      .map(([key, value]) => [key, value.score]))).toEqual({
+      CONTENT: 13.5, ORGANIZATION: 15, VOCABULARY: 13.5,
+      GRAMMAR: 24.5, MECHANICS: 9.5, PRESENTATION: 5
+    });
+    expect(persisted.overallScore).toBe(60);
+    expect(persisted.scoringAudit).toMatchObject({ builtInScoresReused: true,
+      builtInContextHash: canonical.hashBuiltInContext(assignment) });
+  });
+
   test('old evaluation versions are recomputed even when correction hash is unchanged', async () => {
     const record = submission(true);
     record.value.evaluationStatus = 'completed';

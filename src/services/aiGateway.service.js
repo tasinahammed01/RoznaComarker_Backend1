@@ -361,7 +361,8 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
   responseFormat = 'text', responseSchema, schemaName, validate, metadata = {}, googleThinkingLevel,
   env = process.env, fetchImpl = global.fetch,
   now = Date.now, sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  randomFn = Math.random, config = getAIConfig(env), onAttempt, onRetry } = {}) {
+  randomFn = Math.random, config = getAIConfig(env), onAttempt, onRetry,
+  retryableSameModelCodes = [], terminalCodes = [] } = {}) {
   if (!Array.isArray(messages) || typeof fetchImpl !== 'function') {
     throw new TypeError('AI gateway requires messages and fetch.');
   }
@@ -456,9 +457,11 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
           remainingBudgetMs: Math.max(0, deadline - now()), maxOutputTokens, code, httpStatus,
           retryDelayMs: null,
           ...failureMetadata });
+        if (terminalCodes.includes(code)) throw error;
         const status = Number(error?.status || error?.httpStatus);
         const retryableSameModel = retry < entryRetries
-          && (RETRYABLE_HTTP.has(status) || ['AI_ATTEMPT_TIMEOUT', 'AI_PROVIDER_UNAVAILABLE'].includes(code));
+          && (RETRYABLE_HTTP.has(status) || ['AI_ATTEMPT_TIMEOUT', 'AI_PROVIDER_UNAVAILABLE'].includes(code)
+            || retryableSameModelCodes.includes(code));
         if (retryableSameModel) {
           const baseDelay = Math.min(MAX_RETRY_DELAY_MS,
             Math.max(0, config.retryDelayMs) * (2 ** retry));

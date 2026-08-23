@@ -80,9 +80,9 @@ function normalizeAiConfigPayload(payload) {
         factChecking: obj.factChecking
       };
   const checks = {
-    grammarSpelling: typeof checksObj.grammarSpelling === 'boolean' ? checksObj.grammarSpelling : undefined,
-    coherenceLogic: typeof checksObj.coherenceLogic === 'boolean' ? checksObj.coherenceLogic : undefined,
-    factChecking: typeof checksObj.factChecking === 'boolean' ? checksObj.factChecking : undefined
+    ...(typeof checksObj.grammarSpelling === 'boolean' ? { grammarSpelling: checksObj.grammarSpelling } : {}),
+    ...(typeof checksObj.coherenceLogic === 'boolean' ? { coherenceLogic: checksObj.coherenceLogic } : {}),
+    ...(typeof checksObj.factChecking === 'boolean' ? { factChecking: checksObj.factChecking } : {})
   };
 
   const hasAnyChecks = Object.values(checks).some((v) => typeof v === 'boolean');
@@ -203,6 +203,7 @@ async function getMe(req, res) {
 
 async function updateMe(req, res) {
   let failureStage = 'request_processing';
+  let evaluationPropagation = null;
   try {
     const user = req && req.user;
     if (!user) {
@@ -282,21 +283,22 @@ async function updateMe(req, res) {
         }, {
           $set: { evaluationStatus: 'pending' }
         });
+        evaluationPropagation = { status: 'completed', policyHash: nextPolicyHash };
       } catch (err) {
         logger.error({
           event: 'users.updateMe.evaluationPropagationFailed',
           stage: failureStage,
           userId: String(saved._id),
-          error: err instanceof Error ? {
-            name: err.name,
-            message: err.message,
-            code: err.code,
-            errors: err.errors,
-            stack: err.stack
-          } : err
+          profileSaveSucceeded: true,
+          propagationSucceeded: false,
+          errorCode: typeof err?.code === 'string' || typeof err?.code === 'number'
+            ? String(err.code)
+            : 'EVALUATION_PROPAGATION_FAILED'
         });
-        if (err && typeof err === 'object') err.updateMePropagationLogged = true;
-        throw err;
+        // The saved policy hash remains the source of truth. Canonical result reads
+        // compare it with each evaluation hash and will expose mismatches as stale,
+        // even when this eager status propagation needs a later retry.
+        evaluationPropagation = { status: 'pending', policyHash: nextPolicyHash };
       }
     }
 
@@ -310,7 +312,8 @@ async function updateMe(req, res) {
       aiConfig: saved.aiConfig,
       classroomDefaults: saved.classroomDefaults,
       photoURL: saved.photoURL,
-      role: saved.role
+      role: saved.role,
+      ...(evaluationPropagation ? { evaluationPropagation } : {})
     });
   } catch (err) {
     if (!err?.updateMePropagationLogged) {
