@@ -70,6 +70,7 @@ const {
   createGlobalRateLimiter,
   createSensitiveRateLimiter,
   createUserRateLimiter,
+  isBaselineExcludedRequest,
 } = require("./middlewares/rateLimit.middleware");
 
 const app = express();
@@ -148,7 +149,7 @@ app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 // have different semantics and are excluded here; SSE reconnection is limited
 // separately at its token-issuance boundary.
 app.use("/api", createGlobalRateLimiter({
-  skip: (req) => req.path === "/health" || req.path === "/notifications/stream",
+  skip: isBaselineExcludedRequest,
 }));
 
 // Public presentation assets only. Student/teacher artifacts are served by

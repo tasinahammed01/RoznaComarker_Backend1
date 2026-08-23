@@ -22,9 +22,10 @@ function normalizedEmail(req) {
   return email.normalize('NFKC').trim().toLowerCase().slice(0, 320);
 }
 
-function auditRateLimit(req, event, reason) {
+function auditRateLimit(req, event, reason, scope) {
   logger.warn({
     event,
+    scope,
     reason,
     userId: req.user?._id ? String(req.user._id) : undefined,
     role: req.user?.role ? String(req.user.role) : undefined,
@@ -34,7 +35,8 @@ function auditRateLimit(req, event, reason) {
   });
 }
 
-function buildRateLimitConfig({ windowMs, limit, keyGenerator, event = 'RATE_LIMITED', reason = 'policy', skip }) {
+function buildRateLimitConfig({ windowMs, limit, keyGenerator, event = 'RATE_LIMITED', reason = 'policy',
+  scope, skip, skipSuccessfulRequests = false, responseCode = 'RATE_LIMITED', responseMessage }) {
   return {
     windowMs,
     limit,
@@ -42,12 +44,13 @@ function buildRateLimitConfig({ windowMs, limit, keyGenerator, event = 'RATE_LIM
     legacyHeaders: false,
     keyGenerator,
     skip,
+    skipSuccessfulRequests,
     handler(req, res) {
-      auditRateLimit(req, event, reason);
+      auditRateLimit(req, event, reason, scope);
       return res.status(429).json({
         success: false,
-        code: 'RATE_LIMITED',
-        message: 'Too many requests. Please try again later.'
+        code: responseCode,
+        message: responseMessage || 'Too many requests. Please try again later.'
       });
     }
   };
@@ -71,6 +74,11 @@ function createGlobalRateLimiter(options = {}) {
   });
 }
 
+function isBaselineExcludedRequest(req) {
+  return req.path === '/health' || req.path === '/notifications/stream'
+    || (req.method === 'POST' && req.path === '/auth/login');
+}
+
 function createSensitiveRateLimiter(options = {}) {
   return createLimiter({
     windowMs: toPositiveInt(options.windowMs || process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
@@ -87,7 +95,11 @@ function createUserRateLimiter(options = {}) {
     limit: toPositiveInt(options.limit || process.env.AI_USER_RATE_LIMIT_MAX, 10),
     keyGenerator: (req) => req.user?._id ? `user:${String(req.user._id)}` : `ip:${normalizedIp(req)}`,
     event: options.event || 'AI_GENERATION_RATE_LIMITED',
-    reason: options.reason || 'authenticated_user'
+    reason: options.reason || 'authenticated_user',
+    scope: options.scope,
+    skipSuccessfulRequests: options.skipSuccessfulRequests,
+    responseCode: options.responseCode,
+    responseMessage: options.responseMessage
   });
 }
 
@@ -107,7 +119,11 @@ function createAuthIpRateLimiter(options = {}) {
     limit: toPositiveInt(options.limit, 20),
     keyGenerator: normalizedIp,
     event: options.event || 'AUTH_RATE_LIMITED',
-    reason: options.reason || 'auth_ip'
+    reason: options.reason || 'auth_ip',
+    scope: options.scope,
+    skipSuccessfulRequests: options.skipSuccessfulRequests,
+    responseCode: options.responseCode,
+    responseMessage: options.responseMessage
   });
 }
 
@@ -118,6 +134,7 @@ module.exports = {
   createGlobalRateLimiter,
   createSensitiveRateLimiter,
   createUserRateLimiter,
+  isBaselineExcludedRequest,
   normalizedEmail,
   normalizedIp,
   safeHash,

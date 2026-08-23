@@ -54,16 +54,25 @@ const router = express.Router();
 router.post(
   '/login',
   createAuthIpRateLimiter({
-    limit: process.env.LOGIN_IP_RATE_LIMIT_MAX || 20,
-    event: 'AUTH_RATE_LIMITED',
-    reason: 'login_ip'
+    windowMs: process.env.LOGIN_IP_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000,
+    limit: process.env.LOGIN_IP_RATE_LIMIT_MAX || 60,
+    event: 'API_RATE_LIMITED',
+    scope: 'auth_login',
+    reason: 'too_many_ip_attempts',
+    skipSuccessfulRequests: true,
+    responseCode: 'AUTH_RATE_LIMITED',
+    responseMessage: 'Too many login attempts. Please wait a moment and try again.'
   }),
   verifyFirebaseToken,
   createUserRateLimiter({
     windowMs: process.env.LOGIN_ACCOUNT_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000,
     limit: process.env.LOGIN_ACCOUNT_RATE_LIMIT_MAX || 10,
-    event: 'AUTH_RATE_LIMITED',
-    reason: 'login_account'
+    event: 'API_RATE_LIMITED',
+    scope: 'auth_login',
+    reason: 'too_many_account_attempts',
+    skipSuccessfulRequests: true,
+    responseCode: 'AUTH_RATE_LIMITED',
+    responseMessage: 'Too many login attempts. Please wait a moment and try again.'
   }),
   async (req, res) => {
   const { intendedRole } = req.body || {};
