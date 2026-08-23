@@ -20,7 +20,11 @@ function getFeatureGeminiConfig(feature, env = process.env) {
   if (!defaults) throw Object.assign(new Error('Unknown AI feature configuration.'), { code: 'GEMINI_NOT_CONFIGURED' });
   const prefix = key.toUpperCase();
   let global;
-  try { global = aiGateway.getAIConfig(env); } catch { global = null; }
+  try {
+    global = ['worksheet', 'flashcard'].includes(key)
+      ? aiGateway.getAssessmentAIConfig(env)
+      : aiGateway.getAIConfig(env);
+  } catch { global = null; }
   const maxOutputTokens = positiveInteger(env[`${prefix}_AI_MAX_OUTPUT_TOKENS`], defaults.maxOutputTokens, { minimum: 256, maximum: 65536 });
   const primary = global?.chain?.[0] || {};
   return { feature: key, provider: primary.provider || '', model: primary.model || '',
@@ -29,7 +33,9 @@ function getFeatureGeminiConfig(feature, env = process.env) {
 
 function configurationError(config) {
   const error = new Error(`${config.feature} AI service is not configured.`);
-  error.code = 'GEMINI_NOT_CONFIGURED';
+  error.code = ['worksheet', 'flashcard'].includes(config.feature)
+    ? `${config.feature.toUpperCase()}_AI_NOT_CONFIGURED`
+    : 'GEMINI_NOT_CONFIGURED';
   error.provider = config.provider || null;
   error.model = config.model || null;
   return error;
@@ -72,6 +78,21 @@ function mapGeminiError(error) {
   return mapped;
 }
 
+function mapLearningContentError(feature, error) {
+  const code = error?.finalFailureCode || error?.code || 'AI_CHAIN_EXHAUSTED';
+  const featureCode = feature === 'flashcard' ? 'FLASHCARD_AI_FAILED' : 'WORKSHEET_AI_FAILED';
+  const mapped = new Error(`${feature} AI generation failed.`);
+  mapped.code = code === 'AI_CHAIN_EXHAUSTED' ? featureCode : code;
+  mapped.feature = feature;
+  mapped.status = Number(error?.status || error?.httpStatus) || null;
+  mapped.provider = error?.provider || null;
+  mapped.model = error?.model || null;
+  mapped.attempts = error?.attempts || [];
+  mapped.attemptCount = error?.attemptCount || mapped.attempts.length;
+  mapped.cause = error;
+  return mapped;
+}
+
 async function generateFeatureJson(feature, messages, {
   env = process.env,
   fetchImpl = global.fetch,
@@ -83,8 +104,8 @@ async function generateFeatureJson(feature, messages, {
   if (!config.configured) throw configurationError(config);
   const startedAt = now();
   try {
-      const worksheetReliability = config.feature === 'worksheet';
-      const executionConfig = worksheetReliability
+      const paidContentReliability = ['worksheet', 'flashcard'].includes(config.feature);
+      const executionConfig = paidContentReliability
         ? { ...config.global, primaryRetries: Math.max(1, Number(config.global.primaryRetries) || 0) }
         : config.global;
       const result = await aiGateway.generate({
@@ -94,7 +115,7 @@ async function generateFeatureJson(feature, messages, {
           return typeof validateValue === 'function' ? validateValue(parsed) : parsed;
         }, fetchImpl, env, now, sleepFn,
         config: executionConfig,
-        retryableSameModelCodes: worksheetReliability ? [
+        retryableSameModelCodes: paidContentReliability ? [
           'AI_OUTPUT_VALIDATION_FAILED',
           'AI_RESPONSE_INVALID',
           'AI_RESPONSE_EMPTY',
@@ -103,7 +124,7 @@ async function generateFeatureJson(feature, messages, {
           'AI_PROVIDER_UNAVAILABLE',
           'AI_PROVIDER_RATE_LIMIT'
         ] : [],
-        terminalCodes: worksheetReliability ? [
+        terminalCodes: paidContentReliability ? [
           'AI_CHAIN_NOT_CONFIGURED',
           'AI_PROVIDER_AUTH_ERROR',
           'AI_PROVIDER_PAYMENT_REQUIRED',
@@ -114,7 +135,7 @@ async function generateFeatureJson(feature, messages, {
       });
       const value = result.value;
       logger.info({
-        message: 'Feature Gemini generation completed',
+        message: 'Feature AI generation completed',
         feature: config.feature, provider: result.provider, model: result.model,
         attempt: result.attemptCount, durationMs: now() - startedAt,
         outputTokenCount: Number(result.usage?.completion_tokens) || null
@@ -125,7 +146,9 @@ async function generateFeatureJson(feature, messages, {
         durationMs: now() - startedAt, usage: result.usage || null, attempts: result.attempts
       } };
   } catch (rawError) {
-    throw mapGeminiError(rawError);
+    throw ['worksheet', 'flashcard'].includes(config.feature)
+      ? mapLearningContentError(config.feature, rawError)
+      : mapGeminiError(rawError);
   }
 }
 
@@ -227,6 +250,23 @@ function validateWorksheetOutput(value, requestedTypes) {
 
 function featureErrorHttp(error) {
   const code = error?.code || 'INTERNAL_ERROR';
+  if (['AI_CHAIN_NOT_CONFIGURED', 'WORKSHEET_AI_NOT_CONFIGURED',
+    'FLASHCARD_AI_NOT_CONFIGURED'].includes(code)) {
+    return { status: 503, message: 'AI service is not configured.' };
+  }
+  if (['AI_PROVIDER_AUTH_ERROR', 'AI_PROVIDER_PERMISSION_DENIED'].includes(code)) {
+    return { status: 503, message: 'AI service authentication failed.' };
+  }
+  if (code === 'AI_PROVIDER_PAYMENT_REQUIRED') return { status: 503, message: 'AI service is unavailable.' };
+  if (code === 'AI_PROVIDER_RATE_LIMIT') return { status: 429, message: 'AI service is temporarily rate limited.' };
+  if (['AI_ATTEMPT_TIMEOUT', 'AI_TOTAL_BUDGET_EXHAUSTED'].includes(code)) {
+    return { status: 504, message: 'AI service request timed out. Try again.' };
+  }
+  if (['AI_OUTPUT_VALIDATION_FAILED', 'AI_RESPONSE_INVALID', 'AI_RESPONSE_EMPTY',
+    'AI_RESPONSE_TRUNCATED', 'WORKSHEET_AI_FAILED', 'FLASHCARD_AI_FAILED'].includes(code)) {
+    const subject = error?.feature === 'flashcard' ? 'flashcards' : 'worksheet';
+    return { status: 502, message: `We couldn't generate the ${subject} this time. Please try again.` };
+  }
   if (code === 'GEMINI_NOT_CONFIGURED') return { status: 503, message: 'AI service is not configured.' };
   if (code === 'GEMINI_AUTHENTICATION_FAILED') return { status: 503, message: 'AI service authentication failed.' };
   if (['GEMINI_QUOTA_EXCEEDED', 'GEMINI_RATE_LIMITED'].includes(code)) return { status: 429, message: 'AI service is temporarily rate limited.' };
@@ -244,6 +284,7 @@ module.exports = {
   stripSingleJsonFence,
   strictJson,
   mapGeminiError,
+  mapLearningContentError,
   generateFeatureJson,
   validateFlashcardOutput,
   validateWorksheetOutput,

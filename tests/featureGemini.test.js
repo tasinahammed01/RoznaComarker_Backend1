@@ -16,6 +16,14 @@ const envFor = (feature) => ({
   AI_PRIMARY_MODEL: 'global-test-model',
   GEMINI_API_KEY: 'test-gemini-key',
   GEMINI_BASE_URL: 'https://gemini.test/v1beta',
+  OPENROUTER_API_KEY: 'test-openrouter-key',
+  OPENROUTER_BASE_URL: 'https://router.test/v1',
+  ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter',
+  ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1-mini',
+  ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter',
+  ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1',
+  ASSESSMENT_AI_PRIMARY_RETRIES: '1',
+  ASSESSMENT_AI_FALLBACK_RETRIES: '0',
   AI_ATTEMPT_TIMEOUT_MS: '60000',
   AI_TOTAL_BUDGET_MS: '120000',
   AI_RETRIES_PER_MODEL: '0',
@@ -30,6 +38,13 @@ const googleResponse = (text, overrides = {}) => ({
     candidates: [{ finishReason: 'STOP', content: { parts: [{ text }] } }],
     usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 20, totalTokenCount: 30 },
     ...overrides
+  })
+});
+
+const openRouterResponse = (text, finishReason = 'stop') => ({
+  ok: true, status: 200, headers: { get: () => null },
+  text: async () => JSON.stringify({
+    choices: [{ finish_reason: finishReason, message: { content: text } }]
   })
 });
 
@@ -50,32 +65,46 @@ const worksheet = (types = ['ordering', 'classification', 'multipleChoice', 'fil
 });
 
 describe('global feature AI configuration', () => {
-  test.each([
-    ['FLASHCARD', 'flashcard', 4000],
-    ['WORKSHEET', 'worksheet', 6000]
-  ])('%s uses the global chain and retains only its token limit', (prefix, feature, tokens) => {
-    expect(getFeatureGeminiConfig(feature, envFor(prefix))).toMatchObject({
-      provider: 'google', model: 'global-test-model',
-      maxOutputTokens: tokens, configured: true
+  test('flashcards use the existing paid assessment chain only', () => {
+    const config = getFeatureGeminiConfig('flashcard', envFor('FLASHCARD'));
+    expect(config).toMatchObject({
+      provider: 'openrouter', model: 'openai/gpt-4.1-mini', maxOutputTokens: 4000,
+      configured: true
     });
+    expect(config.global.chain.map(({ provider, model }) => ({ provider, model }))).toEqual([
+      { provider: 'openrouter', model: 'openai/gpt-4.1-mini' },
+      { provider: 'openrouter', model: 'openai/gpt-4.1' }
+    ]);
+  });
+
+  test('worksheets use the existing paid assessment chain only', () => {
+    const config = getFeatureGeminiConfig('worksheet', envFor('WORKSHEET'));
+    expect(config).toMatchObject({
+      provider: 'openrouter', model: 'openai/gpt-4.1-mini',
+      maxOutputTokens: 6000, configured: true
+    });
+    expect(config.global.chain).toEqual([
+      { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 0 },
+      { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 1 }
+    ]);
   });
 
   test('deprecated feature selectors are ignored', () => {
     expect(getFeatureGeminiConfig('worksheet', {
       ...envFor('WORKSHEET'), WORKSHEET_AI_PROVIDER: 'openrouter',
       WORKSHEET_AI_MODEL: 'ignored-model'
-    })).toMatchObject({ provider: 'google', model: 'global-test-model', configured: true });
+    })).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-4.1-mini', configured: true });
   });
 
-  test('uses the global primary endpoint once when it succeeds', async () => {
-    const fetchImpl = jest.fn(async (url) => {
-      expect(url).toBe('https://gemini.test/v1beta/models/global-test-model:generateContent');
-      expect(url).not.toContain('openrouter');
-      return googleResponse('[{"front":"Root","back":"Absorbs water."}]');
+  test('uses the paid flashcard primary endpoint once when it succeeds', async () => {
+    const fetchImpl = jest.fn(async (url, options) => {
+      expect(url).toBe('https://router.test/v1/chat/completions');
+      expect(JSON.parse(options.body).model).toBe('openai/gpt-4.1-mini');
+      return openRouterResponse('[{"front":"Root","back":"Absorbs water."}]');
     });
     const result = await generateFeatureJson('flashcard', [{ role: 'user', content: 'synthetic' }],
       { env: envFor('FLASHCARD'), fetchImpl });
-    expect(result.metadata).toMatchObject({ provider: 'google', model: 'global-test-model', attemptCount: 1 });
+    expect(result.metadata).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-4.1-mini', attemptCount: 1 });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
@@ -84,12 +113,7 @@ describe('strict Gemini JSON handling', () => {
   test('concatenated final text and one surrounding JSON fence are supported', async () => {
     expect(stripSingleJsonFence('```json\n{"ok":true}\n```')).toBe('{"ok":true}');
     expect(strictJson('```json\n{"ok":true}\n```')).toEqual({ ok: true });
-    const fetchImpl = jest.fn(async () => googleResponse('', {
-      candidates: [{ finishReason: 'STOP', content: { parts: [
-        { text: '{"cards":[' }, { thought: true, text: 'private reasoning' },
-        { text: '{"front":"A","back":"B"}]}' }
-      ] } }]
-    }));
+    const fetchImpl = jest.fn(async () => openRouterResponse('{"cards":[{"front":"A","back":"B"}]}'));
     await expect(generateFeatureJson('flashcard', [{ role: 'user', content: 'x' }],
       { env: envFor('FLASHCARD'), fetchImpl })).resolves.toMatchObject({ value: { cards: [{ front: 'A', back: 'B' }] } });
   });
@@ -123,8 +147,8 @@ describe('strict Gemini JSON handling', () => {
 describe('feature output validation', () => {
   test('worksheet generation retries one malformed validated response and returns one valid result', async () => {
     const fetchImpl = jest.fn()
-      .mockResolvedValueOnce(googleResponse('{"title":"incomplete"}'))
-      .mockResolvedValueOnce(googleResponse(JSON.stringify(worksheet(['ordering']))));
+      .mockResolvedValueOnce(openRouterResponse('{"title":"incomplete"}'))
+      .mockResolvedValueOnce(openRouterResponse(JSON.stringify(worksheet(['ordering']))));
 
     const result = await generateFeatureJson('worksheet', [{ role: 'user', content: 'plants' }], {
       env: envFor('WORKSHEET'),
@@ -148,8 +172,152 @@ describe('feature output validation', () => {
 
     await expect(generateFeatureJson('worksheet', [{ role: 'user', content: 'plants' }], {
       env: envFor('WORKSHEET'), fetchImpl, sleepFn: async () => {}
-    })).rejects.toMatchObject({ code: 'GEMINI_AUTHENTICATION_FAILED' });
+    })).rejects.toMatchObject({ code: 'AI_PROVIDER_AUTH_ERROR' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('worksheet primary succeeds without fallback', async () => {
+    const fetchImpl = jest.fn(async (url, options) => {
+      const body = JSON.parse(options.body);
+      expect(body.model).toBe('openai/gpt-4.1-mini');
+      expect(url).toBe('https://router.test/v1/chat/completions');
+      return openRouterResponse(JSON.stringify(worksheet(['ordering'])));
+    });
+    const result = await generateFeatureJson('worksheet', [{ role: 'user', content: 'plants' }], {
+      env: envFor('WORKSHEET'), fetchImpl,
+      validateValue: (value) => validateWorksheetOutput(value, ['ordering'])
+    });
+    expect(result.metadata).toMatchObject({ model: 'openai/gpt-4.1-mini', attemptCount: 1 });
+  });
+
+  test('worksheet retries one primary timeout, then succeeds on the same paid model', async () => {
+    const timeout = Object.assign(new Error('timeout'), { name: 'TimeoutError' });
+    const models = [];
+    const fetchImpl = jest.fn(async (_url, options) => {
+      models.push(JSON.parse(options.body).model);
+      if (models.length === 1) throw timeout;
+      return openRouterResponse(JSON.stringify(worksheet(['ordering'])));
+    });
+    const result = await generateFeatureJson('worksheet', [{ role: 'user', content: 'plants' }], {
+      env: envFor('WORKSHEET'), fetchImpl, sleepFn: async () => {},
+      validateValue: (value) => validateWorksheetOutput(value, ['ordering'])
+    });
+    expect(models).toEqual(['openai/gpt-4.1-mini', 'openai/gpt-4.1-mini']);
+    expect(result.metadata.attemptCount).toBe(2);
+  });
+
+  test.each([
+    ['invalid JSON', '{broken'],
+    ['missing worksheet schema', '{"title":"incomplete"}']
+  ])('worksheet falls back to gpt-4.1 after primary %s is exhausted', async (_label, invalid) => {
+    const models = [];
+    const fetchImpl = jest.fn(async (_url, options) => {
+      models.push(JSON.parse(options.body).model);
+      return models.length < 3 ? openRouterResponse(invalid)
+        : openRouterResponse(JSON.stringify(worksheet(['ordering'])));
+    });
+    const result = await generateFeatureJson('worksheet', [{ role: 'user', content: 'plants' }], {
+      env: envFor('WORKSHEET'), fetchImpl, sleepFn: async () => {},
+      validateValue: (value) => validateWorksheetOutput(value, ['ordering'])
+    });
+    expect(models).toEqual([
+      'openai/gpt-4.1-mini', 'openai/gpt-4.1-mini', 'openai/gpt-4.1'
+    ]);
+    expect(result.metadata).toMatchObject({ model: 'openai/gpt-4.1', attemptCount: 3 });
+    expect(models.join(' ')).not.toMatch(/gemini|nemotron|gpt-oss/iu);
+  });
+
+  test('worksheet paid chain is capped at three attempts and returns a neutral validation error', async () => {
+    const fetchImpl = jest.fn(async () => openRouterResponse('{broken'));
+    await expect(generateFeatureJson('worksheet', [{ role: 'user', content: 'plants' }], {
+      env: envFor('WORKSHEET'), fetchImpl, sleepFn: async () => {},
+      validateValue: (value) => validateWorksheetOutput(value, ['ordering'])
+    })).rejects.toMatchObject({ code: 'AI_OUTPUT_VALIDATION_FAILED', attemptCount: 3 });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  test('worksheet configuration failure is provider-neutral and makes no request', async () => {
+    const fetchImpl = jest.fn();
+    await expect(generateFeatureJson('worksheet', [{ role: 'user', content: 'plants' }], {
+      env: { ...envFor('WORKSHEET'), OPENROUTER_API_KEY: '' }, fetchImpl
+    })).rejects.toMatchObject({ code: 'WORKSHEET_AI_NOT_CONFIGURED' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test.each([401, 402, 400])('worksheet terminal HTTP %i failure does not retry or fall back', async (status) => {
+    const fetchImpl = jest.fn(async () => ({
+      ok: false, status, headers: { get: () => null },
+      text: async () => JSON.stringify({ error: { code: status } })
+    }));
+    await expect(generateFeatureJson('worksheet', [{ role: 'user', content: 'plants' }], {
+      env: envFor('WORKSHEET'), fetchImpl, sleepFn: async () => {}
+    })).rejects.toBeDefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ['malformed JSON', '{broken'],
+    ['missing cards array', '{"unexpected":[]}'],
+    ['empty cards', '[]'],
+    ['duplicate cards', '[{"front":"A","back":"B"},{"front":"A","back":"B"}]']
+  ])('flashcard %s retries and returns a strictly validated result', async (_label, invalid) => {
+    const valid = '[{"front":"Root","back":"Absorbs water."}]';
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(openRouterResponse(invalid))
+      .mockResolvedValueOnce(openRouterResponse(valid));
+    const result = await generateFeatureJson('flashcard', [{ role: 'user', content: 'plants' }], {
+      env: envFor('FLASHCARD'), fetchImpl, sleepFn: async () => {},
+      validateValue: (value) => validateFlashcardOutput(value, 1)
+    });
+    expect(result.value).toEqual([{ front: 'Root', back: 'Absorbs water.' }]);
+    expect(result.metadata.attemptCount).toBe(2);
+  });
+
+  test('flashcard primary timeout retries once and paid fallback succeeds after exhaustion', async () => {
+    const models = [];
+    const timeout = Object.assign(new Error('timeout'), { name: 'TimeoutError' });
+    const fetchImpl = jest.fn(async (_url, options) => {
+      models.push(JSON.parse(options.body).model);
+      if (models.length < 3) throw timeout;
+      return openRouterResponse('[{"front":"Root","back":"Absorbs water."}]');
+    });
+    const result = await generateFeatureJson('flashcard', [{ role: 'user', content: 'plants' }], {
+      env: envFor('FLASHCARD'), fetchImpl, sleepFn: async () => {},
+      validateValue: (value) => validateFlashcardOutput(value, 1)
+    });
+    expect(models).toEqual([
+      'openai/gpt-4.1-mini', 'openai/gpt-4.1-mini', 'openai/gpt-4.1'
+    ]);
+    expect(models.join(' ')).not.toMatch(/gemini|nemotron|gpt-oss/iu);
+    expect(result.metadata).toMatchObject({ attemptCount: 3, model: 'openai/gpt-4.1' });
+  });
+
+  test('flashcard paid chain is capped at three attempts with a controlled error', async () => {
+    const fetchImpl = jest.fn(async () => openRouterResponse('{broken'));
+    await expect(generateFeatureJson('flashcard', [{ role: 'user', content: 'plants' }], {
+      env: envFor('FLASHCARD'), fetchImpl, sleepFn: async () => {},
+      validateValue: (value) => validateFlashcardOutput(value, 1)
+    })).rejects.toMatchObject({ feature: 'flashcard', code: 'AI_OUTPUT_VALIDATION_FAILED', attemptCount: 3 });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  test.each([401, 402, 400])('flashcard terminal HTTP %i failure does not retry or fall back', async (status) => {
+    const fetchImpl = jest.fn(async () => ({
+      ok: false, status, headers: { get: () => null },
+      text: async () => JSON.stringify({ error: { code: status } })
+    }));
+    await expect(generateFeatureJson('flashcard', [{ role: 'user', content: 'plants' }], {
+      env: envFor('FLASHCARD'), fetchImpl, sleepFn: async () => {}
+    })).rejects.toMatchObject({ feature: 'flashcard' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('flashcard configuration failure is provider-neutral and makes no request', async () => {
+    const fetchImpl = jest.fn();
+    await expect(generateFeatureJson('flashcard', [{ role: 'user', content: 'plants' }], {
+      env: { ...envFor('FLASHCARD'), OPENROUTER_API_KEY: '' }, fetchImpl
+    })).rejects.toMatchObject({ code: 'FLASHCARD_AI_NOT_CONFIGURED' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test.each(['term-def', 'qa', 'concept'])('flashcard template %s retains the front/back contract', () => {
