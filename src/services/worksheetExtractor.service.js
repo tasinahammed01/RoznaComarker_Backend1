@@ -8,7 +8,21 @@
 
 const { generateChatCompletion } = require('./aiGeneration.service');
 const logger = require('../utils/logger');
-const jsonrepair = require('jsonrepair');
+
+const EXTRACTION_FEATURE = 'worksheet_extract_structure';
+const RETRYABLE_OUTPUT_CODES = [
+  'AI_OUTPUT_VALIDATION_FAILED',
+  'AI_RESPONSE_EMPTY',
+  'AI_RESPONSE_INVALID',
+  'AI_RESPONSE_TRUNCATED',
+];
+
+function extractionValidationError(message, validationCode) {
+  const error = new Error(message);
+  error.code = validationCode;
+  error.validationCode = validationCode;
+  return error;
+}
 
 /**
  * Builds the extraction prompt for LLM structuring.
@@ -67,6 +81,7 @@ ${extractedText}
 OUTPUT RULES:
 - Return ONLY valid JSON matching this exact schema:
 ${schema}
+- The top-level "sections" field must always be an array and must not be renamed or wrapped in another object
 - No markdown, no code fences, no explanation
 - Start your response with { and end with }
 - If you cannot determine a correct answer with high confidence, mark confidence as 'low' and leave correct_answer empty
@@ -82,43 +97,36 @@ ${schema}
  * @returns {Object} Parsed and validated structure
  */
 function parseExtractionResponse(aiText) {
-  logger.info('[EXTRACTION] Parsing LLM response, length:', aiText.length);
-
-  // Extract JSON from response (handles markdown code fences)
-  const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error('No JSON object found in LLM response');
+  const responseText = typeof aiText === 'string' ? aiText.trim() : '';
+  logger.info({ message: 'Worksheet extraction response validation started',
+    feature: EXTRACTION_FEATURE, responseTextLength: responseText.length });
+  if (!responseText) {
+    throw extractionValidationError('Empty LLM response', 'EXTRACTION_RESPONSE_EMPTY');
   }
-  const extractedJson = jsonMatch[0];
 
-  // Try direct parse
+  // Tolerate only an optional whole-response markdown JSON fence. Do not scan
+  // prose for an arbitrary object or repair malformed/truncated JSON.
+  const fenceMatch = responseText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu);
+  const extractedJson = (fenceMatch ? fenceMatch[1] : responseText).trim();
+
   let parsed;
   try {
     parsed = JSON.parse(extractedJson);
-    logger.info('[EXTRACTION] Direct parse successful');
   } catch (parseError) {
-    logger.warn('[EXTRACTION] Direct parse failed, attempting repair:', parseError.message);
-    try {
-      const repaired = jsonrepair(extractedJson);
-      parsed = JSON.parse(repaired);
-      logger.info('[EXTRACTION] Parse after repair successful');
-    } catch (repairError) {
-      logger.error('[EXTRACTION] Repair failed:', repairError.message);
-      throw new Error(`JSON parse and repair failed: ${parseError.message}`);
-    }
+    throw extractionValidationError('Invalid JSON in LLM response', 'EXTRACTION_INVALID_JSON');
   }
 
   // Validate required fields
   if (!parsed || typeof parsed !== 'object') {
-    throw new Error('Parsed result is not a valid object');
+    throw extractionValidationError('Parsed result is not a valid object', 'EXTRACTION_INVALID_ROOT');
   }
 
   if (!parsed.title || typeof parsed.title !== 'string') {
-    throw new Error('Missing or invalid title field');
+    throw extractionValidationError('Missing or invalid title field', 'EXTRACTION_INVALID_TITLE');
   }
 
   if (!Array.isArray(parsed.sections) || parsed.sections.length === 0) {
-    throw new Error('No sections array found in response');
+    throw extractionValidationError('No sections array found in response', 'EXTRACTION_MISSING_SECTIONS');
   }
 
   // Validate each section
@@ -375,7 +383,19 @@ async function extractWorksheetStructure(extractedText, options = {}) {
   const prompt = buildExtractionPrompt(extractedText, options);
 
   try {
-    const rawText = await generateChatCompletion(
+    let gatewayResult = null;
+    const extractionEnv = {
+      ...process.env,
+      AI_PRIMARY_RETRIES: '1',
+      AI_FALLBACK_RETRIES: '0',
+      AI_FALLBACK_1_PROVIDER: '',
+      AI_FALLBACK_1_MODEL: '',
+      AI_FALLBACK_2_PROVIDER: '',
+      AI_FALLBACK_2_MODEL: '',
+      AI_FALLBACK_3_PROVIDER: '',
+      AI_FALLBACK_3_MODEL: '',
+    };
+    const parsed = await generateChatCompletion(
       [
         {
           role: 'system',
@@ -387,15 +407,21 @@ async function extractWorksheetStructure(extractedText, options = {}) {
         temperature: 0.2, // Lower temperature for consistent structuring
         max_tokens: 8000,
         response_format: { type: 'json_object' },
+        feature: EXTRACTION_FEATURE,
+        env: extractionEnv,
+        validate: parseExtractionResponse,
+        returnValidated: true,
+        retryableSameModelCodes: RETRYABLE_OUTPUT_CODES,
+        onResponse: (result) => { gatewayResult = result; },
       },
     );
 
-    logger.info('[EXTRACTION] LLM response length:', rawText.length);
-
-    const parsed = parseExtractionResponse(rawText);
-
-    // Debug: Log parsed structure to check word bank format
-    logger.info('[EXTRACTION] Parsed structure:', JSON.stringify(parsed, null, 2));
+    logger.info({ message: 'Worksheet extraction AI output accepted', feature: EXTRACTION_FEATURE,
+      attemptCount: gatewayResult?.attempts?.length || 1, provider: gatewayResult?.provider || null,
+      model: gatewayResult?.model || null,
+      responseTextLength: gatewayResult?.attempts?.at(-1)?.responseTextLength || null,
+      finishReason: gatewayResult?.attempts?.at(-1)?.finishReason || null,
+      durationMs: gatewayResult?.attempts?.reduce((sum, attempt) => sum + (attempt.durationMs || 0), 0) || null });
 
     // Convert to activities format
     const activities = convertExtractedToActivities(parsed);
@@ -426,7 +452,9 @@ async function extractWorksheetStructure(extractedText, options = {}) {
       extractedStructure: parsed, // Keep original for review
     };
   } catch (error) {
-    logger.error('[EXTRACTION] Extraction failed:', error.message);
+    logger.error({ message: 'Worksheet extraction failed', feature: EXTRACTION_FEATURE,
+      attemptCount: error.attemptCount || error.attempts?.length || 0,
+      finalErrorCode: error.finalFailureCode || error.code || 'AI_OUTPUT_VALIDATION_FAILED' });
     throw error;
   }
 }

@@ -16,13 +16,15 @@ async function generateChatCompletion(messages, options = {}) {
     now: options.now || Date.now,
     sleepFn: options.sleepFn,
     onAttempt: options.onAttempt,
-    onRetry: options.onRetry
+    onRetry: options.onRetry,
+    retryableSameModelCodes: options.retryableSameModelCodes,
+    terminalCodes: options.terminalCodes
   });
   if (typeof options.onResponse === 'function') {
     await options.onResponse({ usage: result.usage, model: result.model, provider: result.provider,
       attempts: result.attempts, fallbackUsed: result.fallbackUsed });
   }
-  return result.content;
+  return options.returnValidated ? result.value : result.content;
 }
 
 // Legacy function names remain callable for compatibility, but they intentionally
