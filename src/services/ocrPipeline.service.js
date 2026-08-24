@@ -2,6 +2,7 @@ const path = require('path');
 const fs = require('fs');
 
 const File = require('../models/File');
+const Assignment = require('../models/assignment.model');
 
 const logger = require('../utils/logger');
 
@@ -15,8 +16,7 @@ function toAbsoluteStoredPath(storedPath) {
   return path.join(__dirname, '..', '..', storedPath);
 }
 
-async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId, assignmentContext = null }) {
-  const ocrStartedAt = Date.now();
+async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
   const ids = Array.isArray(fileIds) ? fileIds.filter(Boolean) : [];
   const first = ids.length ? ids[0] : null;
   if (!first) {
@@ -29,10 +29,6 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId, assignmentC
   if (!targetDoc) {
     throw new Error('Missing target doc');
   }
-  const assignmentId = String(targetDoc.assignment?._id || targetDoc.assignment || '');
-  logger.info({ message: 'Canonical pipeline timing', submissionId: String(targetDoc._id),
-    assignmentId, stage: 'ocr_started', provider: 'google_vision', model: null,
-    attemptNumber: 1, durationMs: 0, correctionCount: 0, triggerReason: 'submission_accepted' });
 
   const isCurrentJob = async () => !jobId || Boolean(await targetDoc.constructor.exists({ _id: targetDoc._id, ocrJobId: jobId }));
   const saveCurrentJob = async () => {
@@ -216,7 +212,6 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId, assignmentC
     .filter(Boolean)
     .join('\n\n');
   const canonicalTranscript = buildCanonicalSubmissionTranscript(targetDoc);
-  const transcriptReadyAt = Date.now();
   const transcriptQuality = assessCanonicalTranscriptQuality(canonicalTranscript);
   if (!transcriptQuality.reliable) {
     targetDoc.ocrStatus = 'failed';
@@ -235,14 +230,12 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId, assignmentC
   targetDoc.ocrError = undefined;
   targetDoc.ocrUpdatedAt = new Date();
   if (!(await saveCurrentJob())) return { ocrStatus: 'superseded' };
-  logger.info({ message: 'Canonical pipeline timing', submissionId: String(targetDoc._id),
-    assignmentId, stage: 'ocr_completed', provider: 'google_vision', model: null,
-    attemptNumber: 1, durationMs: Date.now() - ocrStartedAt, correctionCount: 0 });
-  logger.info({ message: 'Canonical pipeline timing', submissionId: String(targetDoc._id),
-    assignmentId, stage: 'transcript_ready', provider: null, model: null,
-    attemptNumber: null, durationMs: transcriptReadyAt - ocrStartedAt, correctionCount: 0 });
   try {
-    await canonicalCorrectionsPipeline.generateAndPersist(targetDoc, { assignment: assignmentContext || {} });
+    const assignmentDoc = targetDoc.assignment ? await Assignment.findById(targetDoc.assignment).lean().catch(() => null) : null;
+    await canonicalCorrectionsPipeline.generateAndPersist(targetDoc, { assignment: assignmentDoc ? {
+      title: assignmentDoc.title || '', description: assignmentDoc.description || assignmentDoc.instructions || '',
+      rubric: assignmentDoc.rubric || null, rubrics: assignmentDoc.rubrics || null
+    } : {} });
   } catch (err) {
     logger.error({ message: 'Canonical correction generation failed after OCR', error: err?.message || err });
   }

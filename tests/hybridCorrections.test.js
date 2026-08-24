@@ -469,8 +469,7 @@ describe('safe hybrid correction policy', () => {
     expect(canonical.statistics(result.corrections)).toEqual({ content: 1, organization: 1, grammar: 39,
       vocabulary: 6, mechanics: 8, total: 55 });
     expect(result.diagnostics).toMatchObject({ rawCorrectionCount: 55, acceptedCorrectionCount: 55,
-      categoryAudit: { requested: true, categories: auditCategories, durationMs: expect.any(Number),
-        addedCorrectionCount: 2 },
+      categoryAudit: { requested: true, categories: auditCategories },
       allCategoriesReviewed: true, totalExpectedSymbols: 28, totalReceivedUniqueSymbols: 28,
       incompleteReviewCategories: [],
       returnedByCategory: { CONTENT: 1, ORGANIZATION: 1, VOCABULARY: 6, GRAMMAR: 39, MECHANICS: 8 },
@@ -522,8 +521,7 @@ describe('safe hybrid correction policy', () => {
     expect(result.corrections).toHaveLength(3);
     expect(canonical.statistics(result.corrections)).toEqual({ content: 0, organization: 0, grammar: 1,
       vocabulary: 1, mechanics: 1, total: 3 });
-    expect(result.diagnostics.categoryAudit).toMatchObject({ requested: true, categories: ['CONTENT', 'ORGANIZATION'],
-      durationMs: expect.any(Number), addedCorrectionCount: 0 });
+    expect(result.diagnostics.categoryAudit).toMatchObject({ requested: true, categories: ['CONTENT', 'ORGANIZATION'] });
   });
 
   test('keeps existing quote validation on the category audit and preserves valid primary corrections', async () => {
@@ -550,7 +548,7 @@ describe('safe hybrid correction policy', () => {
     expect(result.corrections).toHaveLength(1);
     expect(result.corrections[0]).toMatchObject({ category: 'GRAMMAR', quotedText: 'students is' });
     expect(result.diagnostics.categoryAudit).toMatchObject({ requested: true, failed: true,
-      errorCode: 'SEMANTIC_SCHEMA_INVALID', durationMs: expect.any(Number), addedCorrectionCount: 0 });
+      errorCode: 'SEMANTIC_SCHEMA_INVALID' });
   });
 });
 

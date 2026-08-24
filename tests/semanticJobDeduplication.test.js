@@ -14,7 +14,6 @@ const semantic = require('../src/services/semanticWritingCorrections.service');
 const writing = require('../src/services/writingCorrections.service');
 const metrics = require('../src/services/semanticMetrics.service');
 const pipeline = require('../src/services/canonicalCorrectionsPipeline.service');
-const canonicalEvaluation = require('../src/services/canonicalEvaluation.service');
 const canonical = require('../src/services/correctionCanonical.service');
 const { CANONICAL_TRANSCRIPT_LAYOUT_VERSION, buildCanonicalSubmissionTranscript } = require('../src/utils/ocrTranscriptNormalizer');
 const logger = require('../src/utils/logger');
@@ -25,7 +24,6 @@ describe('semantic single-flight job lock', () => {
     jest.spyOn(writing, 'getLegend').mockResolvedValue(writing.defaultLegend());
     jest.spyOn(writing, 'check').mockResolvedValue({ issues: [] });
     semantic.analyze.mockClear();
-    canonicalEvaluation.generate.mockClear();
   });
 
   test('two concurrent starts for one source hash create exactly one semantic request', async () => {
@@ -48,10 +46,6 @@ describe('semantic single-flight job lock', () => {
     expect(semantic.analyze).toHaveBeenCalledTimes(1);
     expect([first, second].filter((item) => item?.duplicate)).toHaveLength(1);
     expect(metrics.snapshot()).toMatchObject({ semanticJobsStarted: 1, semanticJobsRejectedAsDuplicate: 1 });
-    expect(model.findById).not.toHaveBeenCalled();
-    expect(canonicalEvaluation.generate).toHaveBeenCalledWith(expect.objectContaining({
-      submission: expect.objectContaining({ correctionStatus: 'completed', writingCorrections: [] })
-    }));
   });
 
   test('completed result with the same semantic source key is reused without a provider call', async () => {

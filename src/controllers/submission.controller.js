@@ -411,7 +411,6 @@ async function cleanupUnpersistedRequestFiles(req) {
 }
 
 async function upsertSubmission({ req, res, assignment, qrToken }) {
-  const submissionReceivedAt = Date.now();
   const studentId = req.user && req.user._id;
   if (!studentId) {
     return sendError(res, 401, 'Unauthorized');
@@ -440,10 +439,6 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
     await cleanupUnpersistedRequestFiles(req);
     return sendError(res, 403, 'Another draft is not allowed for this assignment', 'RESUBMISSION_NOT_ALLOWED');
   }
-  logger.info({ message: 'Canonical pipeline timing', submissionId: null,
-    assignmentId: String(assignment?._id || ''), stage: 'submission_received',
-    provider: null, model: null, attemptNumber: null, durationMs: 0,
-    correctionCount: 0, triggerReason: 'student_submission' });
   if (existing && assignment.requireAdaptiveBeforeResubmission === true) {
     const completion = await getAdaptiveCompletionForResubmission(existing._id, studentId);
     if (!completion.completed) {
@@ -510,11 +505,6 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       });
 
       const saved = await existing.save();
-      logger.info({ message: 'Canonical pipeline timing', submissionId: String(saved._id),
-        assignmentId: String(assignment._id), stage: 'submission_persisted',
-        provider: null, model: null, attemptNumber: null,
-        durationMs: Date.now() - submissionReceivedAt, correctionCount: 0,
-        triggerReason: 'resubmission' });
 
       await incrementUsage(studentId, { storageMB: uploadedMB });
 
@@ -524,10 +514,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
           : (firstFile ? [firstFile._id] : []);
 
         const ocrPromise = ids.length
-          ? runOcrAndPersistForFiles({ fileIds: ids, targetDoc: saved, jobId: saved.ocrJobId,
-            assignmentContext: { title: assignment.title || '',
-              description: assignment.description || assignment.instructions || '',
-              rubric: assignment.rubric || null, rubrics: assignment.rubrics || null } })
+          ? runOcrAndPersistForFiles({ fileIds: ids, targetDoc: saved, jobId: saved.ocrJobId })
           : Promise.resolve();
 
         ocrPromise
@@ -608,11 +595,6 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       qrToken,
       ...pendingAnalysisState({ ocrJobId: new mongoose.Types.ObjectId().toString(), now: new Date() })
     });
-    logger.info({ message: 'Canonical pipeline timing', submissionId: String(created._id),
-      assignmentId: String(assignment._id), stage: 'submission_persisted',
-      provider: null, model: null, attemptNumber: null,
-      durationMs: Date.now() - submissionReceivedAt, correctionCount: 0,
-      triggerReason: 'new_submission' });
 
     await incrementUsage(studentId, { submissions: 1, storageMB: uploadedMB });
 
@@ -622,10 +604,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
         : (firstFile ? [firstFile._id] : []);
 
       const ocrPromise = ids.length
-        ? runOcrAndPersistForFiles({ fileIds: ids, targetDoc: created, jobId: created.ocrJobId,
-          assignmentContext: { title: assignment.title || '',
-            description: assignment.description || assignment.instructions || '',
-            rubric: assignment.rubric || null, rubrics: assignment.rubrics || null } })
+        ? runOcrAndPersistForFiles({ fileIds: ids, targetDoc: created, jobId: created.ocrJobId })
         : Promise.resolve();
 
       ocrPromise

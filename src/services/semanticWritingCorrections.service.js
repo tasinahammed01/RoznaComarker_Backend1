@@ -8,7 +8,6 @@ const policy = require('./aiCorrectionPolicy.service');
 const { promptDefinitions } = require('./writingCategoryDefinitions.service');
 const { semanticCorrectionsSchema, CORRECTION_CATEGORIES, CORRECTION_KINDS,
   CORRECTION_SEVERITIES, CORRECTION_FIELDS } = require('./structuredOutputSchemas.service');
-const logger = require('../utils/logger');
 
 const SEMANTIC_PROMPT_VERSION = 'ai-only-correction-detection-v7-examiner-coverage';
 const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v11-provider-compatible-symbol-coverage';
@@ -441,15 +440,7 @@ async function analyze(input, dependencies = {}) {
   const completion = await runCompletion({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
     onAttempt: input.onAttempt, onRetry: input.onRetry, validate, feature: 'semantic_corrections',
-    metadata: { submissionId: input.submissionId, assignmentId: input.assignmentId },
     responseSchema: semanticCorrectionsSchema(input.transcriptHash, CORRECTION_CATEGORIES, runtimeCategorySymbols), schemaName: 'semantic_corrections' });
-  logger.info({ message: 'Canonical pipeline timing', submissionId: input.submissionId || null,
-    assignmentId: input.assignmentId || null, stage: 'semantic_correction_primary_completed',
-    provider: completion.provider || null, model: completion.model || null,
-    attemptNumber: completion.metrics?.attemptCount || 1,
-    durationMs: completion.metrics?.semanticProviderMs || 0,
-    correctionCount: completion.value?.corrections?.length || 0,
-    errorCode: null, validationCode: null });
   const parseStartedAt = Date.now();
   let validated;
   try {
@@ -467,13 +458,6 @@ async function analyze(input, dependencies = {}) {
   const auditCategories = suspiciousCoverageCategories(validated, input.transcript);
   let audit = null;
   if (auditCategories.length) {
-    const auditStartedAt = Date.now();
-    const preAuditCorrectionCount = validated.corrections.length;
-    logger.info({ message: 'Canonical pipeline timing', submissionId: input.submissionId || null,
-      assignmentId: input.assignmentId || null, stage: 'suspicious_audit_started',
-      provider: null, model: null, attemptNumber: null, durationMs: 0,
-      correctionCount: preAuditCorrectionCount, triggerReason: 'suspicious_category_coverage',
-      triggerCategories: auditCategories });
     try {
       const auditValidate = (content, attemptMeta = {}) => {
         const parsed = parseJson(content, input.transcriptHash, attemptMeta, auditCategories,
@@ -489,7 +473,6 @@ async function analyze(input, dependencies = {}) {
         config: preferStrongerAuditConfig(config),
         env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
         validate: auditValidate, feature: 'semantic_corrections_category_audit',
-        metadata: { submissionId: input.submissionId, assignmentId: input.assignmentId },
         responseSchema: semanticCorrectionsSchema(input.transcriptHash, auditCategories, runtimeCategorySymbols), schemaName: 'semantic_corrections_category_audit' });
       const auditValidated = auditCompletion.value || auditValidate(auditCompletion.content);
       const merged = canonical.mergeCanonicalCorrections({ aiCorrections: [...validated.corrections, ...auditValidated.corrections] });
@@ -523,26 +506,9 @@ async function analyze(input, dependencies = {}) {
       }
       audit = { requested: true, categories: auditCategories, provider: auditCompletion.provider, model: auditCompletion.model,
         attemptCount: auditCompletion.metrics?.attemptCount || 1, acceptedByCategory: auditValidated.diagnostics.acceptedByCategory,
-        rejectedByCategory: auditValidated.diagnostics.rejectedByCategory, mergeDiagnostics: merged.diagnostics,
-        durationMs: Date.now() - auditStartedAt,
-        addedCorrectionCount: Math.max(0, validated.corrections.length - preAuditCorrectionCount) };
-      logger.info({ message: 'Canonical pipeline timing', submissionId: input.submissionId || null,
-        assignmentId: input.assignmentId || null, stage: 'suspicious_audit_completed',
-        provider: auditCompletion.provider || null, model: auditCompletion.model || null,
-        attemptNumber: auditCompletion.metrics?.attemptCount || 1, durationMs: audit.durationMs,
-        correctionCount: validated.corrections.length, addedCorrectionCount: audit.addedCorrectionCount,
-        validationCode: null, triggerReason: 'suspicious_category_coverage', triggerCategories: auditCategories });
+        rejectedByCategory: auditValidated.diagnostics.rejectedByCategory, mergeDiagnostics: merged.diagnostics };
     } catch (error) {
-      audit = { requested: true, categories: auditCategories, failed: true,
-        errorCode: error?.code || 'CATEGORY_AUDIT_FAILED', durationMs: Date.now() - auditStartedAt,
-        addedCorrectionCount: 0 };
-      logger.warn({ message: 'Canonical pipeline timing', submissionId: input.submissionId || null,
-        assignmentId: input.assignmentId || null, stage: 'suspicious_audit_completed',
-        provider: error?.provider || null, model: error?.model || null,
-        attemptNumber: error?.attemptCount || null, durationMs: audit.durationMs,
-        correctionCount: validated.corrections.length, addedCorrectionCount: 0,
-        errorCode: audit.errorCode, validationCode: error?.validationCode || null,
-        triggerReason: 'suspicious_category_coverage', triggerCategories: auditCategories });
+      audit = { requested: true, categories: auditCategories, failed: true, errorCode: error?.code || 'CATEGORY_AUDIT_FAILED' };
     }
   }
   validated.diagnostics.categoryAudit = audit || { requested: false, categories: [] };
@@ -552,8 +518,6 @@ async function analyze(input, dependencies = {}) {
       legendVersion: input.legend?.version, legendContentHash: input.legend?.contentHash }),
     metrics: { ...completion.metrics, semanticRequestBuildMs, semanticParseMs,
       semanticValidationMs, categoryAuditRequestCount: auditCategories.length ? 1 : 0,
-      categoryAuditMs: audit?.durationMs || 0,
-      categoryAuditAddedCorrectionCount: audit?.addedCorrectionCount || 0,
       promptCharacters: request.promptCharacters, promptInputTokenEstimate: request.promptInputTokenEstimate } };
 }
 
