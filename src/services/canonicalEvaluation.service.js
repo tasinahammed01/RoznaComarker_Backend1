@@ -60,6 +60,11 @@ function supersededEvaluationError() {
 
 async function generate({ submission, assignment, prelockedJobId = null }) {
   const totalStartedAt = Date.now();
+  const assignmentId = String(submission.assignment?._id || submission.assignment || assignment?._id || '');
+  logger.info({ message: 'Canonical pipeline timing', submissionId: String(submission._id),
+    assignmentId, stage: 'canonical_evaluation_started', provider: null, model: null,
+    attemptNumber: null, durationMs: 0, correctionCount: Array.isArray(submission.writingCorrections)
+      ? submission.writingCorrections.length : 0, triggerReason: 'canonical_corrections_persisted' });
   const sourceHash = submission.correctionSourceHash;
   if (!sourceHash || submission.correctionStatus !== 'completed') return { status: 'superseded' };
   const classDoc = await Class.findById(submission.class).select('teacher').lean();
@@ -157,6 +162,9 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       && persistedFeedback.evaluationVersion === VERSION
       && hasValidRubricScores(persistedFeedback.rubricScores));
     const semanticEvaluationStartedAt = Date.now();
+    logger.info({ message: 'Canonical pipeline timing', submissionId: String(submission._id),
+      assignmentId, stage: 'semantic_rubric_started', provider: null, model: null,
+      attemptNumber: 1, durationMs: 0, correctionCount: corrections.length });
     logger.info({ message: 'Canonical evaluation timing', submissionId: String(submission._id),
       stage: 'semantic_evaluation_start', attemptNumber: null, provider: null, model: null,
       errorCode: null, durationMs: 0 });
@@ -182,6 +190,11 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       stage: 'semantic_evaluation_end', attemptNumber: null, provider: semantic.provider || null,
       model: semantic.model || null, errorCode: null,
       durationMs: Date.now() - semanticEvaluationStartedAt });
+    logger.info({ message: 'Canonical pipeline timing', submissionId: String(submission._id),
+      assignmentId, stage: 'semantic_rubric_completed', provider: semantic.provider || null,
+      model: semantic.model || null, attemptNumber: semantic.metrics?.attemptCount || 1,
+      durationMs: Date.now() - semanticEvaluationStartedAt, correctionCount: corrections.length,
+      errorCode: null, validationCode: null });
     const generatedRubricScores = synchronizedRubricScores({
       CONTENT: semantic.categories.CONTENT,
       ORGANIZATION: semantic.categories.ORGANIZATION,
@@ -270,6 +283,10 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     logger.info({ message: 'Canonical evaluation timing', submissionId: String(submission._id),
       stage: 'persistence', attemptNumber: null, provider: semantic.provider || null,
       model: semantic.model || null, errorCode: null, durationMs: persistenceMs });
+    logger.info({ message: 'Canonical pipeline timing', submissionId: String(submission._id),
+      assignmentId, stage: 'canonical_evaluation_persisted', provider: semantic.provider || null,
+      model: semantic.model || null, attemptNumber: semantic.metrics?.attemptCount || 1,
+      durationMs: persistenceMs, correctionCount: corrections.length, errorCode: null });
     logger.info({ message: 'Canonical evaluation timing', submissionId: String(submission._id),
       stage: 'total', attemptNumber: null, provider: semantic.provider || null,
       model: semantic.model || null, errorCode: null, durationMs: totalCanonicalEvaluationMs });

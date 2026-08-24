@@ -28,7 +28,8 @@ describe('OCR authoritative upload order', () => {
       constructor: { exists: jest.fn(async () => true), updateOne },
       toObject() { const { constructor, toObject, ...values } = this; return values; } };
 
-    const pending = runOcrAndPersistForFiles({ fileIds: ['first', 'second'], targetDoc, jobId: 'job' });
+    const assignmentContext = { title: 'Essay', rubric: { criteria: [] } };
+    const pending = runOcrAndPersistForFiles({ fileIds: ['first', 'second'], targetDoc, jobId: 'job', assignmentContext });
     await Promise.resolve(); await Promise.resolve();
     second.resolve(result('Continuation page'));
     await Promise.resolve();
@@ -39,6 +40,7 @@ describe('OCR authoritative upload order', () => {
       .toEqual([{ fileId: 'first', fileOrder: 0, pageIndex: 0 }, { fileId: 'second', fileOrder: 1, pageIndex: 0 }]);
     expect(targetDoc.combinedOcrText).toBe('Introduction page\n\nContinuation page');
     expect(pipeline.generateAndPersist).toHaveBeenCalledTimes(1);
+    expect(pipeline.generateAndPersist).toHaveBeenLastCalledWith(targetDoc, { assignment: assignmentContext });
   });
 
   test('persists native full text instead of corrupted word reconstruction', async () => {

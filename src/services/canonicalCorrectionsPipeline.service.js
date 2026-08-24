@@ -70,6 +70,11 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   logger.info({ message: 'Canonical evaluation timing', submissionId: String(doc._id),
     stage: 'correction_start', attemptNumber: null, provider: null, model: null,
     errorCode: null, durationMs: 0 });
+  logger.info({ message: 'Canonical pipeline timing', submissionId: String(doc._id),
+    assignmentId: String(doc.assignment?._id || doc.assignment || assignment?._id || ''),
+    stage: 'canonical_corrections_started', provider: null, model: null,
+    attemptNumber: null, durationMs: 0, correctionCount: 0,
+    triggerReason: 'transcript_ready' });
   const canonicalTranscript = buildCanonicalSubmissionTranscript(doc);
   if (!canonicalTranscript.isComplete) {
     await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId }, { $set: {
@@ -114,8 +119,14 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   let semanticValidationMs = 0; let semanticMappingMs = 0;
   const semanticStartedAt = Date.now();
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'aiOnlyStarted' });
+  logger.info({ message: 'Canonical pipeline timing', submissionId: String(doc._id),
+    assignmentId: String(doc.assignment?._id || doc.assignment || assignment?._id || ''),
+    stage: 'semantic_correction_primary_started', provider: semanticConfig.provider,
+    model: semanticConfig.model, attemptNumber: 1, durationMs: 0, correctionCount: 0 });
   try {
-    semanticRun = await semantic.analyze({ transcript, assignment, legend, transcriptHash: hash, spans,
+    semanticRun = await semantic.analyze({ submissionId: String(doc._id),
+      assignmentId: String(doc.assignment?._id || doc.assignment || assignment?._id || ''),
+      transcript, assignment, legend, transcriptHash: hash, spans,
       pageManifest: canonicalTranscript.pages.map((page) => ({ fileId: page.fileId, fileOrder: page.fileOrder,
         pageNumber: page.pageNumber, pageIndex: page.pageIndex, startChar: page.startChar, endChar: page.endChar })),
       onAttempt: async ({ attempt, maxAttempts, provider, model, attemptTimeoutMs, remainingBudgetMs, maxOutputTokens }) => {
@@ -166,11 +177,34 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     });
   }
   const semanticAiMs = Date.now() - semanticStartedAt;
+  if (semanticError) logger.warn({ message: 'Canonical pipeline timing', submissionId: String(doc._id),
+    assignmentId: String(doc.assignment?._id || doc.assignment || assignment?._id || ''),
+    stage: 'semantic_correction_primary_completed', provider: semanticConfig.provider,
+    model: semanticConfig.model, attemptNumber: failedSemanticAttempt || null,
+    durationMs: semanticAiMs, correctionCount: semanticReturnedCount,
+    errorCode: safeErrorCode(semanticError) || null,
+    validationCode: semanticError?.validationCode || null });
+  logger.info({ message: 'Canonical pipeline timing', submissionId: String(doc._id),
+    assignmentId: String(doc.assignment?._id || doc.assignment || assignment?._id || ''),
+    stage: 'correction_validation_completed', provider: semanticRun?.provider || semanticConfig.provider,
+    model: semanticRun?.model || semanticConfig.model,
+    attemptNumber: semanticRun?.metrics?.attemptCount || failedSemanticAttempt || null,
+    durationMs: semanticValidationMs, correctionCount: ai.length,
+    errorCode: safeErrorCode(semanticError) || null, validationCode: semanticError?.validationCode || null });
   const mergeStartedAt = Date.now();
   const merged = canonical.mergeCanonicalCorrections({ aiCorrections: ai });
   const corrections = merged.corrections;
   const combinedStatistics = canonical.statistics(corrections);
   const canonicalMergeMs = Date.now() - mergeStartedAt;
+  logger.info({ message: 'Canonical pipeline timing', submissionId: String(doc._id),
+    assignmentId: String(doc.assignment?._id || doc.assignment || assignment?._id || ''),
+    stage: 'correction_mapping_completed', provider: null, model: null, attemptNumber: null,
+    durationMs: semanticMappingMs + canonicalMergeMs, correctionCount: corrections.length,
+    errorCode: safeErrorCode(semanticError) || null });
+  logger.info({ message: 'Canonical pipeline timing', submissionId: String(doc._id),
+    assignmentId: String(doc.assignment?._id || doc.assignment || assignment?._id || ''),
+    stage: 'statistics_completed', provider: null, model: null, attemptNumber: null,
+    durationMs: canonicalMergeMs, correctionCount: corrections.length, errorCode: null });
   const retainedAiIds = new Set(corrections.filter((item) => item.source === 'AI').map((item) => item.id));
   const removedByMerge = ai.filter((item) => !retainedAiIds.has(item.id));
   rejectionReasons.DUPLICATE_OR_CONFLICT = removedByMerge.length;
@@ -240,11 +274,22 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     deductionPolicyVersion: canonical.DEDUCTION_POLICY_VERSION,
     semanticMetrics: persistedSemanticMetrics
   }});
+  const correctionPersistenceMs = Date.now() - mergeStartedAt - canonicalMergeMs;
   if (!finalWrite.modifiedCount) {
     semanticMetrics.increment('semanticJobsSuperseded');
     logger.info({ message: 'Canonical correction job superseded before final persistence', submissionId: String(doc._id), stage: 'finalCorrectionsPersisted', persisted: false });
     return;
   }
+  // The guarded write above is the authoritative correction snapshot. Keep the
+  // in-memory document aligned with it so evaluation can start immediately,
+  // without an additional large Submission read. Evaluation's own source/job
+  // guards still reject this snapshot if a newer OCR/correction job wins.
+  doc.writingCorrections = corrections;
+  doc.correctionStatistics = combinedStatistics;
+  doc.correctionSourceHash = hash;
+  doc.correctionVersion = canonical.VERSION;
+  doc.correctionTranscriptLayoutVersion = CANONICAL_TRANSCRIPT_LAYOUT_VERSION;
+  doc.correctionStatus = failedStage ? (anyAnalysisStageAvailable ? 'partial' : 'failed') : 'completed';
   if (semanticError) {
     await blockEvaluationAfterCorrectionFailure({ submissionId: doc._id,
       errorCode: safeErrorCode(semanticError) || 'SEMANTIC_ANALYSIS_FAILED' }).catch(() => {});
@@ -275,14 +320,23 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     durationMs: semanticAiMs });
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'finalCorrectionsPersisted',
     aiOnlyCount: ai.length, totalCount: corrections.length });
+  logger.info({ message: 'Canonical pipeline timing', submissionId: String(doc._id),
+    assignmentId: String(doc.assignment?._id || doc.assignment || assignment?._id || ''),
+    stage: 'correction_persisted', provider: null, model: null, attemptNumber: null,
+    durationMs: Math.max(0, correctionPersistenceMs), correctionCount: corrections.length,
+    errorCode: failedStage || null, validationCode: semanticError?.validationCode || null });
   let evaluationMs = 0; let detailedFeedbackMs = 0; let holisticCorrectionCoverageMismatch = false;
   let holisticCorrectionCoverageMismatchCategories = [];
   if (!semanticError) {
     const evaluationStartedAt = Date.now();
+    logger.info({ message: 'Canonical pipeline timing', submissionId: String(doc._id),
+      assignmentId: String(doc.assignment?._id || doc.assignment || assignment?._id || ''),
+      stage: 'canonical_evaluation_enqueued', provider: null, model: null,
+      attemptNumber: null, durationMs: 0, correctionCount: corrections.length,
+      triggerReason: 'canonical_corrections_persisted' });
     logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'evaluationStarted',
       semanticSucceeded: true });
-    const refreshed = await doc.constructor.findById(doc._id);
-    const evaluationResult = refreshed ? await canonicalEvaluation.generate({ submission: refreshed, assignment }) : null;
+    const evaluationResult = await canonicalEvaluation.generate({ submission: doc, assignment });
     evaluationMs = Date.now() - evaluationStartedAt;
     detailedFeedbackMs = Number(evaluationResult?.timings?.detailedFeedbackMs || 0);
     holisticCorrectionCoverageMismatchCategories = holisticCoverageMismatchCategories(
@@ -328,6 +382,13 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     provider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
     model: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
     errorCode: failedStage || null, durationMs: totalResultReadyMs });
+  logger.info({ message: 'Canonical pipeline timing', submissionId: String(doc._id),
+    assignmentId: String(doc.assignment?._id || doc.assignment || assignment?._id || ''),
+    stage: 'total_pipeline_completed',
+    provider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
+    model: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
+    attemptNumber: gatewayMetrics.attemptCount || null, durationMs: totalResultReadyMs,
+    correctionCount: corrections.length, errorCode: failedStage || null });
   await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
     semanticMetrics: { ...persistedSemanticMetrics, evaluationMs, detailedFeedbackMs,
       totalCorrectionsMs, totalResultReadyMs, holisticCorrectionCoverageMismatch,
