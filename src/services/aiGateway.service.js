@@ -457,7 +457,17 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
           remainingBudgetMs: Math.max(0, deadline - now()), maxOutputTokens, code, httpStatus,
           retryDelayMs: null,
           ...failureMetadata });
-        if (terminalCodes.includes(code)) throw error;
+        if (terminalCodes.includes(code)) {
+          // Preserve sanitized attempt diagnostics for the canonical failure
+          // record while preventing a terminal account/request failure from
+          // being repeated against another model.
+          error.attempts = attempts.map((attempt) => ({ ...attempt }));
+          error.attemptCount = attempts.length;
+          error.provider = entry.provider;
+          error.model = entry.model;
+          error.durationMs = now() - started;
+          throw error;
+        }
         const status = Number(error?.status || error?.httpStatus);
         const retryableSameModel = retry < entryRetries
           && (RETRYABLE_HTTP.has(status) || ['AI_ATTEMPT_TIMEOUT', 'AI_PROVIDER_UNAVAILABLE'].includes(code)

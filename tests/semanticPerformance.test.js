@@ -43,14 +43,14 @@ describe('semantic performance contract', () => {
     expect(signals[0]).not.toBe(signals[1]);
   });
 
-  test('permanent authentication failure is not retried on the same model', async () => {
+  test('permanent authentication failure is terminal across the assessment chain', async () => {
     const fetchImpl = jest.fn(async () => response(401));
     await expect(runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
       config: getSemanticAIConfig(env()), env: env(), fetchImpl }))
-      .rejects.toMatchObject({ code: 'AI_CHAIN_EXHAUSTED' });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+      .rejects.toMatchObject({ code: 'AI_PROVIDER_AUTH_ERROR', attemptCount: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls.map((call) => JSON.parse(call[1].body).model))
-      .toEqual(['openai/gpt-4.1', 'openai/gpt-4.1-mini']);
+      .toEqual(['openai/gpt-4.1']);
   });
 
   test('audited category-review prompt keeps bounded overhead over the incomplete legacy contract', () => {

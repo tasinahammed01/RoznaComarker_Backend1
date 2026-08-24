@@ -100,7 +100,7 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     && persistedFeedback?.evaluationJobId === submission.evaluationJobId && !persistedFeedback?.overriddenByTeacher) {
     const recovered = await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash,
       evaluationStatus: 'processing', evaluationJobId: submission.evaluationJobId }, { $set: {
-      evaluationStatus: 'completed', evaluationSourceHash: sourceHash, evaluationVersion: VERSION,
+      evaluationStatus: persistedFeedback.evaluationStatus === 'partial' ? 'partial' : 'completed', evaluationSourceHash: sourceHash, evaluationVersion: VERSION,
       evaluationRubricSourceHash: rubricHash, evaluationPolicyHash: policyHash,
       evaluationUpdatedAt: new Date(), evaluationError: null
     }});
@@ -266,7 +266,30 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     if (error?.code === 'ANALYSIS_JOB_SUPERSEDED') return { status: 'superseded', sourceHash };
     // A valid feedback write followed by an interrupted status update is
     // intentionally left recoverable by the idempotent path above.
-    if (feedbackPersisted) return { status: 'superseded', sourceHash };
+    if (feedbackPersisted) {
+      const persisted = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
+      const recoveredStatus = persisted?.evaluationStatus === 'partial' ? 'partial' : 'completed';
+      const recovered = await submission.constructor.updateOne({ _id: submission._id,
+        correctionSourceHash: sourceHash, evaluationStatus: 'processing', evaluationJobId: jobId }, { $set: {
+        evaluationStatus: recoveredStatus, evaluationSourceHash: sourceHash, evaluationVersion: VERSION,
+        evaluationRubricSourceHash: rubricHash, evaluationPolicyHash: policyHash,
+        evaluationProvider: persisted?.evaluationProvider || null,
+        evaluationModel: persisted?.evaluationModel || null,
+        evaluationAttempts: persisted?.evaluationAttempts || [],
+        evaluationDiagnostics: persisted?.evaluationDiagnostics || { commentNormalizations: [] },
+        evaluationUpdatedAt: new Date(), evaluationError: null, evaluationErrorCode: null
+      }});
+      console.info('[canonical-evaluation] finalization recovery attempted', {
+        submissionId: String(submission._id), stage: 'submission_status_finalization',
+        provider: persisted?.evaluationProvider || null, model: persisted?.evaluationModel || null,
+        errorCode: error?.code || 'SUBMISSION_STATUS_UPDATE_INTERRUPTED',
+        persistenceStatus: recovered.modifiedCount === 1 ? 'recovered' : 'superseded'
+      });
+      return recovered.modifiedCount === 1
+        ? { status: recoveredStatus, sourceHash, provider: persisted?.evaluationProvider || null,
+          model: persisted?.evaluationModel || null, overallScore: Number(persisted?.overallScore), recovered: true }
+        : { status: 'superseded', sourceHash };
+    }
     const attempts = Array.isArray(error?.attempts) ? error.attempts : [];
     const lastAttempt = attempts[attempts.length - 1] || {};
     const errorCode = error?.code || 'SEMANTIC_RUBRIC_FAILED';

@@ -4,7 +4,20 @@
 // aiGateway.service; semantic callers retain their established result shape.
 const gateway = require('./aiGateway.service');
 
-const SEMANTIC_TRANSIENT_STATUSES = new Set([402, 408, 429, 500, 502, 503, 504]);
+const SEMANTIC_TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+const SEMANTIC_RETRYABLE_OUTPUT_CODES = Object.freeze([
+  'AI_RESPONSE_EMPTY',
+  'AI_RESPONSE_INVALID',
+  'AI_RESPONSE_TRUNCATED',
+  'AI_OUTPUT_VALIDATION_FAILED'
+]);
+const SEMANTIC_TERMINAL_CODES = Object.freeze([
+  'AI_PROVIDER_AUTH_ERROR',
+  'AI_PROVIDER_PAYMENT_REQUIRED',
+  'AI_PROVIDER_PERMISSION_DENIED',
+  'AI_PROVIDER_INVALID_REQUEST',
+  'AI_RESPONSE_BLOCKED'
+]);
 const GOOGLE_SEMANTIC_MODELS = new Set(); // retained export; models are no longer allowlisted
 const GOOGLE_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high']);
 const MAX_SEMANTIC_OUTPUT_TOKENS = 65536;
@@ -80,10 +93,16 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
   env = process.env, now = Date.now, sleepFn, validate, feature = 'semantic', responseSchema,
   schemaName, metadata, onAttempt, onRetry } = {}) {
   const chain = config.chain || gateway.getAssessmentAIConfig(env).chain;
+  const isRubricAssessment = feature === 'semantic' || feature === 'semantic_rubric_assessment';
   const result = await gateway.generate({ feature, messages, maxOutputTokens: config.maxOutputTokens,
     temperature: ASSESSMENT_TEMPERATURE, responseFormat: ASSESSMENT_RESPONSE_FORMAT,
     responseSchema, schemaName, googleThinkingLevel: ASSESSMENT_THINKING_LEVEL,
     validate, metadata, fetchImpl, env, now, sleepFn, onAttempt, onRetry,
+    // Correction detection also uses this compatibility facade. Keep its
+    // established retry policy unchanged; these classifications belong only
+    // to the canonical rubric-assessment stage.
+    retryableSameModelCodes: isRubricAssessment ? SEMANTIC_RETRYABLE_OUTPUT_CODES : [],
+    terminalCodes: isRubricAssessment ? SEMANTIC_TERMINAL_CODES : [],
     config: {
       chain,
       attemptTimeoutMs: config.attemptTimeoutMs,
@@ -108,6 +127,7 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
 }
 
 module.exports = { SEMANTIC_TRANSIENT_STATUSES, GOOGLE_SEMANTIC_MODELS, GOOGLE_THINKING_LEVELS,
+  SEMANTIC_RETRYABLE_OUTPUT_CODES, SEMANTIC_TERMINAL_CODES,
   MAX_SEMANTIC_OUTPUT_TOKENS, ASSESSMENT_TEMPERATURE, ASSESSMENT_RESPONSE_FORMAT,
   ASSESSMENT_THINKING_LEVEL, getSemanticAIConfig, getSemanticAIConfigStatus, credentialFor, endpointFor,
   retryAfterMs, classifyTransient, classifyProviderFailure, approvedFallback, providerAttempt,

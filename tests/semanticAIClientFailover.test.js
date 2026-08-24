@@ -62,20 +62,16 @@ describe('semantic assessment-chain facade', () => {
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body).temperature).toBe(0);
   });
 
-  test('payment failure selects the configured fallback', async () => {
+  test.each([401, 402, 403, 400])('terminal HTTP %i does not retry or select fallback', async (status) => {
     const attempts = [];
-    const fetchImpl = jest.fn()
-      .mockResolvedValueOnce(response(402, {}))
-      .mockResolvedValueOnce(router('{"ok":true}'));
-    const result = await runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
+    const fetchImpl = jest.fn().mockResolvedValue(response(status, {}));
+    await expect(runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
       config: getSemanticAIConfig(env()), env: env(), fetchImpl,
-      onAttempt: (attempt) => attempts.push(attempt) });
-    expect(result).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-4.1-mini' });
-    expect(result.metrics.attempts).toHaveLength(2);
-    expect(attempts).toHaveLength(2);
-    expect(attempts.map((attempt) => attempt.model)).toEqual(['openai/gpt-4.1', 'openai/gpt-4.1-mini']);
-    expect(fetchImpl.mock.calls.map((call) => JSON.parse(call[1].body).temperature)).toEqual([0, 0]);
-    expect(JSON.parse(fetchImpl.mock.calls[1][1].body)).not.toHaveProperty('thinkingConfig');
+      onAttempt: (attempt) => attempts.push(attempt) })).rejects.toMatchObject({
+        attemptCount: 1, attempts: [expect.objectContaining({ fallbackIndex: 0 })]
+      });
+    expect(attempts).toHaveLength(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   test('12000 reaches both OpenRouter assessment models', async () => {
@@ -116,5 +112,22 @@ describe('semantic assessment-chain facade', () => {
       } });
     expect(result.value).toEqual({ ok: true });
     expect(result.model).toBe('openai/gpt-4.1-mini');
+  });
+
+  test('feature validation failure uses the bounded primary retry before fallback', async () => {
+    const configuredEnv = env({ ASSESSMENT_AI_PRIMARY_RETRIES: '1' });
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(router('{"ok":false}'))
+      .mockResolvedValueOnce(router('{"ok":true}'));
+    const result = await runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
+      config: getSemanticAIConfig(configuredEnv), env: configuredEnv, fetchImpl,
+      validate: (content) => {
+        const parsed = JSON.parse(content);
+        if (!parsed.ok) throw new Error('schema');
+        return parsed;
+      } });
+    expect(result.value).toEqual({ ok: true });
+    expect(result.model).toBe('openai/gpt-4.1');
+    expect(result.metrics.attempts.map((attempt) => attempt.retryIndex)).toEqual([0, 1]);
   });
 });
