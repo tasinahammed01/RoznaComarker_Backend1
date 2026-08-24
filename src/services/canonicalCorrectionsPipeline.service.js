@@ -67,6 +67,9 @@ function holisticCoverageMismatchCategories(categoryScores = {}, statistics = {}
 
 async function generateAndPersist(doc, { assignment = {}, force = false } = {}) {
   const totalStartedAt = Date.now();
+  logger.info({ message: 'Canonical evaluation timing', submissionId: String(doc._id),
+    stage: 'correction_start', attemptNumber: null, provider: null, model: null,
+    errorCode: null, durationMs: 0 });
   const canonicalTranscript = buildCanonicalSubmissionTranscript(doc);
   if (!canonicalTranscript.isComplete) {
     await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId }, { $set: {
@@ -320,6 +323,11 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     totalCorrectionsMs, totalResultReadyMs: Date.now() - totalStartedAt
   }});
   const totalResultReadyMs = Date.now() - totalStartedAt;
+  logger.info({ message: 'Canonical evaluation timing', submissionId: String(doc._id),
+    stage: 'correction_end', attemptNumber: null,
+    provider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
+    model: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
+    errorCode: failedStage || null, durationMs: totalResultReadyMs });
   await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
     semanticMetrics: { ...persistedSemanticMetrics, evaluationMs, detailedFeedbackMs,
       totalCorrectionsMs, totalResultReadyMs, holisticCorrectionCoverageMismatch,

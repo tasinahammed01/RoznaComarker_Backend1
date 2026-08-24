@@ -66,6 +66,24 @@ describe('assessment structured output schemas', () => {
       .properties.correctionId.enum).toEqual([null]);
   });
 
+  test('custom-rubric schema requires evidence for deducted levels and binds level percentages', () => {
+    const schema = schemas.semanticRubricAssessmentSchema('hash', {
+      transcriptEvidenceIds: ['ev-1'],
+      customCriteria: [{ id: 'criterion-1', levels: [
+        { title: 'Excellent', percentage: 100 },
+        { title: 'Developing', percentage: 60 }
+      ] }]
+    });
+    const alternatives = schema.properties.customCriteria.items.anyOf;
+    const excellent = alternatives.find((item) => item.properties.levelTitle.const === 'Excellent');
+    const developing = alternatives.find((item) => item.properties.levelTitle.const === 'Developing');
+    expect(excellent.properties.percentage.const).toBe(100);
+    expect(excellent.properties.evidenceIds.minItems).toBe(0);
+    expect(developing.properties.percentage.const).toBe(60);
+    expect(developing.properties.evidenceIds).toMatchObject({ minItems: 1, maxItems: 20,
+      items: { enum: ['ev-1'] } });
+  });
+
   test('empty and request-isolated rubric catalogs cannot accept arbitrary IDs', () => {
     const empty = schemas.semanticRubricAssessmentSchema('hash');
     expect(empty.properties.categories.properties.CONTENT.properties.strengthEvidence.maxItems).toBe(0);

@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const logger = require('../utils/logger');
 const { getSemanticAIConfig, getSemanticAIConfigStatus, runSemanticCompletion } = require('./semanticAIClient.service');
 const { promptDefinitions } = require('./writingCategoryDefinitions.service');
 const { semanticRubricAssessmentSchema, MAX_RUBRIC_EVIDENCE_IDS } = require('./structuredOutputSchemas.service');
@@ -203,6 +204,17 @@ function parseJson(content) {
     throw semanticRubricError('SEMANTIC_RUBRIC_JSON_INVALID', 'Semantic rubric assessment returned invalid JSON',
       'json_parse');
   }
+}
+
+function normalizeAssessmentContract(parsed) {
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.customCriteria)) return parsed;
+  return { ...parsed, customCriteria: parsed.customCriteria.map((criterion) => {
+    const raw = criterion?.evidenceIds;
+    const evidenceIds = typeof raw === 'string' ? [raw]
+      : Array.isArray(raw) ? raw.map((value) => typeof value === 'string' ? value : value?.evidenceId)
+        .filter((value) => typeof value === 'string' && value.trim()) : raw;
+    return { ...criterion, evidenceIds };
+  }) };
 }
 
 function quoteLocations(transcript, quote) {
@@ -424,14 +436,27 @@ async function assess(input, dependencies = {}) {
   const request = buildRequest(input);
   const startedAt = Date.now();
   const runCompletion = dependencies.runCompletion || runSemanticCompletion;
-  const validate = (content) => validateAssessment(parseJson(content), {
-    sourceHash: input.sourceHash, transcript: input.transcript,
-    corrections: input.corrections, contextStatus: request.contextStatus, evidenceCatalog: request.evidenceCatalog,
-    transcriptComplete: input.transcriptComplete === true, customRubric: input.customRubric
-  });
+  let validationMs = 0;
+  const validate = (content, attempt = {}) => {
+    const validationStartedAt = Date.now();
+    try {
+      return validateAssessment(normalizeAssessmentContract(parseJson(content)), {
+        sourceHash: input.sourceHash, transcript: input.transcript,
+        corrections: input.corrections, contextStatus: request.contextStatus, evidenceCatalog: request.evidenceCatalog,
+        transcriptComplete: input.transcriptComplete === true, customRubric: input.customRubric
+      });
+    } finally {
+      const durationMs = Date.now() - validationStartedAt;
+      validationMs += durationMs;
+      logger.info({ message: 'Canonical evaluation timing', submissionId: String(input.submissionId || ''),
+        stage: 'validation', attemptNumber: attempt.attemptNumber || null,
+        provider: attempt.provider || null, model: attempt.model || null, durationMs });
+    }
+  };
   const completion = await runCompletion({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
     validate, feature: 'semantic_rubric_assessment',
+    metadata: { submissionId: String(input.submissionId || '') },
     responseSchema: semanticRubricAssessmentSchema(input.sourceHash, {
       transcriptEvidenceIds: request.evidenceCatalog.map((item) => item.evidenceId),
       correctionIds: request.allowedCorrectionIds, customCriteria: request.customCriteria
@@ -441,10 +466,10 @@ async function assess(input, dependencies = {}) {
   const attempts = Array.isArray(completion.metrics?.attempts) ? completion.metrics.attempts : [];
   return { ...assessment, provider: completion.provider, model: completion.model, usage: completion.usage,
     metrics: { ...completion.metrics, attempts, validationRepairAttempted: false,
-      semanticRubricAssessmentMs: Date.now() - startedAt,
+      semanticRubricAssessmentMs: Date.now() - startedAt, validationMs,
       promptCharacters: request.promptCharacters, promptInputTokenEstimate: request.promptInputTokenEstimate } };
 }
 
 module.exports = { PROMPT_VERSION, SCHEMA_VERSION, SEMANTIC_CATEGORIES, correctionCatalog,
   allowedCorrectionIdsByCategory, transcriptEvidenceCatalog, buildRequest, parseJson, normalizeStatisticsComment,
-  validateAssessment, assess, conclusionClaimKind };
+  validateAssessment, normalizeAssessmentContract, assess, conclusionClaimKind };

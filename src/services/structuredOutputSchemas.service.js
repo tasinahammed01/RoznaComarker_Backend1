@@ -95,16 +95,26 @@ function semanticRubricAssessmentSchema(sourceHash, { transcriptEvidenceIds = []
     VOCABULARY: categoryAssessment(transcriptEvidenceIds, correctionIds.VOCABULARY)
   }) };
   if (customCriteria.length) {
+    const criterionLevelSchemas = customCriteria.flatMap((criterion) => {
+      const levels = Array.isArray(criterion.levels) ? criterion.levels : [];
+      return levels.map((level) => closedObject({
+        criterionId: { type: 'string', const: criterion.id },
+        percentage: { type: 'number', const: Number(level.percentage) },
+        levelTitle: { type: 'string', const: String(level.title) },
+        comment: string(500, { minLength: 1 }),
+        evidenceIds: {
+          type: 'array',
+          minItems: transcriptEvidenceIds.length && Number(level.percentage) < 100 ? 1 : 0,
+          maxItems: transcriptEvidenceIds.length ? 20 : 0,
+          items: transcriptEvidenceIds.length
+            ? { type: 'string', enum: transcriptEvidenceIds }
+            : { type: 'string' }
+        }
+      }));
+    });
     properties.customCriteria = {
       type: 'array', minItems: customCriteria.length, maxItems: customCriteria.length,
-      items: closedObject({
-        criterionId: { type: 'string', enum: customCriteria.map((criterion) => criterion.id) },
-        percentage: { type: 'number', minimum: 0, maximum: 100 },
-        levelTitle: string(160, { minLength: 1 }),
-        comment: string(500, { minLength: 1 }),
-        evidenceIds: { type: 'array', maxItems: transcriptEvidenceIds.length ? 20 : 0,
-          items: transcriptEvidenceIds.length ? { type: 'string', enum: transcriptEvidenceIds } : { type: 'string' } }
-      })
+      items: { anyOf: criterionLevelSchemas }
     };
   }
   return closedObject(properties);

@@ -137,6 +137,8 @@ describe('assignment rubric scoring', () => {
     expect(isEvaluationFresh(record, context)).toBe(true);
     expect(isEvaluationFresh(record, { ...context, policyHash: 'friendly' })).toBe(false);
     expect(isEvaluationFresh(record, { ...context, rubricHash: 'changed-rubric' })).toBe(false);
+    expect(isEvaluationFresh(record, { ...context, sourceHash: 'changed-source' })).toBe(false);
+    expect(isEvaluationFresh({ ...record, evaluationVersion: 'old-version' }, context)).toBe(false);
     expect(isEvaluationFresh({ ...record, evaluationPolicyHash: undefined }, context)).toBe(false);
   });
 });

@@ -1,4 +1,4 @@
-const { parseJson, validateAssessment, assess, transcriptEvidenceCatalog, buildRequest } = require('../src/services/semanticRubricAssessment.service');
+const { parseJson, validateAssessment, normalizeAssessmentContract, assess, transcriptEvidenceCatalog, buildRequest } = require('../src/services/semanticRubricAssessment.service');
 const { NO_TRANSCRIPT_EVIDENCE_SENTINEL } = require('../src/services/structuredOutputSchemas.service');
 const { getSemanticAIConfig } = require('../src/services/semanticAIClient.service');
 
@@ -74,6 +74,21 @@ describe('semantic rubric assessment validation', () => {
       percentage: 60,
       levelTitle: 'Satisfactory'
     });
+  });
+
+  test('normalizes equivalent evidence representations without inventing evidence', () => {
+    const payload = withCustomCriterion({ evidenceIds: evidence[0].evidenceId });
+    const normalized = normalizeAssessmentContract(payload);
+    expect(normalized.customCriteria[0].evidenceIds).toEqual([evidence[0].evidenceId]);
+    expect(validateAssessment(normalized, {
+      sourceHash: 'hash', transcript, corrections, customRubric
+    }).customCriteria[0].evidence).toHaveLength(1);
+  });
+
+  test('still rejects a deducted custom level with missing evidence', () => {
+    expect(() => validateAssessment(withCustomCriterion({ evidenceIds: [] }), {
+      sourceHash: 'hash', transcript, corrections, customRubric
+    })).toThrow(expect.objectContaining({ code: 'CUSTOM_RUBRIC_EVIDENCE_REQUIRED' }));
   });
 
   test('rejects a custom percentage inconsistent with the selected configured level', () => {

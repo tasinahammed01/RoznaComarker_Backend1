@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const logger = require('../utils/logger');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 const Class = require('../models/class.model');
 const User = require('../models/user.model');
@@ -58,6 +59,7 @@ function supersededEvaluationError() {
 }
 
 async function generate({ submission, assignment, prelockedJobId = null }) {
+  const totalStartedAt = Date.now();
   const sourceHash = submission.correctionSourceHash;
   if (!sourceHash || submission.correctionStatus !== 'completed') return { status: 'superseded' };
   const classDoc = await Class.findById(submission.class).select('teacher').lean();
@@ -154,9 +156,13 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       && persistedFeedback.assessmentVersion === ASSESSMENT_VERSION
       && persistedFeedback.evaluationVersion === VERSION
       && hasValidRubricScores(persistedFeedback.rubricScores));
+    const semanticEvaluationStartedAt = Date.now();
+    logger.info({ message: 'Canonical evaluation timing', submissionId: String(submission._id),
+      stage: 'semantic_evaluation_start', attemptNumber: null, provider: null, model: null,
+      errorCode: null, durationMs: 0 });
     console.info('[canonical-evaluation] semantic rubric assessment started', { submissionId: String(submission._id),
       sourceHashMatch: true, correctionCounts: stats });
-    const semantic = await semanticRubricAssessment.assess({ transcript, sourceHash, assignment,
+    const semantic = await semanticRubricAssessment.assess({ submissionId: String(submission._id), transcript, sourceHash, assignment,
       corrections, statistics: stats, pageManifest: submission.ocrPages || [],
       transcriptComplete: submission.ocrStatus === 'completed' && Boolean(transcript.trim()),
       policy, customRubric: customRubricResult.rubric });
@@ -172,6 +178,10 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       provider: semantic.provider, model: semantic.model, sourceHashMatch: semantic.sourceHash === sourceHash,
       categoryScores: Object.fromEntries(Object.entries(semantic.categories).map(([key, value]) => [key, value.score])),
       duration: semantic.metrics?.semanticRubricAssessmentMs });
+    logger.info({ message: 'Canonical evaluation timing', submissionId: String(submission._id),
+      stage: 'semantic_evaluation_end', attemptNumber: null, provider: semantic.provider || null,
+      model: semantic.model || null, errorCode: null,
+      durationMs: Date.now() - semanticEvaluationStartedAt });
     const generatedRubricScores = synchronizedRubricScores({
       CONTENT: semantic.categories.CONTENT,
       ORGANIZATION: semantic.categories.ORGANIZATION,
@@ -223,6 +233,7 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     const detailedFeedback = detailedFeedbackService.buildDeterministicDetailedFeedback({ corrections,
       statistics: stats, categoryScores: rubricScores, sourceHash, semanticAssessment: semantic });
     const detailedFeedbackMs = Date.now() - detailedFeedbackStartedAt;
+    const persistenceStartedAt = Date.now();
     const existing = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
     const jobStillCurrent = await submission.constructor.exists({ _id: submission._id, correctionSourceHash: sourceHash, evaluationJobId: jobId });
     if (!jobStillCurrent) return { status: 'superseded', sourceHash };
@@ -254,6 +265,14 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       evaluationUpdatedAt: new Date(), evaluationError: null, evaluationErrorCode: null
     }});
     if (completed.modifiedCount !== 1) throw supersededEvaluationError();
+    const persistenceMs = Date.now() - persistenceStartedAt;
+    const totalCanonicalEvaluationMs = Date.now() - totalStartedAt;
+    logger.info({ message: 'Canonical evaluation timing', submissionId: String(submission._id),
+      stage: 'persistence', attemptNumber: null, provider: semantic.provider || null,
+      model: semantic.model || null, errorCode: null, durationMs: persistenceMs });
+    logger.info({ message: 'Canonical evaluation timing', submissionId: String(submission._id),
+      stage: 'total', attemptNumber: null, provider: semantic.provider || null,
+      model: semantic.model || null, errorCode: null, durationMs: totalCanonicalEvaluationMs });
     console.info('[canonical-evaluation] canonical evaluation persisted', { submissionId: String(submission._id),
       sourceHashMatch: true, correctionCounts: stats, categoryScores: Object.fromEntries(Object.entries(rubricScores).map(([key, value]) => [key, value.score])),
       customRubricPresent: Boolean(customRubricScores), builtInScoresReused: reusableBuiltInScores, overallScore });
@@ -261,8 +280,15 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       sourceHashMatch: true, duration: detailedFeedbackMs });
     return { status: semantic.status === 'partial' ? 'partial' : 'completed', sourceHash, rubricHash, policyHash, stats,
       provider: semantic.provider, model: semantic.model, overallScore, errorCode: null,
-      categoryScores: rubricScores, attempts: semantic.metrics?.attempts || [], timings: { detailedFeedbackMs } };
+      categoryScores: rubricScores, attempts: semantic.metrics?.attempts || [], timings: {
+        detailedFeedbackMs, validationMs: semantic.metrics?.validationMs || 0,
+        persistenceMs, totalCanonicalEvaluationMs
+      } };
   } catch (error) {
+    logger.info({ message: 'Canonical evaluation timing', submissionId: String(submission._id),
+      stage: 'total', attemptNumber: null, provider: error?.provider || null,
+      model: error?.model || null, errorCode: error?.validationCode || error?.code || 'CANONICAL_EVALUATION_FAILED',
+      durationMs: Date.now() - totalStartedAt });
     if (error?.code === 'ANALYSIS_JOB_SUPERSEDED') return { status: 'superseded', sourceHash };
     // A valid feedback write followed by an interrupted status update is
     // intentionally left recoverable by the idempotent path above.
