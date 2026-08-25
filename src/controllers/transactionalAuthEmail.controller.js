@@ -38,7 +38,9 @@ async function sendVerificationEmail(req, res) {
     if (!record.email) return res.status(400).json({ success: false, message: 'This account has no email address.' });
     if (record.emailVerified) return res.json({ success: true, message: 'Verification email request accepted.' });
     const link = await admin.auth().generateEmailVerificationLink(record.email, actionSettings('/verify-email'));
-    const delivery = await emailService.sendVerificationEmail(record.email, link);
+    const delivery = await emailService.sendVerificationEmail({
+      to: record.email, verificationLink: link, displayName: record.displayName || ''
+    });
     if (!delivery.success) throw Object.assign(new Error('Email delivery failed'), { code: 'EMAIL_DELIVERY_FAILED', statusCode: delivery.statusCode });
     return res.json({ success: true, message: 'Verification email request accepted.' });
   } catch (error) {
@@ -65,7 +67,9 @@ async function requestPasswordReset(req, res) {
     const supportsPassword = (record.providerData || []).some((provider) => provider.providerId === 'password');
     if (!supportsPassword) return res.json({ success: true, message: RESET_MESSAGE });
     const link = await admin.auth().generatePasswordResetLink(record.email || email, actionSettings('/login'));
-    const delivery = await emailService.sendResetPasswordEmail(record.email || email, link);
+    const delivery = await emailService.sendPasswordResetEmail({
+      to: record.email || email, resetLink: link, displayName: record.displayName || ''
+    });
     if (!delivery.success) throw Object.assign(new Error('Email delivery failed'), { code: 'EMAIL_DELIVERY_FAILED', statusCode: delivery.statusCode });
     return res.json({ success: true, message: RESET_MESSAGE });
   } catch (error) {

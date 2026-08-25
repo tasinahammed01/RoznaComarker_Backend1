@@ -15,7 +15,6 @@ const { sanitizeRequest } = require("./middlewares/sanitize.middleware");
 const healthRoutes = require("./routes/health.routes");
 const userRoutes = require("./routes/user.routes");
 const authRoutes = require("./routes/auth.routes");
-const emailAuthRoutes = require("./routes/authRoutes");
 const demoRoutes = require("./routes/demo.routes");
 const classRoutes = require("./routes/class.routes");
 const membershipRoutes = require("./routes/membership.routes");
@@ -177,7 +176,6 @@ app.use(
 
 app.use("/api", healthRoutes);
 app.use("/api/auth", authRoutes);
-app.use("/api/email-auth", emailAuthRoutes);
 app.use("/api/users", userRoutes);
 if (process.env.NODE_ENV === "development") {
   app.use("/api/demo", demoRoutes);

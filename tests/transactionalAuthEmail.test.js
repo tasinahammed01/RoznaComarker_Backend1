@@ -7,7 +7,7 @@ const mockAuth = {
 const mockEmail = {
   isConfigured: jest.fn(() => true),
   sendVerificationEmail: jest.fn(),
-  sendResetPasswordEmail: jest.fn()
+  sendPasswordResetEmail: jest.fn()
 };
 
 jest.mock('../src/config/firebase', () => ({ auth: () => mockAuth }));
@@ -21,7 +21,7 @@ function response() {
   return { statusCode: 200, body: null, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
 }
 
-describe('Firebase action links delivered by SendGrid', () => {
+describe('Firebase action links delivered by Resend', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockEmail.isConfigured.mockReturnValue(true);
@@ -29,7 +29,7 @@ describe('Firebase action links delivered by SendGrid', () => {
     process.env.NODE_ENV = 'test';
   });
 
-  test('verification uses authenticated Firebase record, trusted URL, and SendGrid', async () => {
+  test('verification uses authenticated Firebase record, trusted URL, and Resend', async () => {
     mockAuth.getUser.mockResolvedValue({ email: 'owner@example.com', emailVerified: false });
     mockAuth.generateEmailVerificationLink.mockResolvedValue('https://firebase.example/action?oobCode=secret');
     mockEmail.sendVerificationEmail.mockResolvedValue({ success: true });
@@ -39,14 +39,16 @@ describe('Firebase action links delivered by SendGrid', () => {
     expect(mockAuth.generateEmailVerificationLink).toHaveBeenCalledWith('owner@example.com', {
       url: 'https://comarkers.roznahub.com/verify-email', handleCodeInApp: false
     });
-    expect(mockEmail.sendVerificationEmail).toHaveBeenCalledWith('owner@example.com', expect.stringContaining('firebase.example'));
+    expect(mockEmail.sendVerificationEmail).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'owner@example.com', verificationLink: expect.stringContaining('firebase.example')
+    }));
     expect(res.statusCode).toBe(200);
   });
 
   test('password reset uses Firebase link and trusted login URL', async () => {
     mockAuth.getUserByEmail.mockResolvedValue({ email: 'person@example.com', providerData: [{ providerId: 'password' }] });
     mockAuth.generatePasswordResetLink.mockResolvedValue('https://firebase.example/reset?oobCode=secret');
-    mockEmail.sendResetPasswordEmail.mockResolvedValue({ success: true });
+    mockEmail.sendPasswordResetEmail.mockResolvedValue({ success: true });
     const res = response();
     await controller.requestPasswordReset({ body: { email: ' Person@Example.com ', continueUrl: 'https://evil.example' } }, res);
     expect(mockAuth.getUserByEmail).toHaveBeenCalledWith('person@example.com');
@@ -66,11 +68,11 @@ describe('Firebase action links delivered by SendGrid', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.message).toBe(controller.RESET_MESSAGE);
     expect(mockAuth.generatePasswordResetLink).not.toHaveBeenCalled();
-    expect(mockEmail.sendResetPasswordEmail).not.toHaveBeenCalled();
+    expect(mockEmail.sendPasswordResetEmail).not.toHaveBeenCalled();
   });
 
   test('delivery failure is generic and logs neither action link nor API key', async () => {
-    process.env.SENDGRID_API_KEY = 'must-never-be-logged';
+    process.env.RESEND_API_KEY = 'must-never-be-logged';
     mockAuth.getUser.mockResolvedValue({ email: 'owner@example.com', emailVerified: false });
     mockAuth.generateEmailVerificationLink.mockResolvedValue('https://firebase.example/action?oobCode=secret');
     mockEmail.sendVerificationEmail.mockResolvedValue({ success: false, statusCode: 401 });
@@ -80,6 +82,6 @@ describe('Firebase action links delivered by SendGrid', () => {
     expect(res.body).toEqual(expect.objectContaining({ code: 'EMAIL_DELIVERY_UNAVAILABLE' }));
     const logged = JSON.stringify(logger.error.mock.calls);
     expect(logged).not.toContain('oobCode');
-    expect(logged).not.toContain(process.env.SENDGRID_API_KEY);
+    expect(logged).not.toContain(process.env.RESEND_API_KEY);
   });
 });

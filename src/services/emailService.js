@@ -1,460 +1,49 @@
-const nodemailer = require('nodemailer');
+'use strict';
+const { Resend } = require('resend');
 const logger = require('../utils/logger');
-require('dotenv').config();
+const PROVIDER = 'resend';
+const clean = (value) => typeof value === 'string' ? value.trim() : '';
+const escapeHtml = (value) => String(value || '').replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;').replace(/"/gu, '&quot;').replace(/'/gu, '&#39;');
 
 class EmailService {
-  constructor() {
-    this.transporter = null;
-    this.initializeTransporter();
+  constructor({ env = process.env, ResendClass = Resend } = {}) { this.env = env; this.ResendClass = ResendClass; this.client = null; }
+  isConfigured() { return Boolean(clean(this.env.RESEND_API_KEY) && clean(this.env.RESEND_FROM_EMAIL)); }
+  getClient() {
+    if (!this.isConfigured()) { const error = new Error('Resend transactional email is not configured'); error.code = 'EMAIL_CONFIG_MISSING'; throw error; }
+    if (!this.client) this.client = new this.ResendClass(clean(this.env.RESEND_API_KEY));
+    return this.client;
   }
-
-  initializeTransporter() {
+  fromAddress() { return `${clean(this.env.RESEND_FROM_NAME) || 'CoMarker'} <${clean(this.env.RESEND_FROM_EMAIL)}>`; }
+  async sendEmail({ to, subject, html, text }) {
     try {
-      // Unit and HTTP integration tests must never create SMTP sockets. Email
-      // behavior is exercised with explicit transport mocks instead.
-      if (process.env.NODE_ENV === 'test') return;
-      if (!process.env.SENDGRID_API_KEY) {
-        logger.warn('SendGrid API key not found in environment variables');
-        return;
-      }
-
-      this.transporter = nodemailer.createTransport({
-        host: 'smtp.sendgrid.net',
-        port: 587,
-        secure: false,
-        auth: {
-          user: 'apikey',
-          pass: process.env.SENDGRID_API_KEY
-        },
-      });
-
-      this.transporter.verify((error, success) => {
-        if (error) {
-          logger.error(`Email transporter verification failed: ${error.message}`);
-        } else {
-          logger.info('Email transporter is ready to send messages');
-        }
-      });
+      if (!clean(to) || !clean(subject) || !clean(html) || !clean(text)) { const error = new Error('Transactional email fields are incomplete'); error.code = 'EMAIL_INVALID_REQUEST'; throw error; }
+      const result = await this.getClient().emails.send({ from: this.fromAddress(), to: [clean(to)], subject: clean(subject), html, text });
+      if (result?.error) { const error = new Error('Resend rejected transactional email'); error.code = 'EMAIL_PROVIDER_ERROR'; error.statusCode = Number(result.error.statusCode || result.error.status) || null; throw error; }
+      const messageId = clean(result?.data?.id);
+      if (!messageId) { const error = new Error('Resend returned an invalid response'); error.code = 'EMAIL_PROVIDER_INVALID_RESPONSE'; throw error; }
+      logger.info({ event: 'transactional_email.sent', provider: PROVIDER, status: 'success' });
+      return { success: true, provider: PROVIDER, messageId };
     } catch (error) {
-      logger.error(`Failed to initialize email transporter: ${error.message}`);
+      logger.error({ event: 'transactional_email.failed', provider: PROVIDER, code: error?.code || 'EMAIL_PROVIDER_FAILURE', statusCode: error?.statusCode || null });
+      return { success: false, provider: PROVIDER, error: 'Email delivery failed', code: error?.code || 'EMAIL_PROVIDER_FAILURE', statusCode: error?.statusCode || null };
     }
   }
-
-  isConfigured() {
-    return Boolean(this.transporter && process.env.SENDGRID_API_KEY
-      && (process.env.SENDGRID_FROM_EMAIL || process.env.EMAIL_FROM));
+  async sendVerificationEmail(input, legacyLink) {
+    const options = typeof input === 'object' && input !== null ? input : { to: input, verificationLink: legacyLink };
+    const to = clean(options.to); const link = clean(options.verificationLink);
+    if (!to || !link) return { success: false, provider: PROVIDER, code: 'EMAIL_INVALID_REQUEST' };
+    const greeting = clean(options.displayName) ? `Hello ${escapeHtml(options.displayName)},` : 'Welcome to CoMarker.'; const safeLink = escapeHtml(link);
+    return this.sendEmail({ to, subject: 'Verify your CoMarker email', text: `Welcome to CoMarker.\nPlease verify your email address to continue.\n\nVerify Email: ${link}\n\nIf you did not create this account, you can ignore this email.`, html: `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#243044;line-height:1.5;margin:0;padding:24px"><main style="max-width:560px;margin:auto"><h1 style="font-size:24px">Verify your email</h1><p>${greeting}</p><p>Please verify your email address to continue.</p><p><a href="${safeLink}" style="display:inline-block;background:#0f766e;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none">Verify Email</a></p><p>If the button does not work, copy this URL:</p><p style="word-break:break-all">${safeLink}</p><p><strong>Security note:</strong> If you did not create this account, you can ignore this email.</p></main></body></html>` });
   }
-
-  async sendEmail({ to, subject, html, text, from = null }) {
-    try {
-      if (!this.transporter) {
-        throw new Error('Email transporter not initialized');
-      }
-
-      if (!to || !subject || !html) {
-        throw new Error('Missing required parameters: to, subject, html');
-      }
-
-      const mailOptions = {
-        from: from || {
-          name: process.env.SENDGRID_FROM_NAME || 'CoMarker',
-          address: process.env.SENDGRID_FROM_EMAIL || process.env.EMAIL_FROM
-        },
-        to,
-        subject,
-        html,
-        text
-      };
-
-      const info = await this.transporter.sendMail(mailOptions);
-      
-      return {
-        success: true,
-        messageId: info.messageId,
-        response: info.response
-      };
-    } catch (error) {
-      logger.error({ event: 'email.delivery.failed', statusCode: error.statusCode || error.code });
-      return {
-        success: false,
-        error: 'Email delivery failed',
-        statusCode: error.statusCode || error.code
-      };
-    }
+  async sendPasswordResetEmail(input, legacyLink) {
+    const options = typeof input === 'object' && input !== null ? input : { to: input, resetLink: legacyLink };
+    const to = clean(options.to); const link = clean(options.resetLink);
+    if (!to || !link) return { success: false, provider: PROVIDER, code: 'EMAIL_INVALID_REQUEST' };
+    const greeting = clean(options.displayName) ? `<p>Hello ${escapeHtml(options.displayName)},</p>` : ''; const safeLink = escapeHtml(link);
+    return this.sendEmail({ to, subject: 'Reset your CoMarker password', text: `We received a request to reset your CoMarker password.\n\nReset Password: ${link}\n\nIf you did not request a password reset, you can ignore this email.`, html: `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#243044;line-height:1.5;margin:0;padding:24px"><main style="max-width:560px;margin:auto"><h1 style="font-size:24px">Reset your password</h1>${greeting}<p>We received a request to reset your CoMarker password.</p><p><a href="${safeLink}" style="display:inline-block;background:#0f766e;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none">Reset Password</a></p><p>If the button does not work, copy this URL:</p><p style="word-break:break-all">${safeLink}</p><p><strong>Security note:</strong> If you did not request a password reset, you can ignore this email.</p></main></body></html>` });
   }
-
-  async sendOTPEmail(to, otp) {
-    try {
-      if (!to || !otp) {
-        throw new Error('Email and OTP are required');
-      }
-
-      const subject = 'Your OTP Verification Code';
-      const html = this.getOTPTemplate(otp);
-
-      return await this.sendEmail({ to, subject, html });
-    } catch (error) {
-      logger.error(`Failed to send OTP email: ${error.message}`);
-      return {
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  async sendVerificationEmail(to, verificationLink) {
-    try {
-      if (!to || !verificationLink) {
-        throw new Error('Email and verification link are required');
-      }
-
-      const subject = 'Verify your CoMarker email';
-      const html = this.getVerificationTemplate(verificationLink);
-      const text = `Welcome to CoMarker. Verify your email using this secure Firebase link:\n\n${verificationLink}\n\nIf you didn't create this account, you can ignore this email.`;
-
-      return await this.sendEmail({ to, subject, html, text });
-    } catch (error) {
-      logger.error(`Failed to send verification email: ${error.message}`);
-      return {
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  async sendResetPasswordEmail(to, resetLink) {
-    try {
-      if (!to || !resetLink) {
-        throw new Error('Email and reset link are required');
-      }
-
-      const subject = 'Reset your CoMarker password';
-      const html = this.getResetPasswordTemplate(resetLink);
-      const text = `A password reset was requested for your CoMarker account. Reset it using this secure Firebase link:\n\n${resetLink}\n\nIf you didn't request this, ignore this email; your password will remain unchanged.`;
-
-      return await this.sendEmail({ to, subject, html, text });
-    } catch (error) {
-      logger.error(`Failed to send reset password email: ${error.message}`);
-      return {
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  getOTPTemplate(otp) {
-    return `
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>OTP Verification</title>
-        <style>
-          body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f4f7fa;
-            margin: 0;
-            padding: 20px;
-            color: #333;
-          }
-          .container {
-            max-width: 600px;
-            margin: 0 auto;
-            background-color: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
-            overflow: hidden;
-          }
-          .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 40px 30px;
-            text-align: center;
-          }
-          .header h1 {
-            margin: 0;
-            font-size: 32px;
-            font-weight: 600;
-          }
-          .content {
-            padding: 40px 30px;
-            text-align: center;
-          }
-          .otp-container {
-            background-color: #f8f9ff;
-            border: 2px dashed #667eea;
-            border-radius: 8px;
-            padding: 20px;
-            margin: 30px 0;
-            display: inline-block;
-          }
-          .otp-code {
-            font-size: 36px;
-            font-weight: bold;
-            color: #667eea;
-            letter-spacing: 8px;
-            margin: 0;
-            text-decoration: none;
-          }
-          .footer {
-            background-color: #f8f9fa;
-            padding: 20px 30px;
-            text-align: center;
-            color: #6c757d;
-            font-size: 14px;
-          }
-          .warning {
-            color: #dc3545;
-            font-size: 14px;
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #fff5f5;
-            border-radius: 6px;
-            border-left: 4px solid #dc3545;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>OTP Verification</h1>
-          </div>
-          <div class="content">
-            <h2>Your Verification Code</h2>
-            <p>Use the following One-Time Password to verify your identity:</p>
-            
-            <div class="otp-container">
-              <p class="otp-code">${otp}</p>
-            </div>
-            
-            <p>This code will expire in <strong>10 minutes</strong>.</p>
-            
-            <div class="warning">
-              <strong>Security Notice:</strong> Never share this code with anyone. Our team will never ask for your OTP.
-            </div>
-          </div>
-          <div class="footer">
-            <p>&copy; ${new Date().getFullYear()} Rozna. All rights reserved.</p>
-            <p>This is an automated message, please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
-  }
-
-  getVerificationTemplate(verificationLink) {
-    return `
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Email Verification</title>
-        <style>
-          body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f4f7fa;
-            margin: 0;
-            padding: 20px;
-            color: #333;
-          }
-          .container {
-            max-width: 600px;
-            margin: 0 auto;
-            background-color: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
-            overflow: hidden;
-          }
-          .header {
-            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
-            color: white;
-            padding: 40px 30px;
-            text-align: center;
-          }
-          .header h1 {
-            margin: 0;
-            font-size: 32px;
-            font-weight: 600;
-          }
-          .content {
-            padding: 40px 30px;
-            text-align: center;
-          }
-          .btn {
-            display: inline-block;
-            padding: 15px 40px;
-            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
-            color: white;
-            text-decoration: none;
-            border-radius: 6px;
-            font-weight: 600;
-            font-size: 16px;
-            margin: 20px 0;
-            transition: transform 0.2s;
-          }
-          .btn:hover {
-            transform: translateY(-2px);
-          }
-          .footer {
-            background-color: #f8f9fa;
-            padding: 20px 30px;
-            text-align: center;
-            color: #6c757d;
-            font-size: 14px;
-          }
-          .alternative {
-            margin-top: 30px;
-            padding: 20px;
-            background-color: #f8f9ff;
-            border-radius: 6px;
-            border-left: 4px solid #28a745;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>Verify Your Email</h1>
-          </div>
-          <div class="content">
-            <h2>Welcome to CoMarker by RoznaHub!</h2>
-            <p>Thank you for signing up. Please click the button below to verify your email address:</p>
-            
-            <a href="${verificationLink}" class="btn">Verify Email Address</a>
-            
-            <div class="alternative">
-              <p><strong>Can't click the button?</strong></p>
-              <p>Copy and paste this link into your browser:</p>
-              <p style="word-break: break-all; color: #28a745; font-family: monospace;">${verificationLink}</p>
-            </div>
-            
-            <p>For your security, Firebase controls this link and its expiry.</p>
-            <p>If you didn't create this account, you can ignore this email.</p>
-          </div>
-          <div class="footer">
-            <p>&copy; ${new Date().getFullYear()} CoMarker / RoznaHub. All rights reserved.</p>
-            <p>This is an automated message, please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
-  }
-
-  getResetPasswordTemplate(resetLink) {
-    return `
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Reset Password</title>
-        <style>
-          body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f4f7fa;
-            margin: 0;
-            padding: 20px;
-            color: #333;
-          }
-          .container {
-            max-width: 600px;
-            margin: 0 auto;
-            background-color: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
-            overflow: hidden;
-          }
-          .header {
-            background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%);
-            color: white;
-            padding: 40px 30px;
-            text-align: center;
-          }
-          .header h1 {
-            margin: 0;
-            font-size: 32px;
-            font-weight: 600;
-          }
-          .content {
-            padding: 40px 30px;
-            text-align: center;
-          }
-          .btn {
-            display: inline-block;
-            padding: 15px 40px;
-            background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%);
-            color: white;
-            text-decoration: none;
-            border-radius: 6px;
-            font-weight: 600;
-            font-size: 16px;
-            margin: 20px 0;
-            transition: transform 0.2s;
-          }
-          .btn:hover {
-            transform: translateY(-2px);
-          }
-          .footer {
-            background-color: #f8f9fa;
-            padding: 20px 30px;
-            text-align: center;
-            color: #6c757d;
-            font-size: 14px;
-          }
-          .alternative {
-            margin-top: 30px;
-            padding: 20px;
-            background-color: #fff5f5;
-            border-radius: 6px;
-            border-left: 4px solid #dc3545;
-          }
-          .warning {
-            color: #dc3545;
-            font-size: 14px;
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #fff5f5;
-            border-radius: 6px;
-            border-left: 4px solid #dc3545;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>Reset Your Password</h1>
-          </div>
-          <div class="content">
-            <h2>Password Reset Request</h2>
-            <p>We received a request to reset your password. Click the button below to proceed:</p>
-            
-            <a href="${resetLink}" class="btn">Reset Password</a>
-            
-            <div class="alternative">
-              <p><strong>Can't click the button?</strong></p>
-              <p>Copy and paste this link into your browser:</p>
-              <p style="word-break: break-all; color: #dc3545; font-family: monospace;">${resetLink}</p>
-            </div>
-            
-            <p>For your security, Firebase controls this link and its expiry.</p>
-            
-            <div class="warning">
-              <strong>Security Notice:</strong> If you didn't request this password reset, please ignore this email. Your password will remain unchanged.
-            </div>
-          </div>
-          <div class="footer">
-            <p>&copy; ${new Date().getFullYear()} CoMarker / RoznaHub. All rights reserved.</p>
-            <p>This is an automated message, please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
-  }
+  sendResetPasswordEmail(input, legacyLink) { return this.sendPasswordResetEmail(input, legacyLink); }
+  async sendOTPEmail(to, otp) { const code = clean(otp); return this.sendEmail({ to, subject: 'Your CoMarker verification code', text: `Your CoMarker verification code is ${code}. Do not share this code.`, html: `<p>Your CoMarker verification code is:</p><p style="font-size:28px;font-weight:bold">${escapeHtml(code)}</p><p>Do not share this code.</p>` }); }
 }
-
 module.exports = new EmailService();
+module.exports.EmailService = EmailService;
