@@ -1,6 +1,7 @@
 const User = require('../models/user.model');
 
 const { ensureActivePlan } = require('./usage.middleware');
+const logger = require('../utils/logger');
 
 function getBearerToken(req) {
   const header = req.headers.authorization;
@@ -16,7 +17,22 @@ function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-async function createOrGetUserFromFirebase(decodedToken, intendedRole) {
+function firebaseVerificationDiagnostic(err, admin) {
+  const code = isNonEmptyString(err && err.code) ? err.code.trim() : 'auth/unknown-error';
+  const rawMessage = isNonEmptyString(err && err.message) ? err.message.trim() : 'Firebase ID token verification failed';
+  const safeMessage = rawMessage
+    .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
+    .replace(/eyJ[A-Za-z0-9._-]+/g, '[REDACTED_TOKEN]');
+  return {
+    event: 'firebase.idTokenVerification.failed',
+    authStage: 'verifyIdToken',
+    code,
+    message: safeMessage,
+    firebaseProjectId: admin && (admin.firebaseProjectId || admin.app?.().options?.projectId) || null
+  };
+}
+
+async function createOrGetUserFromFirebase(decodedToken) {
   const firebaseUid = decodedToken && decodedToken.uid;
   const email = decodedToken && decodedToken.email;
 
@@ -32,11 +48,6 @@ async function createOrGetUserFromFirebase(decodedToken, intendedRole) {
     return { user: existingUser, isNew: false };
   }
 
-  const ALLOWED_ROLES = ['teacher', 'student'];
-  const roleToAssign = (intendedRole && ALLOWED_ROLES.includes(String(intendedRole).toLowerCase()))
-    ? String(intendedRole).toLowerCase()
-    : 'student';
-
   try {
     const createdUser = await User.create({
       firebaseUid: normalizedFirebaseUid,
@@ -46,8 +57,7 @@ async function createOrGetUserFromFirebase(decodedToken, intendedRole) {
         : undefined,
       photoURL: isNonEmptyString(decodedToken.picture)
         ? decodedToken.picture.trim()
-        : undefined,
-      role: roleToAssign
+        : undefined
     });
 
     return { user: createdUser, isNew: true };
@@ -78,8 +88,7 @@ async function verifyFirebaseToken(req, res, next) {
     // tokens when creating a new backend session.
     const decodedToken = await admin.auth().verifyIdToken(token, true);
 
-    const intendedRole = req.body && req.body.intendedRole;
-    const { user, isNew } = await createOrGetUserFromFirebase(decodedToken, intendedRole);
+    const { user, isNew } = await createOrGetUserFromFirebase(decodedToken);
 
     if (!user) {
       return res.status(401).json({
@@ -110,6 +119,9 @@ async function verifyFirebaseToken(req, res, next) {
 
     return next();
   } catch (err) {
+    let admin = null;
+    try { admin = require('../config/firebase'); } catch { /* initialization error is already sanitized below */ }
+    logger.error(firebaseVerificationDiagnostic(err, admin));
     return res.status(401).json({
       success: false,
       message: 'Invalid or expired token'
@@ -119,5 +131,6 @@ async function verifyFirebaseToken(req, res, next) {
 
 module.exports = {
   createOrGetUserFromFirebase,
+  firebaseVerificationDiagnostic,
   verifyFirebaseToken
 };

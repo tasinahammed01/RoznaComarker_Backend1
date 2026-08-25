@@ -14,6 +14,7 @@ const privateKey = privateKeyRaw.replace(/\\n/g, '\n');
 
 if (!admin.apps.length) {
   admin.initializeApp({
+    projectId,
     credential: admin.credential.cert({
       projectId,
       clientEmail,
@@ -21,5 +22,7 @@ if (!admin.apps.length) {
     })
   });
 }
+
+admin.firebaseProjectId = projectId;
 
 module.exports = admin;

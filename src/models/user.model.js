@@ -61,7 +61,7 @@ const userSchema = new mongoose.Schema(
     role: {
       type: String,
       enum: ['teacher', 'student', 'admin'],
-      default: 'student'
+      default: null
     },
     plan: {
       type: mongoose.Schema.Types.ObjectId,

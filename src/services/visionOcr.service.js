@@ -58,7 +58,7 @@ function resolveCredentialsPathMaybe(rawPath) {
 
 function ensureGoogleCredentialsEnv() {
 
-  const raw = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  const raw = process.env.GOOGLE_CLOUD_KEY_FILE || process.env.GOOGLE_APPLICATION_CREDENTIALS;
 
   const resolved = resolveCredentialsPathMaybe(raw);
 
@@ -67,46 +67,17 @@ function ensureGoogleCredentialsEnv() {
 
 
   if (!fs.existsSync(resolved)) {
-
-    const backendRoot = getBackendRootDir();
-
-    const fallback = path.resolve(backendRoot, 'key', 'vision_key.json');
-
-    if (fs.existsSync(fallback)) {
-
-      logger.warn({
-
-        message: 'GOOGLE_APPLICATION_CREDENTIALS path invalid; using fallback backend/key/vision_key.json',
-
-        configured: resolved,
-
-        fallback
-
-      });
-
-      process.env.GOOGLE_APPLICATION_CREDENTIALS = fallback;
-
-      return fallback;
-
-    }
-
-
-
     throw new Error(
 
-      `Google Vision credentials file not found at: ${resolved} (from GOOGLE_APPLICATION_CREDENTIALS=${JSON.stringify(raw)}). ` +
+      `Google Vision credentials file not found at: ${resolved}. ` +
 
-        'Fix GOOGLE_APPLICATION_CREDENTIALS. Recommended values: ./key/vision_key.json (backend-relative) ' +
-
-        'or an absolute path to backend/key/vision_key.json.'
+        'Set GOOGLE_CLOUD_KEY_FILE to the Vision service-account JSON path.'
 
     );
 
   }
 
 
-
-  process.env.GOOGLE_APPLICATION_CREDENTIALS = resolved;
 
   return resolved;
 
@@ -120,7 +91,7 @@ function ensureGoogleCredentialsEnv() {
 
  * Credentials are loaded automatically from:
 
- * process.env.GOOGLE_APPLICATION_CREDENTIALS
+ * process.env.GOOGLE_CLOUD_KEY_FILE (preferred) or GOOGLE_APPLICATION_CREDENTIALS
 
  */
 

@@ -17,6 +17,7 @@ jest.mock('../src/middlewares/usage.middleware', () => ({
 }));
 
 const { verifyFirebaseToken } = require('../src/middlewares/firebaseAuth.middleware');
+const logger = require('../src/utils/logger');
 
 function responseRecorder() {
   return {
@@ -40,7 +41,7 @@ describe('Phase 4 Firebase to backend identity boundary', () => {
       uid: 'verified-uid', email: 'Verified@Example.test', name: 'Verified User'
     });
     mockFindOne.mockResolvedValue(null);
-    const created = { _id: 'mongo-user', firebaseUid: 'verified-uid', email: 'verified@example.test', role: 'student', isActive: true };
+    const created = { _id: 'mongo-user', firebaseUid: 'verified-uid', email: 'verified@example.test', role: null, isActive: true };
     mockCreate.mockResolvedValue(created);
     const req = {
       headers: { authorization: 'Bearer firebase-id-token' },
@@ -53,8 +54,9 @@ describe('Phase 4 Firebase to backend identity boundary', () => {
 
     expect(mockVerifyIdToken).toHaveBeenCalledWith('firebase-id-token', true);
     expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({
-      firebaseUid: 'verified-uid', email: 'verified@example.test'
+      firebaseUid: 'verified-uid', email: 'verified@example.test', displayName: 'Verified User'
     }));
+    expect(mockCreate.mock.calls[0][0]).not.toHaveProperty('role');
     expect(mockCreate.mock.calls[0][0]).not.toMatchObject({ firebaseUid: 'forged-uid' });
     expect(req.user).toBe(created);
     expect(next).toHaveBeenCalledTimes(1);
@@ -83,5 +85,30 @@ describe('Phase 4 Firebase to backend identity boundary', () => {
     expect(res.statusCode).toBe(401);
     expect(res.body).toEqual({ success: false, message: 'Invalid or expired token' });
     expect(JSON.stringify(res.body)).not.toContain('sensitive');
+  });
+
+  test.each([
+    ['auth/invalid-id-token', 'The provided ID token is malformed.'],
+    ['auth/id-token-expired', 'Firebase ID token has expired.'],
+    ['auth/id-token-revoked', 'The Firebase ID token has been revoked.'],
+    ['auth/argument-error', 'Firebase ID token has incorrect aud claim for another-project.']
+  ])('logs safe Firebase verification diagnostics for %s', async (code, message) => {
+    const rawToken = 'eyJhbGciOiJSUzI1NiJ9.sensitive-payload.sensitive-signature';
+    mockVerifyIdToken.mockRejectedValue(Object.assign(new Error(`${message} ${rawToken}`), { code }));
+    const log = jest.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const res = responseRecorder();
+      await verifyFirebaseToken(
+        { headers: { authorization: `Bearer ${rawToken}` }, body: {} }, res, jest.fn()
+      );
+      expect(res.statusCode).toBe(401);
+      expect(res.body).toEqual({ success: false, message: 'Invalid or expired token' });
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({
+        event: 'firebase.idTokenVerification.failed', authStage: 'verifyIdToken', code
+      }));
+      expect(JSON.stringify(log.mock.calls)).not.toContain(rawToken);
+    } finally {
+      log.mockRestore();
+    }
   });
 });

@@ -197,8 +197,7 @@ router.patch(
 router.patch(
   '/me/role',
   verifyJwtToken,
-  requireRole('admin'),
-  body('role').isString().trim().notEmpty().withMessage('role is required'),
+  body('role').isIn(['teacher', 'student']).withMessage('role must be teacher or student'),
   handleValidationResult,
   userController.setMyRole
 );

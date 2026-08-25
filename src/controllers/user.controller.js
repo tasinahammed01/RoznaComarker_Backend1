@@ -369,10 +369,6 @@ async function uploadMyAvatar(req, res) {
   }
 }
 
-const ALLOWED_ROLE_TRANSITIONS = {
-  admin: ['teacher', 'student']
-};
-
 async function setMyRole(req, res) {
   try {
     const role = req && req.body && req.body.role;
@@ -389,11 +385,11 @@ async function setMyRole(req, res) {
       return sendError(res, 401, 'Unauthorized');
     }
 
-    const userRole = user.role;
-    if (!ALLOWED_ROLE_TRANSITIONS[userRole] || !ALLOWED_ROLE_TRANSITIONS[userRole].includes(normalizedRole)) {
-      return res.status(403).json({
+    if (user.role === 'teacher' || user.role === 'student' || user.role === 'admin') {
+      return res.status(409).json({
         success: false,
-        message: 'You are not authorized to assign this role'
+        code: 'ROLE_ALREADY_FINALIZED',
+        message: 'Your account role has already been selected'
       });
     }
 
