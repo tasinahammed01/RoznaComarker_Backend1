@@ -117,6 +117,30 @@ function getAssessmentAIConfig(env = process.env, options = {}) {
   return config;
 }
 
+function getWorksheetExtractionAIConfig(env = process.env, options = {}) {
+  const worksheetOrGlobal = (worksheetKey, globalKey) =>
+    text(env[worksheetKey]) ? env[worksheetKey] : env[globalKey];
+  const extractionEnv = { ...env,
+    AI_PRIMARY_PROVIDER: text(env.WORKSHEET_EXTRACTION_AI_PRIMARY_PROVIDER) || 'openrouter',
+    AI_PRIMARY_MODEL: text(env.WORKSHEET_EXTRACTION_AI_PRIMARY_MODEL) || 'openai/gpt-4.1-mini',
+    AI_FALLBACK_1_PROVIDER: text(env.WORKSHEET_EXTRACTION_AI_FALLBACK_PROVIDER) || 'openrouter',
+    AI_FALLBACK_1_MODEL: text(env.WORKSHEET_EXTRACTION_AI_FALLBACK_MODEL) || 'openai/gpt-4.1',
+    // Worksheet extraction is intentionally a closed paid chain.
+    AI_FALLBACK_2_PROVIDER: '', AI_FALLBACK_2_MODEL: '',
+    AI_FALLBACK_3_PROVIDER: '', AI_FALLBACK_3_MODEL: '',
+    AI_ATTEMPT_TIMEOUT_MS: worksheetOrGlobal('WORKSHEET_EXTRACTION_AI_ATTEMPT_TIMEOUT_MS', 'AI_ATTEMPT_TIMEOUT_MS'),
+    AI_TOTAL_BUDGET_MS: worksheetOrGlobal('WORKSHEET_EXTRACTION_AI_TOTAL_BUDGET_MS', 'AI_TOTAL_BUDGET_MS'),
+    AI_PRIMARY_RETRIES: text(env.WORKSHEET_EXTRACTION_AI_PRIMARY_RETRIES) || '1',
+    AI_FALLBACK_RETRIES: text(env.WORKSHEET_EXTRACTION_AI_FALLBACK_RETRIES) || '0',
+    AI_RETRY_DELAY_MS: worksheetOrGlobal('WORKSHEET_EXTRACTION_AI_RETRY_DELAY_MS', 'AI_RETRY_DELAY_MS')
+  };
+  const config = getAIConfig(extractionEnv, options);
+  if (config.primaryRetries > 1 || config.fallbackRetries !== 0) {
+    throw configurationError(['Worksheet extraction permits at most one primary retry and no fallback retries.']);
+  }
+  return config;
+}
+
 function sanitizedAssessmentChain(env = process.env) {
   return getAssessmentAIConfig(env).chain.map((entry, index) => Object.freeze({
     index, role: index === 0 ? 'primary' : `fallback_${index}`,
@@ -534,7 +558,7 @@ function validateAIConfig(env = process.env) {
 
 module.exports = {
   SUPPORTED_PROVIDERS, DEFAULTS, MAX_RETRIES, MAX_RETRY_DELAY_MS, credentialFor, endpointFor,
-  getAIConfig, getAssessmentAIConfig, sanitizedAssessmentChain, validateAIConfig,
+  getAIConfig, getAssessmentAIConfig, getWorksheetExtractionAIConfig, sanitizedAssessmentChain, validateAIConfig,
   retryAfterMs, safeCode, extractGoogle, extractOpenRouter, googleUsage, safeFailureMetadata,
   safeSchemaName, safeProviderErrorDetails, googleBody, providerAttempt, generate
 };

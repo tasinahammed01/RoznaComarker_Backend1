@@ -26,9 +26,6 @@ class EmailService {
           user: 'apikey',
           pass: process.env.SENDGRID_API_KEY
         },
-        tls: {
-          rejectUnauthorized: false
-        }
       });
 
       this.transporter.verify((error, success) => {
@@ -43,7 +40,12 @@ class EmailService {
     }
   }
 
-  async sendEmail({ to, subject, html, from = null }) {
+  isConfigured() {
+    return Boolean(this.transporter && process.env.SENDGRID_API_KEY
+      && (process.env.SENDGRID_FROM_EMAIL || process.env.EMAIL_FROM));
+  }
+
+  async sendEmail({ to, subject, html, text, from = null }) {
     try {
       if (!this.transporter) {
         throw new Error('Email transporter not initialized');
@@ -54,10 +56,14 @@ class EmailService {
       }
 
       const mailOptions = {
-        from: from || process.env.EMAIL_FROM || 'noreply@rozna.com',
+        from: from || {
+          name: process.env.SENDGRID_FROM_NAME || 'CoMarker',
+          address: process.env.SENDGRID_FROM_EMAIL || process.env.EMAIL_FROM
+        },
         to,
         subject,
-        html
+        html,
+        text
       };
 
       const info = await this.transporter.sendMail(mailOptions);
@@ -68,11 +74,11 @@ class EmailService {
         response: info.response
       };
     } catch (error) {
-      logger.error(`Failed to send email: ${error.message}`);
+      logger.error({ event: 'email.delivery.failed', statusCode: error.statusCode || error.code });
       return {
         success: false,
-        error: error.message,
-        details: error
+        error: 'Email delivery failed',
+        statusCode: error.statusCode || error.code
       };
     }
   }
@@ -102,10 +108,11 @@ class EmailService {
         throw new Error('Email and verification link are required');
       }
 
-      const subject = 'Verify Your Email Address';
+      const subject = 'Verify your CoMarker email';
       const html = this.getVerificationTemplate(verificationLink);
+      const text = `Welcome to CoMarker. Verify your email using this secure Firebase link:\n\n${verificationLink}\n\nIf you didn't create this account, you can ignore this email.`;
 
-      return await this.sendEmail({ to, subject, html });
+      return await this.sendEmail({ to, subject, html, text });
     } catch (error) {
       logger.error(`Failed to send verification email: ${error.message}`);
       return {
@@ -121,10 +128,11 @@ class EmailService {
         throw new Error('Email and reset link are required');
       }
 
-      const subject = 'Reset Your Password';
+      const subject = 'Reset your CoMarker password';
       const html = this.getResetPasswordTemplate(resetLink);
+      const text = `A password reset was requested for your CoMarker account. Reset it using this secure Firebase link:\n\n${resetLink}\n\nIf you didn't request this, ignore this email; your password will remain unchanged.`;
 
-      return await this.sendEmail({ to, subject, html });
+      return await this.sendEmail({ to, subject, html, text });
     } catch (error) {
       logger.error(`Failed to send reset password email: ${error.message}`);
       return {
@@ -312,7 +320,7 @@ class EmailService {
             <h1>Verify Your Email</h1>
           </div>
           <div class="content">
-            <h2>Welcome to Rozna!</h2>
+            <h2>Welcome to CoMarker by RoznaHub!</h2>
             <p>Thank you for signing up. Please click the button below to verify your email address:</p>
             
             <a href="${verificationLink}" class="btn">Verify Email Address</a>
@@ -323,10 +331,11 @@ class EmailService {
               <p style="word-break: break-all; color: #28a745; font-family: monospace;">${verificationLink}</p>
             </div>
             
-            <p>This link will expire in <strong>24 hours</strong>.</p>
+            <p>For your security, Firebase controls this link and its expiry.</p>
+            <p>If you didn't create this account, you can ignore this email.</p>
           </div>
           <div class="footer">
-            <p>&copy; ${new Date().getFullYear()} Rozna. All rights reserved.</p>
+            <p>&copy; ${new Date().getFullYear()} CoMarker / RoznaHub. All rights reserved.</p>
             <p>This is an automated message, please do not reply to this email.</p>
           </div>
         </div>
@@ -431,14 +440,14 @@ class EmailService {
               <p style="word-break: break-all; color: #dc3545; font-family: monospace;">${resetLink}</p>
             </div>
             
-            <p>This link will expire in <strong>1 hour</strong>.</p>
+            <p>For your security, Firebase controls this link and its expiry.</p>
             
             <div class="warning">
               <strong>Security Notice:</strong> If you didn't request this password reset, please ignore this email. Your password will remain unchanged.
             </div>
           </div>
           <div class="footer">
-            <p>&copy; ${new Date().getFullYear()} Rozna. All rights reserved.</p>
+            <p>&copy; ${new Date().getFullYear()} CoMarker / RoznaHub. All rights reserved.</p>
             <p>This is an automated message, please do not reply to this email.</p>
           </div>
         </div>

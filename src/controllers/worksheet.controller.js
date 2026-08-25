@@ -923,12 +923,15 @@ async function extractWorksheetStructureController(req, res) {
     const language = req.body.language || "English";
     const subject = req.body.subject || "General";
     const gradeLevel = req.body.gradeLevel || "Not specified";
+    const difficulty = ["easy", "medium", "hard"].includes(req.body.difficulty)
+      ? req.body.difficulty : "medium";
 
     // Call the extraction service
     const result = await extractWorksheetStructure(extractedText, {
       language,
       subject,
       gradeLevel,
+      difficulty,
     });
 
     console.log(
@@ -952,29 +955,43 @@ async function extractWorksheetStructureController(req, res) {
       fileName: req.file.originalname,
     });
   } catch (error) {
-    console.error(
-      "[EXTRACT STRUCTURE] Error:",
-      error.response?.data || error.message
-    );
-    if (error.status === 402)
-      return sendError(
-        res,
-        500,
-        "AI service credits exhausted. Contact admin."
-      );
-    if (error.status === 429)
-      return sendError(
-        res,
-        500,
-        "AI service rate limited. Try again in a moment."
-      );
-    if (error.status === 401)
-      return sendError(res, 500, "AI service authentication failed.");
-    return res.status(500).json({
-      success: false,
-      message: "Worksheet extraction failed",
-      error: error.message,
+    const attempts = Array.isArray(error.attempts) ? error.attempts : [];
+    const finalAttempt = attempts.at(-1) || {};
+    const finalFailureCode = error.finalFailureCode || error.code || finalAttempt.code;
+    logger.error({
+      message: "Worksheet structure AI extraction failed",
+      event: "worksheet.extraction.failed",
+      feature: "worksheet_extract_structure",
+      code: error.code || "WORKSHEET_EXTRACTION_FAILED",
+      finalFailureCode,
+      attemptCount: error.attemptCount || attempts.length,
+      timeoutCount: error.timeoutCount || 0,
+      attempts: attempts.map((attempt) => ({
+        provider: attempt.provider, model: attempt.model, code: attempt.code,
+        httpStatus: attempt.httpStatus, finishReason: attempt.finishReason,
+        validationCode: attempt.validationCode,
+        responseTextLength: attempt.responseTextLength,
+      })),
     });
+    const status = Number(finalAttempt.httpStatus || error.status || error.httpStatus);
+    let message = "Worksheet extraction failed. Please try again.";
+    if (finalFailureCode === "AI_TOTAL_BUDGET_EXHAUSTED" ||
+        finalFailureCode === "AI_ATTEMPT_TIMEOUT" || error.code === "AI_TOTAL_BUDGET_EXHAUSTED") {
+      message = "Worksheet extraction timed out. Please try again.";
+    } else if (status === 429 || finalFailureCode === "AI_PROVIDER_RATE_LIMIT") {
+      message = "AI service is temporarily busy. Please try again.";
+    } else if (status === 402 || finalFailureCode === "AI_PROVIDER_PAYMENT_REQUIRED") {
+      message = "AI service credits are unavailable. Please contact admin.";
+    } else if ([401, 403].includes(status) ||
+        ["AI_PROVIDER_AUTH_ERROR", "AI_PROVIDER_PERMISSION_DENIED", "AI_CHAIN_NOT_CONFIGURED"]
+          .includes(finalFailureCode)) {
+      message = "AI service configuration error. Please contact admin.";
+    } else if (finalFailureCode === "AI_OUTPUT_VALIDATION_FAILED") {
+      message = "We couldn't structure this worksheet reliably. Please try again.";
+    } else if (error.code === "WORKSHEET_EXTRACTION_INPUT_TOO_LARGE") {
+      message = error.userMessage;
+    }
+    return sendError(res, 500, message);
   }
 }
 

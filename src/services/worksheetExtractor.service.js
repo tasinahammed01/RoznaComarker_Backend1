@@ -7,6 +7,7 @@
  */
 
 const { generateChatCompletion } = require('./aiGeneration.service');
+const { getWorksheetExtractionAIConfig } = require('./aiGateway.service');
 const logger = require('../utils/logger');
 
 const EXTRACTION_FEATURE = 'worksheet_extract_structure';
@@ -16,6 +17,8 @@ const RETRYABLE_OUTPUT_CODES = [
   'AI_RESPONSE_INVALID',
   'AI_RESPONSE_TRUNCATED',
 ];
+const DEFAULT_MAX_INPUT_CHARACTERS = 120000;
+const DEFAULT_MAX_OUTPUT_TOKENS = 8000;
 
 function extractionValidationError(message, validationCode) {
   const error = new Error(message);
@@ -24,18 +27,59 @@ function extractionValidationError(message, validationCode) {
   return error;
 }
 
+function boundedInteger(value, fallback, minimum, maximum) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
+}
+
 /**
  * Builds the extraction prompt for LLM structuring.
  * @param {string} extractedText - Raw text from file extraction
  * @param {Object} options - Teacher options (language, subject, etc.)
  * @returns {string} System + user prompt
  */
+function normalizeComparable(value) {
+  return String(value || '').toLowerCase().replace(/_+/gu, ' blank ')
+    .replace(/[^a-z0-9\s]/gu, ' ').replace(/\s+/gu, ' ').trim();
+}
+
+function analyzeSourceRichness(extractedText) {
+  const textValue = String(extractedText || '').trim();
+  const lines = textValue.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  const paragraphs = textValue.split(/(?:\r?\n){2,}/u).map((p) => p.trim()).filter(Boolean);
+  const headings = lines.filter((line) => line.length <= 80 &&
+    (/[:：]$/u.test(line) || /^[A-Z][A-Z\s\d&/-]{3,}$/u.test(line))).length;
+  const listItems = lines.filter((line) => /^(?:[-*•]|\d+[.)])\s+/u.test(line)).length;
+  const factCandidates = textValue.split(/(?<=[.!?])\s+|\r?\n/u)
+    .map(normalizeComparable).filter((value) => value.split(' ').length >= 4);
+  const distinctFacts = new Set(factCandidates).size;
+  const namedSequences = lines.filter((line) =>
+    /\b(?:stage|step|phase|cycle|category|type|part|first|second|third|then|finally)\b/iu.test(line)).length;
+  const factUnits = Math.max(paragraphs.length, distinctFacts, listItems + namedSequences);
+  let sizeBand = textValue.length < 2500 ? 'short' : textValue.length <= 8000 ? 'medium' : 'long';
+  let targetItems = sizeBand === 'short' ? 7 : sizeBand === 'medium' ? 12 : 17;
+  if (sizeBand === 'short' && factUnits >= 10) targetItems = Math.min(15, Math.max(10, Math.round(factUnits * 1.25)));
+  if (sizeBand === 'medium') targetItems = Math.min(14, Math.max(10, Math.round(factUnits * 0.75)));
+  if (sizeBand === 'long') targetItems = Math.min(20, Math.max(14, Math.round(factUnits * 0.65)));
+  const sparse = factUnits < 5;
+  if (sparse) targetItems = Math.max(4, Math.min(targetItems, factUnits + 2));
+  const matching = targetItems >= 10 ? Math.max(4, Math.round(targetItems * 0.3)) : Math.max(2, Math.round(targetItems * 0.28));
+  const multipleChoice = Math.max(2, Math.round(targetItems * 0.27));
+  const fillBlank = Math.max(1, Math.round(targetItems * 0.2));
+  const trueFalse = Math.max(1, targetItems - matching - multipleChoice - fillBlank);
+  return { characterCount: textValue.length, paragraphCount: paragraphs.length, headingCount: headings,
+    listItemCount: listItems, distinctFactCount: distinctFacts, namedSequenceCount: namedSequences,
+    factUnits, sizeBand, sparse, targetItems,
+    distribution: { multiple_choice: multipleChoice, fill_blank: fillBlank, matching, true_false: trueFalse } };
+}
+
 function buildExtractionPrompt(extractedText, options = {}) {
   const {
     language = 'English',
     subject = 'General',
-    gradeLevel = 'Not specified',
+    gradeLevel = 'Not specified', difficulty = 'medium',
   } = options;
+  const richness = options.richness || analyzeSourceRichness(extractedText);
 
   const schema = `{
   "title": "string - worksheet title",
@@ -49,7 +93,7 @@ function buildExtractionPrompt(extractedText, options = {}) {
           "id": "string - unique identifier (e.g., q1, q2, q3)",
           "prompt": "string - the question or prompt text",
           "type": "fill_blank | multiple_choice | matching | true_false | short_answer | essay",
-          "options": ["string", "..."] - only for multiple_choice or matching (array of options),
+          "options": ["string", "..."] - exactly 4 unique options for multiple_choice; omit otherwise,
           "correct_answer": "string | string[] - the correct answer(s)",
           "topic": "string - skill/topic being tested (e.g., 'present tense verbs', 'multiplication facts')",
           "confidence": "high | medium | low - how confident you are about this extraction"
@@ -74,6 +118,10 @@ CONTEXT:
 - Language: ${language}
 - Subject: ${subject || 'General'}
 - Grade Level: ${gradeLevel || 'Not specified'}
+- Difficulty: ${difficulty || 'medium'}
+- Source richness: ${richness.sizeBand}; ${richness.factUnits} distinct factual units estimated
+- Target assessable items: approximately ${richness.targetItems}
+- Suggested distribution: ${richness.distribution.multiple_choice} multiple choice, ${richness.distribution.fill_blank} fill blanks, ${richness.distribution.matching} matching pairs, ${richness.distribution.true_false} true/false
 
 EXTRACTED WORKSHEET CONTENT:
 ${extractedText}
@@ -86,9 +134,16 @@ ${schema}
 - Start your response with { and end with }
 - If you cannot determine a correct answer with high confidence, mark confidence as 'low' and leave correct_answer empty
 - For multiple_choice, provide 4 options in the options array
-- For matching, provide pairs in the options array
+- Each matching question represents ONE pair: prompt is the left term and correct_answer is its right-side match. Generate several pairs in the same section; do not put pairs in options
+- Each fill_blank prompt must contain an underscore blank marker and correct_answer must contain only the missing word or short phrase, never the incomplete prompt
+- Treat every MCQ, fill blank, matching pair, and true/false statement as one assessable item
+- Adapt counts to the usable source. Do not invent facts to hit a quota, but do not return one token item per type when the source supports more
+- Cover distinct concepts across the whole source before reusing a fact. Do not restate the same fact as MCQ, fill blank, and true/false
+- MCQ distractors must be plausible and distinct, with exactly one option equal to correct_answer. Vary the correct option position
+- Matching sections should normally contain 4-8 unique pairs when supported
+- Difficulty rules: easy uses direct source recall; medium emphasizes sequence, comparison, and relationships; hard uses source-grounded inference and cause/effect only
 - Be precise with question boundaries - each question should be a single, clear prompt
-- CRITICAL for fill_blank questions: Preserve blank markers (underscores like _____ or _______) in the prompt text exactly as they appear in the worksheet. Do NOT remove or replace them. The blank markers indicate where the answer should go. For word banks, return each word as a separate string in the correct_answer array, not concatenated together.`;
+- CRITICAL for fill_blank questions: create exactly one clear underscore blank per item and preserve it in prompt. Put only that blank's missing word or short phrase in correct_answer. The application builds the shared word bank from these answers.`;
 }
 
 /**
@@ -130,38 +185,74 @@ function parseExtractionResponse(aiText) {
   }
 
   // Validate each section
+  const ids = new Set();
+  const comparablePrompts = [];
   for (const section of parsed.sections) {
     if (!section.instruction || typeof section.instruction !== 'string') {
-      throw new Error('Section missing instruction field');
+      throw extractionValidationError('Section missing instruction field', 'EXTRACTION_INVALID_SECTION_INSTRUCTION');
     }
     if (!Array.isArray(section.questions) || section.questions.length === 0) {
-      throw new Error('Section missing questions array');
+      throw extractionValidationError('Section missing questions array', 'EXTRACTION_MISSING_QUESTIONS');
     }
     // Validate each question
     for (const q of section.questions) {
       if (!q.id || typeof q.id !== 'string') {
-        throw new Error('Question missing id field');
+        throw extractionValidationError('Question missing id field', 'EXTRACTION_INVALID_QUESTION_ID');
       }
+      if (ids.has(q.id)) throw extractionValidationError('Duplicate question id', 'EXTRACTION_DUPLICATE_QUESTION_ID');
+      ids.add(q.id);
       if (!q.prompt || typeof q.prompt !== 'string') {
-        throw new Error('Question missing prompt field');
+        throw extractionValidationError('Question missing prompt field', 'EXTRACTION_INVALID_QUESTION_PROMPT');
       }
       if (!q.type || typeof q.type !== 'string') {
-        throw new Error('Question missing type field');
+        throw extractionValidationError('Question missing type field', 'EXTRACTION_INVALID_QUESTION_TYPE');
       }
       const validTypes = ['fill_blank', 'multiple_choice', 'matching', 'true_false', 'short_answer', 'essay'];
       if (!validTypes.includes(q.type)) {
-        throw new Error(`Invalid question type: ${q.type}`);
+        throw extractionValidationError(`Invalid question type: ${q.type}`, 'EXTRACTION_INVALID_QUESTION_TYPE');
+      }
+      if (q.type === 'multiple_choice') {
+        if (!Array.isArray(q.options) || q.options.length !== 4 ||
+            new Set(q.options.map(normalizeComparable)).size !== 4) {
+          throw extractionValidationError('Multiple choice requires four unique options', 'EXTRACTION_INVALID_MCQ_OPTIONS');
+        }
+        if (typeof q.correct_answer !== 'string' || !q.options.includes(q.correct_answer)) {
+          throw extractionValidationError('Multiple choice answer must match one option', 'EXTRACTION_INVALID_MCQ_ANSWER');
+        }
+      }
+      if (q.type === 'fill_blank') {
+        const answer = typeof q.correct_answer === 'string' ? q.correct_answer.trim() : '';
+        if (!/_+/u.test(q.prompt) || !answer || answer.length > 80 || normalizeComparable(answer) === normalizeComparable(q.prompt)) {
+          throw extractionValidationError('Malformed fill blank question', 'EXTRACTION_INVALID_FILL_BLANK');
+        }
+      }
+      if (q.type === 'matching') {
+        if (typeof q.correct_answer !== 'string' || !q.correct_answer.trim() ||
+            normalizeComparable(q.prompt) === normalizeComparable(q.correct_answer)) {
+          throw extractionValidationError('Malformed matching pair', 'EXTRACTION_INVALID_MATCHING_PAIR');
+        }
+      }
+      if (q.type === 'true_false' && !['true', 'false'].includes(String(q.correct_answer).toLowerCase())) {
+        throw extractionValidationError('True/false answer must be boolean-like', 'EXTRACTION_INVALID_TRUE_FALSE_ANSWER');
       }
       if (!q.topic || typeof q.topic !== 'string') {
-        throw new Error('Question missing topic field');
+        throw extractionValidationError('Question missing topic field', 'EXTRACTION_INVALID_TOPIC');
       }
       if (!q.confidence || typeof q.confidence !== 'string') {
-        throw new Error('Question missing confidence field');
+        throw extractionValidationError('Question missing confidence field', 'EXTRACTION_INVALID_CONFIDENCE');
       }
       const validConfidence = ['high', 'medium', 'low'];
       if (!validConfidence.includes(q.confidence)) {
-        throw new Error(`Invalid confidence level: ${q.confidence}`);
+        throw extractionValidationError(`Invalid confidence level: ${q.confidence}`, 'EXTRACTION_INVALID_CONFIDENCE');
       }
+      const normalizedPrompt = normalizeComparable(q.prompt);
+      if (comparablePrompts.some((prior) => prior === normalizedPrompt ||
+          (prior.length > 24 && normalizedPrompt.length > 24 &&
+           prior.split(' ').filter((word) => normalizedPrompt.split(' ').includes(word)).length /
+             Math.max(prior.split(' ').length, normalizedPrompt.split(' ').length) >= 0.85))) {
+        throw extractionValidationError('Duplicate or near-duplicate question', 'EXTRACTION_DUPLICATE_QUESTION');
+      }
+      comparablePrompts.push(normalizedPrompt);
     }
   }
 
@@ -380,21 +471,25 @@ async function extractWorksheetStructure(extractedText, options = {}) {
   logger.info('[EXTRACTION] Starting worksheet structure extraction');
   logger.info('[EXTRACTION] Extracted text length:', extractedText.length);
 
-  const prompt = buildExtractionPrompt(extractedText, options);
+  const maxInputCharacters = boundedInteger(process.env.WORKSHEET_EXTRACTION_AI_MAX_INPUT_CHARACTERS,
+    DEFAULT_MAX_INPUT_CHARACTERS, 1000, 500000);
+  if (extractedText.length > maxInputCharacters) {
+    const error = new Error('Worksheet text exceeds the safe AI input limit.');
+    error.code = 'WORKSHEET_EXTRACTION_INPUT_TOO_LARGE';
+    error.userMessage = 'This worksheet is too large to extract at once. Please upload a shorter document.';
+    throw error;
+  }
+  const richness = analyzeSourceRichness(extractedText);
+  const prompt = buildExtractionPrompt(extractedText, { ...options, richness });
+  const maxOutputTokens = boundedInteger(process.env.WORKSHEET_EXTRACTION_AI_MAX_OUTPUT_TOKENS,
+    DEFAULT_MAX_OUTPUT_TOKENS, 1000, 16000);
+  logger.info({ message: 'Worksheet extraction prompt prepared', feature: EXTRACTION_FEATURE,
+    extractedCharacterCount: extractedText.length, promptCharacterCount: prompt.length,
+    estimatedPromptTokens: Math.ceil(prompt.length / 4), maxOutputTokens });
 
   try {
     let gatewayResult = null;
-    const extractionEnv = {
-      ...process.env,
-      AI_PRIMARY_RETRIES: '1',
-      AI_FALLBACK_RETRIES: '0',
-      AI_FALLBACK_1_PROVIDER: '',
-      AI_FALLBACK_1_MODEL: '',
-      AI_FALLBACK_2_PROVIDER: '',
-      AI_FALLBACK_2_MODEL: '',
-      AI_FALLBACK_3_PROVIDER: '',
-      AI_FALLBACK_3_MODEL: '',
-    };
+    const config = getWorksheetExtractionAIConfig(process.env);
     const parsed = await generateChatCompletion(
       [
         {
@@ -405,13 +500,33 @@ async function extractWorksheetStructure(extractedText, options = {}) {
       ],
       {
         temperature: 0.2, // Lower temperature for consistent structuring
-        max_tokens: 8000,
+        max_tokens: maxOutputTokens,
         response_format: { type: 'json_object' },
         feature: EXTRACTION_FEATURE,
-        env: extractionEnv,
-        validate: parseExtractionResponse,
+        env: process.env,
+        config,
+        validate: (content) => {
+          const parsed = parseExtractionResponse(content);
+          const counts = parsed.sections.flatMap((section) => section.questions)
+            .reduce((acc, question) => ({ ...acc, [question.type]: (acc[question.type] || 0) + 1 }), {});
+          const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+          const minimumTotal = richness.sparse ? Math.max(1, richness.targetItems - 3)
+            : Math.max(5, Math.floor(richness.targetItems * 0.7));
+          if (total < minimumTotal) throw extractionValidationError('Too few assessable items for source richness', 'EXTRACTION_INSUFFICIENT_ITEMS');
+          if (!richness.sparse && richness.targetItems >= 10 && (counts.matching || 0) < 4) {
+            throw extractionValidationError('Matching activity has too few pairs', 'EXTRACTION_INSUFFICIENT_MATCHING_PAIRS');
+          }
+          if (!richness.sparse && richness.targetItems >= 10 &&
+              ((counts.multiple_choice || 0) < 3 || (counts.fill_blank || 0) < 2 ||
+               (counts.true_false || 0) < 2)) {
+            throw extractionValidationError('Generated activity distribution is too shallow', 'EXTRACTION_INSUFFICIENT_TYPE_COVERAGE');
+          }
+          return parsed;
+        },
         returnValidated: true,
         retryableSameModelCodes: RETRYABLE_OUTPUT_CODES,
+        terminalCodes: ['AI_PROVIDER_AUTH_ERROR', 'AI_PROVIDER_PERMISSION_DENIED',
+          'AI_PROVIDER_PAYMENT_REQUIRED', 'AI_PROVIDER_INVALID_REQUEST'],
         onResponse: (result) => { gatewayResult = result; },
       },
     );
@@ -453,8 +568,18 @@ async function extractWorksheetStructure(extractedText, options = {}) {
     };
   } catch (error) {
     logger.error({ message: 'Worksheet extraction failed', feature: EXTRACTION_FEATURE,
+      code: error.code || 'AI_OUTPUT_VALIDATION_FAILED',
+      finalFailureCode: error.finalFailureCode || error.code || 'AI_OUTPUT_VALIDATION_FAILED',
       attemptCount: error.attemptCount || error.attempts?.length || 0,
-      finalErrorCode: error.finalFailureCode || error.code || 'AI_OUTPUT_VALIDATION_FAILED' });
+      timeoutCount: error.timeoutCount || 0,
+      attempts: Array.isArray(error.attempts) ? error.attempts.map((attempt) => ({
+        provider: attempt.provider, model: attempt.model, code: attempt.code,
+        httpStatus: attempt.httpStatus, finishReason: attempt.finishReason,
+        validationCode: attempt.validationCode, responseTextLength: attempt.responseTextLength,
+        promptTokenCount: attempt.promptTokenCount, candidateTokenCount: attempt.candidateTokenCount,
+        totalTokenCount: attempt.totalTokenCount, retryIndex: attempt.retryIndex,
+        fallbackIndex: attempt.fallbackIndex
+      })) : [] });
     throw error;
   }
 }
@@ -464,4 +589,5 @@ module.exports = {
   convertExtractedToActivities,
   buildExtractionPrompt,
   parseExtractionResponse,
+  analyzeSourceRichness,
 };

@@ -18,7 +18,8 @@ async function generateChatCompletion(messages, options = {}) {
     onAttempt: options.onAttempt,
     onRetry: options.onRetry,
     retryableSameModelCodes: options.retryableSameModelCodes,
-    terminalCodes: options.terminalCodes
+    terminalCodes: options.terminalCodes,
+    config: options.config
   });
   if (typeof options.onResponse === 'function') {
     await options.onResponse({ usage: result.usage, model: result.model, provider: result.provider,

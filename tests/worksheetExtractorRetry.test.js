@@ -25,8 +25,10 @@ describe('worksheet structure extraction bounded retry', () => {
 
   beforeEach(() => {
     jest.resetModules();
-    process.env.AI_PRIMARY_PROVIDER = 'openrouter';
-    process.env.AI_PRIMARY_MODEL = 'test/worksheet-model';
+    process.env.WORKSHEET_EXTRACTION_AI_PRIMARY_PROVIDER = 'openrouter';
+    process.env.WORKSHEET_EXTRACTION_AI_PRIMARY_MODEL = 'test/worksheet-model';
+    process.env.WORKSHEET_EXTRACTION_AI_FALLBACK_PROVIDER = 'openrouter';
+    process.env.WORKSHEET_EXTRACTION_AI_FALLBACK_MODEL = 'test/worksheet-fallback';
     process.env.OPENROUTER_API_KEY = 'test-key';
     process.env.OPENROUTER_BASE_URL = 'https://router.test/v1';
     process.env.AI_ATTEMPT_TIMEOUT_MS = '60000';
@@ -76,22 +78,23 @@ describe('worksheet structure extraction bounded retry', () => {
     expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 
-  test('returns a controlled failure after exactly two invalid outputs', async () => {
+  test('falls back after two invalid primary outputs and returns a controlled failure', async () => {
     await expect(extractWithResponses(
       providerSuccess(JSON.stringify({ title: 'Missing sections' })),
-      providerSuccess('{broken')
+      providerSuccess('{broken'),
+      providerSuccess('{still broken')
     )).rejects.toMatchObject({
       code: 'AI_CHAIN_EXHAUSTED',
       finalFailureCode: 'AI_OUTPUT_VALIDATION_FAILED',
-      attemptCount: 2
+      attemptCount: 3
     });
-    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(global.fetch).toHaveBeenCalledTimes(3);
   });
 
   test('does not retry provider authentication failures', async () => {
     await expect(extractWithResponses({
       ok: false, status: 401, headers: { get: () => null }, text: async () => ''
-    })).rejects.toMatchObject({ code: 'AI_CHAIN_EXHAUSTED', attemptCount: 1 });
+    })).rejects.toMatchObject({ code: 'AI_PROVIDER_AUTH_ERROR', attemptCount: 1 });
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -121,5 +124,27 @@ describe('worksheet structure extraction bounded retry', () => {
       providerSuccess(`\`\`\`json\n${JSON.stringify(VALID_STRUCTURE)}\n\`\`\``)
     );
     expect(result.extractedStructure).toEqual(VALID_STRUCTURE);
+  });
+
+  test('uses the paid fallback after the primary retry is exhausted', async () => {
+    const result = await extractWithResponses(
+      providerSuccess('{broken'), providerSuccess('{broken again'),
+      providerSuccess(JSON.stringify(VALID_STRUCTURE))
+    );
+    const bodies = global.fetch.mock.calls.map((call) => JSON.parse(call[1].body));
+    expect(bodies.map((body) => body.model)).toEqual([
+      'test/worksheet-model', 'test/worksheet-model', 'test/worksheet-fallback'
+    ]);
+    expect(result.title).toBe('Fractions');
+  });
+
+  test('invalid question type is a retryable structured validation failure', async () => {
+    const invalid = JSON.parse(JSON.stringify(VALID_STRUCTURE));
+    invalid.sections[0].questions[0].type = 'unknown';
+    const result = await extractWithResponses(
+      providerSuccess(JSON.stringify(invalid)), providerSuccess(JSON.stringify(VALID_STRUCTURE))
+    );
+    expect(result.title).toBe('Fractions');
+    expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 });

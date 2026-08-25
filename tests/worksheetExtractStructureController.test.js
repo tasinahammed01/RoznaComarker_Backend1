@@ -56,9 +56,30 @@ describe('worksheet extract-structure controller sequencing', () => {
     await controller.extractWorksheetStructure(request(), res);
     expect(mockExtractContent).toHaveBeenCalledTimes(1);
     expect(mockExtractWorksheetStructure).toHaveBeenCalledWith('Extracted worksheet text', {
-      language: 'English', subject: 'Math', gradeLevel: '4',
+      language: 'English', subject: 'Math', gradeLevel: '4', difficulty: 'medium',
     });
     expect(res.statusCode).toBe(200);
     expect(res.body.success).toBe(true);
+  });
+
+  test.each([
+    ['AI_TOTAL_BUDGET_EXHAUSTED', null, 'Worksheet extraction timed out. Please try again.'],
+    ['AI_PROVIDER_RATE_LIMIT', 429, 'AI service is temporarily busy. Please try again.'],
+    ['AI_PROVIDER_PAYMENT_REQUIRED', 402, 'AI service credits are unavailable. Please contact admin.'],
+    ['AI_PROVIDER_AUTH_ERROR', 401, 'AI service configuration error. Please contact admin.'],
+    ['AI_OUTPUT_VALIDATION_FAILED', null, "We couldn't structure this worksheet reliably. Please try again."],
+  ])('maps %s to a safe client message', async (code, httpStatus, expected) => {
+    mockExtractContent.mockResolvedValue('Extracted worksheet text');
+    mockExtractWorksheetStructure.mockRejectedValue(Object.assign(new Error('private provider detail'), {
+      code: code === 'AI_TOTAL_BUDGET_EXHAUSTED' ? code : 'AI_CHAIN_EXHAUSTED',
+      finalFailureCode: code,
+      attempts: [{ provider: 'openrouter', model: 'test/model', code, httpStatus }],
+      attemptCount: 1,
+    }));
+    const res = response();
+    await controller.extractWorksheetStructure(request(), res);
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ success: false, message: expected });
+    expect(JSON.stringify(res.body)).not.toContain('private provider detail');
   });
 });

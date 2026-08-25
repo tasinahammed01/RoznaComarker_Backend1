@@ -93,7 +93,11 @@ function createUserRateLimiter(options = {}) {
   return createLimiter({
     windowMs: toPositiveInt(options.windowMs || process.env.AI_USER_RATE_LIMIT_WINDOW_MS, 5 * 60 * 1000),
     limit: toPositiveInt(options.limit || process.env.AI_USER_RATE_LIMIT_MAX, 10),
-    keyGenerator: (req) => req.user?._id ? `user:${String(req.user._id)}` : `ip:${normalizedIp(req)}`,
+    keyGenerator: (req) => req.user?._id
+      ? `user:${String(req.user._id)}`
+      : req.firebase?.uid
+        ? `firebase:${safeHash(req.firebase.uid)}`
+        : `ip:${normalizedIp(req)}`,
     event: options.event || 'AI_GENERATION_RATE_LIMITED',
     reason: options.reason || 'authenticated_user',
     scope: options.scope,

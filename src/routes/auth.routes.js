@@ -1,6 +1,7 @@
 const express = require('express');
 
-const { verifyFirebaseToken } = require('../middlewares/firebaseAuth.middleware');
+const { verifyFirebaseIdentityToken, verifyFirebaseToken } = require('../middlewares/firebaseAuth.middleware');
+const transactionalAuthEmail = require('../controllers/transactionalAuthEmail.controller');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { signJwt } = require('../utils/jwt');
 const { issueToken: issueSseToken } = require('../services/sseToken.service');
@@ -9,8 +10,22 @@ const {
   createAuthIpRateLimiter,
   createUserRateLimiter
 } = require('../middlewares/rateLimit.middleware');
+const { createEmailRateLimiter } = require('../middlewares/rateLimit.middleware');
 
 const router = express.Router();
+
+router.post('/send-verification-email',
+  createAuthIpRateLimiter({ windowMs: process.env.EMAIL_IP_RATE_LIMIT_WINDOW_MS, limit: process.env.EMAIL_IP_RATE_LIMIT_MAX }),
+  verifyFirebaseIdentityToken,
+  createUserRateLimiter({ windowMs: process.env.EMAIL_ADDRESS_RATE_LIMIT_WINDOW_MS, limit: process.env.EMAIL_ADDRESS_RATE_LIMIT_MAX }),
+  transactionalAuthEmail.sendVerificationEmail
+);
+
+router.post('/request-password-reset',
+  createAuthIpRateLimiter({ windowMs: process.env.EMAIL_IP_RATE_LIMIT_WINDOW_MS, limit: process.env.EMAIL_IP_RATE_LIMIT_MAX }),
+  createEmailRateLimiter({ windowMs: process.env.EMAIL_ADDRESS_RATE_LIMIT_WINDOW_MS, limit: process.env.EMAIL_ADDRESS_RATE_LIMIT_MAX }),
+  transactionalAuthEmail.requestPasswordReset
+);
 
 /**
  * @openapi

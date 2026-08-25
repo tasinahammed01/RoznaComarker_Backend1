@@ -16,7 +16,7 @@ jest.mock('../src/middlewares/usage.middleware', () => ({
   ensureActivePlan: (...args) => mockEnsureActivePlan(...args)
 }));
 
-const { verifyFirebaseToken } = require('../src/middlewares/firebaseAuth.middleware');
+const { verifyFirebaseIdentityToken, verifyFirebaseToken } = require('../src/middlewares/firebaseAuth.middleware');
 const logger = require('../src/utils/logger');
 
 function responseRecorder() {
@@ -34,6 +34,25 @@ describe('Phase 4 Firebase to backend identity boundary', () => {
     mockFindOne.mockReset();
     mockCreate.mockReset();
     mockEnsureActivePlan.mockReset().mockResolvedValue(undefined);
+  });
+
+  test('verification-email identity boundary requires a valid revocation-checked token without MongoDB access', async () => {
+    mockVerifyIdToken.mockResolvedValue({ uid: 'pending-uid', email: 'pending@example.test' });
+    const req = { headers: { authorization: 'Bearer pending-token' }, body: { email: 'forged@example.test' } };
+    const next = jest.fn();
+    await verifyFirebaseIdentityToken(req, responseRecorder(), next);
+    expect(mockVerifyIdToken).toHaveBeenCalledWith('pending-token', true);
+    expect(req.firebase).toEqual({ uid: 'pending-uid', email: 'pending@example.test' });
+    expect(mockFindOne).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  test('verification-email identity boundary rejects missing credentials', async () => {
+    const res = responseRecorder();
+    await verifyFirebaseIdentityToken({ headers: {}, body: {} }, res, jest.fn());
+    expect(res.statusCode).toBe(401);
+    expect(mockVerifyIdToken).not.toHaveBeenCalled();
   });
 
   test('uses only verified Firebase identity and checks revocation', async () => {
@@ -72,6 +91,46 @@ describe('Phase 4 Firebase to backend identity boundary', () => {
     expect(mockFindOne).toHaveBeenCalledWith({ firebaseUid: 'verified-uid' });
     expect(mockCreate).not.toHaveBeenCalled();
     expect(req.user).toBe(existing);
+  });
+
+  test('rejects an unverified password token before MongoDB lookup or creation', async () => {
+    mockVerifyIdToken.mockResolvedValue({
+      uid: 'unverified-uid', email: 'unverified@example.test', email_verified: false,
+      firebase: { sign_in_provider: 'password' }
+    });
+    const res = responseRecorder();
+    await verifyFirebaseToken({ headers: { authorization: 'Bearer valid-token' }, body: {} }, res, jest.fn());
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toEqual({ success: false, code: 'EMAIL_NOT_VERIFIED',
+      message: 'Please verify your email before continuing.' });
+    expect(mockFindOne).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['password', true],
+    ['google.com', true]
+  ])('accepts a verified %s identity', async (provider, emailVerified) => {
+    const created = { _id: `mongo-${provider}`, firebaseUid: `${provider}-uid`,
+      email: `${provider}@example.test`, role: null, isActive: true };
+    mockVerifyIdToken.mockResolvedValue({ uid: created.firebaseUid, email: created.email,
+      email_verified: emailVerified, firebase: { sign_in_provider: provider } });
+    mockFindOne.mockResolvedValue(null);
+    mockCreate.mockResolvedValue(created);
+    const next = jest.fn();
+    await verifyFirebaseToken({ headers: { authorization: 'Bearer valid-token' }, body: {} }, responseRecorder(), next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  test('ignores client attempts to fake verification state', async () => {
+    mockVerifyIdToken.mockResolvedValue({ uid: 'unverified-uid', email: 'unverified@example.test',
+      email_verified: false, firebase: { sign_in_provider: 'password' } });
+    const res = responseRecorder();
+    await verifyFirebaseToken({ headers: { authorization: 'Bearer valid-token' },
+      body: { email_verified: true, provider: 'google.com' } }, res, jest.fn());
+    expect(res.statusCode).toBe(403);
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   test('sanitizes disabled, invalid, and forged token failures', async () => {
