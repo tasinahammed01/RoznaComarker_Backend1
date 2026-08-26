@@ -45,7 +45,6 @@
     "pdfmake": "^0.3.8",
     "puppeteer": "^24.39.1",
     "qrcode": "^1.5.4",
-    "resend": "^6.22.1",
     "sanitize-html": "^2.17.0",
     "sharp": "^0.34.5",
     "stripe": "^22.5.0",

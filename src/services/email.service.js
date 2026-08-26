@@ -6,7 +6,7 @@ let transporter = null;
 
 function getTransporter() {
   if (!transporter) {
-    transporter = nodemailer.createTransporter({
+    transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST || 'smtp.gmail.com',
       port: parseInt(process.env.SMTP_PORT) || 587,
       secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
@@ -24,7 +24,7 @@ async function sendInvitationEmail({ to, className, classCode, joinUrl, teacherN
     const transporter = getTransporter();
     
     const mailOptions = {
-      from: `"${teacherName || 'Classroom'}" <${process.env.SMTP_USER}>`,
+      from: `"${process.env.MAIL_FROM_NAME || 'CoMarker'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
       to: Array.isArray(to) ? to.join(', ') : to,
       subject: `You're invited to join ${className}`,
       html: `

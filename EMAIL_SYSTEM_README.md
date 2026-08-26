@@ -1,18 +1,14 @@
-# Transactional authentication email
+# Authentication email
 
-Firebase remains authoritative for identity, email verification, passwords, and action codes. The backend uses Firebase Admin to generate verification and password-reset links; Resend only delivers those links.
+Firebase Authentication is authoritative for identity, passwords, email verification, reset action codes, and delivery of verification/password-reset messages.
 
-## Configuration
+The Angular client calls Firebase directly with trusted environment-derived continuation URLs:
 
-```env
-APP_FRONTEND_URL=http://localhost:4200
-RESEND_API_KEY=
-RESEND_FROM_EMAIL=no-reply@roznahub.com
-RESEND_FROM_NAME=CoMarker
-```
+- Verification: `FRONTEND_URL/verify-email`
+- Password reset: `FRONTEND_URL/login`
 
-Production uses `APP_FRONTEND_URL=https://comarkers.roznahub.com`. Never commit a real API key. Verify `roznahub.com` in Resend and publish the DNS records Resend provides before production delivery.
+Production uses `FRONTEND_URL=https://comarkers.roznahub.com`. Configure that domain in Firebase Authentication's Authorized domains list and configure the Firebase email templates in Firebase Console.
 
-The central service is `src/services/emailService.js`. Auth controllers must not call the Resend SDK directly and must never log Firebase links, action codes, email bodies, Firebase ID tokens, authorization headers, or provider credentials.
+The deprecated backend paths `/api/auth/send-verification-email` and `/api/auth/request-password-reset` return `410 Gone`; they do not generate links or send mail.
 
-The separate `src/services/email.service.js` SMTP implementation is retained only for class invitations. The unused legacy `/api/email-auth/*` custom-token routes were removed; authentication email uses only the Firebase-first `/api/auth/*` flow.
+The separate `src/services/email.service.js` Nodemailer wrapper remains only for class invitations. Its SMTP settings are unrelated to Firebase verification and password-reset delivery.

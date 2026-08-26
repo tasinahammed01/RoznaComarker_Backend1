@@ -1,7 +1,6 @@
 const express = require('express');
 
-const { verifyFirebaseIdentityToken, verifyFirebaseToken } = require('../middlewares/firebaseAuth.middleware');
-const transactionalAuthEmail = require('../controllers/transactionalAuthEmail.controller');
+const { verifyFirebaseToken } = require('../middlewares/firebaseAuth.middleware');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { signJwt } = require('../utils/jwt');
 const { issueToken: issueSseToken } = require('../services/sseToken.service');
@@ -10,22 +9,19 @@ const {
   createAuthIpRateLimiter,
   createUserRateLimiter
 } = require('../middlewares/rateLimit.middleware');
-const { createEmailRateLimiter } = require('../middlewares/rateLimit.middleware');
 
 const router = express.Router();
 
-router.post('/send-verification-email',
-  createAuthIpRateLimiter({ windowMs: process.env.EMAIL_IP_RATE_LIMIT_WINDOW_MS, limit: process.env.EMAIL_IP_RATE_LIMIT_MAX }),
-  verifyFirebaseIdentityToken,
-  createUserRateLimiter({ windowMs: process.env.EMAIL_ADDRESS_RATE_LIMIT_WINDOW_MS, limit: process.env.EMAIL_ADDRESS_RATE_LIMIT_MAX }),
-  transactionalAuthEmail.sendVerificationEmail
-);
-
-router.post('/request-password-reset',
-  createAuthIpRateLimiter({ windowMs: process.env.EMAIL_IP_RATE_LIMIT_WINDOW_MS, limit: process.env.EMAIL_IP_RATE_LIMIT_MAX }),
-  createEmailRateLimiter({ windowMs: process.env.EMAIL_ADDRESS_RATE_LIMIT_WINDOW_MS, limit: process.env.EMAIL_ADDRESS_RATE_LIMIT_MAX }),
-  transactionalAuthEmail.requestPasswordReset
-);
+// Deprecated compatibility paths. Firebase's client SDK now sends verification
+// and reset emails directly. Keep explicit responses so unknown external callers
+// receive a controlled migration signal instead of silently invoking old SMTP code.
+router.post('/send-verification-email', (_req, res) => res.status(410).json({
+  success: false, code: 'ENDPOINT_DEPRECATED', message: 'Use Firebase Authentication email verification.'
+}));
+router.post('/request-password-reset', (_req, res) => res.status(410).json({
+  success: false, code: 'ENDPOINT_DEPRECATED',
+  message: 'If an account supports password sign-in, reset instructions have been sent.'
+}));
 
 /**
  * @openapi

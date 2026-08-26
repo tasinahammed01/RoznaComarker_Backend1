@@ -13,7 +13,8 @@ Expected flow:
 Internet -> optional Cloudflare -> CloudPanel/Nginx
   -> Angular static files (comarkers.roznahub.com)
   -> Express loopback:5000 (comarkerback.roznahub.com)
-     -> MongoDB Atlas and Stripe/Firebase/Google/AI/Resend/Unsplash HTTPS APIs
+     -> MongoDB Atlas and Stripe/Firebase/Google/AI/Unsplash APIs
+     -> SMTP only for class invitations (not authentication email)
 ```
 
 Repository-confirmed facts:
@@ -208,7 +209,7 @@ committed ecosystem contains no secrets. Rotation checklist:
   then revoke the old credential.
 - Stripe secret/webhook: stage replacement values and endpoint secrets, verify
   signed test events, then revoke old values. Do not switch live mode here.
-- AI/OpenRouter/Google/Resend: issue least-privilege replacements, deploy and
+- AI/OpenRouter/Google/Brevo: issue least-privilege replacements, deploy and
   smoke test, then revoke old keys. Remove leaked service-account keys entirely.
 
 Never print secret values in shell history, PM2 config, tickets, backups, or
@@ -225,8 +226,8 @@ official guidance. Avoid aggressive edge limits for classroom NAT traffic.
 
 Review both DNS names and remove stale records, especially unclaimed third-party
 CNAMEs (subdomain takeover risk). Configure SPF, DKIM and DMARC only with the
-exact records generated for the real Resend sender domain. Require MFA for
-Hostinger, CloudPanel, Atlas, Stripe, Google/Firebase, Git hosting, Resend and
+exact records generated for the real Brevo sender domain. Require MFA for
+Hostinger, CloudPanel, Atlas, Stripe, Google/Firebase, Git hosting, Brevo and
 Cloudflare. Keep deployment, database application, Git deploy and administrator
 accounts separate and least privileged.
 
@@ -306,7 +307,7 @@ the frontend domain is authorized in the intended Firebase project.
 8. Restrict Atlas IP/user permissions and verify application startup. Confirm
    Atlas and encrypted upload backup jobs plus separate restore procedures.
 9. Configure monitoring, certificate/backup alerts, MFA, Firebase domain and
-   Resend-provided email DNS. Review CSP telemetry before any future enforcement.
+   Brevo-provided email DNS. Review CSP telemetry before any future enforcement.
 10. Run every command/check in section 8 and record evidence.
 
 Rollback application/config changes by deploying the last known-good release and

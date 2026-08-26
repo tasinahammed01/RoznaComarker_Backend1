@@ -8,7 +8,7 @@ describe('startup logging credential safety', () => {
     'GEMINI_API_KEY',
     'OPENAI_API_KEY',
     'OPENROUTER_API_KEY',
-    'RESEND_API_KEY',
+    'SMTP_PASS',
     'UNSPLASH_ACCESS_KEY',
   ];
   const originalEnv = {};
