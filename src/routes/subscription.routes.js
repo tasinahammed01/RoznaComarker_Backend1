@@ -39,7 +39,10 @@ router.post(
   verifyJwtToken,
   requireRole('teacher'),
   createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'checkout_user' }),
-  body('planSlug').isString().trim().notEmpty(),
+  body('planSlug').optional().isString().trim().notEmpty(),
+  body('planCode').optional().isString().trim().notEmpty(),
+  body().custom((value) => !!String(value?.planCode || value?.planSlug || '').trim()).withMessage('planCode is required'),
+  body('billingPeriod').optional().isIn(['monthly', 'annual']),
   body('checkoutAttemptId').isString().isLength({ min: 36, max: 36 }).isUUID(4)
     .withMessage('checkoutAttemptId must be a valid UUID v4'),
   body('priceId').not().exists().withMessage('priceId is not accepted'),

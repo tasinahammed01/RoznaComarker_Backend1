@@ -47,6 +47,32 @@ describe('dedicated feature generation controllers', () => {
     ] });
     expect(mockGenerateFeatureJson).toHaveBeenCalledTimes(1);
     expect(mockGenerateFeatureJson.mock.calls[0][0]).toBe('flashcard');
+    const messages = mockGenerateFeatureJson.mock.calls[0][1];
+    const options = mockGenerateFeatureJson.mock.calls[0][2];
+    expect(messages[0].content).toContain('JSON object containing a flashcards array');
+    expect(messages[1].content).toContain(`Template: ${template === 'qa' ? 'QUESTION AND ANSWER' : template === 'concept' ? 'CONCEPT EXPLANATION' : 'TERM AND DEFINITION'}`);
+    expect(options).toMatchObject({ schemaName: 'flashcard_generation' });
+    expect(options.responseSchema.required).toEqual(['flashcards']);
+    expect(options.validateValue({ flashcards: res.body.data })).toEqual(res.body.data);
+  });
+
+  test('short but valid topics reach generation and truly insufficient input does not', async () => {
+    mockGenerateFeatureJson.mockResolvedValue({
+      value: [{ front: 'Mars', back: 'The fourth planet from the Sun.' }],
+      metadata: { model: 'test-model', attemptCount: 1 }
+    });
+    const validRes = response();
+    await flashcardController.generateFlashcards({
+      body: { content: 'Mars', template: 'qa', cardCount: 1, language: 'English' }
+    }, validRes);
+    expect(validRes.statusCode).toBe(200);
+    expect(mockGenerateFeatureJson).toHaveBeenCalledTimes(1);
+
+    const invalidRes = response();
+    await flashcardController.generateFlashcards({ body: { content: ' x ' } }, invalidRes);
+    expect(invalidRes.statusCode).toBe(400);
+    expect(invalidRes.body.code).toBe('INSUFFICIENT_FLASHCARD_CONTENT');
+    expect(mockGenerateFeatureJson).toHaveBeenCalledTimes(1);
   });
 
   test('worksheet request and response contracts remain unchanged and never use global AI generation', async () => {

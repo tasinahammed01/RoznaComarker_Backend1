@@ -1,5 +1,6 @@
 'use strict';
 
+require('../src/config/env');
 const { generateFeatureJson, validateFlashcardOutput } = require('../src/services/featureGemini.service');
 
 async function main() {
@@ -7,17 +8,19 @@ async function main() {
     console.log('Flashcard Gemini smoke skipped; set RUN_LIVE_FLASHCARD_AI_SMOKE=true to run.');
     return;
   }
-  const startedAt = Date.now();
-  const result = await generateFeatureJson('flashcard', [
-    { role: 'system', content: 'Return only a JSON array of two objects with non-empty front and back strings.' },
-    { role: 'user', content: 'Create two English term-definition cards about the water cycle. No personal data.' }
-  ]);
-  const cards = validateFlashcardOutput(result.value, 2);
-  console.log(JSON.stringify({
-    provider: result.metadata.provider, model: result.metadata.model,
-    durationMs: Date.now() - startedAt, itemCount: cards.length,
-    tokenUsage: result.metadata.usage || null
-  }));
+  for (const template of ['qa', 'concept']) {
+    const startedAt = Date.now();
+    const result = await generateFeatureJson('flashcard', [
+      { role: 'system', content: 'Return only one JSON object in the shape {"flashcards":[{"front":"string","back":"string"}]}.' },
+      { role: 'user', content: `Create two English ${template} cards about the water cycle. No personal data.` }
+    ], { validateValue: (value) => validateFlashcardOutput(value, 2, template) });
+    const cards = result.value;
+    console.log(JSON.stringify({
+      template, provider: result.metadata.provider, model: result.metadata.model,
+      durationMs: Date.now() - startedAt, itemCount: cards.length,
+      tokenUsage: result.metadata.usage || null
+    }));
+  }
 }
 
 main().catch((error) => {

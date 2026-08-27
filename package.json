@@ -8,6 +8,7 @@
     "verify:runtime": "node scripts/verify-runtime-contract.js",
     "verify:production-security": "node scripts/verify-production-security.js --dry-run",
     "test": "jest --runInBand",
+    "seed:phase1b-pricing": "node scripts/seedPhase1bPricing.js",
     "benchmark:semantic": "node scripts/benchmarkSemanticAnalysis.js",
     "test:live-gemini-smoke": "node scripts/liveGeminiSemanticSmoke.js",
     "test:live-flashcard-gemini": "node scripts/liveFlashcardGeminiSmoke.js",

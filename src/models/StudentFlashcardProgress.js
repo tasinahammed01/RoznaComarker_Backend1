@@ -58,13 +58,25 @@ const studentFlashcardProgressSchema = new Schema(
       default: 0,
       min: 0 
     },
+    currentCardId: { type: Schema.Types.ObjectId, default: null },
+    cardProgress: [{
+      cardId: { type: Schema.Types.ObjectId, required: true },
+      studentAnswer: { type: String, default: '' },
+      selfRating: { type: String, enum: ['knew', 'didnt_know'], default: null },
+      isChecked: { type: Boolean, default: false },
+      isCorrect: { type: Boolean, default: null },
+      gradingMethod: { type: String, enum: ['exact', 'normalized', 'semantic_ai'], default: null },
+      checkedAt: { type: Date, default: null },
+      completedAt: { type: Date, default: null }
+    }],
+    revision: { type: Number, default: 0, min: 0 },
     cardResults: {
       type: Map,
       of: {
         type: String,
         enum: ['knew', 'didnt_know']
       },
-      description: 'Map of cardIndex -> result (knew/didnt_know) for self-assessed cards'
+      description: 'Map of canonical cardId -> result; legacy documents may use cardIndex keys'
     },
     startedAt: { 
       type: Date, 
@@ -109,9 +121,12 @@ studentFlashcardProgressSchema.index({ assignmentId: 1, status: 1 });
 studentFlashcardProgressSchema.index({ classId: 1, status: 1 });
 
 // Pre-save hook to auto-calculate completedCards and manage status transitions
-studentFlashcardProgressSchema.pre('save', function(next) {
-  // Update completedCards based on unique cards viewed
-  this.completedCards = this.cardsViewed ? this.cardsViewed.length : 0;
+studentFlashcardProgressSchema.pre('save', function() {
+  const completedIds = new Set((this.cardProgress || [])
+    .filter((item) => this.template === 'qa' ? item.isChecked === true : Boolean(item.selfRating))
+    .map((item) => String(item.cardId)));
+  this.completedCards = Math.min(completedIds.size, this.totalCards || 0);
+  this.lastCardIndex = Math.min(Math.max(this.lastCardIndex || 0, 0), Math.max((this.totalCards || 0) - 1, 0));
   
   // Auto-update status based on progress
   if (this.totalCards > 0 && this.completedCards >= this.totalCards) {
@@ -121,26 +136,32 @@ studentFlashcardProgressSchema.pre('save', function(next) {
         this.completedAt = new Date();
       }
     }
-  } else if (this.completedCards > 0 && this.status === 'not_started') {
+  } else if (this.completedCards > 0) {
     this.status = 'in_progress';
     if (!this.startedAt) {
       this.startedAt = new Date();
     }
+  } else {
+    this.status = 'not_started';
+    this.completedAt = null;
   }
   
   // Update lastActivityAt
   this.lastActivityAt = new Date();
   
-  next();
 });
 
 // Pre-update hook for findOneAndUpdate operations
-studentFlashcardProgressSchema.pre('findOneAndUpdate', async function(next) {
+studentFlashcardProgressSchema.pre('findOneAndUpdate', function() {
   const update = this.getUpdate();
   
   // If cardsViewed is being updated, recalculate completedCards
   if (update.$set && update.$set.cardsViewed) {
-    update.$set.completedCards = update.$set.cardsViewed.length;
+    update.$set.cardsViewed = [...new Set(update.$set.cardsViewed)]
+      .filter((index) => Number.isInteger(index) && index >= 0 && index < (update.$set.totalCards || Infinity));
+    update.$set.completedCards = Math.min(update.$set.cardsViewed.length, update.$set.totalCards || update.$set.cardsViewed.length);
+    update.$set.lastCardIndex = Math.min(Math.max(update.$set.lastCardIndex || 0, 0),
+      Math.max((update.$set.totalCards || 0) - 1, 0));
     
     // Auto-update status based on progress
     const totalCards = update.$set.totalCards || this._conditions.totalCards;
@@ -163,7 +184,6 @@ studentFlashcardProgressSchema.pre('findOneAndUpdate', async function(next) {
   if (!update.$set) update.$set = {};
   update.$set.lastActivityAt = new Date();
   
-  next();
 });
 
 // Virtual for cards remaining

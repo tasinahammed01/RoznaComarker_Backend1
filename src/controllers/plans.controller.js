@@ -19,8 +19,10 @@ async function getActivePlans(req, res) {
     const rawPlans = await Plan.find({ isActive: true }).lean();
     const preferredOrder = new Map([
       ['free', 0],
+      ['essential', 1],
       ['starter_monthly', 1],
-      ['custom', 2]
+      ['pro', 2],
+      ['custom', 3]
     ]);
 
     const ordered = rawPlans
@@ -28,9 +30,17 @@ async function getActivePlans(req, res) {
         name: plan.name,
         slug: plan.slug,
         price: typeof plan.price === 'number' ? plan.price : null,
+        annualPrice: typeof plan.annualPrice === 'number' ? plan.annualPrice : null,
+        displayOrder: Number(plan.displayOrder || 0),
         currency: plan.currency || 'USD',
         billingInterval: plan.billingInterval ?? null,
         popular: !!plan.popular,
+        assessmentCreditNudges: {
+          softThresholdPercent: plan.assessmentCreditNudges?.softThresholdPercent ?? 50,
+          warningThresholdPercent: plan.assessmentCreditNudges?.warningThresholdPercent ?? 80
+        },
+        purchasable: !!plan.stripe?.productId && !!(plan.stripe?.monthlyPriceId || plan.stripe?.priceId),
+        annualBillingAvailable: typeof plan.annualPrice === 'number' && !!plan.stripe?.annualPriceId,
         features: {
           maxClasses: plan.features?.maxClasses ?? null,
           maxStudents: plan.features?.maxStudents ?? null,
@@ -54,8 +64,8 @@ async function getActivePlans(req, res) {
         }
       }))
       .sort((left, right) => {
-        const leftOrder = preferredOrder.get(left.slug) ?? Number.MAX_SAFE_INTEGER;
-        const rightOrder = preferredOrder.get(right.slug) ?? Number.MAX_SAFE_INTEGER;
+        const leftOrder = Number.isFinite(left.displayOrder) && left.displayOrder !== 0 ? left.displayOrder : (preferredOrder.get(left.slug) ?? Number.MAX_SAFE_INTEGER);
+        const rightOrder = Number.isFinite(right.displayOrder) && right.displayOrder !== 0 ? right.displayOrder : (preferredOrder.get(right.slug) ?? Number.MAX_SAFE_INTEGER);
         return leftOrder - rightOrder || String(left.slug).localeCompare(String(right.slug));
       });
 

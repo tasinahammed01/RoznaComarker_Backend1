@@ -138,12 +138,15 @@ async function setUserSubscription(req, res) {
 async function getCheckoutPlan(req, res) {
   try {
     if (!req.user || req.user.role !== 'teacher') return sendError(res, 403, 'Forbidden');
-    const plan = await Plan.findOne({ slug: 'starter_monthly', isActive: true }).lean();
+    const planCode = String(req.query.planCode || 'starter_monthly').trim().toLowerCase();
+    if (['free', 'custom', 'institution'].includes(planCode)) return sendError(res, 400, 'Plan is not available for checkout', 'PLAN_NOT_PURCHASABLE');
+    const plan = await Plan.findOne({ slug: planCode, isActive: true }).lean();
     if (!plan) return sendError(res, 404, 'Plan not found');
     return sendSuccess(res, {
       name: plan.name,
       slug: plan.slug,
       price: plan.price,
+      annualPrice: plan.annualPrice,
       currency: plan.currency,
       billingInterval: plan.billingInterval,
       features: plan.features,
@@ -157,17 +160,18 @@ async function getCheckoutPlan(req, res) {
 async function createCheckoutSession(req, res) {
   try {
     const user = req.user;
-    const { planSlug, checkoutAttemptId } = req.body || {};
-    if (planSlug !== 'starter_monthly') {
-      return sendError(res, 400, planSlug === 'custom' ? 'Custom plans require contacting us' : 'Plan is not available for checkout');
-    }
+    const { checkoutAttemptId } = req.body || {};
+    const planSlug = String(req.body?.planCode || req.body?.planSlug || '').trim().toLowerCase();
+    const billingPeriod = String(req.body?.billingPeriod || 'monthly').trim().toLowerCase();
+    if (['free', 'custom', 'institution'].includes(planSlug) || !['monthly', 'annual'].includes(billingPeriod))
+      return sendError(res, 400, 'Plan is not available for checkout', 'PLAN_NOT_PURCHASABLE');
     const plan = await Plan.findOne({ slug: planSlug, isActive: true });
     if (!plan) return sendError(res, 404, 'Plan not found');
-    const trustedPriceId = plan.stripe?.priceId;
+    const trustedPriceId = billingPeriod === 'annual' ? plan.stripe?.annualPriceId : (plan.stripe?.monthlyPriceId || plan.stripe?.priceId);
     const trustedProductId = plan.stripe?.productId;
-    if (!trustedPriceId || !trustedProductId) return sendError(res, 503, 'Starter billing is not configured');
+    if (!trustedPriceId || !trustedProductId) return sendError(res, 503, 'Plan billing is not configured', 'PLAN_BILLING_NOT_CONFIGURED');
     if (CHECKOUT_BLOCKING_STATUSES.has(user.stripeSubscriptionStatus)) {
-      return res.status(409).json({ success: false, code: 'ALREADY_SUBSCRIBED', message: 'Starter Monthly is already active' });
+      return res.status(409).json({ success: false, code: 'ALREADY_SUBSCRIBED', message: 'A subscription is already active. Use Manage Plan to change it.' });
     }
 
     const stripe = getStripe();
@@ -179,7 +183,7 @@ async function createCheckoutSession(req, res) {
         user.stripeSubscriptionId = duplicate.id;
         user.stripeSubscriptionStatus = duplicate.status;
         await user.save();
-        return res.status(409).json({ success: false, code: 'ALREADY_SUBSCRIBED', message: 'Starter Monthly is already active' });
+        return res.status(409).json({ success: false, code: 'ALREADY_SUBSCRIBED', message: 'This subscription is already active.' });
       }
     } else {
       const customer = await stripe.customers.create({
@@ -193,10 +197,12 @@ async function createCheckoutSession(req, res) {
     }
 
     const stripePrice = await stripe.prices.retrieve(trustedPriceId);
-    const expectedAmount = Math.round(Number(plan.price) * 100);
+    const expectedLiveMode = String(process.env.STRIPE_SECRET_KEY || '').startsWith('sk_live_');
+    const expectedAmount = Math.round(Number(billingPeriod === 'annual' ? plan.annualPrice : plan.price) * 100);
     const expectedCurrency = String(plan.currency || 'USD').toLowerCase();
     const productId = typeof stripePrice.product === 'string' ? stripePrice.product : stripePrice.product?.id;
-    if (!stripePrice.active || stripePrice.type !== 'recurring' || stripePrice.unit_amount !== expectedAmount || stripePrice.currency !== expectedCurrency || stripePrice.recurring?.interval !== 'month' || productId !== trustedProductId) {
+    const expectedInterval = billingPeriod === 'annual' ? 'year' : 'month';
+    if (!!stripePrice.livemode !== expectedLiveMode || !stripePrice.active || stripePrice.type !== 'recurring' || stripePrice.unit_amount !== expectedAmount || stripePrice.currency !== expectedCurrency || stripePrice.recurring?.interval !== expectedInterval || productId !== trustedProductId) {
       logger.error(`stripe plan mismatch plan=${plan.slug} configuredProduct=${trustedProductId} configuredPrice=${trustedPriceId}`);
       return sendError(res, 503, 'Starter billing configuration does not match the application plan');
     }
@@ -212,7 +218,7 @@ async function createCheckoutSession(req, res) {
         return_url: `${getFrontendUrl()}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
         metadata: { userId: String(user._id), planSlug: plan.slug },
         subscription_data: { metadata: { userId: String(user._id), planSlug: plan.slug } }
-      }, { idempotencyKey: `rozna-checkout:${user._id}:${plan.slug}:${checkoutAttemptId}` });
+      }, { idempotencyKey: `rozna-checkout:${user._id}:${plan.slug}:${billingPeriod}:${checkoutAttemptId}` });
       if (!session?.client_secret) {
         const missingSecretError = new Error('Stripe Checkout Session response did not contain client_secret');
         missingSecretError.type = 'StripeInvalidResponseError';

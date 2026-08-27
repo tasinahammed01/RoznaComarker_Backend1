@@ -16,10 +16,11 @@ function sendSuccess(res, data) {
   });
 }
 
-function sendError(res, statusCode, message) {
+function sendError(res, statusCode, message, code) {
   return res.status(statusCode).json({
     success: false,
-    message
+    message,
+    ...(code ? { code } : {})
   });
 }
 
@@ -48,6 +49,9 @@ async function joinClassByCode(req, res) {
 
     if (!classDoc) {
       return sendError(res, 404, 'Invalid join code');
+    }
+    if (classDoc.status === 'archived') {
+      return sendError(res, 409, 'This class is archived and is no longer accepting new students.', 'CLASS_ARCHIVED');
     }
 
     const teacherId = classDoc.teacher && classDoc.teacher._id ? classDoc.teacher._id : classDoc.teacher;

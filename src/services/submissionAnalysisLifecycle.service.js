@@ -19,7 +19,9 @@ function pendingAnalysisState({ ocrJobId, now = new Date() }) {
     evaluationVersion: undefined, evaluationRubricSourceHash: undefined,
     evaluationPolicyHash: undefined, evaluationProvider: undefined, evaluationModel: undefined,
     evaluationErrorCode: undefined, evaluationAttempts: undefined, evaluationDiagnostics: undefined,
-    evaluationError: undefined, evaluationUpdatedAt: undefined
+    evaluationError: undefined, evaluationUpdatedAt: undefined,
+    assessmentRunId: undefined, assessmentStatus: 'started', assessmentCompletedAt: undefined,
+    assessmentErrorCode: undefined
   };
 }
 

@@ -98,7 +98,9 @@ async function generateFeatureJson(feature, messages, {
   fetchImpl = global.fetch,
   now = Date.now,
   sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  validateValue
+  validateValue,
+  responseSchema,
+  schemaName
 } = {}) {
   const config = getFeatureGeminiConfig(feature, env);
   if (!config.configured) throw configurationError(config);
@@ -106,17 +108,17 @@ async function generateFeatureJson(feature, messages, {
   try {
       const paidContentReliability = ['worksheet', 'flashcard'].includes(config.feature);
       const executionConfig = paidContentReliability
-        ? { ...config.global, primaryRetries: Math.max(1, Number(config.global.primaryRetries) || 0) }
+        ? { ...config.global, primaryRetries: config.feature === 'flashcard' ? 0 : Math.max(1, Number(config.global.primaryRetries) || 0) }
         : config.global;
       const result = await aiGateway.generate({
         feature: config.feature, messages, maxOutputTokens: config.maxOutputTokens,
-        responseFormat: 'json', validate: (content) => {
+        responseFormat: 'json', responseSchema, schemaName, validate: (content) => {
           const parsed = strictJson(content);
           return typeof validateValue === 'function' ? validateValue(parsed) : parsed;
         }, fetchImpl, env, now, sleepFn,
         config: executionConfig,
         retryableSameModelCodes: paidContentReliability ? [
-          'AI_OUTPUT_VALIDATION_FAILED',
+          ...(config.feature === 'flashcard' ? [] : ['AI_OUTPUT_VALIDATION_FAILED']),
           'AI_RESPONSE_INVALID',
           'AI_RESPONSE_EMPTY',
           'AI_RESPONSE_TRUNCATED',
@@ -156,30 +158,36 @@ function containsExecutableHtml(value) {
   return /<\s*script\b|javascript\s*:|\bon\w+\s*=/iu.test(String(value || ''));
 }
 
-function outputValidationError(message) {
-  return Object.assign(new Error(message), { code: 'FEATURE_OUTPUT_VALIDATION_FAILED' });
+function outputValidationError(message, metadata = {}) {
+  return Object.assign(new Error(message), { code: 'FEATURE_OUTPUT_VALIDATION_FAILED', ...metadata });
 }
 
-function validateFlashcardOutput(value, requestedCount) {
+function validateFlashcardOutput(value, requestedCount, template = 'term-def') {
   const cards = Array.isArray(value) ? value
     : Array.isArray(value?.flashcards) ? value.flashcards
       : Array.isArray(value?.cards) ? value.cards : null;
-  if (!cards) throw outputValidationError('Flashcard output must be an array.');
+  if (!cards) throw outputValidationError('Flashcard output must contain a flashcards array.', { jsonPath: '$.flashcards', expected: 'array', actualType: Array.isArray(value) ? 'array' : typeof value });
   const normalized = [];
   const seen = new Set();
   for (const card of cards) {
-    const front = typeof card?.front === 'string' ? card.front.replace(/\s+/gu, ' ').trim() : '';
-    const back = typeof card?.back === 'string' ? card.back.replace(/\s+/gu, ' ').trim() : '';
+    const rawFront = card?.front ?? card?.question ?? card?.term ?? card?.concept;
+    const rawBack = card?.back ?? card?.answer ?? card?.definition ?? card?.explanation;
+    const front = typeof rawFront === 'string' ? rawFront.replace(/\s+/gu, ' ').trim() : '';
+    const back = typeof rawBack === 'string' ? rawBack.replace(/\s+/gu, ' ').trim() : '';
     if (!front || !back || front.length > 500 || back.length > 4000 || containsExecutableHtml(front) || containsExecutableHtml(back)) {
-      throw outputValidationError('Flashcard output contains an invalid card.');
+      throw outputValidationError('Flashcard output contains an invalid card.', { jsonPath: `$.flashcards[${normalized.length}]`, expected: 'non-empty front and back strings', actualType: typeof card });
     }
-    const key = `${front.toLocaleLowerCase()}|${back.toLocaleLowerCase()}`;
-    if (seen.has(key)) throw outputValidationError('Flashcard output contains duplicate cards.');
+    if (template === 'qa' && front.toLocaleLowerCase() === back.toLocaleLowerCase()) {
+      throw outputValidationError('Question and answer must be different.', { jsonPath: `$.flashcards[${normalized.length}]` });
+    }
+    const key = front.toLocaleLowerCase();
+    if (seen.has(key)) continue;
     seen.add(key);
     normalized.push({ front, back });
   }
-  if (normalized.length !== requestedCount) throw outputValidationError('Flashcard output count does not match the requested count.');
-  return normalized;
+  const minimumCount = Math.max(1, Math.ceil(requestedCount * 0.6));
+  if (normalized.length < minimumCount) throw outputValidationError('Flashcard output contains too few valid cards.', { jsonPath: '$.flashcards', expected: `at least ${minimumCount}`, actualType: String(normalized.length) });
+  return normalized.slice(0, requestedCount);
 }
 
 function nonEmptyString(value) {

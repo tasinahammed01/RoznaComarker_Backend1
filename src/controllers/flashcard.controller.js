@@ -5,6 +5,7 @@ const FlashcardSubmission = require("../models/FlashcardSubmission");
 const Class = require("../models/class.model");
 const Membership = require("../models/membership.model");
 const Assignment = require("../models/assignment.model");
+const FlashcardAnswerCheck = require("../models/FlashcardAnswerCheck");
 const { createNotification } = require("../services/notification.service");
 const logger = require("../utils/logger");
 const {
@@ -12,13 +13,14 @@ const {
   validateFlashcardOutput,
   featureErrorHttp,
 } = require("../services/featureGemini.service");
+const { gradeFlashcardAnswer } = require("../services/flashcardAnswerGrading.service");
 
 function sendSuccess(res, data, statusCode = 200) {
   return res.status(statusCode).json({ success: true, data });
 }
 
-function sendError(res, statusCode, message) {
-  return res.status(statusCode).json({ success: false, message });
+function sendError(res, statusCode, message, code) {
+  return res.status(statusCode).json({ success: false, message, ...(code ? { code } : {}) });
 }
 
 function normalizeGeneratedJsonText(value) {
@@ -206,9 +208,11 @@ function recoverGeneratedCards(rawText) {
 }
 
 function buildFlashcardPrompt(topic, template, count, language) {
-  const base = `Generate ${count} flashcards about "${topic}" in ${language}.
-Return ONLY a valid JSON array. No preamble, no markdown, no explanation.
-Each item must have exactly: "front" (string) and "back" (string).`;
+  const base = `Generate exactly ${count} unique flashcards grounded only in this source content: "${topic}".
+Write every card in ${language}.
+Return JSON only in exactly this top-level shape: {"flashcards":[{"front":"string","back":"string"}]}.
+Do not include markdown fences, comments, headings, or text outside the JSON object.
+Every item must contain non-empty "front" and "back" strings. Do not invent facts unsupported by the source.`;
 
   const templateInstructions = {
     "term-def": `
@@ -235,8 +239,17 @@ Template: CONCEPT EXPLANATION
 
   const instruction =
     templateInstructions[template] || templateInstructions["term-def"];
-  return `${base}\n${instruction}\nReturn format: [{"front":"...","back":"..."},{"front":"...","back":"..."}]`;
+  return `${base}\n${instruction}\nReturn exactly ${count} items in the flashcards array.`;
 }
+
+const FLASHCARD_RESPONSE_SCHEMA = Object.freeze({
+  type: "object",
+  properties: { flashcards: { type: "array", items: { type: "object",
+    properties: { front: { type: "string" }, back: { type: "string" } },
+    required: ["front", "back"], additionalProperties: false } } },
+  required: ["flashcards"],
+  additionalProperties: false,
+});
 
 function normalizeGeneratedCards(cards, requestedCount) {
   const unique = [];
@@ -362,6 +375,10 @@ async function generateFlashcards(req, res) {
       : "term-def";
     const resolvedLanguage = language || "English";
     const shouldAddImages = addImage || includeImages;
+    const normalizedContent = String(content || "").trim();
+    if (normalizedContent.length < 3) {
+      return sendError(res, 400, "Add a little more content so CoMarker can create useful flashcards.", "INSUFFICIENT_FLASHCARD_CONTENT");
+    }
 
     console.log("[FLASHCARD GENERATION] Parameters:", {
       contentLength: String(content || "").length,
@@ -372,7 +389,7 @@ async function generateFlashcards(req, res) {
     });
 
     const userPrompt = buildFlashcardPrompt(
-      content,
+      normalizedContent,
       resolvedTemplate,
       count,
       resolvedLanguage,
@@ -384,18 +401,19 @@ async function generateFlashcards(req, res) {
         {
           role: "system",
           content: `You are a flashcard generation assistant.
-You must respond with ONLY a valid JSON array.
+You must respond with ONLY one valid JSON object containing a flashcards array.
 Do not write any explanation, introduction, or conclusion.
 Do not use markdown or code fences.
-Your entire response must start with [ and end with ].
-No text before [. No text after ].`,
+Your entire response must start with { and end with }.
+No text before {. No text after }.`,
         },
         {
           role: "user",
           content: userPrompt,
         },
       ],
-      { validateValue: (value) => validateFlashcardOutput(value, count) },
+      { validateValue: (value) => validateFlashcardOutput(value, count, resolvedTemplate),
+        responseSchema: FLASHCARD_RESPONSE_SCHEMA, schemaName: "flashcard_generation" },
     );
     let cards = generated.value;
 
@@ -425,6 +443,9 @@ No text before [. No text after ].`,
       cards.length,
       "flashcards",
     );
+    logger.metric({ event: "flashcard.generation.completed", template: resolvedTemplate,
+      requestedCount: count, returnedCount: cards.length, model: generated.metadata?.model || null,
+      attempts: generated.metadata?.attemptCount || 1, durationMs: generated.metadata?.durationMs || null });
     return sendSuccess(res, cards);
   } catch (error) {
     logger.error({
@@ -435,7 +456,13 @@ No text before [. No text after ].`,
       status: Number(error?.status) || null,
     });
     const mapped = featureErrorHttp(error);
-    return sendError(res, mapped.status, mapped.message);
+    if (error?.code === "AI_OUTPUT_VALIDATION_FAILED" || error?.code === "FEATURE_OUTPUT_VALIDATION_FAILED") {
+      logger.metric({ event: "flashcard.output.validation_failed", template: req.body?.template || null,
+        model: error?.model || null, jsonPath: error?.jsonPath || null,
+        validationCode: error?.validationCode || error?.code, itemCount: null });
+    }
+    return sendError(res, mapped.status, mapped.message,
+      mapped.status === 502 ? "FLASHCARD_OUTPUT_INVALID" : undefined);
   }
 }
 
@@ -891,71 +918,40 @@ async function assignSet(req, res) {
  * @returns {{ isCorrect: boolean }}
  */
 async function gradeAnswer(req, res) {
-  const { question, correctAnswer, studentAnswer } = req.body;
-
-  if (!question || !correctAnswer) {
-    return sendError(res, 400, "question and correctAnswer are required");
-  }
-
-  const trimmedAnswer = String(studentAnswer ?? "").trim();
-  if (!trimmedAnswer) {
-    return sendSuccess(res, { isCorrect: false });
-  }
-
-  const systemPrompt = `You are a strict but fair grading assistant for a Q&A flashcard system.
-Your ONLY job is to decide whether a student's answer is correct or not.
-You must respond with ONLY valid JSON — no explanation, no markdown, no extra text.
-Valid responses: {"isCorrect":true}  or  {"isCorrect":false}`;
-
-  const userPrompt = `Question: "${question}"
-Correct Answer: "${correctAnswer}"
-Student's Answer: "${trimmedAnswer}"
-
-Grading rules (apply ALL of them):
-1. Mark CORRECT if the student's answer conveys the same essential meaning as the correct answer, even if worded differently, abbreviated, or paraphrased.
-2. Mark CORRECT if the student uses synonyms, minor spelling mistakes, or equivalent phrasing that a teacher would accept.
-3. Mark WRONG if the student's answer is nonsensical, gibberish, or random characters (e.g. "fasdfasdca", "aaa", "123abc").
-4. Mark WRONG if the answer is a single letter or number with no semantic connection to the question.
-5. Mark WRONG if the answer is factually incorrect or directly contradicts the correct answer.
-6. Mark WRONG if the answer is completely unrelated to the question topic.
-7. Be STRICT: a vague or partial answer that omits the core meaning is WRONG.
-
-Respond with ONLY one of these — nothing else:
-{"isCorrect":true}
-{"isCorrect":false}`;
-
+  const startedAt = Date.now();
+  const { id: setId, cardId } = req.params;
+  const studentAnswer = String(req.body?.answer ?? '').trim();
+  const assignmentId = req.body?.assignmentId || null;
+  if (!studentAnswer) return sendError(res, 400, 'Answer is required.');
   try {
-    const raw = await generateChatCompletion(
-      [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      {
-        temperature: 0,
-        max_tokens: 20,
-      },
+    const set = await FlashcardSet.findById(setId).select('template cards visibility').lean();
+    const card = set?.cards?.find((item) => String(item._id) === String(cardId));
+    if (!set || set.template !== 'qa' || !card) return sendError(res, 404, 'Question not found.');
+    if (assignmentId) {
+      const assignment = await Assignment.findOne({ _id: assignmentId, resourceType: 'flashcard', resourceId: String(setId), isActive: true }).select('class').lean();
+      if (!assignment) return sendError(res, 404, 'Flashcard assignment not found.');
+      const member = await Membership.exists({ class: assignment.class, student: req.user._id, status: 'active' });
+      if (!member) return sendError(res, 403, 'Not enrolled in this class.');
+    } else if (set.visibility === 'private') return sendError(res, 403, 'Forbidden.');
+    const graded = await gradeFlashcardAnswer({ question: card.front, expectedAnswer: card.back, studentAnswer });
+    const persisted = await FlashcardAnswerCheck.findOneAndUpdate(
+      { flashcardSetId: setId, cardId, userId: req.user._id, assignmentId },
+      { $setOnInsert: { studentAnswer, correctAnswer: card.back, isCorrect: graded.correct,
+        gradingMethod: graded.gradingMethod, confidence: graded.confidence,
+        explanation: graded.reason, checkedAt: new Date() } },
+      { new: true, upsert: true, runValidators: true }
     );
-
-    const cleaned = raw
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-
-    let isCorrect = false;
-    try {
-      isCorrect = JSON.parse(cleaned).isCorrect === true;
-    } catch {
-      isCorrect = /\"isCorrect\"\s*:\s*true/i.test(cleaned);
-    }
-
-    console.log(
-      `[GRADE ANSWER] Q: "${String(question).slice(0, 50)}" | student: "${trimmedAnswer.slice(0, 40)}" | result: ${isCorrect}`,
-    );
-    return sendSuccess(res, { isCorrect });
-  } catch (err) {
-    console.error("[GRADE ANSWER] Error:", err.message);
-    return sendError(res, 500, "Grading failed");
+    logger.metric({ event: 'flashcard.answer_check.completed', flashcardId: String(cardId),
+      gradingMethod: persisted.gradingMethod, correct: persisted.isCorrect,
+      model: graded.model || null, durationMs: Date.now() - startedAt });
+    return sendSuccess(res, { correct: persisted.isCorrect, isCorrect: persisted.isCorrect,
+      correctAnswer: persisted.correctAnswer, studentAnswer: persisted.studentAnswer,
+      explanation: persisted.explanation, gradingMethod: persisted.gradingMethod,
+      confidence: persisted.confidence, checkedAt: persisted.checkedAt });
+  } catch (error) {
+    logger.metric({ event: 'flashcard.answer_check.failed', flashcardId: String(cardId || ''),
+      gradingMethod: null, correct: null, model: error?.model || null, durationMs: Date.now() - startedAt });
+    return sendError(res, 503, "We couldn't check this answer right now. Please try again.", 'FLASHCARD_ANSWER_CHECK_FAILED');
   }
 }
 

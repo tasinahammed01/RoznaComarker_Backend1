@@ -20,9 +20,10 @@ router.post('/generate',
   createUserConcurrencyGuard({ operation: 'flashcard_generation', maxConcurrent: 2 }),
   reserveAiFlashcardUsage(),
   flashcardController.generateFlashcards);
-router.post('/grade-answer',
+router.post('/:id/cards/:cardId/check-answer',
   createSensitiveRateLimiter({ windowMs: 60 * 1000, limit: 120, event: 'AI_GENERATION_RATE_LIMITED', reason: 'flashcard_grade_ip' }),
   verifyJwtToken,
+  requireRole('student'),
   createUserRateLimiter({ windowMs: 60 * 1000, limit: 60, event: 'AI_GENERATION_RATE_LIMITED', reason: 'flashcard_grade_user' }),
   createUserConcurrencyGuard({ operation: 'flashcard_answer_check', maxConcurrent: 2 }),
   flashcardController.gradeAnswer);
@@ -55,8 +56,8 @@ router.post('/:id/share',  verifyJwtToken, requireRole('teacher'), flashcardCont
 router.delete('/:id/share', verifyJwtToken, requireRole('teacher'), flashcardController.revokeShare);
 
 /** PART 3 — real-time progress tracking (student) */
-router.patch('/:id/progress', verifyJwtToken, requireRole('student'), flashcardProgressController.saveProgress);
-router.get('/:id/progress', verifyJwtToken, requireRole('student'), flashcardProgressController.getProgress);
-router.delete('/:id/progress', verifyJwtToken, requireRole('student'), flashcardProgressController.resetProgress);
+router.patch('/:setId/progress', verifyJwtToken, requireRole('student'), flashcardProgressController.saveProgress);
+router.get('/:setId/progress', verifyJwtToken, requireRole('student'), flashcardProgressController.getProgress);
+router.delete('/:setId/progress', verifyJwtToken, requireRole('student'), flashcardProgressController.resetProgress);
 
 module.exports = router;

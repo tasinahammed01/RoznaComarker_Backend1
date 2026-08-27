@@ -118,6 +118,24 @@ router.delete(
   classController.removeStudentFromClass
 );
 
+router.patch(
+  '/:id/archive',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid class id'),
+  handleValidationResult,
+  classController.archiveOwnedClass
+);
+
+router.patch(
+  '/:id/unarchive',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid class id'),
+  handleValidationResult,
+  classController.unarchiveOwnedClass
+);
+
 router.get(
   '/:classId/summary',
   verifyJwtToken,

@@ -13,6 +13,8 @@ const { SCORING_POLICY_VERSION, normalizeTeacherEvaluationPolicy, evaluationPoli
   correctionsAllowedByPolicy } = require('./teacherEvaluationPolicy.service');
 const { normalizeAssignmentRubric, hashNormalizedRubric, calculateCustomRubricScore } =
   require('./assignmentRubric.service');
+const CreditService = require('./credit.service');
+const assessmentCompletion = require('./assessmentCompletion.service');
 
 const VERSION = EVALUATION_VERSION;
 const stable = (value) => value == null ? null : Array.isArray(value) ? value.map(stable) : typeof value === 'object'
@@ -63,7 +65,8 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
   const sourceHash = submission.correctionSourceHash;
   if (!sourceHash || submission.correctionStatus !== 'completed') return { status: 'superseded' };
   const classDoc = await Class.findById(submission.class).select('teacher').lean();
-  const teacher = classDoc?.teacher ? await User.findById(classDoc.teacher).select('aiConfig').lean() : null;
+  const teacher = classDoc?.teacher ? await User.findById(classDoc.teacher).select('aiConfig role').lean() : null;
+  const accountingEnabled = teacher?.role === 'teacher';
   const policy = normalizeTeacherEvaluationPolicy(teacher);
   const policyHash = evaluationPolicyHash(policy);
   const customRubricResult = normalizeAssignmentRubric(assignment || {});
@@ -128,6 +131,16 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       model: existingFeedback.evaluationModel || null, overallScore: Number(existingFeedback.overallScore), errorCode: null
     };
   }
+  const creditState = accountingEnabled ? await CreditService.canRunAssessment(classDoc?.teacher) : { allowed: true, availableCredits: null };
+  if (!creditState.allowed) {
+    await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash }, { $set: {
+      evaluationStatus: 'blocked', evaluationErrorCode: 'INSUFFICIENT_ASSESSMENT_CREDITS',
+      evaluationError: 'You have used all your Assessment Credits for this billing cycle.'
+    }});
+    logger.info({ event: 'credit.assessment.not_charged', userId: String(classDoc?.teacher),
+      submissionId: String(submission._id), assessmentId: sourceHash, reason: 'insufficient_credits' });
+    return { status: 'blocked', sourceHash, errorCode: 'INSUFFICIENT_ASSESSMENT_CREDITS' };
+  }
   const jobId = prelockedJobId || crypto.randomUUID();
   if (!prelockedJobId) {
     const locked = await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash, evaluationStatus: { $ne: 'processing' } },
@@ -138,6 +151,8 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       evaluationStatus: 'processing', evaluationJobId: jobId });
     if (!ownsLock) return { status: 'superseded', sourceHash };
   }
+  if (accountingEnabled) await assessmentCompletion.start({ runId: jobId, submission,
+    teacherId: classDoc.teacher, sourceHash });
   let feedbackPersisted = false;
   try {
     await SubmissionFeedback.findOneAndUpdate({ submissionId: submission._id }, { $set: {
@@ -278,8 +293,16 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       customRubricPresent: Boolean(customRubricScores), builtInScoresReused: reusableBuiltInScores, overallScore });
     console.info('[canonical-evaluation] detailed feedback persisted', { submissionId: String(submission._id),
       sourceHashMatch: true, duration: detailedFeedbackMs });
+    const completion = semantic.status === 'completed' && accountingEnabled
+      ? await assessmentCompletion.complete({ runId: jobId, teacherId: classDoc.teacher,
+        submissionId: submission._id, sourceHash })
+      : { availableCredits: creditState.availableCredits };
+    if (semantic.status !== 'completed' && accountingEnabled) logger.info({ event: 'credit.assessment.not_charged',
+      userId: String(classDoc.teacher), submissionId: String(submission._id), assessmentId: sourceHash, reason: 'partial_assessment' });
     return { status: semantic.status === 'partial' ? 'partial' : 'completed', sourceHash, rubricHash, policyHash, stats,
       provider: semantic.provider, model: semantic.model, overallScore, errorCode: null,
+      assessmentRunId: jobId, assessmentStatus: semantic.status === 'completed' ? 'complete' : 'failed',
+      availableCredits: completion.credit?.availableCredits ?? completion.availableCredits,
       categoryScores: rubricScores, attempts: semantic.metrics?.attempts || [], timings: {
         detailedFeedbackMs, validationMs: semantic.metrics?.validationMs || 0,
         persistenceMs, totalCanonicalEvaluationMs
@@ -290,6 +313,8 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       model: error?.model || null, errorCode: error?.validationCode || error?.code || 'CANONICAL_EVALUATION_FAILED',
       durationMs: Date.now() - totalStartedAt });
     if (error?.code === 'ANALYSIS_JOB_SUPERSEDED') return { status: 'superseded', sourceHash };
+    if (error?.code === 'ASSESSMENT_COMPLETION_FAILED') return { status: 'failed', sourceHash,
+      errorCode: error.componentCode || error.code, assessmentRunId: jobId, assessmentStatus: 'failed' };
     // A valid feedback write followed by an interrupted status update is
     // intentionally left recoverable by the idempotent path above.
     if (feedbackPersisted) {

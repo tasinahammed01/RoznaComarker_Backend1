@@ -38,6 +38,7 @@ const { scopeCanonicalPages, scopeCanonicalCorrections } = require('../services/
 const { pendingAnalysisState, resetSubmissionAnalysisState } = require('../services/submissionAnalysisLifecycle.service');
 const submissionRemoval = require('../services/submissionRemoval.service');
 const { getAdaptiveCompletionForResubmission } = require('../services/adaptivePractice.service');
+const CreditService = require('../services/credit.service');
 
 const ADAPTIVE_RESUBMISSION_MESSAGE = 'Complete the required Adaptive Learning activities before submitting another draft.';
 
@@ -1031,6 +1032,10 @@ async function getOcrCorrections(req, res) {
       correctionCurrent: resultState.correctionCurrent,
       correctionSourceHash: resultState.correctionCurrent ? (doc.correctionSourceHash || null) : null,
       evaluationStatus: resultState.evaluationStatus,
+      assessmentRunId: doc.assessmentRunId || null,
+      assessmentStatus: doc.assessmentStatus || null,
+      assessmentCompletedAt: doc.assessmentCompletedAt || null,
+      assessmentErrorCode: doc.assessmentErrorCode || null,
       evaluationSource: resultState.evaluationSource,
       evaluationVersion: resultState.evaluationVersion,
       assessmentVersion: resultState.assessmentVersion,
@@ -1073,6 +1078,11 @@ async function regenerateCanonicalCorrections(req, res) {
     if (await SubmissionFeedback.exists({ submissionId: submission._id, overriddenByTeacher: true })) {
       return sendError(res, 409, 'Teacher-overridden evaluations cannot be regenerated');
     }
+    if (mongoose.Types.ObjectId.isValid(req.user._id)) {
+      const creditState = await CreditService.canRunAssessment(req.user);
+      if (!creditState.allowed) return sendError(res, 403,
+        'You have used all your Assessment Credits for this billing cycle.', 'INSUFFICIENT_ASSESSMENT_CREDITS');
+    }
     
     if (submission.correctionStatus === 'processing') return res.status(409).json({ success: false, message: 'Correction generation is already processing', data: {
       correctionStatus: 'processing', processingActive: true, automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false
@@ -1104,6 +1114,11 @@ async function retryCanonicalEvaluation(req, res) {
     await uploadService.assertTeacherOwnsClassOrThrow(req.user._id, submission.class);
     if (await SubmissionFeedback.exists({ submissionId: submission._id, overriddenByTeacher: true })) {
       return sendError(res, 409, 'Teacher-overridden evaluations cannot be re-evaluated');
+    }
+    if (mongoose.Types.ObjectId.isValid(req.user._id)) {
+      const creditState = await CreditService.canRunAssessment(req.user);
+      if (!creditState.allowed) return sendError(res, 403,
+        'You have used all your Assessment Credits for this billing cycle.', 'INSUFFICIENT_ASSESSMENT_CREDITS');
     }
     if (submission.evaluationStatus === 'processing') return res.status(409).json({
       success: false, message: 'Evaluation is already processing',

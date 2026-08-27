@@ -31,7 +31,11 @@ async function getAssignmentOrThrow(assignmentId) {
     throw new ApiError(404, 'Assignment not found');
   }
 
-  const classDoc = await Class.findOne({ _id: assignment.class, isActive: true });
+  const classDoc = await Class.findOne({
+    _id: assignment.class,
+    isActive: true,
+    $or: [{ status: 'active' }, { status: { $exists: false } }]
+  });
   if (!classDoc) {
     throw new ApiError(404, 'Class not found');
   }

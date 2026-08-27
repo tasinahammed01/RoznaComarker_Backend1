@@ -2,6 +2,7 @@ const fs = require('fs');
 
 const Plan = require('../models/Plan');
 const User = require('../models/user.model');
+const Class = require('../models/class.model');
 const logger = require('../utils/logger');
 const { isSubscriptionEntitled } = require('../services/stripeSubscription.service');
 
@@ -166,7 +167,13 @@ function enforceUsageLimit(metric, amountOrGetter) {
       const amount = typeof amountOrGetter === 'function' ? amountOrGetter(req) : amountOrGetter;
       const normalizedAmount = typeof amount === 'number' && Number.isFinite(amount) ? amount : 1;
 
-      const current = getUsage(user, metric);
+      const current = metric === 'classes'
+        ? await Class.countDocuments({
+            teacher: user._id,
+            isActive: true,
+            $or: [{ status: 'active' }, { status: { $exists: false } }]
+          })
+        : getUsage(user, metric);
 
       if (current + normalizedAmount > limit) {
         return sendError(res, 403, `Limit exceeded: ${metric}`);

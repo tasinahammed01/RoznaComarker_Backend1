@@ -60,11 +60,28 @@ const classSchema = new Schema(
     isActive: {
       type: Boolean,
       default: true
+    },
+    status: {
+      type: String,
+      enum: ['active', 'archived'],
+      default: 'active',
+      index: true
+    },
+    archivedAt: {
+      type: Date,
+      default: null
+    },
+    archivedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null
     }
   },
   {
     timestamps: true
   }
 );
+
+classSchema.index({ teacher: 1, status: 1, isActive: 1 });
 
 module.exports = mongoose.model('Class', classSchema);

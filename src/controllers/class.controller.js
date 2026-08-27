@@ -11,6 +11,12 @@ const Invitation = require("../models/invitation.model");
 const User = require("../models/user.model");
 const { sendInvitationEmail } = require("../services/email.service");
 const { generateShortJoinCode } = require("../utils/joinCode");
+const {
+  withActiveStatus,
+  isArchivedClass,
+  archiveClass,
+  unarchiveClass,
+} = require("../services/classLifecycle.service");
 
 const {
   incrementUsage,
@@ -24,10 +30,11 @@ function sendSuccess(res, data) {
   });
 }
 
-function sendError(res, statusCode, message) {
+function sendError(res, statusCode, message, code) {
   return res.status(statusCode).json({
     success: false,
     message,
+    ...(code ? { code } : {}),
   });
 }
 
@@ -179,11 +186,11 @@ async function updateClass(req, res) {
       return sendError(res, 401, "Unauthorized");
     }
 
-    const classDoc = await Class.findOne({
+    const classDoc = await Class.findOne(withActiveStatus({
       _id: id,
       teacher: teacherId,
       isActive: true,
-    });
+    }));
 
     if (!classDoc) {
       return sendError(res, 404, "Class not found");
@@ -279,6 +286,37 @@ async function deleteClass(req, res) {
   }
 }
 
+async function archiveOwnedClass(req, res) {
+  try {
+    const teacherId = req.user?._id;
+    if (!teacherId) return sendError(res, 401, 'Unauthorized');
+    const classDoc = await archiveClass({ classId: req.params.id, teacherId });
+    if (!classDoc) return sendError(res, 404, 'Class not found', 'CLASS_NOT_FOUND');
+    return sendSuccess(res, classDoc);
+  } catch {
+    return sendError(res, 500, 'Failed to archive class');
+  }
+}
+
+async function unarchiveOwnedClass(req, res) {
+  try {
+    if (!req.user?._id) return sendError(res, 401, 'Unauthorized');
+    const result = await unarchiveClass({ classId: req.params.id, teacher: req.user });
+    if (!result.classDoc) return sendError(res, 404, 'Class not found', 'CLASS_NOT_FOUND');
+    if (result.limitReached) {
+      return res.status(409).json({
+        success: false,
+        code: 'ACTIVE_CLASS_LIMIT_REACHED',
+        message: "You've reached your active class limit. Archive another class or upgrade your plan before restoring this class.",
+        data: { activeCount: result.activeCount, limit: result.limit }
+      });
+    }
+    return sendSuccess(res, result.classDoc);
+  } catch {
+    return sendError(res, 500, 'Failed to restore class');
+  }
+}
+
 async function getMyClasses(req, res) {
   try {
     const teacherId = req.user && req.user._id;
@@ -286,10 +324,14 @@ async function getMyClasses(req, res) {
       return sendError(res, 401, "Unauthorized");
     }
 
-    const classes = await Class.find({
-      teacher: teacherId,
-      isActive: true,
-    }).sort({ createdAt: -1 });
+    const requestedStatus = String(req.query?.status || 'active').toLowerCase();
+    if (!['active', 'archived'].includes(requestedStatus)) {
+      return sendError(res, 400, 'status must be active or archived', 'INVALID_CLASS_STATUS');
+    }
+    const query = requestedStatus === 'archived'
+      ? { teacher: teacherId, isActive: true, status: 'archived' }
+      : withActiveStatus({ teacher: teacherId, isActive: true });
+    const classes = await Class.find(query).sort({ createdAt: -1 });
 
     return sendSuccess(res, classes);
   } catch (err) {
@@ -306,16 +348,19 @@ async function joinByCode(req, res) {
     }
 
     const normalizedJoinCode = joinCode.trim();
-    const classDoc = await Class.findOne({
+    const anyClass = await Class.findOne({
       joinCode: { $in: [normalizedJoinCode, normalizedJoinCode.toUpperCase()] },
       isActive: true,
-    }).select("_id name description createdAt updatedAt");
+    }).select("_id name description status createdAt updatedAt");
 
-    if (!classDoc) {
+    if (!anyClass) {
       return sendError(res, 404, "Invalid join code");
     }
+    if (isArchivedClass(anyClass)) {
+      return sendError(res, 409, 'This class is archived and is no longer accepting new students.', 'CLASS_ARCHIVED');
+    }
 
-    return sendSuccess(res, classDoc);
+    return sendSuccess(res, anyClass);
   } catch (err) {
     return sendError(res, 500, "Failed to verify join code");
   }
@@ -392,11 +437,11 @@ async function removeStudentFromClass(req, res) {
       return sendError(res, 401, "Unauthorized");
     }
 
-    const classDoc = await Class.findOne({
+    const classDoc = await Class.findOne(withActiveStatus({
       _id: classId,
       teacher: teacherId,
       isActive: true,
-    });
+    }));
 
     if (!classDoc) {
       return sendError(res, 404, "Class not found");
@@ -575,6 +620,8 @@ async function getClassSummary(req, res) {
         : null,
       bannerUrl: classDoc.bannerUrl || "",
       joinCode: classDoc.joinCode,
+      status: classDoc.status || 'active',
+      archivedAt: classDoc.archivedAt || null,
       gradingScale: classDoc.gradingScale,
       teacher: {
         id: teacher && teacher._id ? String(teacher._id) : String(teacherId),
@@ -606,11 +653,11 @@ async function uploadClassBanner(req, res) {
       return sendError(res, 401, "Unauthorized");
     }
 
-    const classDoc = await Class.findOne({
+    const classDoc = await Class.findOne(withActiveStatus({
       _id: id,
       teacher: teacherId,
       isActive: true,
-    });
+    }));
 
     if (!classDoc) {
       tryDeleteUploadedFile(req.file);
@@ -671,11 +718,11 @@ async function inviteStudents(req, res) {
       return sendError(res, 401, "Unauthorized");
     }
 
-    const classDoc = await Class.findOne({
+    const classDoc = await Class.findOne(withActiveStatus({
       _id: classId,
       teacher: teacherId,
       isActive: true,
-    });
+    }));
 
     if (!classDoc) {
       return sendError(res, 404, "Class not found");
@@ -799,11 +846,11 @@ async function getClassInvitations(req, res) {
       return sendError(res, 401, "Unauthorized");
     }
 
-    const classDoc = await Class.findOne({
+    const classDoc = await Class.findOne(withActiveStatus({
       _id: classId,
       teacher: teacherId,
       isActive: true,
-    });
+    }));
 
     if (!classDoc) {
       return sendError(res, 404, "Class not found");
@@ -824,6 +871,8 @@ module.exports = {
   getMyClasses,
   updateClass,
   deleteClass,
+  archiveOwnedClass,
+  unarchiveOwnedClass,
   joinByCode,
   getClassSummary,
   getClassStudents,

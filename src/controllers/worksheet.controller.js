@@ -371,6 +371,7 @@ async function resolveStudentWorksheetAssignment({
   const classDoc = await Class.findOne({
     _id: assignment.class,
     isActive: true,
+    $or: [{ status: 'active' }, { status: { $exists: false } }],
   }).lean();
   if (!classDoc) {
     return { error: { statusCode: 404, message: "Class not found" } };
@@ -1823,6 +1824,8 @@ async function submitWorksheet(req, res) {
       existing.activity9Total = totalPointsPossible;
 
       await existing.save();
+      logger.metric({ event: 'worksheet.progress.submitted', userId: String(studentId),
+        worksheetId: String(worksheetId), status: existing.status });
       console.log(
         "[SUBMIT WORKSHEET] Updated:",
         existing._id,
@@ -1914,6 +1917,8 @@ async function submitWorksheet(req, res) {
     });
 
     await created.save();
+    logger.metric({ event: 'worksheet.progress.submitted', userId: String(studentId),
+      worksheetId: String(worksheetId), status: created.status });
     console.log(
       "[SUBMIT WORKSHEET] Saved:",
       created._id,
@@ -2802,6 +2807,8 @@ async function getWorksheetDraft(req, res) {
       studentId,
     }).lean();
     if (!draft) return sendError(res, 404, "No draft found");
+    logger.metric({ event: 'worksheet.progress.resumed', userId: String(studentId),
+      worksheetId: String(worksheetId), status: 'in_progress' });
 
     // Convert Mongoose Map types to plain objects for proper serialization
     if (draft.activity9Answers && typeof draft.activity9Answers.toObject === 'function') {
@@ -2834,6 +2841,13 @@ async function saveWorksheetDraft(req, res) {
       activity2Revealed = {},
       activity3Answers = {},
       activity4Blanks = {},
+      activity5Matches = {},
+      activity6Answers = {},
+      activity7Labels = {},
+      activity8Sequences = {},
+      currentQuestionId = null,
+      currentQuestionIndex = 0,
+      expectedRevision,
       activity9Answers,
       activity9Results,
       activity9Score,
@@ -2863,26 +2877,40 @@ async function saveWorksheetDraft(req, res) {
     let isNewDraft = false;
 
     let draft = await WorksheetDraft.findOne({ assignmentId, studentId });
+    if (expectedRevision !== undefined && Number(expectedRevision) !== Number(draft?.revision || 0)) {
+      return res.status(409).json({ success: false, code: 'DRAFT_VERSION_CONFLICT',
+        message: 'This worksheet was updated in another session.', data: { revision: draft?.revision || 0 } });
+    }
 
     if (draft) {
-      // Update existing draft
-      draft.activity1Answers = activity1Answers;
-      draft.activity2Answers = activity2Answers;
-      draft.activity2Revealed = activity2Revealed;
-      draft.activity3Answers = activity3Answers;
-      draft.activity4Blanks = activity4Blanks;
-      // Activity 9 overlay worksheet data
-      if (activity9Answers !== undefined) draft.activity9Answers = activity9Answers;
-      if (activity9Results !== undefined) draft.activity9Results = activity9Results;
-      if (activity9Score !== undefined) draft.activity9Score = activity9Score;
-      if (activity9Total !== undefined) draft.activity9Total = activity9Total;
-      draft.progressPercentage = Math.min(
+      const draftUpdate = {
+        activity1Answers, activity2Answers, activity2Revealed, activity3Answers,
+        activity4Blanks, activity5Matches, activity6Answers, activity7Labels,
+        activity8Sequences, currentQuestionId,
+        currentQuestionIndex: Math.max(0, Number(currentQuestionIndex) || 0),
+        progressPercentage: Math.min(
         100,
         Math.max(0, Number(progressPercentage) || 0),
+        ),
+        timeSpent: Number(timeSpent) || 0,
+        lastSavedAt: now,
+      };
+      if (activity9Answers !== undefined) draftUpdate.activity9Answers = activity9Answers;
+      if (activity9Results !== undefined) draftUpdate.activity9Results = activity9Results;
+      if (activity9Score !== undefined) draftUpdate.activity9Score = activity9Score;
+      if (activity9Total !== undefined) draftUpdate.activity9Total = activity9Total;
+      const updateQuery = { _id: draft._id };
+      if (expectedRevision !== undefined) updateQuery.revision = Number(expectedRevision);
+      draft = await WorksheetDraft.findOneAndUpdate(
+        updateQuery,
+        { $set: draftUpdate, $inc: { revision: 1 } },
+        { new: true, runValidators: true },
       );
-      draft.timeSpent = Number(timeSpent) || 0;
-      draft.lastSavedAt = now;
-      await draft.save();
+      if (!draft) {
+        const latest = await WorksheetDraft.findOne({ assignmentId, studentId }).select('revision').lean();
+        return res.status(409).json({ success: false, code: 'DRAFT_VERSION_CONFLICT',
+          message: 'This worksheet was updated in another session.', data: { revision: latest?.revision || 0 } });
+      }
     } else {
       // Create new draft
       isNewDraft = true;
@@ -2895,6 +2923,13 @@ async function saveWorksheetDraft(req, res) {
         activity2Revealed,
         activity3Answers,
         activity4Blanks,
+        activity5Matches,
+        activity6Answers,
+        activity7Labels,
+        activity8Sequences,
+        currentQuestionId,
+        currentQuestionIndex: Math.max(0, Number(currentQuestionIndex) || 0),
+        revision: 1,
         // Activity 9 overlay worksheet data
         activity9Answers: activity9Answers || {},
         activity9Results: activity9Results || {},
@@ -2910,6 +2945,8 @@ async function saveWorksheetDraft(req, res) {
       });
       await draft.save();
     }
+    logger.metric({ event: isNewDraft ? 'worksheet.progress.created' : 'worksheet.progress.saved',
+      userId: String(studentId), worksheetId: String(worksheetId), status: 'in_progress' });
 
     // Publish SSE event for teacher dashboard
     try {

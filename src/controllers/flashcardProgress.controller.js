@@ -5,13 +5,48 @@ const Assignment = require('../models/assignment.model');
 const Membership = require('../models/membership.model');
 const User = require('../models/user.model');
 const logger = require('../utils/logger');
+const FlashcardAnswerCheck = require('../models/FlashcardAnswerCheck');
 
 function sendSuccess(res, data, statusCode = 200) {
   return res.status(statusCode).json({ success: true, data });
 }
 
-function sendError(res, statusCode, message) {
-  return res.status(statusCode).json({ success: false, message });
+function sendError(res, statusCode, message, code, field) {
+  return res.status(statusCode).json({ success: false, ...(code ? { code } : {}), message, ...(field ? { field } : {}) });
+}
+
+function invalidProgressPayload(req, res, message, field) {
+  logger.warn({ event: 'flashcard.progress.validation_failed', setId: String(req.params?.setId || ''),
+    assignmentIdPresent: Boolean(req.body?.assignmentId || req.query?.assignmentId),
+    bodyFields: Object.keys(req.body || {}), field, code: 'INVALID_PROGRESS_PAYLOAD' });
+  return sendError(res, 400, message, 'INVALID_PROGRESS_PAYLOAD', field);
+}
+
+function revisionConflict(res, revision) {
+  return res.status(409).json({
+    success: false,
+    code: 'PROGRESS_VERSION_CONFLICT',
+    message: 'Progress was updated in another session.',
+    data: { revision: Number(revision) || 0 }
+  });
+}
+
+function progressSaveErrorDetails(err) {
+  const validationErrors = err?.errors && typeof err.errors === 'object'
+    ? Object.fromEntries(Object.entries(err.errors).map(([field, value]) => [field, {
+      name: value?.name,
+      message: value?.message,
+      kind: value?.kind
+    }]))
+    : undefined;
+  return {
+    event: 'flashcard.progress.save_failed',
+    name: err?.name || 'Error',
+    message: err?.message || 'Unknown error',
+    code: err?.code,
+    ...(validationErrors ? { validationErrors } : {}),
+    ...(process.env.NODE_ENV !== 'production' && err?.stack ? { stack: err.stack } : {})
+  };
 }
 
 /**
@@ -29,7 +64,7 @@ async function saveProgress(req, res) {
     }
     
     if (!mongoose.Types.ObjectId.isValid(setId)) {
-      return sendError(res, 400, 'Invalid flashcard set ID');
+      return invalidProgressPayload(req, res, 'Invalid flashcard set ID', 'setId');
     }
     
     const { 
@@ -38,12 +73,16 @@ async function saveProgress(req, res) {
       cardResults, 
       assignmentId,
       template,
-      totalCards 
+      totalCards,
+      currentCardId,
+      cardProgress,
+      expectedRevision
     } = req.body || {};
     
     // Validate required fields
     if (typeof lastCardIndex !== 'number' || !Array.isArray(cardsViewed)) {
-      return sendError(res, 400, 'lastCardIndex (number) and cardsViewed (array) are required');
+      return invalidProgressPayload(req, res, 'lastCardIndex (number) and cardsViewed (array) are required',
+        typeof lastCardIndex !== 'number' ? 'lastCardIndex' : 'cardsViewed');
     }
     
     // Get flashcard set to verify it exists and get totalCards if not provided
@@ -52,13 +91,15 @@ async function saveProgress(req, res) {
       return sendError(res, 404, 'Flashcard set not found');
     }
     
-    const resolvedTotalCards = totalCards || (flashcardSet.cards?.length) || 0;
+    const resolvedTotalCards = (flashcardSet.cards?.length) || 0;
+    const canonicalCardIds = new Set((flashcardSet.cards || []).map((card) => String(card._id)));
+    const resolvedTemplate = flashcardSet.template || 'term-def';
     
     // Verify assignment access if assignmentId provided
     let classId = null;
     if (assignmentId) {
       if (!mongoose.Types.ObjectId.isValid(assignmentId)) {
-        return sendError(res, 400, 'Invalid assignment ID');
+        return invalidProgressPayload(req, res, 'Invalid assignment ID', 'assignmentId');
       }
       
       const assignment = await Assignment.findOne({
@@ -84,7 +125,7 @@ async function saveProgress(req, res) {
       }
       
       classId = assignment.class;
-    }
+    } else if (flashcardSet.visibility === 'private') return sendError(res, 403, 'Forbidden');
     
     // Build the query to find existing progress
     const query = {
@@ -98,30 +139,94 @@ async function saveProgress(req, res) {
       query.assignmentId = null;
     }
     
+    const existingProgress = await StudentFlashcardProgress.findOne(query);
+    if (existingProgress?.status === 'completed') {
+      return sendSuccess(res, existingProgress);
+    }
+    if (expectedRevision !== undefined && Number(expectedRevision) !== Number(existingProgress?.revision || 0)) {
+      return revisionConflict(res, existingProgress?.revision);
+    }
+
     // Build update data
     const updateData = {
-      lastCardIndex: Math.max(0, lastCardIndex),
-      cardsViewed: [...new Set(cardsViewed)], // Ensure unique values
-      completedCards: cardsViewed.length,
+      lastCardIndex: Math.min(Math.max(0, lastCardIndex), Math.max(resolvedTotalCards - 1, 0)),
+      cardsViewed: [],
+      completedCards: 0,
       lastActivityAt: new Date(),
-      template: template || flashcardSet.template || 'term-def',
+      template: resolvedTemplate,
       totalCards: resolvedTotalCards
     };
-    
-    // Add cardResults if provided
-    if (cardResults && typeof cardResults === 'object') {
-      updateData.cardResults = new Map(Object.entries(cardResults));
+    const incomingByCardId = new Map();
+    for (const item of Array.isArray(cardProgress) ? cardProgress : []) {
+      const cardId = String(item?.cardId || '');
+      if (canonicalCardIds.has(cardId)) incomingByCardId.set(cardId, item);
     }
+
+    if (resolvedTemplate === 'qa') {
+      const checks = await FlashcardAnswerCheck.find({ flashcardSetId: setId, userId: studentId,
+        ...(assignmentId ? { assignmentId } : { assignmentId: null }) }).lean();
+      const checksByCard = new Map(checks.map((check) => [String(check.cardId), check]));
+      updateData.cardProgress = [...incomingByCardId.entries()].map(([cardId, item]) => {
+          const checked = checksByCard.get(cardId);
+          return checked ? { cardId, studentAnswer: checked.studentAnswer,
+            isChecked: true, isCorrect: checked.isCorrect, gradingMethod: checked.gradingMethod,
+            checkedAt: checked.checkedAt, completedAt: checked.checkedAt }
+            : { cardId, studentAnswer: String(item.studentAnswer || '').slice(0, 4000),
+              isChecked: false, isCorrect: null, gradingMethod: null, checkedAt: null,
+              selfRating: null, completedAt: null };
+        });
+      updateData.cardResults = new Map();
+    } else {
+      const legacyRatings = new Map();
+      for (const [key, value] of Object.entries(cardResults && typeof cardResults === 'object' ? cardResults : {})) {
+        if (value !== 'knew' && value !== 'didnt_know') continue;
+        const numericIndex = /^\d+$/u.test(key) ? Number(key) : -1;
+        const cardId = canonicalCardIds.has(key) ? key
+          : String(flashcardSet.cards?.[numericIndex]?._id || '');
+        if (canonicalCardIds.has(cardId)) legacyRatings.set(cardId, value);
+      }
+      const existingByCardId = new Map((existingProgress?.cardProgress || [])
+        .map((item) => [String(item.cardId), item]));
+      const normalized = new Map();
+      for (const card of flashcardSet.cards || []) {
+        const cardId = String(card._id);
+        const incoming = incomingByCardId.get(cardId);
+        const existing = existingByCardId.get(cardId);
+        const rating = incoming?.selfRating === 'knew' || incoming?.selfRating === 'didnt_know'
+          ? incoming.selfRating : legacyRatings.get(cardId) || existing?.selfRating;
+        if (rating !== 'knew' && rating !== 'didnt_know') continue;
+        normalized.set(cardId, { cardId, studentAnswer: '', selfRating: rating,
+          isChecked: false, isCorrect: null, gradingMethod: null, checkedAt: null,
+          completedAt: existing?.completedAt || new Date() });
+      }
+      updateData.cardProgress = [...normalized.values()];
+      updateData.cardResults = new Map([...normalized.entries()].map(([cardId, item]) => [cardId, item.selfRating]));
+    }
+
+    const completedIds = new Set(updateData.cardProgress
+      .filter((item) => resolvedTemplate === 'qa' ? item.isChecked === true : Boolean(item.selfRating))
+      .map((item) => String(item.cardId)));
+    updateData.cardsViewed = (flashcardSet.cards || []).map((card, index) =>
+      completedIds.has(String(card._id)) ? index : null).filter((index) => index !== null);
+    updateData.completedCards = Math.min(completedIds.size, resolvedTotalCards);
     
     // Auto-calculate status based on progress
-    if (resolvedTotalCards > 0 && cardsViewed.length >= resolvedTotalCards) {
+    const completedCount = updateData.completedCards;
+    if (resolvedTotalCards > 0 && completedCount >= resolvedTotalCards) {
       updateData.status = 'completed';
       updateData.completedAt = new Date();
-    } else if (cardsViewed.length > 0) {
+      updateData.currentCardId = null;
+    } else if (completedCount > 0 || updateData.cardProgress?.some((item) => item.studentAnswer)) {
       updateData.status = 'in_progress';
+      updateData.completedAt = null;
       if (!await StudentFlashcardProgress.exists({ ...query, startedAt: { $ne: null } })) {
         updateData.startedAt = new Date();
       }
+      if (currentCardId && canonicalCardIds.has(String(currentCardId))) updateData.currentCardId = currentCardId;
+    } else {
+      updateData.status = 'not_started';
+      updateData.completedAt = null;
+      updateData.currentCardId = currentCardId && canonicalCardIds.has(String(currentCardId)) ? currentCardId : null;
     }
     
     if (classId) {
@@ -129,16 +234,36 @@ async function saveProgress(req, res) {
     }
     
     // Upsert progress record
+    const expectedRevisionNumber = Number(expectedRevision);
+    const revisionCondition = expectedRevisionNumber === 0
+      ? { $or: [{ revision: 0 }, { revision: { $exists: false } }] }
+      : { revision: expectedRevisionNumber };
+    const updateQuery = existingProgress && expectedRevision !== undefined
+      ? { ...query, ...revisionCondition }
+      : query;
     const progress = await StudentFlashcardProgress.findOneAndUpdate(
-      query,
-      { $set: updateData },
+      updateQuery,
+      { $set: updateData, $inc: { revision: 1 } },
       { 
         new: true, 
-        upsert: true,
+        upsert: !existingProgress,
         runValidators: true,
         setDefaultsOnInsert: true
       }
     );
+    if (!progress) {
+      const latest = await StudentFlashcardProgress.findOne(query).select('revision').lean();
+      return revisionConflict(res, latest?.revision);
+    }
+    logger.debug({ event: 'FLASHCARD_PROGRESS_SAVE', setId: String(setId),
+      assignmentId: assignmentId ? String(assignmentId) : null,
+      currentCardId: progress.currentCardId ? String(progress.currentCardId) : null,
+      revision: progress.revision || 0,
+      cardProgress: (progress.cardProgress || []).map((item) => ({ cardId: String(item.cardId),
+        isChecked: item.isChecked === true,
+        isCorrect: typeof item.isCorrect === 'boolean' ? item.isCorrect : null })) });
+    logger.metric({ event: existingProgress ? (progress.status === 'completed' ? 'flashcard.progress.completed' : 'flashcard.progress.saved') : 'flashcard.progress.created',
+      userId: String(studentId), flashcardSetId: String(setId), status: progress.status });
     
     return sendSuccess(res, {
       progressId: progress._id,
@@ -151,11 +276,12 @@ async function saveProgress(req, res) {
       startedAt: progress.startedAt,
       lastActivityAt: progress.lastActivityAt,
       completedAt: progress.completedAt
+      ,revision: progress.revision
     });
     
   } catch (err) {
-    logger.error('saveProgress error:', err);
-    return sendError(res, 500, 'Failed to save progress');
+    logger.error(progressSaveErrorDetails(err));
+    return sendError(res, 500, 'Unable to save flashcard progress.', 'FLASHCARD_PROGRESS_SAVE_FAILED');
   }
 }
 
@@ -175,7 +301,7 @@ async function getProgress(req, res) {
     }
     
     if (!mongoose.Types.ObjectId.isValid(setId)) {
-      return sendError(res, 400, 'Invalid flashcard set ID');
+      return invalidProgressPayload(req, res, 'Invalid flashcard set ID', 'setId');
     }
     
     // Build the query
@@ -184,7 +310,23 @@ async function getProgress(req, res) {
       flashcardSetId: new mongoose.Types.ObjectId(setId)
     };
     
-    if (assignmentId && mongoose.Types.ObjectId.isValid(assignmentId)) {
+    if (assignmentId && !mongoose.Types.ObjectId.isValid(assignmentId)) {
+      return invalidProgressPayload(req, res, 'Invalid assignment ID', 'assignmentId');
+    }
+
+    const flashcardSet = await FlashcardSet.findById(setId).lean();
+    if (!flashcardSet) return sendError(res, 404, 'Flashcard set not found');
+    if (assignmentId) {
+      const assignment = await Assignment.findOne({ _id: assignmentId, resourceType: 'flashcard',
+        resourceId: setId, isActive: true }).lean();
+      if (!assignment) return sendError(res, 404, 'Assignment not found or inactive');
+      const membership = await Membership.findOne({ student: studentId, class: assignment.class, status: 'active' }).lean();
+      if (!membership) return sendError(res, 403, 'Not enrolled in this class');
+    } else if (flashcardSet.visibility === 'private') {
+      return sendError(res, 403, 'Forbidden');
+    }
+
+    if (assignmentId) {
       query.assignmentId = new mongoose.Types.ObjectId(assignmentId);
     } else {
       query.assignmentId = null;
@@ -206,13 +348,27 @@ async function getProgress(req, res) {
         startedAt: null,
         lastActivityAt: null,
         completedAt: null
+        ,currentCardId: null
+        ,cardProgress: []
+        ,revision: 0
       });
     }
+    logger.debug({ event: 'FLASHCARD_PROGRESS_LOAD', setId: String(setId),
+      assignmentId: assignmentId || null,
+      currentCardId: progress.currentCardId ? String(progress.currentCardId) : null,
+      revision: progress.revision || 0,
+      cardProgress: (progress.cardProgress || []).map((item) => ({ cardId: String(item.cardId),
+        isChecked: item.isChecked === true,
+        isCorrect: typeof item.isCorrect === 'boolean' ? item.isCorrect : null })) });
+    logger.metric({ event: 'flashcard.progress.resumed', userId: String(studentId),
+      flashcardSetId: String(setId), status: progress.status });
     
     // Convert Map to plain object for JSON response
-    const cardResultsObj = progress.cardResults 
-      ? Object.fromEntries(progress.cardResults) 
-      : {};
+    const cardResultsObj = progress.cardResults instanceof Map
+      ? Object.fromEntries(progress.cardResults)
+      : progress.cardResults && typeof progress.cardResults === 'object'
+        ? { ...progress.cardResults }
+        : {};
     
     return sendSuccess(res, {
       status: progress.status,
@@ -229,10 +385,14 @@ async function getProgress(req, res) {
       lastActivityAt: progress.lastActivityAt,
       completedAt: progress.completedAt,
       template: progress.template
+      ,currentCardId: progress.currentCardId || null
+      ,cardProgress: progress.cardProgress || []
+      ,revision: progress.revision || 0
     });
     
   } catch (err) {
-    logger.error('getProgress error:', err);
+    logger.error({ event: 'flashcard.progress.load_failed', name: err?.name,
+      message: err?.message, ...(process.env.NODE_ENV !== 'production' && err?.stack ? { stack: err.stack } : {}) });
     return sendError(res, 500, 'Failed to fetch progress');
   }
 }
@@ -252,7 +412,7 @@ async function resetProgress(req, res) {
     }
     
     if (!mongoose.Types.ObjectId.isValid(setId)) {
-      return sendError(res, 400, 'Invalid flashcard set ID');
+      return invalidProgressPayload(req, res, 'Invalid flashcard set ID', 'setId');
     }
     
     // Build the query

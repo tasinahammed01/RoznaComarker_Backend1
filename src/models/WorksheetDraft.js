@@ -32,6 +32,10 @@ const worksheetDraftSchema = new Schema(
       ],
       default: [],
     },
+    status: { type: String, enum: ['in_progress'], default: 'in_progress' },
+    currentQuestionId: { type: String, default: null },
+    currentQuestionIndex: { type: Number, default: 0, min: 0 },
+    revision: { type: Number, default: 0, min: 0 },
     activity1Answers: {
       type: Map,
       of: String,
@@ -57,6 +61,10 @@ const worksheetDraftSchema = new Schema(
       of: String,
       default: new Map(),
     },
+    activity5Matches: { type: Map, of: String, default: new Map() },
+    activity6Answers: { type: Map, of: Boolean, default: new Map() },
+    activity7Labels: { type: Map, of: String, default: new Map() },
+    activity8Sequences: { type: Map, of: [String], default: new Map() },
     // DEPRECATED: legacy activity9 overlay format, kept for backward-compat
     // grading of pre-migration worksheets. Do not use for new worksheets.
     activity9Answers: {

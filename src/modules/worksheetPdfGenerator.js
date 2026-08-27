@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const PDFDocument = require("pdfkit");
 const { getActivityType } = require("../config/activityTypes.config");
+const logger = require("../utils/logger");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STYLE TOKENS  (matches existing ProjectRozna palette)
@@ -205,7 +206,6 @@ function renderProgressBar(doc, x, y, w, h, pct, color, showLabel = true) {
  */
 function renderStatCard(doc, x, y, w, h, { label, value, icon, trend, color }) {
   const padding = STYLE.spacing.md;
-  const iconSize = 24;
 
   doc.save();
   doc
@@ -213,21 +213,8 @@ function renderStatCard(doc, x, y, w, h, { label, value, icon, trend, color }) {
     .fillAndStroke(STYLE.colors.white, STYLE.colors.border);
   doc.restore();
 
-  // Icon (if provided)
-  if (icon) {
-    doc
-      .font(STYLE.fonts.main)
-      .fontSize(16)
-      .fillColor(color || STYLE.colors.primary);
-    doc.text(icon, x + padding, y + padding, {
-      width: iconSize,
-      height: iconSize,
-    });
-  }
-
-  const contentX = icon
-    ? x + padding + iconSize + STYLE.spacing.sm
-    : x + padding;
+  // Standard PDF fonts do not reliably support emoji/icon glyphs.
+  const contentX = x + padding;
 
   // Label
   doc
@@ -250,7 +237,7 @@ function renderStatCard(doc, x, y, w, h, { label, value, icon, trend, color }) {
   // Trend (if provided)
   if (trend) {
     const trendColor = trend >= 0 ? STYLE.colors.success : STYLE.colors.error;
-    const trendIcon = trend >= 0 ? "↑" : "↓";
+    const trendIcon = trend >= 0 ? "+" : "-";
     doc
       .font(STYLE.fonts.main)
       .fontSize(STYLE.sizes.xs)
@@ -310,10 +297,10 @@ function renderMiniTable(doc, headers, rows, options = {}) {
   const W = pageW(doc);
   const colW = columnWidths || headers.map(() => W / headers.length);
 
-  const rowH = 28;
   const headerH = 32;
+  let cx = L;
 
-  // Header row
+  const drawHeader = () => {
   ensureSpace(doc, headerH + 10);
   const headerY = doc.y;
 
@@ -332,7 +319,7 @@ function renderMiniTable(doc, headers, rows, options = {}) {
     .font(STYLE.fonts.bold)
     .fontSize(STYLE.sizes.sm)
     .fillColor(STYLE.colors.neutral);
-  let cx = L + STYLE.spacing.sm;
+  cx = L + STYLE.spacing.sm;
   headers.forEach((header, i) => {
     doc.text(safeText(header), cx, headerY + 10, {
       width: colW[i] - STYLE.spacing.sm * 2,
@@ -341,10 +328,15 @@ function renderMiniTable(doc, headers, rows, options = {}) {
   });
 
   doc.y = headerY + headerH;
+  };
+  drawHeader();
 
   // Data rows
   rows.forEach((row, rowIndex) => {
-    ensureSpace(doc, rowH + 4);
+    doc.font(STYLE.fonts.main).fontSize(STYLE.sizes.sm);
+    const cellHeights = row.map((cell, i) => doc.heightOfString(safeText(cell), { width: colW[i] - STYLE.spacing.sm * 2 }));
+    const rowH = Math.max(28, Math.max(...cellHeights, 0) + 16);
+    if (doc.y + rowH > doc.page.height - doc.page.margins.bottom) { doc.addPage(); drawHeader(); }
     const rowY = doc.y;
 
     if (alternateRows && rowIndex % 2 === 1) {
@@ -787,7 +779,7 @@ function drawPageHeaderFooter(
     .fillColor(STYLE.colors.headerFt);
   const generatedDate = formatDate(new Date());
   doc.text(
-    `Generated on ${generatedDate} • Rozna Education Platform`,
+    `Generated on ${generatedDate} - Rozna Education Platform`,
     L,
     footerY + 10,
     { width: W, align: "center" },
@@ -851,24 +843,24 @@ function renderDocHeader(
 
     const metaItems = [
       {
-        icon: "📚",
+        icon: "",
         label: "Subject",
-        value: safeText(worksheetMeta.subject) || "—",
+        value: safeText(worksheetMeta.subject) || "N/A",
       },
       {
-        icon: "🎯",
+        icon: "",
         label: "CEFR",
-        value: safeText(worksheetMeta.cefrLevel) || "—",
+        value: safeText(worksheetMeta.cefrLevel) || "N/A",
       },
       {
-        icon: "🏫",
+        icon: "",
         label: "Grade",
-        value: safeText(worksheetMeta.gradeLevel) || "—",
+        value: safeText(worksheetMeta.gradeLevel) || "N/A",
       },
       {
-        icon: "⚡",
+        icon: "",
         label: "Difficulty",
-        value: formatDifficulty(worksheetMeta.difficulty) || "—",
+        value: formatDifficulty(worksheetMeta.difficulty) || "N/A",
       },
     ];
 
@@ -896,7 +888,7 @@ function renderDocHeader(
       const deadlineY = metaY + metaH + STYLE.spacing.sm;
       const isPast = new Date(deadline) < new Date();
       const deadlineColor = isPast ? STYLE.colors.error : STYLE.colors.white;
-      const deadlineText = `📅 Due: ${formatDate(deadline)}`;
+      const deadlineText = `Due: ${formatDate(deadline)}`;
 
       doc.font(STYLE.fonts.main).fontSize(11).fillColor(deadlineColor);
       doc.text(deadlineText, L, deadlineY, { width: W });
@@ -1059,7 +1051,7 @@ function renderMcqQuestions(doc, questions, answerMap) {
       doc.roundedRect(L + 18, optY, W - 18, optH, 4).fillAndStroke(bg, bd);
       doc.restore();
 
-      const marker = isSelected ? (isCorrect ? "✓ " : "✗ ") : "  ";
+      const marker = isSelected ? (isCorrect ? "[Correct] " : "[Wrong] ") : "  ";
       doc
         .font(isSelected ? "Helvetica-Bold" : "Helvetica")
         .fontSize(10)
@@ -1448,7 +1440,7 @@ function renderMatchingPairs(doc, activity, answerMap) {
       .font("Helvetica")
       .fontSize(14)
       .fillColor(STYLE.colors.muted)
-      .text("→", L + itemW + STYLE.spacing.sm / 2, itemY + 6, {
+      .text("=", L + itemW + STYLE.spacing.sm / 2, itemY + 6, {
         width: STYLE.spacing.md,
       });
 
@@ -1691,18 +1683,21 @@ function renderStatsRow(doc, stats) {
   const L = doc.page.margins.left;
   const W = pageW(doc);
   const n = stats.length;
+  const columns = Math.min(4, Math.max(1, n));
+  const rows = Math.ceil(n / columns);
   const gap = STYLE.spacing.md;
-  const cardW = Math.floor((W - gap * (n - 1)) / n);
+  const cardW = Math.floor((W - gap * (columns - 1)) / columns);
   const cardH = 85;
 
-  ensureSpace(doc, cardH + STYLE.spacing.lg);
+  ensureSpace(doc, rows * cardH + (rows - 1) * gap + STYLE.spacing.lg);
   const y = doc.y;
 
   for (let i = 0; i < n; i++) {
-    const sx = L + i * (cardW + gap);
+    const sx = L + (i % columns) * (cardW + gap);
+    const sy = y + Math.floor(i / columns) * (cardH + gap);
     const { label, value, icon, color, trend } = stats[i];
 
-    renderStatCard(doc, sx, y, cardW, cardH, {
+    renderStatCard(doc, sx, sy, cardW, cardH, {
       label,
       value,
       icon,
@@ -1711,7 +1706,7 @@ function renderStatsRow(doc, stats) {
     });
   }
 
-  doc.y = y + cardH + STYLE.spacing.lg;
+  doc.y = y + rows * cardH + (rows - 1) * gap + STYLE.spacing.lg;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1805,14 +1800,17 @@ function renderParticipantTable(doc, headers, rows, columnWidths) {
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED: build + pipe PDFDocument
 // ─────────────────────────────────────────────────────────────────────────────
-function buildDoc(outputPath) {
+function buildDoc(outputPath, pdfType = "worksheet") {
+  const startedAt = Date.now();
+  logger.metric({ event: "pdf.render.started", pdfType });
   const doc = new PDFDocument({
     size: "A4",
     bufferPages: true,
-    margins: { top: 50, bottom: 50, left: 40, right: 40 },
+    margins: { top: 72, bottom: 50, left: 40, right: 40 },
   });
   const stream = fs.createWriteStream(outputPath);
   doc.pipe(stream);
+  doc._roznaPdfMeta = { pdfType, startedAt };
   return { doc, stream };
 }
 
@@ -1828,8 +1826,16 @@ function finalizeDoc(doc, stream, headerTitle, outputPath) {
       });
     }
     doc.end();
-    stream.on("finish", () => resolve(outputPath));
-    stream.on("error", reject);
+    stream.on("finish", () => {
+      logger.metric({ event: "pdf.render.completed", pdfType: doc._roznaPdfMeta?.pdfType || "worksheet", pageCount: range.count,
+        durationMs: Date.now() - (doc._roznaPdfMeta?.startedAt || Date.now()) });
+      resolve(outputPath);
+    });
+    stream.on("error", (error) => {
+      logger.metric({ event: "pdf.render.failed", pdfType: doc._roznaPdfMeta?.pdfType || "worksheet",
+        durationMs: Date.now() - (doc._roznaPdfMeta?.startedAt || Date.now()) });
+      reject(error);
+    });
   });
 }
 
@@ -1911,7 +1917,7 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
 
   await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
 
-  const { doc, stream } = buildDoc(outputPath);
+  const { doc, stream } = buildDoc(outputPath, "worksheetSubmission");
 
   try {
     renderDocHeader(doc, {
@@ -1942,7 +1948,7 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
       if (studentEmail) infoItems.push({ label: "Email", value: studentEmail });
       if (className) infoItems.push({ label: "Class", value: className });
       infoItems.push({ label: "Worksheet", value: wsTitle });
-      infoItems.push({ label: "Submitted", value: submittedAt || "—" });
+      infoItems.push({ label: "Submitted", value: submittedAt || "N/A" });
 
       const colGap = STYLE.spacing.md;
       const numCols = 2;
@@ -2066,13 +2072,13 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
     });
 
     // Performance summary card for student
-    ensureSpace(doc, 100);
+    ensureSpace(doc, 150);
     const summaryY = doc.y;
 
     // Summary card background
     doc.save();
     doc
-      .roundedRect(L, summaryY, W, 88, STYLE.radius.lg)
+      .roundedRect(L, summaryY, W, 132, STYLE.radius.lg)
       .fillAndStroke(STYLE.colors.bg, STYLE.colors.border);
     doc.restore();
 
@@ -2113,7 +2119,7 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
       { label: "Time", value: formatTime(timeTaken), color: STYLE.colors.info },
       {
         label: "Result",
-        value: isPassed ? "Passed ✓" : "Not Passed",
+        value: isPassed ? "Passed" : "Not Passed",
         color: isPassed ? STYLE.colors.success : STYLE.colors.error,
       },
       {
@@ -2123,14 +2129,16 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
       },
     ];
 
-    const numStats = summaryStats.length;
+    const numStats = 4;
     const statW =
       (W - STYLE.spacing.lg * 2 - STYLE.spacing.md * (numStats - 1)) / numStats;
-    let sx = L + STYLE.spacing.lg;
-    summaryStats.forEach((stat) => {
+    summaryStats.forEach((stat, statIndex) => {
+      const statRow = Math.floor(statIndex / numStats);
+      const sx = L + STYLE.spacing.lg + (statIndex % numStats) * (statW + STYLE.spacing.md);
+      const statY = summaryY + 36 + statRow * 42;
       doc.save();
       doc
-        .roundedRect(sx, summaryY + 36, statW, 32, STYLE.radius.sm)
+        .roundedRect(sx, statY, statW, 34, STYLE.radius.sm)
         .fillAndStroke(STYLE.colors.white, STYLE.colors.border);
       doc.restore();
 
@@ -2138,7 +2146,7 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
         .font(STYLE.fonts.main)
         .fontSize(STYLE.sizes.xxs)
         .fillColor(STYLE.colors.muted);
-      doc.text(stat.label, sx + STYLE.spacing.sm, summaryY + 42, {
+      doc.text(stat.label, sx + STYLE.spacing.sm, statY + 5, {
         width: statW - STYLE.spacing.sm * 2,
       });
 
@@ -2146,14 +2154,13 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
         .font(STYLE.fonts.bold)
         .fontSize(STYLE.sizes.base)
         .fillColor(stat.color);
-      doc.text(stat.value, sx + STYLE.spacing.sm, summaryY + 54, {
+      doc.text(stat.value, sx + STYLE.spacing.sm, statY + 17, {
         width: statW - STYLE.spacing.sm * 2,
       });
 
-      sx += statW + STYLE.spacing.md;
     });
 
-    doc.y = summaryY + 88 + STYLE.spacing.lg;
+    doc.y = summaryY + 132 + STYLE.spacing.lg;
 
     // ── Section-wise Performance Summary ─────────────────────────────────────
     const sectionSummary = [];
@@ -2308,7 +2315,7 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
           sectionLabel,
           safeText(ans.questionId || `Q${reviewRows.length + 1}`),
           studentAns || "Not answered",
-          isCorrect ? "✓ Correct" : "✗ Wrong",
+          isCorrect ? "Correct" : "Wrong",
         ]);
       },
     );
@@ -2381,7 +2388,7 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
           .font("Helvetica")
           .fontSize(10)
           .fillColor(STYLE.colors.muted)
-          .text(wordBank.join("   •   "), L, doc.y, { width: W });
+          .text(wordBank.join(" | "), L, doc.y, { width: W });
         doc.moveDown(0.7);
       }
       if (a4.instructions) {
@@ -2439,7 +2446,7 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
     throw err;
   }
 
-  return finalizeDoc(doc, stream, `${wsTitle} — Student Worksheet`, outputPath);
+  return finalizeDoc(doc, stream, `${wsTitle} - Student Worksheet`, outputPath);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2683,7 +2690,7 @@ async function generateWorksheetReportPdf(data, outputPath) {
 
   await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
 
-  const { doc, stream } = buildDoc(outputPath);
+  const { doc, stream } = buildDoc(outputPath, "worksheetAnalytics");
 
   try {
     const L = doc.page.margins.left;
@@ -2713,7 +2720,7 @@ async function generateWorksheetReportPdf(data, outputPath) {
         .font(STYLE.fonts.main)
         .fontSize(STYLE.sizes.xs)
         .fillColor(STYLE.colors.primary)
-        .text(metaTags.join("  •  "), L, doc.y, { width: W });
+        .text(metaTags.join(" | "), L, doc.y, { width: W });
       doc.moveDown(0.4);
     }
 
@@ -3218,7 +3225,7 @@ async function generateWorksheetReportPdf(data, outputPath) {
     throw err;
   }
 
-  return finalizeDoc(doc, stream, `${wsTitle} — Submission Report`, outputPath);
+  return finalizeDoc(doc, stream, `${wsTitle} - Submission Report`, outputPath);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3236,7 +3243,7 @@ async function generateFlashcardReportPdf(data, outputPath) {
 
   await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
 
-  const { doc, stream } = buildDoc(outputPath);
+  const { doc, stream } = buildDoc(outputPath, "flashcardReport");
 
   try {
     const L = doc.page.margins.left;
@@ -3318,7 +3325,7 @@ async function generateFlashcardReportPdf(data, outputPath) {
     throw err;
   }
 
-  return finalizeDoc(doc, stream, `${title} — Flashcard Report`, outputPath);
+  return finalizeDoc(doc, stream, `${title} - Flashcard Report`, outputPath);
 }
 
 module.exports = {

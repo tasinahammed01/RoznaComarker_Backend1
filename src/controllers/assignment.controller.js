@@ -7,6 +7,7 @@ const Membership = require('../models/membership.model');
 const Submission = require('../models/Submission');
 const FlashcardSubmission = require('../models/FlashcardSubmission');
 const FlashcardSet = require('../models/FlashcardSet');
+const FlashcardAnswerCheck = require('../models/FlashcardAnswerCheck');
 const WorksheetSubmission = require('../models/WorksheetSubmission');
 const Worksheet = require('../models/Worksheet');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
@@ -684,7 +685,8 @@ async function createAssignment(req, res) {
     const classDoc = await Class.findOne({
       _id: classId,
       teacher: teacherId,
-      isActive: true
+      isActive: true,
+      $or: [{ status: 'active' }, { status: { $exists: false } }]
     });
 
     if (!classDoc) {
@@ -1570,24 +1572,48 @@ async function submitFlashcardAssignment(req, res) {
       return sendError(res, 404, 'Flashcard assignment not found');
     }
 
+    const activeClass = await Class.findOne({
+      _id: filteredAssignment.class,
+      isActive: true,
+      $or: [{ status: 'active' }, { status: { $exists: false } }]
+    }).select('_id').lean();
+    if (!activeClass) return sendError(res, 409, 'This class is archived and is read-only.');
+
     const membership = await Membership.findOne({ student: studentId, class: filteredAssignment.class, status: 'active' });
     if (!membership) return sendError(res, 403, 'Not enrolled in this class');
 
     const existing = await FlashcardSubmission.findOne({ assignmentId, userId: studentId });
     const { score, timeTaken, results, completedAt, template, totalCards, cardResults } = req.body || {};
-    const resolvedTemplate = ['term-def', 'qa', 'concept'].includes(template) ? template : 'term-def';
+    const canonicalFlashcardSet = await FlashcardSet.findById(filteredAssignment.resourceId).select('template cards').lean();
+    const resolvedTemplate = ['term-def', 'qa', 'concept'].includes(canonicalFlashcardSet?.template)
+      ? canonicalFlashcardSet.template : 'term-def';
+    let authoritativeCardResults = Array.isArray(cardResults) ? cardResults : [];
+    let authoritativeResults = Array.isArray(results) ? results : [];
+    let authoritativeScore = typeof score === 'number' ? score : 0;
+    if (resolvedTemplate === 'qa') {
+      const checks = await FlashcardAnswerCheck.find({ assignmentId, userId: studentId,
+        flashcardSetId: filteredAssignment.resourceId }).sort({ checkedAt: 1 }).lean();
+      authoritativeCardResults = checks.map((check) => ({ cardId: check.cardId,
+        known: check.isCorrect, studentAnswer: check.studentAnswer, isCorrect: check.isCorrect,
+        correctAnswer: check.correctAnswer, gradingMethod: check.gradingMethod,
+        confidence: check.confidence, explanation: check.explanation, checkedAt: check.checkedAt }));
+      authoritativeResults = checks.map((check) => ({ cardId: check.cardId,
+        status: check.isCorrect ? 'know' : 'learning' }));
+      const denominator = authoritativeCardResults.length;
+      authoritativeScore = denominator ? Math.round((checks.filter((check) => check.isCorrect).length / denominator) * 100) : 0;
+    }
 
     let sub;
     if (existing) {
       sub = await FlashcardSubmission.findOneAndUpdate(
         { assignmentId, userId: studentId },
         {
-          score:       typeof score === 'number' ? score : 0,
+          score:       authoritativeScore,
           timeTaken:   typeof timeTaken === 'number' ? timeTaken : 0,
-          results:     Array.isArray(results) ? results : [],
+          results:     authoritativeResults,
           template:    resolvedTemplate,
           totalCards:  typeof totalCards === 'number' ? totalCards : undefined,
-          cardResults: Array.isArray(cardResults) ? cardResults : [],
+          cardResults: authoritativeCardResults,
           submittedAt: completedAt ? new Date(completedAt) : new Date()
         },
         { new: true }
@@ -1597,12 +1623,12 @@ async function submitFlashcardAssignment(req, res) {
         flashcardSetId: filteredAssignment.resourceId,
         userId: studentId,
         assignmentId,
-        score:       typeof score === 'number' ? score : 0,
+        score:       authoritativeScore,
         timeTaken:   typeof timeTaken === 'number' ? timeTaken : 0,
-        results:     Array.isArray(results) ? results : [],
+        results:     authoritativeResults,
         template:    resolvedTemplate,
         totalCards:  typeof totalCards === 'number' ? totalCards : undefined,
-        cardResults: Array.isArray(cardResults) ? cardResults : [],
+        cardResults: authoritativeCardResults,
         submittedAt: completedAt ? new Date(completedAt) : new Date()
       });
     }
@@ -1628,6 +1654,8 @@ async function submitFlashcardAssignment(req, res) {
             assignmentId: String(filteredAssignment._id || assignmentId),
             submissionId: String(sub._id || ''),
             studentId: String(studentId || ''),
+            resourceType: 'flashcard',
+            flashcardSetId: String(filteredAssignment.resourceId || ''),
             route: {
               path: '/flashcards',
               params: [String(filteredAssignment.resourceId || ''), 'report'],

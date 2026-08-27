@@ -24,6 +24,13 @@ const planSchema = new mongoose.Schema(
       min: 0,
       default: null
     },
+    annualPrice: { type: Number, min: 0, default: null },
+    displayOrder: { type: Number, default: 0, index: true },
+    assessmentCreditNudges: {
+      softThresholdPercent: { type: Number, min: 0, max: 100, default: 50 },
+      warningThresholdPercent: { type: Number, min: 0, max: 100, default: 80 }
+    },
+    metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
     currency: {
       type: String,
       trim: true,
@@ -81,7 +88,9 @@ const planSchema = new mongoose.Schema(
     },
     stripe: {
       productId: { type: String, trim: true },
-      priceId: { type: String, trim: true }
+      priceId: { type: String, trim: true },
+      monthlyPriceId: { type: String, trim: true },
+      annualPriceId: { type: String, trim: true }
     },
     badgeText: {
       type: String,

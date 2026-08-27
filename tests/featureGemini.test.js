@@ -258,8 +258,7 @@ describe('feature output validation', () => {
   test.each([
     ['malformed JSON', '{broken'],
     ['missing cards array', '{"unexpected":[]}'],
-    ['empty cards', '[]'],
-    ['duplicate cards', '[{"front":"A","back":"B"},{"front":"A","back":"B"}]']
+    ['empty cards', '[]']
   ])('flashcard %s retries and returns a strictly validated result', async (_label, invalid) => {
     const valid = '[{"front":"Root","back":"Absorbs water."}]';
     const fetchImpl = jest.fn()
@@ -273,12 +272,12 @@ describe('feature output validation', () => {
     expect(result.metadata.attemptCount).toBe(2);
   });
 
-  test('flashcard primary timeout retries once and paid fallback succeeds after exhaustion', async () => {
+  test('flashcard primary timeout moves directly to the paid fallback', async () => {
     const models = [];
     const timeout = Object.assign(new Error('timeout'), { name: 'TimeoutError' });
     const fetchImpl = jest.fn(async (_url, options) => {
       models.push(JSON.parse(options.body).model);
-      if (models.length < 3) throw timeout;
+      if (models.length < 2) throw timeout;
       return openRouterResponse('[{"front":"Root","back":"Absorbs water."}]');
     });
     const result = await generateFeatureJson('flashcard', [{ role: 'user', content: 'plants' }], {
@@ -286,19 +285,19 @@ describe('feature output validation', () => {
       validateValue: (value) => validateFlashcardOutput(value, 1)
     });
     expect(models).toEqual([
-      'openai/gpt-4.1-mini', 'openai/gpt-4.1-mini', 'openai/gpt-4.1'
+      'openai/gpt-4.1-mini', 'openai/gpt-4.1'
     ]);
     expect(models.join(' ')).not.toMatch(/gemini|nemotron|gpt-oss/iu);
-    expect(result.metadata).toMatchObject({ attemptCount: 3, model: 'openai/gpt-4.1' });
+    expect(result.metadata).toMatchObject({ attemptCount: 2, model: 'openai/gpt-4.1' });
   });
 
-  test('flashcard paid chain is capped at three attempts with a controlled error', async () => {
+  test('flashcard paid chain is capped at two models with a controlled error', async () => {
     const fetchImpl = jest.fn(async () => openRouterResponse('{broken'));
     await expect(generateFeatureJson('flashcard', [{ role: 'user', content: 'plants' }], {
       env: envFor('FLASHCARD'), fetchImpl, sleepFn: async () => {},
       validateValue: (value) => validateFlashcardOutput(value, 1)
-    })).rejects.toMatchObject({ feature: 'flashcard', code: 'AI_OUTPUT_VALIDATION_FAILED', attemptCount: 3 });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    })).rejects.toMatchObject({ feature: 'flashcard', code: 'AI_OUTPUT_VALIDATION_FAILED', attemptCount: 2 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   test.each([401, 402, 400])('flashcard terminal HTTP %i failure does not retry or fall back', async (status) => {
@@ -329,11 +328,25 @@ describe('feature output validation', () => {
     expect(cards[0]).toEqual({ front: 'Photosynthesis', back: 'Plants convert light into chemical energy.' });
   });
 
-  test('flashcard count, empty values, duplicates and executable HTML are rejected', () => {
+  test('flashcard normalizer accepts wrappers, aliases, whitespace, duplicates and over-counts', () => {
+    expect(validateFlashcardOutput({ cards: [
+      { term: '  Solar   energy ', definition: ' Energy from sunlight. ' },
+      { question: 'Solar energy', answer: 'duplicate is ignored' },
+      { concept: 'Wind', explanation: 'Moving air.' }
+    ] }, 2)).toEqual([
+      { front: 'Solar energy', back: 'Energy from sunlight.' },
+      { front: 'Wind', back: 'Moving air.' }
+    ]);
+  });
+
+  test('flashcard normalizer accepts a useful partial set but rejects unusable output', () => {
+    expect(validateFlashcardOutput({ flashcards: [
+      { front: 'A', back: '1' }, { front: 'B', back: '2' }, { front: 'C', back: '3' }
+    ] }, 5)).toHaveLength(3);
     expect(() => validateFlashcardOutput([{ front: 'A', back: 'B' }], 2)).toThrow();
     expect(() => validateFlashcardOutput([{ front: '', back: 'B' }], 1)).toThrow();
-    expect(() => validateFlashcardOutput([{ front: 'A', back: 'B' }, { front: 'A', back: 'B' }], 2)).toThrow();
     expect(() => validateFlashcardOutput([{ front: '<script>x</script>', back: 'B' }], 1)).toThrow();
+    expect(() => validateFlashcardOutput([{ question: 'Same', answer: 'same' }], 1, 'qa')).toThrow();
   });
 
   test('mixed worksheet and every supported prompt activity type retain their structures', () => {

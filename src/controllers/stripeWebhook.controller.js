@@ -3,6 +3,8 @@ const User = require('../models/user.model');
 const logger = require('../utils/logger');
 const { getStripe } = require('../services/stripe.service');
 const { idOf, syncSubscription, associateCheckoutSession } = require('../services/stripeSubscription.service');
+const CreditPack = require('../models/CreditPack');
+const TopupService = require('../services/topup.service');
 
 function invoiceSubscriptionId(invoice) {
   return idOf(invoice?.subscription) || idOf(invoice?.parent?.subscription_details?.subscription);
@@ -12,10 +14,23 @@ async function handleEvent(event) {
   const stripe = getStripe();
   const object = event.data.object;
   if (event.type === 'checkout.session.completed') {
+    if (object.metadata?.kind === 'assessment_credit_topup') {
+      if (object.payment_status !== 'paid') return;
+      const pack = await CreditPack.findOne({ code: object.metadata.packCode });
+      if (!pack) return;
+      if (Number(object.amount_total) !== Math.round(Number(pack.price) * 100) ||
+        String(object.currency).toUpperCase() !== String(pack.currency).toUpperCase()) throw new Error('Top-up payment does not match configured pack');
+      await TopupService.grantPurchasedCredits({ userId: object.metadata.userId, pack, session: object });
+      return;
+    }
     const associatedUser = await associateCheckoutSession(object);
     if (!associatedUser) return;
     const subscriptionId = idOf(object.subscription);
     if (subscriptionId) await syncSubscription(await stripe.subscriptions.retrieve(subscriptionId));
+  } else if (event.type === 'checkout.session.async_payment_failed' && object.metadata?.kind === 'assessment_credit_topup') {
+    await TopupService.recordFailedPurchase({ userId: object.metadata.userId, packCode: object.metadata.packCode, session: object });
+  } else if (event.type === 'charge.refunded') {
+    await TopupService.refundPurchase(object);
   } else if (['customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted'].includes(event.type)) {
     await syncSubscription(object);
   } else if (['invoice.paid', 'invoice.payment_failed'].includes(event.type)) {
@@ -43,7 +58,7 @@ async function stripeWebhook(req, res) {
   }
 
   const supported = new Set([
-    'checkout.session.completed', 'customer.subscription.created',
+    'checkout.session.completed', 'checkout.session.async_payment_failed', 'charge.refunded', 'customer.subscription.created',
     'customer.subscription.updated', 'customer.subscription.deleted',
     'invoice.paid', 'invoice.payment_failed'
   ]);

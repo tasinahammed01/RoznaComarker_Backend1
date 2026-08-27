@@ -35,6 +35,7 @@ const sharedFlashcardRoutes = require("./routes/sharedFlashcard.routes");
 const worksheetRoutes = require("./routes/worksheet.routes");
 const unsplashRoutes = require("./routes/unsplash.routes");
 const adaptivePracticeRoutes = require("./routes/adaptivePractice.routes");
+const creditRoutes = require("./routes/credit.routes");
 // TypeScript worksheet generator routes
 // Method 1: text prompt → WorksheetDocument
 const { default: worksheetTextRoute } = require("./routes/worksheetTextRoute");
@@ -201,6 +202,7 @@ app.use("/api/worksheet-documents", worksheetDocumentRoute);
 app.use("/api/worksheets", worksheetRoutes);
 app.use("/api/unsplash", unsplashRoutes);
 app.use("/api/adaptive-practice", adaptivePracticeRoutes);
+app.use("/api/credits", creditRoutes);
 
 app.post(
   "/upload",

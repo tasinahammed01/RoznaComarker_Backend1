@@ -16,6 +16,11 @@ const cardResultSchema = new Schema(
     known: { type: Boolean },
     studentAnswer: { type: String, default: null },
     isCorrect: { type: Boolean, default: null }
+    ,correctAnswer: { type: String, default: null }
+    ,gradingMethod: { type: String, enum: ['exact', 'normalized', 'semantic_ai'], default: null }
+    ,confidence: { type: Number, default: null }
+    ,explanation: { type: String, default: null }
+    ,checkedAt: { type: Date, default: null }
   },
   { _id: false }
 );
