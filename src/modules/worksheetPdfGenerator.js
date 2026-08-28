@@ -86,6 +86,10 @@ function ensureSpace(doc, h, forceNewPage = false) {
     doc.page.height - doc.page.margins.bottom - footerSpace - doc.y;
   if (forceNewPage || available < h) {
     doc.addPage();
+    // Explicitly restore the content cursor. PDFKit can retain the previous
+    // absolute cursor after positioned text, which otherwise starts the next
+    // block above the printable top margin.
+    doc.y = doc.page.margins.top;
   }
 }
 
@@ -1842,7 +1846,7 @@ function finalizeDoc(doc, stream, headerTitle, outputPath) {
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPORT 1: Individual student worksheet submission PDF
 // ─────────────────────────────────────────────────────────────────────────────
-async function generateWorksheetSubmissionPdf(data, outputPath) {
+async function generateWorksheetSubmissionPdfLegacy(data, outputPath) {
   const ws =
     data.worksheet && typeof data.worksheet === "object" ? data.worksheet : {};
   const submission =
@@ -2447,6 +2451,191 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
   }
 
   return finalizeDoc(doc, stream, `${wsTitle} - Student Worksheet`, outputPath);
+}
+
+function worksheetActivityDescriptors(worksheet) {
+  const legacy = [
+    ["activity1", "ordering", worksheet.activity1], ["activity2", "classification", worksheet.activity2],
+    ["activity3", "multipleChoice", worksheet.activity3], ["activity4", "fillBlanks", worksheet.activity4],
+    ["activity5", "matching", worksheet.activity5], ["activity6", "trueFalse", worksheet.activity6],
+  ];
+  const aliases = { ordering: "activity1", dragDrop: "activity1", sorting: "activity1", classification: "activity2", multipleChoice: "activity3", fillBlanks: "activity4", "fill-blanks": "activity4", matching: "activity5", trueFalse: "activity6", "true-false": "activity6" };
+  const activities = Array.isArray(worksheet.activities) ? worksheet.activities : [];
+  if (activities.length) return activities.map((activity, index) => ({ sectionId: `activity_${index}`, canonicalSectionId: aliases[safeText(activity?.type)] || `activity_${index}`, type: safeText(activity?.type), title: safeText(activity?.title), data: activity?.data && typeof activity.data === "object" ? activity.data : {} }));
+  return legacy.filter(([, , value]) => value).map(([sectionId, type, value]) => ({ sectionId, canonicalSectionId: sectionId, type, title: safeText(value?.title), data: value }));
+}
+
+function buildWorksheetQuestionReview(worksheet, submission) {
+  const answers = Array.isArray(submission.answers) ? submission.answers : [];
+  const answerMap = new Map(answers.map((answer) => [`${safeText(answer.sectionId)}:${safeText(answer.questionId)}`, answer]));
+  const labels = { activity1: "Drag & Drop", activity2: "Classification", activity3: "Multiple Choice", activity4: "Fill in Blanks", activity5: "Matching Pairs", activity6: "True / False" };
+  const questions = [];
+  let number = 1;
+  const pushQuestion = (descriptor, questionId, type, prompt, correctAnswer, options = [], explanation = "", friendlySuffix = "") => {
+    const id = safeText(questionId);
+    const canonical = answerMap.get(`${descriptor.sectionId}:${id}`) || answerMap.get(`${descriptor.canonicalSectionId}:${id}`) || {};
+    const rawAnswer = canonical.studentAnswer;
+    const skipped = rawAnswer === undefined || rawAnswer === null || String(rawAnswer).trim() === "";
+    questions.push({ questionNumber: number++, questionId: id, sectionId: descriptor.canonicalSectionId, sourceSectionId: descriptor.sectionId, section: descriptor.title || labels[descriptor.canonicalSectionId] || titleizeId(descriptor.type), type, prompt: safeText(prompt) || "Question", friendlySuffix, options: options.map(safeText), studentAnswer: skipped ? "No answer submitted" : safeText(rawAnswer), correctAnswer: safeText(correctAnswer), isCorrect: canonical.isCorrect === true, isSkipped: skipped, explanation: safeText(explanation) });
+  };
+  for (const descriptor of worksheetActivityDescriptors(worksheet)) {
+    const activity = descriptor.data || {};
+    if (descriptor.canonicalSectionId === "activity1") (Array.isArray(activity.items) ? activity.items : []).forEach((item, index) => pushQuestion(descriptor, `slot_${index}`, "Drag & Drop", item.text || item.name || item.label || `Place item ${index + 1}`, item.id));
+    else if (descriptor.canonicalSectionId === "activity2") (Array.isArray(activity.items) ? activity.items : []).forEach((item) => pushQuestion(descriptor, item.id, "Classification", item.text || item.name || item.label || item.id, item.correctCategory));
+    else if (descriptor.canonicalSectionId === "activity3") (Array.isArray(activity.questions) ? activity.questions : []).forEach((question) => pushQuestion(descriptor, question.id, "Multiple Choice", question.text, question.correctAnswer, Array.isArray(question.options) ? question.options : [], question.explanation));
+    else if (descriptor.canonicalSectionId === "activity4") (Array.isArray(activity.sentences) ? activity.sentences : []).forEach((sentence) => { const parts = Array.isArray(sentence.parts) ? sentence.parts : []; const prompt = parts.map((part) => part.type === "blank" ? "_____" : safeText(part.value)).join(""); parts.filter((part) => part.type === "blank").forEach((blank, blankIndex) => pushQuestion(descriptor, blank.blankId, "Fill in Blanks", prompt, blank.correctAnswer, [], blank.explanation || sentence.explanation, `Blank ${blankIndex + 1}`)); });
+    else if (descriptor.canonicalSectionId === "activity5") (Array.isArray(activity.pairs) ? activity.pairs : []).forEach((pair) => pushQuestion(descriptor, pair.id, "Matching", pair.leftItem?.text || pair.leftItem, pair.rightItem?.text || pair.correctMatch || pair.rightItem));
+    else if (descriptor.canonicalSectionId === "activity6") (Array.isArray(activity.questions) ? activity.questions : []).forEach((question) => { pushQuestion(descriptor, question.id, "True / False", question.text, question.correctAnswer === true || safeText(question.correctAnswer).toLowerCase() === "true" ? "True" : "False", ["True", "False"], question.explanation); const normalized = questions[questions.length - 1]; if (!normalized.isSkipped) normalized.studentAnswer = normalized.studentAnswer.toLowerCase() === "true" ? "True" : "False"; });
+  }
+  return questions;
+}
+
+function buildStudentWorksheetReportViewModel(data) {
+  const worksheet = data.worksheet && typeof data.worksheet === "object" ? data.worksheet : {};
+  const submission = data.submission && typeof data.submission === "object" ? data.submission : {};
+  const assignment = data.assignment && typeof data.assignment === "object" ? data.assignment : {};
+  const answers = Array.isArray(submission.answers) ? submission.answers : [];
+  const labels = { activity1: "Drag & Drop", activity2: "Classification", activity3: "Multiple Choice", activity4: "Fill in Blanks", activity5: "Matching Pairs", activity6: "True / False" };
+  const questions = buildWorksheetQuestionReview(worksheet, submission);
+  let correct = 0, incorrect = 0, skipped = 0;
+  if (Array.isArray(submission.sections) && submission.sections.length) {
+    for (const section of submission.sections) {
+      correct += safeNumber(section.correctCount, 0); incorrect += safeNumber(section.incorrectCount, 0); skipped += safeNumber(section.skippedCount, 0);
+    }
+  } else {
+    correct = answers.filter((answer) => answer.isCorrect === true).length;
+    skipped = answers.filter((answer) => answer.studentAnswer === undefined || answer.studentAnswer === null || !String(answer.studentAnswer).trim()).length;
+    incorrect = Math.max(0, answers.length - correct - skipped);
+  }
+  const sectionPerformance = [];
+  for (const sectionId of Object.keys(labels)) {
+    const sectionQuestions = questions.filter((question) => question.sectionId === sectionId);
+    if (!sectionQuestions.length) continue;
+    const sourceIds = new Set(sectionQuestions.map((question) => question.sourceSectionId));
+    const canonicalSection = Array.isArray(submission.sections) ? submission.sections.find((section) => safeText(section.sectionId || section.id) === sectionId || sourceIds.has(safeText(section.sectionId || section.id))) : null;
+    const sectionCorrect = canonicalSection ? safeNumber(canonicalSection.correctCount, 0) : answers.filter((answer) => (safeText(answer.sectionId) === sectionId || sourceIds.has(safeText(answer.sectionId))) && answer.isCorrect === true).length;
+    const total = canonicalSection ? safeNumber(canonicalSection.totalQuestions ?? canonicalSection.totalPoints, sectionQuestions.length) : sectionQuestions.length;
+    const percentage = canonicalSection && (canonicalSection.percentage !== undefined || canonicalSection.score !== undefined) ? safeNumber(canonicalSection.percentage ?? canonicalSection.score, 0) : (total > 0 ? Math.round((sectionCorrect / total) * 100) : 0);
+    sectionPerformance.push({ sectionId, label: labels[sectionId], correct: sectionCorrect, total, percentage });
+  }
+  return {
+    worksheetTitle: safeText(worksheet.title) || "Worksheet", studentName: safeText(data.studentName), studentEmail: safeText(data.studentEmail),
+    className: safeText(data.className), submittedAt: safeText(data.submittedAt) || "N/A", subject: safeText(worksheet.subject), grade: safeText(worksheet.gradeLevel || worksheet.gradeCategory),
+    cefr: safeText(worksheet.cefrLevel), difficulty: formatDifficulty(worksheet.difficulty), dueDate: safeText(assignment.deadline || assignment.dueDate || worksheet.assignmentDeadline),
+    earned: safeNumber(submission.totalPointsPossible > 0 ? submission.totalPointsEarned : submission.earnedPoints, 0), possible: safeNumber(submission.totalPointsPossible > 0 ? submission.totalPointsPossible : submission.totalPoints, questions.length), percentage: safeNumber(submission.totalPointsPossible > 0 ? submission.percentage : submission.score, 0),
+    result: submission.isPassed === true ? "Passed" : "Not Passed", performance: safeText(submission.performanceStatus || submission.performanceLevel),
+    correct, incorrect, skipped, time: formatTime(safeNumber(submission.timeTaken, 0)), submissionStatus: submission.isLate === true ? "Late" : "On Time",
+    sectionPerformance, questions,
+  };
+}
+
+function drawStudentReportQuestion(doc, question) {
+  const L = doc.page.margins.left, W = pageW(doc), pad = 10;
+  const status = question.isSkipped ? "Skipped" : question.isCorrect ? "Correct" : "Incorrect";
+  const accent = question.isSkipped ? STYLE.colors.warning : question.isCorrect ? STYLE.colors.success : STYLE.colors.error;
+  const options = Array.isArray(question.options) ? question.options : [];
+  doc.font(STYLE.fonts.bold).fontSize(10.5);
+  const promptH = doc.heightOfString(question.prompt, { width: W - pad * 2 });
+  const isBinaryChoice = question.type === "True / False" && options.length === 2;
+  let bodyH = (isBinaryChoice ? 34 : 48) + promptH;
+  if (options.length) {
+    bodyH += options.reduce((sum, option) => sum + Math.max(22, doc.heightOfString(option, { width: W - 62 }) + 10) + 4, 0);
+  } else {
+    doc.font(STYLE.fonts.main).fontSize(9.5);
+    bodyH += Math.max(17, doc.heightOfString(question.studentAnswer, { width: W - 150 }) + 5) + Math.max(17, doc.heightOfString(question.correctAnswer, { width: W - 150 }) + 5) + 10;
+  }
+  if (question.explanation) { doc.font(STYLE.fonts.main).fontSize(8.5); bodyH += doc.heightOfString(question.explanation, { width: W - 40 }) + 18; }
+  bodyH = Math.max(isBinaryChoice ? 108 : options.length ? 125 : 116, bodyH + 12);
+  // PDFKit can advance its cursor while drawing explicitly-positioned wrapped
+  // text. Reserve a conservative continuation buffer so a card never starts
+  // near the footer and auto-flows onto the next page without its border/header.
+  ensureSpace(doc, Math.min(bodyH + (isBinaryChoice ? 10 : options.length ? 18 : 52), 680));
+  const y = doc.y;
+  doc.save(); doc.roundedRect(L, y, W, bodyH, STYLE.radius.md).fillAndStroke(STYLE.colors.white, STYLE.colors.border); doc.rect(L, y, 4, bodyH).fill(accent); doc.restore();
+  doc.font(STYLE.fonts.bold).fontSize(10).fillColor(STYLE.colors.neutral).text(`Q${question.questionNumber}  |  ${question.section}${question.friendlySuffix ? `  |  ${question.friendlySuffix}` : ""}`, L + pad, y + pad, { width: W - 150 });
+  doc.font(STYLE.fonts.bold).fontSize(9).fillColor(accent).text(status, L + W - 110, y + pad, { width: 96, align: "right" });
+  let cy = y + 29;
+  doc.font(STYLE.fonts.bold).fontSize(10.5).fillColor(STYLE.colors.neutral).text(question.prompt, L + pad, cy, { width: W - pad * 2 });
+  cy += promptH + 9;
+  if (options.length) {
+    options.forEach((option, index) => {
+      const selected = safeText(option).toLowerCase() === safeText(question.studentAnswer).toLowerCase();
+      const correct = safeText(option).toLowerCase() === safeText(question.correctAnswer).toLowerCase();
+      const rowH = Math.max(22, doc.font(STYLE.fonts.main).fontSize(9.5).heightOfString(option, { width: W - 100 }) + 10);
+      const bg = correct ? STYLE.colors.successBg : selected ? STYLE.colors.errorBg : STYLE.colors.bg;
+      const border = correct ? STYLE.colors.successBd : selected ? STYLE.colors.errorBd : STYLE.colors.border;
+      doc.save(); doc.roundedRect(L + pad, cy, W - pad * 2, rowH, 3).fillAndStroke(bg, border); doc.restore();
+      const tags = selected && correct ? "  [Student answer - Correct]" : selected ? "  [Student answer]" : correct ? "  [Correct answer]" : "";
+      doc.font((selected || correct) ? STYLE.fonts.bold : STYLE.fonts.main).fontSize(9.5).fillColor(STYLE.colors.neutral).text(`${OPTION_LETTERS[index] || index + 1}. ${option}${tags}`, L + pad + 7, cy + 6, { width: W - pad * 2 - 14 });
+      cy += rowH + 4;
+    });
+  } else {
+    const labelW = 100;
+    [["Student answer", question.studentAnswer, question.isSkipped ? STYLE.colors.warning : question.isCorrect ? STYLE.colors.success : STYLE.colors.error], ["Correct answer", question.correctAnswer, STYLE.colors.success]].forEach(([label, value, color]) => {
+      doc.font(STYLE.fonts.bold).fontSize(9).fillColor(STYLE.colors.muted).text(label, L + pad, cy, { width: labelW });
+      doc.font(STYLE.fonts.main).fontSize(9.5).fillColor(color).text(value || "Not available", L + pad + labelW, cy, { width: W - pad * 2 - labelW });
+      cy += Math.max(17, doc.heightOfString(value || "Not available", { width: W - pad * 2 - labelW }) + 5);
+    });
+  }
+  if (question.explanation) {
+    doc.font(STYLE.fonts.bold).fontSize(8.5).fillColor(STYLE.colors.muted).text("Explanation", L + pad, cy + 2, { width: 75 });
+    doc.font(STYLE.fonts.main).fontSize(8.5).fillColor(STYLE.colors.muted).text(question.explanation, L + pad + 75, cy + 2, { width: W - pad * 2 - 75 });
+  }
+  doc.y = y + bodyH + 9;
+}
+
+async function generateWorksheetSubmissionPdf(data, outputPath) {
+  const model = buildStudentWorksheetReportViewModel(data);
+  const expectedQuestionCount = safeNumber(data.submission?.totalPointsPossible > 0 ? data.submission.totalPointsPossible : data.submission?.totalPoints, 0);
+  if (process.env.NODE_ENV !== "production") {
+    const worksheet = data.worksheet || {}, submission = data.submission || {};
+    console.info("[WORKSHEET PDF REVIEW]", { worksheetId: safeText(worksheet._id || submission.worksheetId?._id || submission.worksheetId), submissionId: safeText(submission._id), worksheetActivityKeys: Array.isArray(worksheet.activities) && worksheet.activities.length ? worksheet.activities.map((activity, index) => `${index}:${safeText(activity?.type)}`) : Object.keys(worksheet).filter((key) => /^activity\d+$/.test(key) && worksheet[key]), submissionAnswerSections: [...new Set((Array.isArray(submission.answers) ? submission.answers : []).map((answer) => safeText(answer.sectionId)))], normalizedQuestionCount: model.questions.length });
+  }
+  if (expectedQuestionCount > 0 && model.questions.length === 0) throw new Error(`Worksheet PDF question mapping failed: expected ${expectedQuestionCount} gradable questions but normalized 0.`);
+  await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
+  const { doc, stream } = buildDoc(outputPath, "worksheetSubmission");
+  try {
+    const L = doc.page.margins.left, W = pageW(doc);
+    doc.font(STYLE.fonts.bold).fontSize(19).fillColor(STYLE.colors.neutral).text(model.worksheetTitle, L, doc.y, { width: W - 150 });
+    doc.font(STYLE.fonts.main).fontSize(9.5).fillColor(STYLE.colors.muted).text("Student Submission Report", L, doc.y + 2, { width: W - 150 });
+    doc.font(STYLE.fonts.bold).fontSize(11).fillColor(STYLE.colors.primary).text("RoznaHub", L + W - 120, 73, { width: 120, align: "right" });
+    doc.moveDown(0.8); doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(1.5).strokeColor(STYLE.colors.primary).stroke(); doc.y += 10;
+    const metadata = [["Student", model.studentName || model.studentEmail || "Student"], ["Email", model.studentEmail], ["Class", model.className], ["Submitted", model.submittedAt], ["Status", model.submissionStatus]].filter(([, value]) => value);
+    const colW = W / 3;
+    const metadataY = doc.y;
+    metadata.forEach(([label, value], index) => {
+      const x = L + (index % 3) * colW, y = metadataY + Math.floor(index / 3) * 31;
+      doc.font(STYLE.fonts.main).fontSize(8).fillColor(STYLE.colors.muted).text(label, x, y, { width: colW - 10 });
+      doc.font(STYLE.fonts.bold).fontSize(9.5).fillColor(STYLE.colors.neutral).text(value, x, y + 11, { width: colW - 10 });
+    });
+    doc.y = metadataY + Math.ceil(metadata.length / 3) * 31 + 8;
+    const metaLine = [[model.subject], [model.grade && `Grade ${model.grade}`], [model.cefr && `CEFR ${model.cefr}`], [model.difficulty], [model.dueDate && `Due ${model.dueDate}`]].flat().filter(Boolean).join("  |  ");
+    if (metaLine) { doc.font(STYLE.fonts.main).fontSize(8.5).fillColor(STYLE.colors.primary).text(metaLine, L, doc.y, { width: W }); doc.moveDown(0.7); }
+    const heroY = doc.y, heroH = 76;
+    doc.save(); doc.roundedRect(L, heroY, W, heroH, STYLE.radius.md).fillAndStroke(STYLE.colors.bg, STYLE.colors.border); doc.restore();
+    doc.font(STYLE.fonts.main).fontSize(8).fillColor(STYLE.colors.muted).text("SCORE", L + 12, heroY + 10);
+    doc.font(STYLE.fonts.bold).fontSize(18).fillColor(getScoreColor(model.percentage)).text(`${model.earned} / ${model.possible}  |  ${Math.round(model.percentage)}%`, L + 12, heroY + 24, { width: 190 });
+    doc.font(STYLE.fonts.main).fontSize(8).fillColor(STYLE.colors.muted).text("RESULT", L + 230, heroY + 10);
+    doc.font(STYLE.fonts.bold).fontSize(12).fillColor(model.result === "Passed" ? STYLE.colors.success : STYLE.colors.error).text(model.result, L + 230, heroY + 25, { width: 100 });
+    if (model.performance) { doc.font(STYLE.fonts.main).fontSize(8).fillColor(STYLE.colors.muted).text("PERFORMANCE", L + 340, heroY + 10); doc.font(STYLE.fonts.bold).fontSize(12).fillColor(getScoreColor(model.percentage)).text(model.performance, L + 340, heroY + 25, { width: 120 }); }
+    doc.font(STYLE.fonts.main).fontSize(9).fillColor(STYLE.colors.neutral).text(`Correct ${model.correct}  |  Incorrect ${model.incorrect}  |  Skipped ${model.skipped}  |  Time ${model.time}`, L + 12, heroY + 56, { width: W - 24 });
+    doc.y = heroY + heroH + 13;
+    if (model.sectionPerformance.length) {
+      doc.font(STYLE.fonts.bold).fontSize(11).fillColor(STYLE.colors.neutral).text("Section Performance", L, doc.y, { width: W }); doc.moveDown(0.35);
+      const rowW = W / 2, startY = doc.y;
+      model.sectionPerformance.forEach((section, index) => {
+        const x = L + (index % 2) * rowW, y = startY + Math.floor(index / 2) * 31;
+        doc.font(STYLE.fonts.bold).fontSize(9.5).fillColor(STYLE.colors.neutral).text(section.label, x, y, { width: rowW - 78 });
+        doc.font(STYLE.fonts.bold).fontSize(9.5).fillColor(getScoreColor(section.percentage)).text(`${section.percentage}%`, x + rowW - 72, y, { width: 62, align: "right" });
+        doc.font(STYLE.fonts.main).fontSize(8.5).fillColor(STYLE.colors.muted).text(`${section.correct}/${section.total} correct`, x, y + 13, { width: rowW - 10 });
+      });
+      doc.y = startY + Math.ceil(model.sectionPerformance.length / 2) * 31 + 10;
+    }
+    doc.font(STYLE.fonts.bold).fontSize(12).fillColor(STYLE.colors.neutral).text("Question Review", L, doc.y, { width: W }); doc.moveDown(0.45);
+    model.questions.forEach((question) => drawStudentReportQuestion(doc, question));
+    if (!model.questions.length) doc.font(STYLE.fonts.italic).fontSize(10).fillColor(STYLE.colors.muted).text("No gradable questions recorded for this submission.", L, doc.y, { width: W });
+  } catch (error) { try { doc.end(); } catch {} throw error; }
+  return finalizeDoc(doc, stream, `${model.worksheetTitle} - Student Submission Report`, outputPath);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3329,6 +3518,8 @@ async function generateFlashcardReportPdf(data, outputPath) {
 }
 
 module.exports = {
+  buildWorksheetQuestionReview,
+  buildStudentWorksheetReportViewModel,
   generateWorksheetSubmissionPdf,
   generateWorksheetReportPdf,
   generateFlashcardReportPdf,

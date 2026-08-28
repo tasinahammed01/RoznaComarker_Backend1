@@ -31,6 +31,16 @@ router.get(
 );
 
 router.get(
+  '/student-worksheet-result/:submissionId',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole(['student']),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  pdfController.downloadStudentWorksheetResultPdf
+);
+
+router.get(
   '/worksheet-report/:worksheetId',
   createSensitiveRateLimiter(),
   verifyJwtToken,

@@ -7,7 +7,8 @@ const { createCanvas } = require('canvas');
 async function render(pdfPath, outputDirectory) {
   const pdfjs = require('pdfjs-dist/legacy/build/pdf.js');
   const bytes = await fs.promises.readFile(pdfPath);
-  const document = await pdfjs.getDocument({ data: new Uint8Array(bytes), disableWorker: true }).promise;
+  const standardFontDataUrl = `${path.dirname(require.resolve('pdfjs-dist/package.json')).replace(/\\/g, '/')}/standard_fonts/`;
+  const document = await pdfjs.getDocument({ data: new Uint8Array(bytes), disableWorker: true, standardFontDataUrl }).promise;
   await fs.promises.mkdir(outputDirectory, { recursive: true });
   const stem = path.basename(pdfPath, path.extname(pdfPath));
   const files = [];

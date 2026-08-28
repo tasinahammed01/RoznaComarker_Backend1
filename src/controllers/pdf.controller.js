@@ -351,6 +351,49 @@ async function downloadWorksheetSubmissionPdf(req, res, next) {
   }
 }
 
+// Student-only worksheet result PDF rendered from canonical worksheet/submission
+// data through the shared Chromium PDF engine.
+async function downloadStudentWorksheetResultPdf(req, res, next) {
+  let outFile = null;
+  try {
+    const submissionId = String(req.params?.submissionId || "");
+    if (!mongoose.Types.ObjectId.isValid(submissionId)) throw new ApiError(400, "Invalid submission id");
+    const submission = await WorksheetSubmission.findById(submissionId)
+      .populate("studentId", "_id email displayName")
+      .populate("worksheetId")
+      .populate({ path: "assignmentId", populate: { path: "class", select: "_id name teacher" } });
+    if (!submission) throw new ApiError(404, "Submission not found");
+    if (!req.user) throw new ApiError(401, "Unauthorized");
+    if (String(submission.studentId?._id || submission.studentId) !== String(req.user._id)) throw new ApiError(403, "Forbidden");
+    const student = submission.studentId;
+    const worksheet = submission.worksheetId;
+    const tmpDir = path.join(os.tmpdir(), "rozna-pdf");
+    outFile = path.join(tmpDir, `student-worksheet-result-${submissionId}-${uuidv4()}.pdf`);
+    // eslint-disable-next-line global-require
+    const { generateStudentWorksheetResultPdf } = require("../modules/studentWorksheetResultPdfGenerator");
+    await generateStudentWorksheetResultPdf({
+      worksheet,
+      submission,
+      assignment: submission.assignmentId,
+      studentName: String(student?.displayName || student?.email || "Student").trim(),
+      studentEmail: String(student?.email || "").trim(),
+      className: String(submission.assignmentId?.class?.name || "").trim(),
+      submittedAt: submission.submittedAt ? new Date(submission.submittedAt).toLocaleDateString("en-US") : "",
+    }, outFile);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", 'attachment; filename="worksheet-result.pdf"');
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    return res.download(outFile, "worksheet-result.pdf", async (error) => {
+      await fs.promises.unlink(outFile).catch(() => {});
+      if (error) return next(new ApiError(500, "Failed to download PDF"));
+      return undefined;
+    });
+  } catch (error) {
+    if (outFile) await fs.promises.unlink(outFile).catch(() => {});
+    return next(error);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // WORKSHEET: full class submission report PDF (teacher only)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -600,6 +643,7 @@ async function downloadFlashcardReportPdf(req, res, next) {
 module.exports = {
   downloadSubmissionPdf,
   downloadWorksheetSubmissionPdf,
+  downloadStudentWorksheetResultPdf,
   downloadWorksheetReportPdf,
   downloadFlashcardReportPdf,
 };

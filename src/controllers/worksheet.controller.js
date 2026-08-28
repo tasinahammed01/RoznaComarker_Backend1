@@ -67,6 +67,10 @@ const fs = require("fs");
 const path = require("path");
 const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
 const { createCanvas } = require("canvas");
+const {
+  buildLabelingImageQuery,
+  validateLabelingActivity,
+} = require("../services/worksheetLabelingValidation.service");
 
 // Custom CanvasFactory for Node.js compatibility with pdfjs-dist legacy build
 class NodeCanvasFactory {
@@ -139,13 +143,12 @@ async function convertPdfToBase64Image(fileBuffer) {
  * @param {string} topic - The worksheet topic to search for relevant images
  * @returns {Promise<string>} Image URL or fallback URL
  */
-async function fetchUnsplashImageForLabeling(topic) {
+async function fetchUnsplashImageForLabeling(query) {
   const unsplashAccessKey = process.env.UNSPLASH_ACCESS_KEY;
-  const fallbackUrl = 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=800';
 
   if (!unsplashAccessKey) {
-    logger.warn("[LABELING] UNSPLASH_ACCESS_KEY not configured, using fallback image");
-    return fallbackUrl;
+    logger.warn("[LABELING] UNSPLASH_ACCESS_KEY not configured; labeling activity will be omitted");
+    return null;
   }
 
   try {
@@ -153,7 +156,7 @@ async function fetchUnsplashImageForLabeling(topic) {
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     const response = await fetch(
-      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(topic)}&per_page=1&orientation=landscape`,
+      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=5&orientation=landscape`,
       {
         headers: {
           Authorization: `Client-ID ${unsplashAccessKey}`,
@@ -166,36 +169,66 @@ async function fetchUnsplashImageForLabeling(topic) {
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      logger.warn(`[LABELING] Unsplash API failed: ${response.status}, using fallback`);
-      return fallbackUrl;
+      logger.warn(`[LABELING] Unsplash API failed: ${response.status}; no image accepted`);
+      return null;
     }
 
     const data = await response.json();
     const results = data.results || [];
 
     if (results.length === 0) {
-      logger.warn("[LABELING] No Unsplash results found, using fallback");
-      return fallbackUrl;
+      logger.warn("[LABELING] No Unsplash results found; no image accepted");
+      return null;
     }
 
     // Use regular URL (not small) for better quality in labeling activity
-    const imageUrl = results[0].urls?.regular || results[0].urls?.full || results[0].urls?.small;
+    const result = results.find((candidate) => {
+      const purpose = `${candidate.alt_description || ''} ${candidate.description || ''}`.trim();
+      return validateLabelingActivity({ title: query, data: { labels: [{ text: query, x: 50, y: 50 }] } }, {
+        topic: query, imagePurpose: purpose, targetCount: 1,
+      }).valid;
+    });
+    const imageUrl = result?.urls?.regular || result?.urls?.full || result?.urls?.small;
     
     if (!imageUrl) {
-      logger.warn("[LABELING] Unsplash result has no URL, using fallback");
-      return fallbackUrl;
+      logger.warn("[LABELING] No semantically related image result was accepted");
+      return null;
     }
 
-    logger.info(`[LABELING] Fetched Unsplash image for topic: ${topic}`);
-    return imageUrl;
+    logger.info(`[LABELING] Accepted image for query: ${query}`);
+    return { imageUrl, purpose: `${result.alt_description || ''} ${result.description || ''}`.trim() };
   } catch (error) {
     if (error.name === "AbortError") {
-      logger.warn("[LABELING] Unsplash request timeout, using fallback");
+      logger.warn("[LABELING] Unsplash request timeout; no image accepted");
     } else {
       logger.error("[LABELING] Unsplash fetch error:", error);
     }
-    return fallbackUrl;
+    return null;
   }
+}
+
+async function resolveLabelingActivities(worksheet, topic) {
+  const accepted = [];
+  for (const activity of worksheet.activities || []) {
+    if (activity.type !== 'labeling') { accepted.push(activity); continue; }
+    const query = buildLabelingImageQuery(activity, topic);
+    const image = await fetchUnsplashImageForLabeling(query);
+    const validation = validateLabelingActivity(activity, {
+      topic: `${topic} ${activity.title || ''}`,
+      imagePurpose: image?.purpose || activity.data?.imageDescription || activity.data?.imagePrompt || '',
+      targetCount: activity.data?.labels?.length,
+    });
+    if (!image || !validation.valid) {
+      logger.warn('[LABELING] Activity omitted after validation', { title: activity.title, errors: validation.errors });
+      continue;
+    }
+    activity.data.imageUrl = image.imageUrl;
+    activity.data.imageQuery = query;
+    activity.data.imagePurpose = image.purpose;
+    accepted.push(activity);
+  }
+  worksheet.activities = accepted;
+  return worksheet;
 }
 
 function sendSuccess(res, data, statusCode = 200) {
@@ -673,15 +706,7 @@ async function generateWorksheet(req, res) {
       parsed.activities.map((a) => a.type).join(", "),
     );
 
-    // Fetch Unsplash images for labeling activities
-    for (const activity of parsed.activities) {
-      if (activity.type === 'labeling' && activity.data) {
-        console.log("[GENERATE] Fetching Unsplash image for labeling activity");
-        const imageUrl = await fetchUnsplashImageForLabeling(sourceText);
-        activity.data.imageUrl = imageUrl;
-        console.log("[GENERATE] Injected imageUrl for labeling activity:", imageUrl);
-      }
-    }
+    await resolveLabelingActivities(parsed, sourceText);
 
     return res.json({
       success: true,
@@ -818,15 +843,7 @@ async function uploadAndGenerate(req, res) {
       parsed.activities.map((a) => a.type).join(", "),
     );
 
-    // Fetch Unsplash images for labeling activities
-    for (const activity of parsed.activities) {
-      if (activity.type === 'labeling' && activity.data) {
-        console.log("[UPLOAD AND GENERATE] Fetching Unsplash image for labeling activity");
-        const imageUrl = await fetchUnsplashImageForLabeling(extractedText);
-        activity.data.imageUrl = imageUrl;
-        console.log("[UPLOAD AND GENERATE] Injected imageUrl for labeling activity:", imageUrl);
-      }
-    }
+    await resolveLabelingActivities(parsed, extractedText);
 
     return res.json({
       success: true,
