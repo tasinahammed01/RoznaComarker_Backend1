@@ -258,11 +258,13 @@ function semanticError(code, stage, message, details = {}) {
   return error;
 }
 
-function suspiciousCoverageCategories(validated, transcript) {
+function suspiciousCoverageCategories(validated, transcript, env = process.env) {
   if (String(transcript || '').length < 400) return [];
   const counts = validated?.diagnostics?.acceptedByCategory || {};
   const zero = CORRECTION_CATEGORIES.filter((category) => Number(counts[category] || 0) === 0);
-  return zero;
+  const configured = Number(env.SEMANTIC_AUDIT_MIN_ZERO_CATEGORIES);
+  const minZeroCategories = Number.isInteger(configured) && configured > 0 ? configured : 1;
+  return zero.length >= minZeroCategories ? zero : [];
 }
 
 function buildCategoryAuditRequest(input, request, categories) {
@@ -456,7 +458,7 @@ async function analyze(input, dependencies = {}) {
     throw error;
   }
   const semanticParseMs = Date.now() - parseStartedAt;
-  const auditCategories = suspiciousCoverageCategories(validated, input.transcript);
+  const auditCategories = suspiciousCoverageCategories(validated, input.transcript, dependencies.env || process.env);
   let audit = null;
   if (auditCategories.length) {
     const auditStartedAt = Date.now();
