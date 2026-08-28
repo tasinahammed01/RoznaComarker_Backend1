@@ -116,6 +116,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'aiOnlyStarted' });
   try {
     semanticRun = await semantic.analyze({ transcript, assignment, legend, transcriptHash: hash, spans,
+      submissionId: String(doc._id),
       pageManifest: canonicalTranscript.pages.map((page) => ({ fileId: page.fileId, fileOrder: page.fileOrder,
         pageNumber: page.pageNumber, pageIndex: page.pageIndex, startChar: page.startChar, endChar: page.endChar })),
       onAttempt: async ({ attempt, maxAttempts, provider, model, attemptTimeoutMs, remainingBudgetMs, maxOutputTokens }) => {

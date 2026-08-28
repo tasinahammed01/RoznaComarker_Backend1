@@ -8,6 +8,7 @@ const policy = require('./aiCorrectionPolicy.service');
 const { promptDefinitions } = require('./writingCategoryDefinitions.service');
 const { semanticCorrectionsSchema, CORRECTION_CATEGORIES, CORRECTION_KINDS,
   CORRECTION_SEVERITIES, CORRECTION_FIELDS } = require('./structuredOutputSchemas.service');
+const logger = require('../utils/logger');
 
 const SEMANTIC_PROMPT_VERSION = 'ai-only-correction-detection-v7-examiner-coverage';
 const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v11-provider-compatible-symbol-coverage';
@@ -458,6 +459,7 @@ async function analyze(input, dependencies = {}) {
   const auditCategories = suspiciousCoverageCategories(validated, input.transcript);
   let audit = null;
   if (auditCategories.length) {
+    const auditStartedAt = Date.now();
     try {
       const auditValidate = (content, attemptMeta = {}) => {
         const parsed = parseJson(content, input.transcriptHash, attemptMeta, auditCategories,
@@ -469,8 +471,15 @@ async function analyze(input, dependencies = {}) {
         checked.symbolReviewCoverage = parsed.symbolReviewCoverage;
         return checked;
       };
+      const configuredAuditTimeout = Number((dependencies.env || process.env).SEMANTIC_AUDIT_ATTEMPT_TIMEOUT_MS);
+      const auditTimeoutMs = Number.isFinite(configuredAuditTimeout) && configuredAuditTimeout > 0
+        ? Math.floor(configuredAuditTimeout) : 15000;
+      const preferredAuditConfig = preferStrongerAuditConfig(config);
+      const auditConfig = { ...preferredAuditConfig,
+        attemptTimeoutMs: Math.min(Number(preferredAuditConfig.attemptTimeoutMs) || auditTimeoutMs, auditTimeoutMs),
+        primaryRetries: 0, fallbackRetries: 0 };
       const auditCompletion = await runCompletion({ messages: buildCategoryAuditRequest(input, request, auditCategories),
-        config: preferStrongerAuditConfig(config),
+        config: auditConfig,
         env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
         validate: auditValidate, feature: 'semantic_corrections_category_audit',
         responseSchema: semanticCorrectionsSchema(input.transcriptHash, auditCategories, runtimeCategorySymbols), schemaName: 'semantic_corrections_category_audit' });
@@ -506,9 +515,16 @@ async function analyze(input, dependencies = {}) {
       }
       audit = { requested: true, categories: auditCategories, provider: auditCompletion.provider, model: auditCompletion.model,
         attemptCount: auditCompletion.metrics?.attemptCount || 1, acceptedByCategory: auditValidated.diagnostics.acceptedByCategory,
-        rejectedByCategory: auditValidated.diagnostics.rejectedByCategory, mergeDiagnostics: merged.diagnostics };
+        rejectedByCategory: auditValidated.diagnostics.rejectedByCategory, mergeDiagnostics: merged.diagnostics,
+        durationMs: Date.now() - auditStartedAt };
+      logger.info({ message: 'Category audit stage', submissionId: input.submissionId || null,
+        categories: auditCategories, durationMs: audit.durationMs, provider: audit.provider,
+        model: audit.model, attemptCount: audit.attemptCount });
     } catch (error) {
-      audit = { requested: true, categories: auditCategories, failed: true, errorCode: error?.code || 'CATEGORY_AUDIT_FAILED' };
+      audit = { requested: true, categories: auditCategories, failed: true,
+        errorCode: error?.code || 'CATEGORY_AUDIT_FAILED', durationMs: Date.now() - auditStartedAt };
+      logger.warn({ message: 'Category audit stage failed', submissionId: input.submissionId || null,
+        categories: auditCategories, durationMs: audit.durationMs, errorCode: audit.errorCode });
     }
   }
   validated.diagnostics.categoryAudit = audit || { requested: false, categories: [] };
