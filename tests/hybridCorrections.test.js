@@ -9,6 +9,7 @@ const policy = require('../src/services/aiCorrectionPolicy.service');
 const pipeline = require('../src/services/canonicalCorrectionsPipeline.service');
 const expertFixture = require('./fixtures/twoPageLearnerEssaySanitized');
 const { CATEGORY_SYMBOLS } = require('../src/services/structuredOutputSchemas.service');
+const logger = require('../src/utils/logger');
 
 const finding = (overrides = {}) => ({
   category: 'CONTENT', symbol: 'DEV', correctionKind: 'localized', quotedText: 'claim', occurrence: 0,
@@ -394,6 +395,11 @@ describe('safe hybrid correction policy', () => {
     expect(semantic.suspiciousCoverageCategories(twoZero, 'x'.repeat(401))).toEqual(['CONTENT', 'ORGANIZATION']);
     expect(semantic.suspiciousCoverageCategories(realTwoZero, 'x'.repeat(401))).toEqual(['CONTENT', 'ORGANIZATION']);
     expect(semantic.suspiciousCoverageCategories(oneZero, 'x'.repeat(401))).toEqual(['ORGANIZATION']);
+    expect(semantic.suspiciousCoverageCategories(oneZero, 'x'.repeat(401), {})).toEqual(['ORGANIZATION']);
+    expect(semantic.suspiciousCoverageCategories(oneZero, 'x'.repeat(401), { SEMANTIC_AUDIT_MIN_ZERO_CATEGORIES: '' })).toEqual(['ORGANIZATION']);
+    expect(semantic.suspiciousCoverageCategories(oneZero, 'x'.repeat(401), { SEMANTIC_AUDIT_MIN_ZERO_CATEGORIES: 'garbage' })).toEqual(['ORGANIZATION']);
+    expect(semantic.suspiciousCoverageCategories(oneZero, 'x'.repeat(401), { SEMANTIC_AUDIT_MIN_ZERO_CATEGORIES: '2' })).toEqual([]);
+    expect(semantic.suspiciousCoverageCategories(twoZero, 'x'.repeat(401), { SEMANTIC_AUDIT_MIN_ZERO_CATEGORIES: '2' })).toEqual(['CONTENT', 'ORGANIZATION']);
   });
 
   test('does not audit short-transcript or all-healthy coverage', () => {
@@ -438,18 +444,24 @@ describe('safe hybrid correction policy', () => {
       return { content, value: options.validate(content, { provider: 'openrouter', model: 'openai/gpt-4.1', attemptIndex: 0 }),
         provider: 'openrouter', model: 'openai/gpt-4.1', usage: {}, metrics: { attemptCount: 1 } };
     });
+    const mainConfig = {
+      provider: 'openrouter', model: 'openai/gpt-4.1-mini', attemptTimeoutMs: 30000,
+      primaryRetries: 1, fallbackRetries: 2,
+      chain: [
+        { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 0 },
+        { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 1 }
+      ], fallback: { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 1 }
+    };
     const result = await semantic.analyze({ transcript, transcriptHash: 'audit-hash' }, {
       runCompletion, env: { OPENROUTER_API_KEY: 'test-only' }, config: {
-        provider: 'openrouter', model: 'openai/gpt-4.1-mini',
-        chain: [
-          { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 0 },
-          { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 1 }
-        ], fallback: { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 1 }
+        ...mainConfig
       }
     });
     expect(runCompletion).toHaveBeenCalledTimes(2);
     expect(configs[0].model).toBe('openai/gpt-4.1-mini');
     expect(configs[1].model).toBe('openai/gpt-4.1');
+    expect(configs[0]).toEqual(mainConfig);
+    expect(configs[1]).toMatchObject({ attemptTimeoutMs: 15000, primaryRetries: 0, fallbackRetries: 0 });
     expect(configs[1].chain.map((entry) => entry.model)).toEqual(['openai/gpt-4.1', 'openai/gpt-4.1-mini']);
     expect(prompts[1]).toContain('previous pass produced unexpectedly sparse coverage');
     expect(prompts[1]).toContain('Re-read the COMPLETE canonical transcript independently');
@@ -509,19 +521,23 @@ describe('safe hybrid correction policy', () => {
       noFindingReason: 'No defensible localized finding after complete review.', corrections: []
     }])) };
     const payloads = [primary, audit];
+    const configs = [];
     const runCompletion = jest.fn(async (options) => {
+      configs.push(options.config);
       const content = JSON.stringify(payloads.shift());
       return { content, value: options.validate(content), provider: 'openrouter', model: options.config.model, usage: {}, metrics: {} };
     });
     const result = await semantic.analyze({ transcript, transcriptHash: 'audit-zero-hash' }, {
-      runCompletion, env: { OPENROUTER_API_KEY: 'test-only' },
-      config: { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallback: [] }
+      runCompletion, env: { OPENROUTER_API_KEY: 'test-only', SEMANTIC_AUDIT_ATTEMPT_TIMEOUT_MS: '7000' },
+      config: { provider: 'openrouter', model: 'openai/gpt-4.1-mini', attemptTimeoutMs: 30000, fallback: [] }
     });
     expect(runCompletion).toHaveBeenCalledTimes(2);
     expect(result.corrections).toHaveLength(3);
     expect(canonical.statistics(result.corrections)).toEqual({ content: 0, organization: 0, grammar: 1,
       vocabulary: 1, mechanics: 1, total: 3 });
     expect(result.diagnostics.categoryAudit).toMatchObject({ requested: true, categories: ['CONTENT', 'ORGANIZATION'] });
+    expect(configs[0]).toMatchObject({ attemptTimeoutMs: 30000 });
+    expect(configs[1]).toMatchObject({ attemptTimeoutMs: 7000, primaryRetries: 0, fallbackRetries: 0 });
   });
 
   test('keeps existing quote validation on the category audit and preserves valid primary corrections', async () => {
@@ -537,18 +553,25 @@ describe('safe hybrid correction policy', () => {
       }))] : []
     }])) };
     const payloads = [primary, invalidAudit];
+    const configs = [];
     const runCompletion = jest.fn(async (options) => {
+      configs.push(options.config);
       const content = JSON.stringify(payloads.shift());
       return { content, value: options.validate(content), provider: 'openrouter', model: options.config.model, usage: {}, metrics: {} };
     });
-    const result = await semantic.analyze({ transcript, transcriptHash: 'audit-invalid-hash' }, {
-      runCompletion, env: { OPENROUTER_API_KEY: 'test-only' },
-      config: { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallback: [] }
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+    const result = await semantic.analyze({ transcript, transcriptHash: 'audit-invalid-hash', submissionId: 'submission-audit-failure' }, {
+      runCompletion, env: { OPENROUTER_API_KEY: 'test-only', SEMANTIC_AUDIT_ATTEMPT_TIMEOUT_MS: 'garbage' },
+      config: { provider: 'openrouter', model: 'openai/gpt-4.1-mini', attemptTimeoutMs: 30000, fallback: [] }
     });
     expect(result.corrections).toHaveLength(1);
     expect(result.corrections[0]).toMatchObject({ category: 'GRAMMAR', quotedText: 'students is' });
     expect(result.diagnostics.categoryAudit).toMatchObject({ requested: true, failed: true,
-      errorCode: 'SEMANTIC_SCHEMA_INVALID' });
+      errorCode: 'SEMANTIC_SCHEMA_INVALID', durationMs: expect.any(Number) });
+    expect(configs[1]).toMatchObject({ attemptTimeoutMs: 15000, primaryRetries: 0, fallbackRetries: 0 });
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ message: 'Category audit stage failed',
+      submissionId: 'submission-audit-failure', categories, durationMs: expect.any(Number), errorCode: 'SEMANTIC_SCHEMA_INVALID' }));
+    warn.mockRestore();
   });
 });
 
