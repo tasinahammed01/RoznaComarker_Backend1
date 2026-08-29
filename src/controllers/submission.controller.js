@@ -1019,6 +1019,8 @@ async function getOcrCorrections(req, res) {
       semanticMaxAttempts: resultState.semanticMaxAttempts,
       semanticNextRetryAt: resultState.semanticNextRetryAt,
       semanticErrorCode: resultState.semanticErrorCode,
+      semanticCoverage: resultState.semanticCoverage,
+      coverageComplete: resultState.coverageComplete,
       statistics,
       transcript: canonicalTranscript.text,
       transcriptPages: canonicalTranscript.pages.map((page) => ({ fileId: page.fileId, pageNumber: page.pageNumber,

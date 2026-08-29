@@ -26,8 +26,11 @@ const RUBRIC_SCHEMA = closedObject({
 });
 
 function categoryCorrectionItem(category, categorySymbols = CATEGORY_SYMBOLS) {
+  const canonicalSymbols = [...new Set(Object.values(categorySymbols).flat())];
   return closedObject({
-      symbol: { type: 'string', enum: categorySymbols[category] || CATEGORY_SYMBOLS[category] },
+      // The response category is diagnostic; the backend derives the canonical
+      // category from this legend-backed symbol after parsing.
+      symbol: { type: 'string', enum: canonicalSymbols },
       correctionKind: { type: 'string', enum: ['CONTENT', 'ORGANIZATION'].includes(category) ? CORRECTION_KINDS : ['localized'] },
       quotedText: string(500, { minLength: 1 }),
       occurrence: { type: 'integer', minimum: 0 },

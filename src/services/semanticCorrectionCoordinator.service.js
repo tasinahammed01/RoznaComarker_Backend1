@@ -5,7 +5,7 @@ const semanticWriting = require('./semanticWritingCorrections.service');
 const canonical = require('./correctionCanonical.service');
 const { getSemanticAIConfig } = require('./semanticAIClient.service');
 const { CORRECTION_CATEGORIES } = require('./structuredOutputSchemas.service');
-const VERSION = 'semantic-chunk-coordinator-v1';
+const VERSION = 'semantic-chunk-coordinator-v2-explicit-coverage';
 
 const integer = (value, fallback, minimum = 1) => {
   const parsed = Number(value);
@@ -130,6 +130,42 @@ function aggregateMetrics(results, chunks, startedAt, mode) {
     totalDurationMs: Date.now() - startedAt };
 }
 
+function aggregateValidationDiagnostics(successful, merged) {
+  const diagnostics = successful.map((result) => result.value.diagnostics || {});
+  const sum = (key) => diagnostics.reduce((total, item) => total + Number(item[key] || 0), 0);
+  const addCounts = (key) => diagnostics.reduce((out, item) => {
+    for (const [name, count] of Object.entries(item[key] || {})) out[name] = Number(out[name] || 0) + Number(count || 0);
+    return out;
+  }, {});
+  const addCategoryCounts = (key) => Object.fromEntries(CORRECTION_CATEGORIES.map((category) => [category,
+    diagnostics.reduce((total, item) => total + Number(item[key]?.[category] || 0), 0)]));
+  const categoryRemaps = diagnostics.flatMap((item) => item.categoryRemaps || []);
+  return {
+    rawCorrectionCount: sum('rawCorrectionCount'),
+    acceptedCorrectionCount: merged.corrections.length,
+    rejectedCorrectionCount: sum('rejectedCorrectionCount'),
+    categoryRemapCount: categoryRemaps.length,
+    categoryRemaps,
+    rejectionReasons: addCounts('rejectionReasons'),
+    returnedByCategory: addCategoryCounts('returnedByCategory'),
+    acceptedByCategory: addCategoryCounts('acceptedByCategory'),
+    rejectedByCategory: addCategoryCounts('rejectedByCategory'),
+    duplicateCount: Number(merged.diagnostics?.duplicateCount || 0),
+    conflictCount: Number(merged.diagnostics?.conflictCount || 0)
+  };
+}
+
+function coveredCharactersForSuccessfulChunks(results, chunks) {
+  return results.slice(0, chunks.length).flatMap((result, index) => result.status === 'fulfilled'
+    ? [{ start: chunks[index].startChar, end: chunks[index].endChar }] : [])
+    .sort((a, b) => a.start - b.start).reduce((ranges, range) => {
+      const previous = ranges[ranges.length - 1];
+      if (previous && range.start <= previous.end) previous.end = Math.max(previous.end, range.end);
+      else ranges.push({ ...range });
+      return ranges;
+    }, []).reduce((sum, range) => sum + range.end - range.start, 0);
+}
+
 async function analyze(input, dependencies = {}) {
   const startedAt = Date.now();
   const env = dependencies.env || process.env;
@@ -142,8 +178,12 @@ async function analyze(input, dependencies = {}) {
     const result = await semanticService.analyze(input, dependencies);
     const coordinatorMetrics = aggregateMetrics([{ status: 'fulfilled', value: result }],
       [{ text: input.transcript, startChar: 0, endChar: input.transcript.length }], startedAt, 'single');
-    return { ...result, status: 'completed', coverage: { complete: true, coveredCharacters: input.transcript.length,
-      totalCharacters: input.transcript.length }, metrics: { ...(result.metrics || {}), ...coordinatorMetrics } };
+    const categoryCoverageComplete = Object.fromEntries(CORRECTION_CATEGORIES.map((category) => [category, true]));
+    return { ...result, status: 'completed', coverage: { complete: true, coverageComplete: true,
+      coveredCharacters: input.transcript.length, totalCharacters: input.transcript.length,
+      totalChunks: 1, successfulChunks: 1, failedChunks: 0, structuralPassStatus: 'not_required',
+      sourceHashMatches: true, expectedTextRangesCovered: true, finalMergeCompleted: true,
+      categoryCoverageComplete }, metrics: { ...(result.metrics || {}), ...coordinatorMetrics } };
   }
 
   const localPromptOverheadTokens = semanticWriting.buildSemanticRequest({ ...input, transcript: '',
@@ -170,18 +210,35 @@ async function analyze(input, dependencies = {}) {
   const merged = canonical.mergeCanonicalCorrections({ aiCorrections: successful.flatMap((result) => result.value.corrections || []) });
   const localSuccessCount = results.slice(0, chunks.length).filter((result) => result.status === 'fulfilled').length;
   const structuralSucceeded = results[chunks.length]?.status === 'fulfilled';
-  const status = localSuccessCount === chunks.length && structuralSucceeded ? 'completed'
+  const localCoverageComplete = localSuccessCount === chunks.length;
+  const expectedTextRangesCovered = localCoverageComplete && chunks[0]?.startChar === 0
+    && chunks[chunks.length - 1]?.endChar === input.transcript.length
+    && chunks.every((chunk, index) => index === 0 || chunk.startChar <= chunks[index - 1].endChar);
+  const coverageComplete = localCoverageComplete && structuralSucceeded && expectedTextRangesCovered;
+  const categoryCoverageComplete = {
+    CONTENT: coverageComplete, ORGANIZATION: coverageComplete,
+    VOCABULARY: localCoverageComplete && expectedTextRangesCovered,
+    GRAMMAR: localCoverageComplete && expectedTextRangesCovered,
+    MECHANICS: localCoverageComplete && expectedTextRangesCovered
+  };
+  const status = coverageComplete ? 'completed'
     : successful.length ? 'partial' : 'failed';
   const errors = results.filter((result) => result.status === 'rejected').map((result, index) => ({ index,
     code: result.reason?.code || 'SEMANTIC_CHUNK_FAILED' }));
   const metrics = { ...aggregateMetrics(results, chunks, startedAt, 'chunked'),
     configuredChunkInputTokens: settings.chunkInputTokens, localPromptOverheadTokens };
+  const coveredCharacters = coveredCharactersForSuccessfulChunks(results, chunks);
   return { status, corrections: merged.corrections, provider: successful[0]?.value.provider || null,
-    model: successful[0]?.value.model || null, diagnostics: { chunking: { localChunkCount: chunks.length,
-      localSuccessCount, structuralSucceeded, errors, mergeDiagnostics: merged.diagnostics } }, metrics,
-    coverage: { complete: status === 'completed', coveredCharacters: metrics.coveredCharacters,
-      totalCharacters: input.transcript.length, successfulChunks: localSuccessCount, totalChunks: chunks.length } };
+    model: successful[0]?.value.model || null, diagnostics: { ...aggregateValidationDiagnostics(successful, merged),
+      chunking: { localChunkCount: chunks.length, localSuccessCount,
+        localFailureCount: chunks.length - localSuccessCount, structuralSucceeded, errors,
+        mergeDiagnostics: merged.diagnostics } }, metrics,
+    coverage: { complete: coverageComplete, coverageComplete, coveredCharacters,
+      totalCharacters: input.transcript.length, successfulChunks: localSuccessCount, totalChunks: chunks.length,
+      failedChunks: chunks.length - localSuccessCount,
+      structuralPassStatus: structuralSucceeded ? 'completed' : 'failed', sourceHashMatches: true,
+      expectedTextRangesCovered, finalMergeCompleted: true, categoryCoverageComplete } };
 }
 
 module.exports = { VERSION, config, preferredBoundary, buildChunks, localSpans, localPages, remapCorrections,
-  runBounded, aggregateMetrics, analyze };
+  runBounded, aggregateMetrics, aggregateValidationDiagnostics, coveredCharactersForSuccessfulChunks, analyze };

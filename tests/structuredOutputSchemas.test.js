@@ -25,7 +25,9 @@ describe('assessment structured output schemas', () => {
     expect(JSON.stringify(schema)).not.toContain('uniqueItems');
     expect(content.properties.findingCount).toBeUndefined();
     expect(content.properties.corrections.items.properties.category).toBeUndefined();
-    expect(content.properties.corrections.items.properties.symbol.enum).toEqual(schemas.CATEGORY_SYMBOLS.CONTENT);
+    expect(content.properties.corrections.items.properties.symbol.enum).toEqual(
+      [...new Set(Object.values(schemas.CATEGORY_SYMBOLS).flat())]
+    );
     expect(content.properties.corrections.items.properties.correctionKind.enum).toEqual(['localized', 'global']);
     expect(schema.properties.categories.properties.GRAMMAR.properties.corrections.items.properties.correctionKind.enum)
       .toEqual(['localized']);

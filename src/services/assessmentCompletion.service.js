@@ -3,7 +3,6 @@ const Submission = require('../models/Submission');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 const Feedback = require('../models/Feedback');
 require('../models/File');
-const adaptivePractice = require('./adaptivePractice.service');
 const reportService = require('./submissionFeedbackReport.service');
 const CreditService = require('./credit.service');
 const logger = require('../utils/logger');
@@ -55,7 +54,7 @@ async function complete({ runId, submissionId, teacherId, sourceHash }) {
       transcription: 'complete', issueDetection: submission.semanticStatus === 'failed' ? 'failed'
         : submission.semanticStatus === 'partial' ? 'partial' : 'complete',
       evaluation: 'complete', detailedFeedback: 'complete',
-      report: 'pending', adaptiveLearning: 'pending'
+      report: 'pending', adaptiveLearning: 'not_required'
     } } });
 
     const legacyFeedback = await Feedback.findOne({ submission: submissionId });
@@ -65,13 +64,8 @@ async function complete({ runId, submissionId, teacherId, sourceHash }) {
       timestamp: new Date().toISOString(), sourceHash });
     await AssessmentRun.updateOne({ _id: run._id }, { $set: { 'components.report': 'complete' } });
 
-    const adaptive = await adaptivePractice.generateSession(submissionId, submission.student, { retry: true });
-    if (!['ready', 'no-weaknesses'].includes(adaptive?.state)) throw completionError('ADAPTIVE_LEARNING_INCOMPLETE');
-    logger.info({ message: 'Assessment pipeline timing', submissionId: String(submissionId), stage: 'adaptiveReadyAt',
-      timestamp: new Date().toISOString(), sourceHash, adaptiveState: adaptive.state });
-    const adaptiveComponent = adaptive.state === 'no-weaknesses' ? 'not_required' : 'complete';
     const completed = await AssessmentRun.findOneAndUpdate({ _id: run._id, status: { $ne: 'complete' } }, { $set: {
-      status: 'complete', 'components.adaptiveLearning': adaptiveComponent, adaptiveState: adaptive.state,
+      status: 'complete', 'components.adaptiveLearning': 'not_required', adaptiveState: 'not_generated',
       completedAt: new Date(), failedAt: null, errorCode: null
     } }, { returnDocument: 'after' }) || await AssessmentRun.findById(run._id);
     await Submission.updateOne({ _id: submissionId, assessmentRunId: runId }, { $set: {

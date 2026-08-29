@@ -41,6 +41,8 @@ describe('canonical evaluation interrupted-finalization recovery', () => {
 
     const result = await service.generate({ submission: {
       _id: 'submission-1', correctionStatus: 'completed', correctionSourceHash: sourceHash,
+      semanticStatus: 'completed', semanticMetrics: { coverage: { coverageComplete: true,
+        failedChunks: 0, structuralPassStatus: 'not_required' } },
       evaluationStatus: 'processing', evaluationJobId: 'job-1', writingCorrections: [], correctionStatistics: {},
       constructor: { updateOne: submissionUpdateOne }
     }, assignment });

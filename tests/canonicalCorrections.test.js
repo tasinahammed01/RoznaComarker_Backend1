@@ -4,6 +4,7 @@ jest.mock('../src/models/CorrectionLegend', () => ({ findOne: jest.fn(() => ({ l
 const writing = require('../src/services/writingCorrections.service');
 const { checkTextWithLanguageTool } = require('../src/services/languageTool.service');
 const canonical = require('../src/services/correctionCanonical.service');
+const semantic = require('../src/services/semanticWritingCorrections.service');
 const { normalizeOcrWordsFromStored, buildTranscriptAndSpans } = require('../src/services/ocrCorrections.service');
 const { buildCanonicalSubmissionTranscript } = require('../src/utils/ocrTranscriptNormalizer');
 const realRuleMetadata = require('./fixtures/languageToolRuleMetadata');
@@ -124,6 +125,63 @@ describe('canonical correction primitives', () => {
   test('rejects invalid symbols and counts genuine zero categories', () => {
     expect(canonical.normalizeCorrection({ category: 'CONTENT', symbol: 'FAKE', quotedText: 'x' }, 'x', [], writing.defaultLegend(), 'AI')).toBeNull();
     expect(canonical.statistics([])).toEqual({ content: 0, organization: 0, grammar: 0, vocabulary: 0, mechanics: 0, total: 0 });
+  });
+
+  test.each([
+    ['SP', 'VOCABULARY', 'MECHANICS'], ['P', 'GRAMMAR', 'MECHANICS'], ['CAP', 'CONTENT', 'MECHANICS'],
+    ['WC', 'GRAMMAR', 'VOCABULARY'], ['WF', 'MECHANICS', 'VOCABULARY'],
+    ['AGR', 'VOCABULARY', 'GRAMMAR'], ['T', 'CONTENT', 'GRAMMAR'],
+    ['ART', 'MECHANICS', 'GRAMMAR'], ['PREP', 'ORGANIZATION', 'GRAMMAR']
+  ])('derives %s from the legend instead of model category %s', (symbol, modelCategory, expectedCategory) => {
+    const correction = canonical.normalizeCorrection({ category: modelCategory, symbol, quotedText: 'social media',
+      message: 'Correct this issue.', suggestedText: 'online platforms', confidence: 0.95,
+      correctionKind: 'localized', severity: 'medium' }, 'social media', [], writing.defaultLegend(), 'AI');
+    expect(correction).toMatchObject({ symbol, category: expectedCategory, canonicalCategory: expectedCategory,
+      modelCategory, categoryRemapped: modelCategory !== expectedCategory });
+  });
+
+  test('validator retains a known code under the wrong model category and records a safe remap diagnostic', () => {
+    const transcript = 'University students use socail media every day.';
+    const result = semantic.validateCorrections([{
+      category: 'VOCABULARY', symbol: 'SP', correctionKind: 'localized', quotedText: 'socail', occurrence: 0,
+      message: 'Correct the spelling.', suggestedText: 'social', confidence: 0.99,
+      severity: 'medium', stylePreference: false
+    }], { transcript, legend: semantic.compactSemanticLegend(writing.defaultLegend()), env: {} });
+    expect(result.corrections[0]).toMatchObject({ category: 'MECHANICS', symbol: 'SP',
+      modelCategory: 'VOCABULARY', canonicalCategory: 'MECHANICS', categoryRemapped: true });
+    expect(result.diagnostics).toMatchObject({ categoryRemapCount: 1,
+      categoryRemaps: [expect.objectContaining({ symbol: 'SP', modelCategory: 'VOCABULARY',
+        canonicalCategory: 'MECHANICS', categoryRemapped: true })] });
+    expect(JSON.stringify(result.diagnostics)).not.toContain(transcript);
+  });
+
+  test('category-label variation, overlap duplicates, and ordering produce identical counts and fingerprint', () => {
+    const transcript = 'University students use socail media, and it influence their study.';
+    const raw = [
+      { category: 'VOCABULARY', symbol: 'SP', quotedText: 'socail', suggestedText: 'social', message: 'Spelling.', confidence: .9 },
+      { category: 'VOCABULARY', symbol: 'AGR', quotedText: 'it influence', suggestedText: 'it influences', message: 'Agreement.', confidence: .9 }
+    ];
+    const normalize = (items) => items.map((item) => canonical.normalizeCorrection(item, transcript, [],
+      writing.defaultLegend(), 'AI')).filter(Boolean);
+    const runA = canonical.mergeCanonicalCorrections({ aiCorrections: normalize(raw) });
+    const runB = canonical.mergeCanonicalCorrections({ aiCorrections: normalize([
+      { ...raw[1], category: 'GRAMMAR' }, { ...raw[0], category: 'MECHANICS' },
+      { ...raw[0], category: 'GRAMMAR', confidence: .8 }
+    ]) });
+    const runC = canonical.mergeCanonicalCorrections({ aiCorrections: normalize([
+      { ...raw[0], category: 'CONTENT', confidence: .8 }, { ...raw[1], category: 'MECHANICS' },
+      { ...raw[0], category: 'MECHANICS' }
+    ]) });
+    expect(runA.corrections.map((item) => [item.category, item.symbol])).toEqual([
+      ['MECHANICS', 'SP'], ['GRAMMAR', 'AGR']
+    ]);
+    expect(canonical.statistics(runB.corrections)).toEqual(canonical.statistics(runA.corrections));
+    expect(canonical.statistics(runC.corrections)).toEqual(canonical.statistics(runA.corrections));
+    expect(canonical.canonicalFingerprint(runB.corrections, 'same-source'))
+      .toBe(canonical.canonicalFingerprint(runA.corrections, 'same-source'));
+    expect(canonical.canonicalFingerprint(runC.corrections, 'same-source'))
+      .toBe(canonical.canonicalFingerprint(runA.corrections, 'same-source'));
+    expect(runB.diagnostics.duplicateCount).toBe(1);
   });
 
   test('orders all pages by uploaded file order and removes duplicate page records', () => {

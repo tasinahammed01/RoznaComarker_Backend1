@@ -69,9 +69,33 @@ describe('semantic correction chunk coordinator', () => {
       config: { maxOutputTokens: 2000 } });
     expect(result.status).toBe('partial');
     expect(result.corrections).toHaveLength(1);
+    expect(result.coverage).toMatchObject({ coverageComplete: false, failedChunks: 1,
+      structuralPassStatus: 'completed', categoryCoverageComplete: {
+        CONTENT: false, ORGANIZATION: false, VOCABULARY: false, GRAMMAR: false, MECHANICS: false
+      } });
     expect(result.diagnostics.chunking.errors).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'AI_ATTEMPT_TIMEOUT' })
     ]));
+  });
+
+  test('marks structural categories incomplete while retaining complete local-language findings', async () => {
+    const transcript = `${'a'.repeat(1580)}badword ${'b'.repeat(2400)}`;
+    const semanticService = { analyze: jest.fn(async (input) => {
+      if (input.analysisMode === 'document_structure') {
+        const error = new Error('structural timeout'); error.code = 'AI_ATTEMPT_TIMEOUT'; throw error;
+      }
+      return semanticResult(input);
+    }) };
+    const result = await coordinator.analyze({ transcript, transcriptHash: 'source', legend: defaultLegend(),
+      spans: [], pageManifest: [], assignment: {} }, { semanticService,
+      settings: { enabled: true, singleRequestThresholdTokens: 1, chunkInputTokens: 3100,
+        overlapTokens: 10, chunkMaxOutputTokens: 1000, maxConcurrency: 2, maxChunks: 8, totalBudgetMs: 5000 },
+      config: { maxOutputTokens: 2000 } });
+    expect(result).toMatchObject({ status: 'partial', coverage: { coverageComplete: false,
+      failedChunks: 0, structuralPassStatus: 'failed', categoryCoverageComplete: {
+        CONTENT: false, ORGANIZATION: false, VOCABULARY: true, GRAMMAR: true, MECHANICS: true
+      } } });
+    expect(result.corrections).toHaveLength(1);
   });
 
   test('reports failed with no corrections when every local and structural request fails', async () => {

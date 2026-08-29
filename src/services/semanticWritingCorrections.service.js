@@ -10,8 +10,8 @@ const { semanticCorrectionsSchema, CORRECTION_CATEGORIES, CORRECTION_KINDS,
   CORRECTION_SEVERITIES, CORRECTION_FIELDS } = require('./structuredOutputSchemas.service');
 const logger = require('../utils/logger');
 
-const SEMANTIC_PROMPT_VERSION = 'ai-only-correction-detection-v7-examiner-coverage';
-const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v11-provider-compatible-symbol-coverage';
+const SEMANTIC_PROMPT_VERSION = 'ai-only-correction-detection-v8-code-first';
+const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v12-code-authoritative';
 const CATEGORY_REVIEW_POLICY_VERSION = 'ai-only-categories-v5-28-symbol-coverage';
 const DEFAULT_NO_FINDING_REASON = 'No validated canonical findings were returned after the category review.';
 const SEMANTIC_CATEGORIES = new Set(CORRECTION_CATEGORIES);
@@ -73,7 +73,7 @@ function buildSemanticRequest({ transcript, assignment = {}, legend: resolvedLeg
     `Your task is error detection, not general essay evaluation. ${scopeInstruction} No external grammar checker is available. Do not stop after finding several examples.`,
     'Return the provider-native category-structured object defined by the JSON Schema. Review every requested category exactly once and set reviewed=true. Do not return findingCount; the server calculates it. If a category has no corrections, give a meaningful non-empty noFindingReason. For a category with corrections, return noFindingReason="".',
     'For every requested category, review every supplied legend symbol across the supplied text and return the complete symbol list in reviewedSymbols. reviewedSymbols reports review coverage only: it does not mean an error was found, does not affect scoring or statistics, and must never cause a correction to be created. Use each authoritative legend label and description supplied above.',
-    'For each candidate, identify the primary nature of the problem and use the narrowest correct symbol in exactly one primary category. A passage may support multiple genuinely different findings, but duplicates are prohibited. Do not classify the same problem as both Grammar and Vocabulary. Every correction symbol must belong to its containing category object.',
+    'For each candidate, select the most specific valid correction symbol from the supplied legend first. Never invent a symbol. The backend derives the parent category from that symbol, so the symbol is authoritative. Return one correction per distinct issue and avoid exact duplicates. Spelling, punctuation, and capitalization are Mechanics, never Vocabulary; punctuation is never Vocabulary.',
     'Return every material defensible finding, not merely representative examples.',
     ...(selectedCategories.includes('CONTENT') ? ['CONTENT: REL, DEV, TA, CL, SD. Ground findings in a specific phrase, sentence, or bounded passage. Do not force findings.'] : []),
     ...(selectedCategories.includes('ORGANIZATION') ? ['ORGANIZATION: COH, CO, PU, TS, CONC. Inspect progression, paragraph unity, transitions, topic sentences, and the actual ending when whole-document context is supplied.'] : []),
@@ -306,8 +306,10 @@ function preferStrongerAuditConfig(config) {
 
 function validateCorrections(corrections, { transcript, legend, spans = [], env = process.env,
   provider = null, model = null, attemptIndex = null } = {}) {
-  const allowed = new Set((legend || []).flatMap((group) => (group.symbols || [])
-    .map((item) => `${group.category}:${item.symbol}`)));
+  const legendObject = { groups: (legend || []).map((group) => ({ key: group.category, label: group.label,
+    color: group.color, symbols: group.symbols })) };
+  const allowedSymbols = new Set((legend || []).flatMap((group) => (group.symbols || [])
+    .map((item) => String(item.symbol || '').trim().toUpperCase())));
   const thresholds = policy.confidenceThresholds(env);
   const accepted = [];
   const rejectionReasons = {};
@@ -317,6 +319,7 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
   const rejectedByCategory = Object.fromEntries(allCategories.map((key) => [key, 0]));
   const rejectionReasonsByCategory = Object.fromEntries(allCategories.map((key) => [key, {}]));
   const rejectionDiagnostics = [];
+  const categoryRemaps = [];
   const reject = (reason, category, item, candidateIndex, validationStage) => {
     rejectionReasons[reason] = (rejectionReasons[reason] || 0) + 1;
     if (rejectedByCategory[category] !== undefined) {
@@ -331,8 +334,10 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
   };
   for (let candidateIndex = 0; candidateIndex < corrections.length; candidateIndex += 1) {
     const item = corrections[candidateIndex];
-    const category = SEMANTIC_CATEGORIES.has(item?.category) ? item.category : null;
-    if (category) returnedByCategory[category] += 1;
+    const modelCategory = SEMANTIC_CATEGORIES.has(item?.category) ? item.category : null;
+    const symbol = String(item?.symbol || '').trim().toUpperCase();
+    const canonicalCategory = canonical.getCanonicalCategoryForCorrectionCode(symbol, legendObject);
+    if (modelCategory) returnedByCategory[modelCategory] += 1;
     if (!item || typeof item !== 'object' || !SEMANTIC_CATEGORIES.has(item.category)
       || typeof item.symbol !== 'string' || !item.symbol.trim()
       || typeof item.quotedText !== 'string' || !item.quotedText
@@ -342,39 +347,41 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
       || item.quotedText.includes('\uFFFD')
       || !Number.isFinite(Number(item.confidence)) || Number(item.confidence) < 0 || Number(item.confidence) > 1
       || !Number.isInteger(Number(item.occurrence)) || Number(item.occurrence) < 0) {
-      reject('INVALID_SCHEMA', category, item, candidateIndex, 'schema_validation'); continue;
+      reject('INVALID_SCHEMA', modelCategory, item, candidateIndex, 'schema_validation'); continue;
     }
-    if (!allowed.has(`${item.category}:${item.symbol}`)) {
-      reject('LEGEND_MISMATCH', category, item, candidateIndex, 'legend_validation'); continue;
+    if (!allowedSymbols.has(symbol) || !canonicalCategory) {
+      reject('LEGEND_MISMATCH', modelCategory, item, candidateIndex, 'legend_validation'); continue;
     }
-    if (item.stylePreference === true) { reject('STYLE_PREFERENCE', category, item, candidateIndex, 'category_validation'); continue; }
+    const canonicalItem = { ...item, symbol, modelCategory, category: canonicalCategory };
+    if (modelCategory !== canonicalCategory) categoryRemaps.push({ candidateIndex, symbol,
+      modelCategory, canonicalCategory, categoryRemapped: true, provider, model, attemptIndex });
+    if (item.stylePreference === true) { reject('STYLE_PREFERENCE', canonicalCategory, item, candidateIndex, 'category_validation'); continue; }
     const correctionKind = item.correctionKind || 'localized';
     if (!['localized', 'global'].includes(correctionKind)
-      || (correctionKind === 'global' && !['CONTENT', 'ORGANIZATION'].includes(item.category))
+      || (correctionKind === 'global' && !['CONTENT', 'ORGANIZATION'].includes(canonicalCategory))
       || (correctionKind === 'localized' && !item.suggestedText.trim())) {
-      reject('UNSUPPORTED_CORRECTION_KIND', category, item, candidateIndex, 'category_validation'); continue;
+      reject('UNSUPPORTED_CORRECTION_KIND', canonicalCategory, item, candidateIndex, 'category_validation'); continue;
     }
-    if (item.category === 'VOCABULARY' && item.symbol === 'WC'
+    if (canonicalCategory === 'VOCABULARY' && symbol === 'WC'
       && /\bmore\s+\p{L}+er\b/iu.test(item.quotedText)
       && !/\bmore\b/iu.test(item.suggestedText)) {
-      reject('CATEGORY_MISMATCH', category, item, candidateIndex, 'category_validation'); continue;
+      reject('CATEGORY_MISMATCH', canonicalCategory, item, candidateIndex, 'category_validation'); continue;
     }
     if (item.severity != null && !policy.SEVERITIES.has(String(item.severity).toLowerCase())) {
-      reject('INVALID_SEVERITY', category, item, candidateIndex, 'schema_validation'); continue;
+      reject('INVALID_SEVERITY', canonicalCategory, item, candidateIndex, 'schema_validation'); continue;
     }
-    if (Number(item.confidence) < thresholds[item.category]) { reject('LOW_CONFIDENCE', category, item, candidateIndex, 'confidence_validation'); continue; }
+    if (Number(item.confidence) < thresholds[canonicalCategory]) { reject('LOW_CONFIDENCE', canonicalCategory, item, candidateIndex, 'confidence_validation'); continue; }
     const range = canonical.locateQuote(transcript, item.quotedText, Number(item.occurrence));
     if (!range) {
       const anyOccurrence = canonical.locateQuote(transcript, item.quotedText, 0);
-      reject(anyOccurrence ? 'OCCURRENCE_NOT_FOUND' : 'QUOTE_NOT_FOUND', category, item, candidateIndex,
+      reject(anyOccurrence ? 'OCCURRENCE_NOT_FOUND' : 'QUOTE_NOT_FOUND', canonicalCategory, item, candidateIndex,
         anyOccurrence ? 'occurrence_validation' : 'quote_match_validation'); continue;
     }
-    const normalized = canonical.normalizeCorrection({ ...item, startChar: range.start, endChar: range.end },
-      transcript, spans, { groups: legend.map((group) => ({ key: group.category, label: group.label, color: group.color,
-        symbols: group.symbols })) }, 'AI');
-    if (!normalized || (spans.length && !normalized.wordIds.length)) { reject('INVALID_LOCATION', category, item, candidateIndex, 'location_validation'); continue; }
+    const normalized = canonical.normalizeCorrection({ ...canonicalItem, startChar: range.start, endChar: range.end },
+      transcript, spans, legendObject, 'AI');
+    if (!normalized || (spans.length && !normalized.wordIds.length)) { reject('INVALID_LOCATION', canonicalCategory, item, candidateIndex, 'location_validation'); continue; }
     accepted.push(normalized);
-    perCategory[item.category] = (perCategory[item.category] || 0) + 1;
+    perCategory[canonicalCategory] = (perCategory[canonicalCategory] || 0) + 1;
   }
   const diagnostics = {
     responseJsonParsed: true, transcriptHashMatch: true, schemaValidated: true, groundingValidated: true,
@@ -382,7 +389,7 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
     rejectedCorrectionCount: corrections.length - accepted.length, rejectionReasons, thresholds,
     returnedByCategory, acceptedByCategory: Object.fromEntries(Object.keys(returnedByCategory)
       .map((key) => [key, perCategory[key] || 0])), rejectedByCategory, rejectionReasonsByCategory
-    , rejectionDiagnostics
+    , rejectionDiagnostics, categoryRemapCount: categoryRemaps.length, categoryRemaps
   };
   if (corrections.length && !accepted.length) {
     const error = semanticError('SEMANTIC_SCHEMA_INVALID', 'canonical_validation',
@@ -499,6 +506,9 @@ async function analyze(input, dependencies = {}) {
         validated.diagnostics.rejectionReasons[reason] = Number(validated.diagnostics.rejectionReasons[reason] || 0) + Number(count || 0);
       }
       validated.diagnostics.rejectionDiagnostics.push(...(auditValidated.diagnostics.rejectionDiagnostics || []));
+      validated.diagnostics.categoryRemapCount = Number(validated.diagnostics.categoryRemapCount || 0)
+        + Number(auditValidated.diagnostics.categoryRemapCount || 0);
+      validated.diagnostics.categoryRemaps.push(...(auditValidated.diagnostics.categoryRemaps || []));
       for (const category of auditCategories) {
         const count = validated.corrections.filter((item) => item.category === category).length;
         validated.diagnostics.acceptedByCategory[category] = count;

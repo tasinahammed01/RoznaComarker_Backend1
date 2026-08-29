@@ -126,6 +126,21 @@ describe('canonical result state contract', () => {
     expect(state.statistics.content).toBe(0);
   });
 
+  test('partial structural coverage never exposes content or organization zero as authoritative', () => {
+    const state = buildCanonicalResultState({ submission: {
+      correctionStatus: 'partial', semanticStatus: 'partial', correctionSourceHash: 'hash',
+      correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
+      correctionStatistics: { content: 0, organization: 0, vocabulary: 2, grammar: 3, mechanics: 1, total: 6 },
+      semanticMetrics: { coverage: { coverageComplete: false, totalChunks: 3, successfulChunks: 3,
+        failedChunks: 0, structuralPassStatus: 'failed', categoryCoverageComplete: {
+          CONTENT: false, ORGANIZATION: false, VOCABULARY: true, GRAMMAR: true, MECHANICS: true
+        } } }
+    } });
+    expect(state).toMatchObject({ statisticsCompleteness: 'partial', coverageComplete: false,
+      categoryAvailability: { content: 'failed', organization: 'failed', vocabulary: 'available',
+        grammar: 'available', mechanics: 'available' } });
+  });
+
   test('AI-only corrections provide all categories when completed', () => {
     const state = buildCanonicalResultState({ submission: { correctionStatus: 'completed', semanticStatus: 'completed',
       correctionSourceHash: 'hash', correctionVersion: 'v',

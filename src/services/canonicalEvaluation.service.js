@@ -54,6 +54,28 @@ function isEvaluationFresh(record, { sourceHash, rubricHash, policyHash }) {
     && ['completed', 'partial'].includes(record.evaluationStatus));
 }
 
+function correctionCoverageState(submission = {}) {
+  const coverage = submission.semanticMetrics?.coverage || {};
+  const semanticStatus = String(submission.semanticStatus || '');
+  const coverageComplete = coverage.coverageComplete === true;
+  const failedChunks = Number(coverage.failedChunks);
+  const structuralPassStatus = String(coverage.structuralPassStatus || '');
+  const requiredStructuralPassSucceeded = structuralPassStatus === 'completed'
+    || structuralPassStatus === 'not_required';
+  const correctionCoverageComplete = semanticStatus === 'completed'
+    && coverageComplete
+    && Number.isFinite(failedChunks)
+    && failedChunks === 0
+    && requiredStructuralPassSucceeded;
+  const correctionCountsAuthoritativeForScoring = correctionCoverageComplete;
+  if (!correctionCoverageComplete && correctionCountsAuthoritativeForScoring !== false) {
+    throw new Error('Incomplete correction coverage cannot be authoritative for scoring');
+  }
+  return Object.freeze({ semanticStatus, coverageComplete, failedChunks, structuralPassStatus,
+    requiredStructuralPassSucceeded, correctionCoverageComplete,
+    correctionCountsAuthoritativeForScoring });
+}
+
 function supersededEvaluationError() {
   const error = new Error('Canonical evaluation job was superseded');
   error.code = 'ANALYSIS_JOB_SUPERSEDED';
@@ -228,7 +250,9 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
   const totalStartedAt = Date.now();
   const sourceHash = submission.correctionSourceHash;
   const correctionsAvailable = submission.semanticStatus !== 'failed' && submission.correctionStatus === 'completed';
-  if (!sourceHash || (!correctionsAvailable && !allowDegradedCorrections)) return { status: 'superseded' };
+  const coverageState = correctionCoverageState(submission);
+  const correctionCountsAuthoritativeForScoring = coverageState.correctionCountsAuthoritativeForScoring;
+  if (!sourceHash || (!correctionCountsAuthoritativeForScoring && !allowDegradedCorrections)) return { status: 'superseded' };
   const classDoc = await Class.findById(submission.class).select('teacher').lean();
   const teacher = classDoc?.teacher ? await User.findById(classDoc.teacher).select('aiConfig role').lean() : null;
   const accountingEnabled = teacher?.role === 'teacher';
@@ -330,6 +354,8 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
     const wordCount = countWords(transcript);
     const corrections = correctionsAllowedByPolicy(submission.writingCorrections || [], policy);
     const reusableBuiltInScores = Boolean(persistedFeedback && !persistedFeedback.overriddenByTeacher
+      && submission.evaluationSourceHash === sourceHash
+      && ['completed', 'partial'].includes(submission.evaluationStatus)
       && persistedFeedback.evaluationSource !== 'provisional'
       && persistedFeedback.evaluationSourceHash === sourceHash
       && persistedFeedback.evaluationPolicyHash === policyHash
@@ -365,7 +391,7 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
       CONTENT: semantic.categories.CONTENT,
       ORGANIZATION: semantic.categories.ORGANIZATION,
       VOCABULARY: semantic.categories.VOCABULARY,
-      GRAMMAR: correctionsAvailable ? scoreGrammar({ corrections, wordCount, strictness: policy.strictness,
+      GRAMMAR: correctionCountsAuthoritativeForScoring ? scoreGrammar({ corrections, wordCount, strictness: policy.strictness,
         enabled: policy.checks.grammarSpelling }) : {
         ...semantic.categories.GRAMMAR,
         score: policy.checks.grammarSpelling ? Math.round(Number(semantic.categories.GRAMMAR.score) * 1.25 * 10) / 10 : 25,
@@ -373,7 +399,7 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
         comment: policy.checks.grammarSpelling ? semantic.categories.GRAMMAR.comment
           : 'Grammar scoring is disabled by the teacher evaluation policy.'
       },
-      MECHANICS: correctionsAvailable ? scoreMechanics({ corrections, wordCount, strictness: policy.strictness,
+      MECHANICS: correctionCountsAuthoritativeForScoring ? scoreMechanics({ corrections, wordCount, strictness: policy.strictness,
         enabled: policy.checks.grammarSpelling }) : {
         ...semantic.categories.MECHANICS,
         score: policy.checks.grammarSpelling ? Math.round(Number(semantic.categories.MECHANICS.score) * 0.5 * 10) / 10 : 10,
@@ -393,6 +419,16 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
       ? customRubricScores.overallScore
       : Object.values(rubricScores).reduce((sum, item) => sum + item.score, 0);
     const grade = gradeFromOverallScore(overallScore);
+    const scoringSourceByCategory = Object.freeze({
+      CONTENT: reusableBuiltInScores ? 'reused_canonical_evaluation' : 'prepared_rubric',
+      ORGANIZATION: reusableBuiltInScores ? 'reused_canonical_evaluation' : 'prepared_rubric',
+      VOCABULARY: reusableBuiltInScores ? 'reused_canonical_evaluation' : 'prepared_rubric',
+      GRAMMAR: reusableBuiltInScores ? 'reused_canonical_evaluation'
+        : correctionCountsAuthoritativeForScoring ? 'canonical_corrections' : 'prepared_rubric',
+      MECHANICS: reusableBuiltInScores ? 'reused_canonical_evaluation'
+        : correctionCountsAuthoritativeForScoring ? 'canonical_corrections' : 'prepared_rubric',
+      PRESENTATION: reusableBuiltInScores ? 'reused_canonical_evaluation' : 'deterministic_presentation'
+    });
     const scoringAuditRecord = {
       version: SCORING_AUDIT_VERSION,
       policy: { ...policy, scoringPolicyVersion: SCORING_POLICY_VERSION },
@@ -402,7 +438,13 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
       builtInScoresReused: reusableBuiltInScores,
       overallMethod: customRubricScores ? 'custom_rubric_weighted_total' : 'fixed_six_category_sum',
       correctionsAvailable,
-      languageScoringMode: correctionsAvailable ? 'canonical_corrections' : 'transcript_semantic_fallback',
+      semanticStatus: coverageState.semanticStatus,
+      coverageComplete: coverageState.coverageComplete,
+      correctionCoverageComplete: coverageState.correctionCoverageComplete,
+      correctionCountsAuthoritativeForScoring,
+      scoringSourceByCategory,
+      languageScoringMode: correctionCountsAuthoritativeForScoring
+        ? 'canonical_corrections' : 'transcript_semantic_fallback',
       ...(customRubricScores ? {
         customRubric: {
           overallScore: customRubricScores.overallScore,
@@ -415,13 +457,23 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
           }))
         }
       } : {}),
-      categories: [
+      categories: correctionCountsAuthoritativeForScoring ? [
         scoringAudit({ corrections, category: 'GRAMMAR', maxScore: RUBRIC_MAX.GRAMMAR,
           wordCount, strictness: policy.strictness }),
         scoringAudit({ corrections, category: 'MECHANICS', maxScore: RUBRIC_MAX.MECHANICS,
           wordCount, strictness: policy.strictness })
+      ] : [
+        { category: 'GRAMMAR', finalScore: rubricScores.GRAMMAR.score,
+          scoringSource: 'prepared_rubric', correctionCountsAuthoritativeForScoring: false },
+        { category: 'MECHANICS', finalScore: rubricScores.MECHANICS.score,
+          scoringSource: 'prepared_rubric', correctionCountsAuthoritativeForScoring: false }
       ]
     };
+    logger.info({ message: 'Canonical evaluation scoring authority', submissionId: String(submission._id),
+      sourceHash, semanticStatus: coverageState.semanticStatus,
+      coverageComplete: coverageState.coverageComplete,
+      correctionCoverageComplete: coverageState.correctionCoverageComplete,
+      correctionCountsAuthoritativeForScoring, scoringSourceByCategory });
     const detailedFeedbackStartedAt = Date.now();
     const detailedFeedback = detailedFeedbackService.buildDeterministicDetailedFeedback({ corrections,
       statistics: stats, categoryScores: rubricScores, sourceHash, semanticAssessment: semantic });
@@ -588,5 +640,6 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
 }
 
 module.exports = { VERSION, stable, hashRubric, hashBuiltInContext, synchronizedRubricScores, hasValidRubricScores,
+  correctionCoverageState,
   isEvaluationFresh, preparedRubricDiagnostics, validatePreparedRubric,
   prepareRubricAssessment, persistProvisionalScore, generate };

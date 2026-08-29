@@ -13,6 +13,7 @@ process.env.ASSESSMENT_AI_FALLBACK_3_MODEL = '';
 process.env.ASSESSMENT_AI_PRIMARY_RETRIES = '1';
 process.env.ASSESSMENT_AI_FALLBACK_RETRIES = '0';
 process.env.ASSESSMENT_AI_RETRY_DELAY_MS = '0';
+process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || 'test-openrouter-key';
 
 let mockSemanticMode = 'success';
 let mockOcrGate = Promise.resolve();
@@ -122,9 +123,10 @@ function rubricFixtureFromPrompt(prompt) {
   const sourceHash = String(prompt.match(/^sourceHash=(.+)$/mu)?.[1] || '');
   const transcriptEvidence = lineJson(prompt, 'evidenceCatalog=');
   const evidence = Object.fromEntries([
-    ['CONTENT', 'first test paragraph'], ['ORGANIZATION', 'second test paragraph'], ['VOCABULARY', 'vague wording']
+    ['CONTENT', 'first test paragraph'], ['ORGANIZATION', 'second test paragraph'], ['VOCABULARY', 'vague wording'],
+    ['GRAMMAR', 'This are'], ['MECHANICS', 'teh error']
   ].map(([category, quote]) => [category, transcriptEvidence.find((item) => item.quotedText.includes(quote))]));
-  const categories = Object.fromEntries(['CONTENT', 'ORGANIZATION', 'VOCABULARY'].map((category, index) => {
+  const categories = Object.fromEntries(['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'].map((category, index) => {
     return [category, {
       score: 18 - index,
       maxScore: 20,
@@ -199,7 +201,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
       }
       if (String(url).includes('/chat/completions')) {
         const prompt = rubricPromptFromRequest(options);
-        if (prompt.includes('schema=semantic-corrections-v11-provider-compatible-symbol-coverage')) {
+        if (prompt.includes('schema=semantic-corrections-v12-code-authoritative')) {
           correctionProviderRequestCount += 1;
           lifecycleEvents.push('correction-started');
           return { ok: true, status: 200, headers: { get: () => 'application/json' },
@@ -297,7 +299,8 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(pending.detailedFeedback).toBeNull();
     expect(pending).toMatchObject({ score: null, overallScore: null, rubricScores: null });
     releaseOcr();
-    const processingDoc = await waitFor(successId, (doc) => doc.evaluationStatus === 'processing');
+    const processingDoc = await waitFor(successId, (doc) => doc.evaluationStatus === 'processing'
+      && doc.semanticStatus === 'completed');
     expect(processingDoc.semanticStatus).toBe('completed');
     expect(processingDoc.correctionStatus).toBe('completed');
     expect(processingDoc.writingCorrections).toHaveLength(5);
@@ -364,21 +367,25 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
       studentId: failureStudent._id, teacherId: teacher._id, evaluationStatus: 'pending',
       evaluationSource: 'deterministic_fallback', overallScore: 0, grade: 'F', overriddenByTeacher: false });
     releaseFailureOcr();
-    await waitFor(failureId, (doc) => doc.semanticStatus === 'failed');
+    await waitFor(failureId, (doc) => doc.semanticStatus === 'failed' && doc.evaluationStatus === 'completed');
     const failedStudent = await getResult(failureId, failureToken);
     const failedTeacher = await getResult(failureId, teacherToken);
     expect(canonicalFields(failedStudent)).toEqual(canonicalFields(failedTeacher));
-    expect(failedStudent).toMatchObject({ submissionId: failureId, score: null, rubricScores: null, evaluationStatus: 'blocked', detailedFeedbackStatus: 'blocked', statisticsCompleteness: 'none', manualRetryAllowed: true, automaticPollingAllowed: false });
+    expect(failedStudent).toMatchObject({ submissionId: failureId, score: expect.any(Number),
+      rubricScores: expect.any(Object), evaluationStatus: 'completed', detailedFeedbackStatus: 'completed',
+      statisticsCompleteness: 'none', manualRetryAllowed: true, automaticPollingAllowed: false });
     expect(failedStudent.correctionStatistics).toMatchObject({ grammar: 0, mechanics: 0 });
     expect(failedStudent.score).not.toBe(77);
     expect(failedStudent.overallScore).not.toBe(77);
     expect(failedStudent.score).not.toBe(successStudent.score);
     const failedPersistedFeedback = await SubmissionFeedback.findOne({ submissionId: failureId }).lean();
-    expect(failedPersistedFeedback).toMatchObject({ evaluationStatus: 'blocked',
-      overallScore: null, grade: null, rubricScores: null, correctionStats: null, overriddenByTeacher: false });
-    // In AI-only pipeline, when corrections fail completely, PDF generation returns 409
-    const failedPdfResponse = await request(app).get(`/api/pdf/download/${failureId}`).set('Authorization', `Bearer ${teacherToken}`);
-    expect(failedPdfResponse.status).toBe(409);
+    expect(failedPersistedFeedback).toMatchObject({ evaluationStatus: 'completed',
+      overallScore: expect.any(Number), grade: expect.any(String), rubricScores: expect.any(Object),
+      correctionStats: expect.objectContaining({ total: 0 }), overriddenByTeacher: false,
+      scoringAudit: expect.objectContaining({ correctionCountsAuthoritativeForScoring: false,
+        scoringSourceByCategory: expect.objectContaining({ GRAMMAR: 'prepared_rubric', MECHANICS: 'prepared_rubric' }) }) });
+    const failedPdf = await getPdf(failureId, teacherToken);
+    expect(failedPdf.result.overallScore).toBe(failedStudent.score);
 
     mockSemanticMode = 'success';
     const retry = await retryCorrections(failureId, teacherToken);
@@ -398,10 +405,10 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(retriedPdf.result.overallScore).toBe(retriedStudent.score);
     expect(await SubmissionFeedback.countDocuments({ submissionId: failureId })).toBe(1);
     expect(languageToolRequestCount).toBe(0); // AI-only pipeline does not call LanguageTool
-    expect(rubricProviderRequestCount).toBe(2);
+    expect(rubricProviderRequestCount).toBe(3);
     // Both rubric evaluations succeed on the first GPT-4.1 request; no fallback
     // or non-OpenRouter assessment request is needed.
-    expect(assessmentPrimaryRequestCount).toBe(2);
+    expect(assessmentPrimaryRequestCount).toBe(3);
     expect(rubricProviderRequestCount).toBe(assessmentPrimaryRequestCount);
     expect(correctionProviderRequestCount).toBe(4);
     expect(global.fetch).toHaveBeenCalledTimes(

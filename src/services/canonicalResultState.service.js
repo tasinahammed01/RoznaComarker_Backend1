@@ -42,9 +42,17 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
   const semanticFailed = !layoutCurrent || submission.semanticStatus === 'failed'
     || (!submission.semanticStatus && ['partial', 'failed', 'stale'].includes(correctionStatus));
   const statistics = layoutCurrent ? (submission.correctionStatistics || null) : null;
+  const semanticCoverage = submission.semanticMetrics?.coverage || null;
+  const categoryCoverage = semanticCoverage?.categoryCoverageComplete || null;
   const categoryAvailability = {};
-  for (const category of SEMANTIC_CATEGORIES) categoryAvailability[category] = semanticComplete ? 'available'
-    : semanticPartial ? 'partial' : semanticFailed ? 'failed' : 'pending';
+  for (const category of SEMANTIC_CATEGORIES) {
+    const coverageComplete = categoryCoverage?.[category]
+      ?? categoryCoverage?.[category.toUpperCase()];
+    categoryAvailability[category] = semanticComplete ? 'available'
+      : semanticPartial && coverageComplete === true ? 'available'
+        : semanticPartial && coverageComplete === false ? 'failed'
+          : semanticPartial ? 'partial' : semanticFailed ? 'failed' : 'pending';
+  }
   const canonicalComplete = semanticComplete && correctionStatus === 'completed';
   const anyCategoryAvailable = semanticComplete || semanticPartial;
 
@@ -180,6 +188,8 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
     semanticMaxAttempts: Number(submission.semanticMaxAttempts || 0),
     semanticNextRetryAt: submission.semanticNextRetryAt || null,
     semanticErrorCode,
+    semanticCoverage,
+    coverageComplete: semanticCoverage?.coverageComplete === true,
     retryable: manualRetryAllowed,
     score: evaluationCurrent && Number.isFinite(Number(feedback?.overallScore)) ? Number(feedback.overallScore) : null,
     grade: evaluationCurrent && typeof feedback?.grade === 'string' ? feedback.grade : null,

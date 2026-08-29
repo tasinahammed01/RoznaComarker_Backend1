@@ -4,6 +4,7 @@ const { connectInMemoryMongo, disconnectInMemoryMongo, clearDatabase } = require
 const Plan = require('../src/models/Plan'); const User = require('../src/models/user.model');
 const Submission = require('../src/models/Submission'); const SubmissionFeedback = require('../src/models/SubmissionFeedback');
 const CreditTransaction = require('../src/models/CreditTransaction'); const AssessmentRun = require('../src/models/AssessmentRun');
+const AdaptivePracticeSession = require('../src/models/AdaptivePracticeSession');
 const adaptive = require('../src/services/adaptivePractice.service'); const report = require('../src/services/submissionFeedbackReport.service');
 const completion = require('../src/services/assessmentCompletion.service');
 
@@ -24,27 +25,35 @@ beforeEach(async () => {
 });
 
 test('all required components transition run to complete before exactly one debit', async () => {
-  jest.spyOn(adaptive, 'generateSession').mockResolvedValue({ state: 'ready' });
+  const generate = jest.spyOn(adaptive, 'generateSession');
   await completion.start({ runId: 'run-complete', submission, teacherId: teacher._id, sourceHash: 'source-1' });
+  await completion.complete({ runId: 'run-complete', submissionId: submission._id, teacherId: teacher._id, sourceHash: 'source-1' });
   await completion.complete({ runId: 'run-complete', submissionId: submission._id, teacherId: teacher._id, sourceHash: 'source-1' });
   const run = await AssessmentRun.findOne({ runId: 'run-complete' }).lean();
   expect(run).toMatchObject({ status: 'complete', components: { transcription: 'complete', issueDetection: 'complete',
-    evaluation: 'complete', detailedFeedback: 'complete', report: 'complete', adaptiveLearning: 'complete' } });
+    evaluation: 'complete', detailedFeedback: 'complete', report: 'complete', adaptiveLearning: 'not_required' },
+  adaptiveState: 'not_generated' });
+  expect(generate).not.toHaveBeenCalled();
+  expect(await AdaptivePracticeSession.countDocuments()).toBe(0);
   expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT', status: 'committed' })).toBe(1);
 });
 
-test('Adaptive failure leaves the assessment failed and consumes no credit', async () => {
-  jest.spyOn(adaptive, 'generateSession').mockRejectedValue(new Error('provider failed'));
-  await expect(completion.complete({ runId: 'run-adaptive-failed', submissionId: submission._id,
-    teacherId: teacher._id, sourceHash: 'source-1' })).rejects.toMatchObject({ code: 'ASSESSMENT_COMPLETION_FAILED' });
-  expect(await AssessmentRun.findOne({ runId: 'run-adaptive-failed' })).toMatchObject({ status: 'failed' });
-  expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT' })).toBe(0);
+test('assessment completion does not invoke Adaptive Practice even if its generator would fail', async () => {
+  const generate = jest.spyOn(adaptive, 'generateSession').mockRejectedValue(new Error('provider failed'));
+  await completion.complete({ runId: 'run-adaptive-independent', submissionId: submission._id,
+    teacherId: teacher._id, sourceHash: 'source-1' });
+  expect(await AssessmentRun.findOne({ runId: 'run-adaptive-independent' })).toMatchObject({
+    status: 'complete', adaptiveState: 'not_generated', components: { adaptiveLearning: 'not_required' }
+  });
+  expect(generate).not.toHaveBeenCalled();
+  expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT', status: 'committed' })).toBe(1);
 });
 
 test('report preparation failure leaves the assessment failed and consumes no credit', async () => {
   report.buildPersistedSubmissionFeedbackReport.mockRejectedValueOnce(new Error('report failed'));
-  jest.spyOn(adaptive, 'generateSession').mockResolvedValue({ state: 'ready' });
+  const generate = jest.spyOn(adaptive, 'generateSession');
   await expect(completion.complete({ runId: 'run-report-failed', submissionId: submission._id,
     teacherId: teacher._id, sourceHash: 'source-1' })).rejects.toMatchObject({ code: 'ASSESSMENT_COMPLETION_FAILED' });
   expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT' })).toBe(0);
+  expect(generate).not.toHaveBeenCalled();
 });

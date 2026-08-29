@@ -222,6 +222,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const merged = canonical.mergeCanonicalCorrections({ aiCorrections: ai });
   const corrections = merged.corrections;
   const combinedStatistics = canonical.statistics(corrections);
+  const semanticCanonicalFingerprint = canonical.canonicalFingerprint(corrections, hash);
   const canonicalMergeMs = Date.now() - mergeStartedAt;
   const retainedAiIds = new Set(corrections.filter((item) => item.source === 'AI').map((item) => item.id));
   const removedByMerge = ai.filter((item) => !retainedAiIds.has(item.id));
@@ -263,6 +264,11 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const persistedSemanticMetrics = { ...gatewayMetrics, semanticQueueWaitMs: null, semanticValidationMs, semanticMappingMs,
     validationDiagnostics: semanticRun?.diagnostics || semanticError?.validationDiagnostics || null,
     canonicalMergeMs, mergeDiagnostics: merged.diagnostics,
+    coverage: semanticRun?.coverage || { complete: false, coverageComplete: false,
+      totalChunks: 0, successfulChunks: 0, failedChunks: 0, structuralPassStatus: 'failed',
+      sourceHashMatches: false, expectedTextRangesCovered: false, finalMergeCompleted: true,
+      categoryCoverageComplete: { CONTENT: false, ORGANIZATION: false, VOCABULARY: false,
+        GRAMMAR: false, MECHANICS: false } },
     rawCorrectionCount: semanticReturnedCount, acceptedCorrectionCount: ai.length - rejectionReasons.DUPLICATE_OR_CONFLICT,
     rejectedCorrectionCount: Object.values(rejectionReasons).reduce((sum, count) => sum + count, 0), rejectionReasons,
     returnedByCategory, acceptedByCategory: acceptedBeforeMergeByCategory, rejectedByCategory,
@@ -274,6 +280,11 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     incompleteReviewCategories: Array.isArray(terminalValidation.incompleteReviewCategories)
       ? terminalValidation.incompleteReviewCategories : [],
     retainedAfterMergeByCategory, removedDuringMergeByCategory, persistedByCategory: retainedAfterMergeByCategory,
+    canonicalCounts: combinedStatistics,
+    categoryRemapCount: Number(terminalValidation.categoryRemapCount || 0),
+    duplicateCount: Number(merged.diagnostics?.duplicateCount || 0),
+    conflictCount: Number(merged.diagnostics?.conflictCount || 0),
+    semanticCanonicalFingerprint,
     ...rejectionStageCounts };
   const finalWrite = await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
     writingCorrections: corrections, correctionStatistics: combinedStatistics, correctionSourceHash: hash,
@@ -318,6 +329,17 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     returnedByCategory, acceptedByCategory: acceptedBeforeMergeByCategory, rejectedByCategory,
     rejectionReasonsByCategory: persistedSemanticMetrics.rejectionReasonsByCategory,
     retainedAfterMergeByCategory, removedDuringMergeByCategory, mergeDiagnostics: merged.diagnostics,
+    semanticStatus: semanticError ? 'failed' : semanticRun?.status || 'completed',
+    coverageComplete: semanticRun?.coverage?.coverageComplete === true,
+    totalChunks: Number(semanticRun?.coverage?.totalChunks || 0),
+    successfulChunks: Number(semanticRun?.coverage?.successfulChunks || 0),
+    failedChunks: Number(semanticRun?.coverage?.failedChunks || 0),
+    structuralPassStatus: semanticRun?.coverage?.structuralPassStatus || 'failed',
+    canonicalCounts: combinedStatistics,
+    categoryRemapCount: persistedSemanticMetrics.categoryRemapCount,
+    duplicateCount: persistedSemanticMetrics.duplicateCount,
+    conflictCount: persistedSemanticMetrics.conflictCount,
+    semanticCanonicalFingerprint,
     durationMs: semanticAiMs });
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'finalCorrectionsPersisted',
     aiOnlyCount: ai.length, totalCount: corrections.length });
@@ -332,8 +354,13 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
       preparedRubricProvider: preparedRubric.value?.semantic?.provider || null,
       preparedRubricModel: preparedRubric.value?.semantic?.model || null });
     const refreshed = await doc.constructor.findById(doc._id);
+    const correctionCoverageComplete = !semanticError
+      && semanticRun?.status === 'completed'
+      && semanticRun?.coverage?.coverageComplete === true
+      && Number(semanticRun?.coverage?.failedChunks) === 0
+      && ['completed', 'not_required'].includes(semanticRun?.coverage?.structuralPassStatus);
     const evaluationResult = refreshed ? await canonicalEvaluation.generate({ submission: refreshed, assignment,
-      prelockedJobId: jobId, allowDegradedCorrections: Boolean(semanticError || semanticRun?.status === 'partial'),
+      prelockedJobId: jobId, allowDegradedCorrections: !correctionCoverageComplete,
       preparedRubricRequired: true,
       preparedRubricAssessment: preparedRubric.status === 'fulfilled' ? preparedRubric.value : { error: preparedRubric.reason } }) : null;
     evaluationMs = Date.now() - evaluationStartedAt;
