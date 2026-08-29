@@ -272,6 +272,18 @@ describe('global AI gateway', () => {
     expect(() => gateway.getAIConfig(env({ AI_PRIMARY_RETRIES: '3' }))).toThrow(/invalid/i);
   });
 
+  test('zero assessment retries still performs one primary attempt and one configured fallback attempt', async () => {
+    const assessmentEnv = env({ ASSESSMENT_AI_PRIMARY_PROVIDER: 'google', ASSESSMENT_AI_PRIMARY_MODEL: 'primary-model',
+      ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter', ASSESSMENT_AI_FALLBACK_1_MODEL: 'fallback-one',
+      ASSESSMENT_AI_PRIMARY_RETRIES: '0', ASSESSMENT_AI_FALLBACK_RETRIES: '0' });
+    const config = gateway.getAssessmentAIConfig(assessmentEnv);
+    const fetchImpl = jest.fn().mockResolvedValueOnce(response(503, {})).mockResolvedValueOnce(router('fallback result'));
+    const result = await gateway.generate({ messages: [{ role: 'user', content: 'x' }], env: assessmentEnv,
+      config, fetchImpl, sleepFn: jest.fn(async () => {}) });
+    expect(result).toMatchObject({ content: 'fallback result', attemptCount: 2, fallbackUsed: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   test('primary 503 retries once then succeeds without fallback', async () => {
     const fetchImpl = jest.fn().mockResolvedValueOnce(response(503, {}))
       .mockResolvedValueOnce(google('primary recovered'));

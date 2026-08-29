@@ -91,13 +91,13 @@ async function providerAttempt(options) {
 
 async function runSemanticCompletion({ messages, config = getSemanticAIConfig(), fetchImpl = global.fetch,
   env = process.env, now = Date.now, sleepFn, validate, feature = 'semantic', responseSchema,
-  schemaName, metadata, onAttempt, onRetry } = {}) {
+  schemaName, metadata, onAttempt, onRetry, deadlineAt = null } = {}) {
   const chain = config.chain || gateway.getAssessmentAIConfig(env).chain;
   const isRubricAssessment = feature === 'semantic' || feature === 'semantic_rubric_assessment';
   const result = await gateway.generate({ feature, messages, maxOutputTokens: config.maxOutputTokens,
     temperature: ASSESSMENT_TEMPERATURE, responseFormat: ASSESSMENT_RESPONSE_FORMAT,
     responseSchema, schemaName, googleThinkingLevel: ASSESSMENT_THINKING_LEVEL,
-    validate, metadata, fetchImpl, env, now, sleepFn, onAttempt, onRetry,
+    validate, metadata, fetchImpl, env, now, sleepFn, onAttempt, onRetry, deadlineAt,
     // Correction detection also uses this compatibility facade. Keep its
     // established retry policy unchanged; these classifications belong only
     // to the canonical rubric-assessment stage.

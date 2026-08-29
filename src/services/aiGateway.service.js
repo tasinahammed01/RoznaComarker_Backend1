@@ -385,7 +385,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
   responseFormat = 'text', responseSchema, schemaName, validate, metadata = {}, googleThinkingLevel,
   env = process.env, fetchImpl = global.fetch,
   now = Date.now, sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  randomFn = Math.random, config = getAIConfig(env), onAttempt, onRetry,
+  randomFn = Math.random, config = getAIConfig(env), onAttempt, onRetry, deadlineAt = null,
   retryableSameModelCodes = [], terminalCodes = [] } = {}) {
   if (!Array.isArray(messages) || typeof fetchImpl !== 'function') {
     throw new TypeError('AI gateway requires messages and fetch.');
@@ -395,7 +395,9 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
     ? Object.fromEntries(Object.entries(metadata).filter(([key]) =>
       /^(?:submissionId|assignmentId|jobId|ocrJobId|sourceHash|caller|purpose|requestId)$/u.test(key)))
     : {};
-  const deadline = started + config.totalBudgetMs;
+  const sharedDeadline = Number(deadlineAt);
+  const deadline = Number.isFinite(sharedDeadline) && sharedDeadline > started
+    ? Math.min(started + config.totalBudgetMs, sharedDeadline) : started + config.totalBudgetMs;
   const attempts = [];
   const legacyRetries = Number.isInteger(config.retriesPerModel) ? config.retriesPerModel : 0;
   const retriesFor = (entry) => entry.fallbackIndex === 0

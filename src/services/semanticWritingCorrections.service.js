@@ -29,8 +29,9 @@ function compactAssignment(assignment = {}) {
     rubric: assignment?.rubric || assignment?.rubrics || null });
 }
 
-function compactSemanticLegend(legend = defaultLegend()) {
-  return (legend.groups || []).filter((group) => SEMANTIC_CATEGORIES.has(group?.key)).map((group) => ({
+function compactSemanticLegend(legend = defaultLegend(), categories = CORRECTION_CATEGORIES) {
+  const selected = new Set(categories);
+  return (legend.groups || []).filter((group) => SEMANTIC_CATEGORIES.has(group?.key) && selected.has(group.key)).map((group) => ({
     category: group.key, label: group.label, color: group.color,
     symbols: (group.symbols || []).map((item) => ({ symbol: item.symbol, label: item.label,
       description: item.description, rule: item.description, defaultDeduction: item.defaultDeduction }))
@@ -50,46 +51,49 @@ function compactPageManifest(pages = []) {
     startChar: Number(page?.startChar || 0), endChar: Number(page?.endChar || 0) }));
 }
 
-function buildSemanticRequest({ transcript, assignment = {}, legend: resolvedLegend = defaultLegend(), transcriptHash, pageManifest = [] }) {
+function buildSemanticRequest({ transcript, assignment = {}, legend: resolvedLegend = defaultLegend(), transcriptHash, pageManifest = [],
+  categories = CORRECTION_CATEGORIES, analysisMode = 'document' }) {
   if (!transcriptHash) throw new Error('Semantic analysis requires a transcript hash');
-  const legend = compactSemanticLegend(resolvedLegend);
+  const selectedCategories = categories.filter((category) => CORRECTION_CATEGORIES.includes(category));
+  const legend = compactSemanticLegend(resolvedLegend, selectedCategories);
   const context = compactAssignment(assignment);
   const pages = compactPageManifest(pageManifest);
+  const scopeInstruction = analysisMode === 'local_chunk'
+    ? 'Analyze this bounded overlapping excerpt sentence by sentence. Review every requested category. Treat excerpt edges as incomplete context and do not infer a missing introduction or conclusion from an excerpt boundary.'
+    : analysisMode === 'document_structure'
+      ? 'Perform a compact whole-document structural review of only the requested categories. Focus on weaknesses that require global context and avoid duplicating localized sentence-level issues.'
+      : 'Analyze the entire canonical transcript independently and sentence by sentence, from the first page through the final page.';
   const prompt = [
     `schema=${SEMANTIC_SCHEMA_VERSION};prompt=${SEMANTIC_PROMPT_VERSION}`,
     `transcriptHash=${transcriptHash}`,
     `pages=${JSON.stringify(pages)}`,
     `assignment=${JSON.stringify(context)}`,
     `legend=${JSON.stringify(legend)}`,
-    'Your task is localized error detection, not general essay evaluation. Analyze the entire canonical transcript independently and sentence by sentence, from the first page through the final page. No external grammar checker is available. Do not stop after finding several examples or many findings in one category. Complete all five category passes before returning.',
-    'Return the provider-native category-structured object defined by the JSON Schema. Review every required category exactly once and set reviewed=true. Do not return findingCount; the server calculates it. If a category has no corrections, give a meaningful non-empty noFindingReason. For a category with corrections, return noFindingReason="". Zero findings are permitted only after that category has been fully inspected across the complete transcript. Do not return zero merely because the essay is understandable, and do not invent findings merely to avoid zero.',
-    'For every category, perform a separate complete-transcript review of every supplied legend symbol and return the complete symbol list in reviewedSymbols. reviewedSymbols reports review coverage only: it does not mean an error was found, does not affect scoring or statistics, and must never cause a correction to be created. Use each authoritative legend label and description supplied above.',
+    `analysisMode=${analysisMode};categories=${selectedCategories.join(',')}`,
+    `Your task is error detection, not general essay evaluation. ${scopeInstruction} No external grammar checker is available. Do not stop after finding several examples.`,
+    'Return the provider-native category-structured object defined by the JSON Schema. Review every requested category exactly once and set reviewed=true. Do not return findingCount; the server calculates it. If a category has no corrections, give a meaningful non-empty noFindingReason. For a category with corrections, return noFindingReason="".',
+    'For every requested category, review every supplied legend symbol across the supplied text and return the complete symbol list in reviewedSymbols. reviewedSymbols reports review coverage only: it does not mean an error was found, does not affect scoring or statistics, and must never cause a correction to be created. Use each authoritative legend label and description supplied above.',
     'For each candidate, identify the primary nature of the problem and use the narrowest correct symbol in exactly one primary category. A passage may support multiple genuinely different findings, but duplicates are prohibited. Do not classify the same problem as both Grammar and Vocabulary. Every correction symbol must belong to its containing category object.',
-    'Perform five explicit full-transcript passes and return every material defensible finding within the supplied safe limits, not merely representative examples.',
-    'Pass 1 CONTENT: REL, DEV, TA, CL, SD. Complete this pass independently even if many Grammar findings already exist. REL=relevance to task; DEV=underdeveloped relevant claim or idea; TA=specific task requirement not adequately addressed when assignment context supports it; CL=underlying idea unclear beyond grammar alone; SD=important claim lacks supporting detail, example, or explanation. Ground every finding in a specific phrase, sentence, or bounded passage. Do not force Content findings.',
-    'Pass 2 ORGANIZATION: COH, CO, PU, TS, CONC. Complete this pass independently even if many Grammar findings already exist. COH=weak logical progression/coherence; CO=missing or misused transition/cohesive device; PU=poor paragraph unity; TS=weak, missing, or unclear topic sentence anchored to its paragraph; CONC=weak, incomplete, repetitive, or unsynthesized conclusion anchored to the actual ending. Inspect sequencing, introduction/conclusion structure, and repetitive passages that harm flow. Do not force Organization findings.',
-    'Pass 3 GRAMMAR: T, VF, AGR, FRAG, RO, WO, ART, PREP. For Grammar, inspect every finite verb and verb phrase in every sentence. Check subject-verb and singular/plural agreement, modal + base verb, auxiliary + verb form, tense consistency, missing copula or auxiliary, infinitive/gerund construction, articles, prepositions, fragments, run-ons, and word order. Pattern guidance includes plural subject + singular verb, modal + participle, or auxiliary + wrong verb form; never treat these patterns as hard-coded corrections.',
-    'Pass 4 VOCABULARY: WC, WF, REP, FORM, COL. Check incorrect word choice, wrong lexical form, count/non-count misuse, collocation, register, harmful repetition, and semantically inappropriate lexical usage. Grammar is syntax, agreement, tense, auxiliary/verb construction, articles, prepositions, fragments, run-ons, and word order. Vocabulary is lexical choice/form and usage where syntax is not the primary problem. Do not use Grammar as a fallback category for lexical problems. Lexical morphology such as mass/plural noun form belongs to WF; do not use WF for a syntactic verb-form error.',
-    'Pass 5 MECHANICS: SP, P, CAP, SPC, FMT. Punctuation and capitalization always belong here.',
+    'Return every material defensible finding, not merely representative examples.',
+    ...(selectedCategories.includes('CONTENT') ? ['CONTENT: REL, DEV, TA, CL, SD. Ground findings in a specific phrase, sentence, or bounded passage. Do not force findings.'] : []),
+    ...(selectedCategories.includes('ORGANIZATION') ? ['ORGANIZATION: COH, CO, PU, TS, CONC. Inspect progression, paragraph unity, transitions, topic sentences, and the actual ending when whole-document context is supplied.'] : []),
+    ...(selectedCategories.includes('GRAMMAR') ? ['GRAMMAR: T, VF, AGR, FRAG, RO, WO, ART, PREP. Inspect every finite verb and phrase for tense, agreement, verb form, articles, prepositions, fragments, run-ons, and word order.'] : []),
+    ...(selectedCategories.includes('VOCABULARY') ? ['VOCABULARY: WC, WF, REP, FORM, COL. Check word choice/form, countability, collocation, register, repetition, and lexical usage. Do not use Grammar as a fallback for lexical problems.'] : []),
+    ...(selectedCategories.includes('MECHANICS') ? ['MECHANICS: SP, P, CAP, SPC, FMT. Punctuation and capitalization always belong here.'] : []),
     'IMPORTANT: This transcript comes from OCR of handwritten images. Distinguish between student writing errors and likely OCR artifacts. If a token appears suspicious (low confidence, structurally odd layout), avoid confidently penalizing it unless context strongly confirms the student wrote it.',
-    'Use only these boundaries: CONTENT REL=relevance, DEV=underdeveloped relevant idea, TA=task achievement only when assignment context supports it, CL=unclear underlying idea (not grammar), SD=important unsupported claim.',
-    'ORGANIZATION COH=understandable ideas with poor logical progression, CO=cohesive device/transition, PU=paragraph unity, TS=topic sentence, CONC=genuinely weak/missing conclusion across the full canonical submission anchored to exact final text.',
-    'GRAMMAR T=tense, VF=verb form, AGR=subject-verb agreement, FRAG=fragment, RO=run-on, WO=word order, ART=article, PREP=preposition.',
-    'VOCABULARY WC=word choice, WF=word form, REP=harmful repetition, FORM=register/formality, COL=collocation. MECHANICS SP=spelling, P=punctuation, CAP=capitalization, SPC=spacing, FMT=provable formatting.',
-    'Balance attention equally across all five passes. Category examples are boundaries, not quotas: CONTENT may ground an unsupported claim; ORGANIZATION may ground a weak transition or ending; GRAMMAR may ground agreement or verb form; VOCABULARY may ground imprecise choice, word form, repetition, register, or collocation; MECHANICS may ground spelling, punctuation, capitalization, spacing, or formatting. Never match examples mechanically.',
-    'Poor grammar alone is not CONTENT/CL. Do not infer COH when the underlying ideas are not understandable. Do not fill categories or limits.',
+    selectedCategories.length === CORRECTION_CATEGORIES.length
+      ? 'Balance attention across all five passes. The category examples define boundaries, not quotas; never match them mechanically.'
+      : 'Balance attention across all requested category passes. The category examples define boundaries, not quotas; never match them mechanically.',
     'Only genuine, defensible errors supported by the supplied legend. Quote minimum exact canonical OCR evidence; occurrence is zero-based; message<=240. No rewrites, duplicates, praise, styles, invented text, or OCR guesses.',
-    'Never treat a zero-category explanation as proof of quality. Do not claim a clear conclusion unless the authoritative ending supports it. Do not claim Mechanics is clean when spelling or punctuation findings are returned.',
     promptDefinitions(),
     'localized means a specific passage has an identifiable replacement and suggestedText is required.',
     'For localized quotedText, copy the shortest exact erroneous text verbatim from the canonical transcript. Preserve its OCR spelling, case, punctuation, and normalized whitespace. Never put corrected or paraphrased text in quotedText; put that only in suggestedText.',
     'occurrence is the zero-based occurrence of that exact quotedText. If "students use" appears twice and the second is wrong, use occurrence=1. Wrong: quotedText="students uses" when the transcript says "students use".',
     'global is only CONTENT/ORGANIZATION holistic, absence, or structure weakness. It must anchor an exact existing relevant passage (including the ending for a missing conclusion), never invent missing text, and suggestedText may be empty. Examples include a vague thesis, inadequately developed main claim, or missing conclusion.',
-    'Use legend pairs and be concise. Independently justify every finding from transcript context.',
     `transcript=${transcript}`
   ].join('\n');
   const messages = [
-    { role: 'system', content: 'You are a strict academic writing correction examiner. Your task is localized error detection, not general essay evaluation. Inspect the complete student transcript sentence by sentence from the first page through the final page. Identify every clear, defensible writing error supported by the supplied correction legend. Do not stop after finding several examples. Do not assume a category is clean without checking every sentence. Do not invent errors merely to populate categories. Return exactly one JSON object matching the supplied schema.' },
+    { role: 'system', content: 'You are a strict academic writing correction examiner for localized error detection, not general essay evaluation. Inspect sentence by sentence from the first page through the final page. Do not stop after finding several examples. Return one schema-valid JSON object.' },
     { role: 'user', content: prompt }
   ];
   const serializedLength = JSON.stringify(messages).length;
@@ -121,8 +125,6 @@ function parseJson(value, expectedHash, attemptMeta = {}, expectedCategories = C
     categoryReviews.push({ category, reviewed: true, reviewedSymbols: [...review.reviewedSymbols], noFindingReason: review.noFindingReason });
     corrections.push(...review.corrections.map((item) => ({ ...item, category })));
   }
-  if (corrections.length > policy.MAX_AI_CORRECTIONS)
-    throw semanticError('SEMANTIC_SCHEMA_INVALID', 'correction_limit', 'Semantic analysis returned too many corrections');
   const categoryReviewNormalizations = validateCategoryReviews(categoryReviews, corrections, attemptMeta, expectedCategories);
   return { transcriptHash: parsed.transcriptHash, corrections, categoryReviews,
     symbolReviewCoverage,
@@ -361,9 +363,6 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
       reject('INVALID_SEVERITY', category, item, candidateIndex, 'schema_validation'); continue;
     }
     if (Number(item.confidence) < thresholds[item.category]) { reject('LOW_CONFIDENCE', category, item, candidateIndex, 'confidence_validation'); continue; }
-    if ((perCategory[item.category] || 0) >= policy.MAX_AI_CORRECTIONS_PER_CATEGORY[item.category]) {
-      reject('CATEGORY_LIMIT', category, item, candidateIndex, 'limit_validation'); continue;
-    }
     const range = canonical.locateQuote(transcript, item.quotedText, Number(item.occurrence));
     if (!range) {
       const anyOccurrence = canonical.locateQuote(transcript, item.quotedText, 0);
@@ -414,12 +413,14 @@ async function analyze(input, dependencies = {}) {
   const buildStartedAt = Date.now();
   const request = buildSemanticRequest(input);
   const semanticRequestBuildMs = Date.now() - buildStartedAt;
+  const selectedCategories = (input.categories || CORRECTION_CATEGORIES)
+    .filter((category) => CORRECTION_CATEGORIES.includes(category));
   const runtimeCategorySymbols = categorySymbolCatalog(request.legend);
   let semanticValidationMs = 0;
   const validate = (content, attemptMeta = {}) => {
     const startedAt = Date.now();
     try {
-      const parsed = parseJson(content, input.transcriptHash, attemptMeta, CORRECTION_CATEGORIES,
+      const parsed = parseJson(content, input.transcriptHash, attemptMeta, selectedCategories,
         runtimeCategorySymbols, 'initial');
       const validated = validateCorrections(parsed.corrections, {
         transcript: input.transcript, legend: request.legend, spans: input.spans || [], env: dependencies.env || process.env,
@@ -442,8 +443,8 @@ async function analyze(input, dependencies = {}) {
   const runCompletion = dependencies.runCompletion || runSemanticCompletion;
   const completion = await runCompletion({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
-    onAttempt: input.onAttempt, onRetry: input.onRetry, validate, feature: 'semantic_corrections',
-    responseSchema: semanticCorrectionsSchema(input.transcriptHash, CORRECTION_CATEGORIES, runtimeCategorySymbols), schemaName: 'semantic_corrections' });
+    onAttempt: input.onAttempt, onRetry: input.onRetry, deadlineAt: input.deadlineAt, validate, feature: 'semantic_corrections',
+    responseSchema: semanticCorrectionsSchema(input.transcriptHash, selectedCategories, runtimeCategorySymbols), schemaName: 'semantic_corrections' });
   const parseStartedAt = Date.now();
   let validated;
   try {
@@ -458,7 +459,9 @@ async function analyze(input, dependencies = {}) {
     throw error;
   }
   const semanticParseMs = Date.now() - parseStartedAt;
-  const auditCategories = suspiciousCoverageCategories(validated, input.transcript, dependencies.env || process.env);
+  const auditCategories = input.disableCategoryAudit ? []
+    : suspiciousCoverageCategories(validated, input.transcript, dependencies.env || process.env)
+      .filter((category) => selectedCategories.includes(category));
   let audit = null;
   if (auditCategories.length) {
     const auditStartedAt = Date.now();
@@ -483,6 +486,7 @@ async function analyze(input, dependencies = {}) {
       const auditCompletion = await runCompletion({ messages: buildCategoryAuditRequest(input, request, auditCategories),
         config: auditConfig,
         env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
+        deadlineAt: input.deadlineAt,
         validate: auditValidate, feature: 'semantic_corrections_category_audit',
         responseSchema: semanticCorrectionsSchema(input.transcriptHash, auditCategories, runtimeCategorySymbols), schemaName: 'semantic_corrections_category_audit' });
       const auditValidated = auditCompletion.value || auditValidate(auditCompletion.content);

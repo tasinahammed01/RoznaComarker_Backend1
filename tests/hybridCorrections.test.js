@@ -295,12 +295,10 @@ describe('safe hybrid correction policy', () => {
     expect(accepted.corrections[0]).toMatchObject({ startChar: 11, endChar: 17 });
   });
 
-  test('rejects an oversized response instead of silently slicing it', () => {
+  test('does not silently cap a schema-valid correction response', () => {
     const payload = JSON.stringify(structuredFor(
       Array.from({ length: policy.MAX_AI_CORRECTIONS + 1 }, (_, index) => finding({ occurrence: index }))));
-    expect(() => semantic.parseJson(payload, 'hash')).toThrow(expect.objectContaining({
-      code: 'SEMANTIC_SCHEMA_INVALID', validationStage: 'correction_limit'
-    }));
+    expect(semantic.parseJson(payload, 'hash').corrections).toHaveLength(policy.MAX_AI_CORRECTIONS + 1);
   });
 
   test('sends AI-only prompt with all five category instructions', () => {
@@ -313,20 +311,14 @@ describe('safe hybrid correction policy', () => {
     expect(request.messages[0].content).toContain('localized error detection, not general essay evaluation');
     expect(request.messages[0].content).toContain('sentence by sentence from the first page through the final page');
     expect(request.messages[0].content).toContain('Do not stop after finding several examples.');
-    expect(prompt).toContain('Pass 1 CONTENT: REL, DEV, TA, CL, SD');
-    expect(prompt).toContain('Pass 2 ORGANIZATION: COH, CO, PU, TS, CONC');
-    expect(prompt).toContain('Pass 3 GRAMMAR: T, VF, AGR, FRAG, RO, WO, ART, PREP');
-    expect(prompt).toContain('Pass 4 VOCABULARY: WC, WF, REP, FORM, COL');
-    expect(prompt).toContain('Pass 5 MECHANICS: SP, P, CAP, SPC, FMT');
-    expect(prompt).toContain('inspect every finite verb and verb phrase in every sentence');
-    expect(prompt).toContain('modal + base verb');
-    expect(prompt).toContain('auxiliary + verb form');
-    expect(prompt).toContain('missing copula or auxiliary');
-    expect(prompt).toContain('infinitive/gerund construction');
-    expect(prompt).toContain('Do not use Grammar as a fallback category for lexical problems.');
-    expect(prompt).toContain('Complete this pass independently even if many Grammar findings already exist.');
-    expect(prompt).toContain('Zero findings are permitted only after that category has been fully inspected');
-    expect(prompt).toContain('do not invent findings merely to avoid zero');
+    expect(prompt).toContain('CONTENT: REL, DEV, TA, CL, SD');
+    expect(prompt).toContain('ORGANIZATION: COH, CO, PU, TS, CONC');
+    expect(prompt).toContain('GRAMMAR: T, VF, AGR, FRAG, RO, WO, ART, PREP');
+    expect(prompt).toContain('VOCABULARY: WC, WF, REP, FORM, COL');
+    expect(prompt).toContain('MECHANICS: SP, P, CAP, SPC, FMT');
+    expect(prompt).toContain('Inspect every finite verb and phrase');
+    expect(prompt).toContain('Do not use Grammar as a fallback for lexical problems.');
+    expect(prompt).toContain('Review every requested category exactly once');
     expect(prompt).not.toContain('LanguageTool');
   });
 
@@ -624,11 +616,11 @@ describe('deterministic canonical hybrid merge', () => {
     const text = 'there are a big problem every student cames Taking a taxis is than taken private cars cars gives without pay more money';
     const built = semantic.buildSemanticRequest({ transcript: text, transcriptHash: 'a'.repeat(64), languageToolCorrections: [] });
     const prompt = built.messages[1].content;
-    expect(prompt).toContain('five explicit full-transcript passes');
+    expect(prompt).toContain('Review every requested category exactly once');
     expect(prompt).toContain('Analyze the entire canonical transcript independently');
     expect(prompt).toContain('No external grammar checker is available');
-    expect(prompt).toContain('Pass 3 GRAMMAR');
-    expect(prompt).toContain('Pass 5 MECHANICS');
+    expect(prompt).toContain('GRAMMAR: T, VF, AGR');
+    expect(prompt).toContain('MECHANICS: SP, P, CAP');
     expect(prompt).not.toContain('LanguageTool exclusions');
     expect(prompt).not.toContain('LanguageTool auxiliary');
   });

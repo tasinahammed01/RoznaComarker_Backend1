@@ -1,6 +1,5 @@
 'use strict';
 
-const policy = require('./aiCorrectionPolicy.service');
 const { REQUIRED: CATEGORY_SYMBOLS } = require('./correctionLegendResolver.service');
 
 const CORRECTION_CATEGORIES = Object.freeze(['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS']);
@@ -49,8 +48,7 @@ function semanticCorrectionsSchema(transcriptHash, categories = CORRECTION_CATEG
         maxItems: categorySymbols[category].length,
         items: { type: 'string', enum: categorySymbols[category] } },
       noFindingReason: string(320),
-      corrections: { type: 'array', maxItems: policy.MAX_AI_CORRECTIONS_PER_CATEGORY[category],
-        items: categoryCorrectionItem(category, categorySymbols) }
+      corrections: { type: 'array', items: categoryCorrectionItem(category, categorySymbols) }
     })])))
   });
 }
@@ -88,12 +86,12 @@ function categoryAssessment(transcriptEvidenceIds, correctionIds) {
   });
 }
 
-function semanticRubricAssessmentSchema(sourceHash, { transcriptEvidenceIds = [], correctionIds = {}, customCriteria = [] } = {}) {
-  const properties = { sourceHash: { type: 'string', const: String(sourceHash) }, categories: closedObject({
-    CONTENT: categoryAssessment(transcriptEvidenceIds, correctionIds.CONTENT),
-    ORGANIZATION: categoryAssessment(transcriptEvidenceIds, correctionIds.ORGANIZATION),
-    VOCABULARY: categoryAssessment(transcriptEvidenceIds, correctionIds.VOCABULARY)
-  }) };
+function semanticRubricAssessmentSchema(sourceHash, { transcriptEvidenceIds = [], correctionIds = {}, customCriteria = [],
+  categories = ['CONTENT', 'ORGANIZATION', 'VOCABULARY'] } = {}) {
+  const categoryProperties = Object.fromEntries(categories.map((category) => [category,
+    categoryAssessment(transcriptEvidenceIds, correctionIds[category])]));
+  const properties = { sourceHash: { type: 'string', const: String(sourceHash) },
+    categories: closedObject(categoryProperties) };
   if (customCriteria.length) {
     const criterionLevelSchemas = customCriteria.flatMap((criterion) => {
       const levels = Array.isArray(criterion.levels) ? criterion.levels : [];

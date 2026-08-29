@@ -52,17 +52,23 @@ async function complete({ runId, submissionId, teacherId, sourceHash }) {
       throw completionError('EVALUATION_OR_FEEDBACK_INCOMPLETE');
     }
     await AssessmentRun.updateOne({ _id: run._id }, { $set: { components: {
-      transcription: 'complete', issueDetection: 'complete', evaluation: 'complete', detailedFeedback: 'complete',
+      transcription: 'complete', issueDetection: submission.semanticStatus === 'failed' ? 'failed'
+        : submission.semanticStatus === 'partial' ? 'partial' : 'complete',
+      evaluation: 'complete', detailedFeedback: 'complete',
       report: 'pending', adaptiveLearning: 'pending'
     } } });
 
     const legacyFeedback = await Feedback.findOne({ submission: submissionId });
     await reportService.buildPersistedSubmissionFeedbackReport({ submission, submissionFeedback,
       feedback: legacyFeedback, identity: {}, generatedAt: new Date().toISOString() });
+    logger.info({ message: 'Assessment pipeline timing', submissionId: String(submissionId), stage: 'reportReadyAt',
+      timestamp: new Date().toISOString(), sourceHash });
     await AssessmentRun.updateOne({ _id: run._id }, { $set: { 'components.report': 'complete' } });
 
     const adaptive = await adaptivePractice.generateSession(submissionId, submission.student, { retry: true });
     if (!['ready', 'no-weaknesses'].includes(adaptive?.state)) throw completionError('ADAPTIVE_LEARNING_INCOMPLETE');
+    logger.info({ message: 'Assessment pipeline timing', submissionId: String(submissionId), stage: 'adaptiveReadyAt',
+      timestamp: new Date().toISOString(), sourceHash, adaptiveState: adaptive.state });
     const adaptiveComponent = adaptive.state === 'no-weaknesses' ? 'not_required' : 'complete';
     const completed = await AssessmentRun.findOneAndUpdate({ _id: run._id, status: { $ne: 'complete' } }, { $set: {
       status: 'complete', 'components.adaptiveLearning': adaptiveComponent, adaptiveState: adaptive.state,
@@ -75,6 +81,8 @@ async function complete({ runId, submissionId, teacherId, sourceHash }) {
       assignmentId: submission.assignment, assessmentId: runId,
       reason: submission.draftVersion && Number(submission.draftVersion) > 1 ? 'Revised Draft Assessment' : 'AI Assessment' });
     publishCreditUpdate(teacherId, submissionId, runId);
+    logger.info({ message: 'Assessment pipeline timing', submissionId: String(submissionId), stage: 'assessmentCompleteAt',
+      timestamp: new Date().toISOString(), sourceHash, runId: String(runId) });
     return { run: completed, credit };
   } catch (cause) {
     const code = cause?.componentCode || cause?.code || 'ASSESSMENT_COMPONENT_FAILED';

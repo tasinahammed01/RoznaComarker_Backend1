@@ -9,6 +9,7 @@ const { semanticRubricAssessmentSchema, MAX_RUBRIC_EVIDENCE_IDS } = require('./s
 const PROMPT_VERSION = 'semantic-rubric-assessment-v7-fixed-skill-isolation';
 const SCHEMA_VERSION = 'semantic-rubric-assessment-json-v5';
 const SEMANTIC_CATEGORIES = ['CONTENT', 'ORGANIZATION', 'VOCABULARY'];
+const DEGRADED_CATEGORIES = [...SEMANTIC_CATEGORIES, 'GRAMMAR', 'MECHANICS'];
 const MAX_COMMENT = 320;
 const MAX_EXPLANATION = 320;
 const MAX_SUGGESTION = 240;
@@ -37,8 +38,8 @@ function correctionCatalog(corrections = []) {
     })));
 }
 
-function allowedCorrectionIdsByCategory(catalog = []) {
-  return Object.freeze(Object.fromEntries(SEMANTIC_CATEGORIES.map((category) => [
+function allowedCorrectionIdsByCategory(catalog = [], categories = SEMANTIC_CATEGORIES) {
+  return Object.freeze(Object.fromEntries(categories.map((category) => [
     category,
     Object.freeze(catalog.filter((item) => item.category === category).map((item) => item.correctionId))
   ])));
@@ -115,15 +116,16 @@ function normalizeStatisticsComment({ category, comment, issueCount, score }) {
 }
 
 function buildRequest(input) {
+  const assessedCategories = input.includeLanguageCategories ? DEGRADED_CATEGORIES : SEMANTIC_CATEGORIES;
   const assignment = compactAssignment(input.assignment || {});
   const contextStatus = assignment.instructions ? 'instructions' : assignment.title ? 'title_only' : 'none';
   const catalog = correctionCatalog(input.corrections);
   const evidenceCatalog = transcriptEvidenceCatalog(input.transcript);
-  const allowedCorrectionIds = allowedCorrectionIdsByCategory(catalog);
+  const allowedCorrectionIds = allowedCorrectionIdsByCategory(catalog, assessedCategories);
   const policy = input.policy || { strictness: 'balanced',
     checks: { grammarSpelling: true, coherenceLogic: true, factChecking: false } };
   const customCriteria = Array.isArray(input.customRubric?.criteria) ? input.customRubric.criteria : [];
-  const response = { sourceHash: input.sourceHash, categories: Object.fromEntries(SEMANTIC_CATEGORIES.map((category) => {
+  const response = { sourceHash: input.sourceHash, categories: Object.fromEntries(assessedCategories.map((category) => {
     const hasTranscriptEvidence = evidenceCatalog.length > 0;
     const hasCorrectionEvidence = allowedCorrectionIds[category].length > 0;
     return [category, {
@@ -168,7 +170,9 @@ function buildRequest(input) {
       ? 'CUSTOM_RUBRIC_POLICY: For every custom criterion, do not deduct specifically for organization, coherence, flow, transitions, or logical sequencing.'
       : 'CUSTOM_RUBRIC_POLICY: Coherence and organization evidence may be considered when relevant to a custom criterion.',
     'FIXED_CATEGORY_ISOLATION: Evaluate CONTENT, ORGANIZATION, and VOCABULARY independently from customRubric. The presence, absence, names, weights, levels, and wording of custom criteria must not change any fixed-category score or evidence judgment. Custom criteria are a separate overall-grading view only.',
-    'Assess CONTENT, ORGANIZATION, and VOCABULARY as specified, and assess every customRubric criterion when supplied. For each custom criterion, select exactly one configured levelTitle and copy that level’s configured percentage exactly; percentage is not a weighted score and must not be independently estimated. Do not calculate an overall or weighted total; backend code owns arithmetic. Friendly tolerates isolated/repeated low-impact errors, uses softer density thresholds, caps language-mechanics deductions, and requires especially strong evidence for large semantic deductions. Balanced applies normal academic standards with proportionate deductions. Strict applies tighter thresholds and stronger evidence-grounded deductions, including repeated low-impact patterns. Strictness never permits unsupported deductions and never overrides evidence grounding. When coherenceLogic=false, do not deduct for coherence, style, flow, or organization evidence. factChecking=false means no factual penalty; no external fact verification is available. Do not reorder, rename, alias, or add fixed categories. Return strict JSON only. Repeat sourceHash exactly. Scores must be numbers from 0 to 20 and maxScore exactly 20. Do not score Grammar, Mechanics, Presentation, or overall. Do not invent issue counts. Never return quotedText or occurrence. For transcript evidence, copy only an evidenceId from evidenceCatalog; the backend owns and resolves its exact text and offset. For correction evidence, copy only a correctionId from the same category correctionCatalog and set evidenceId=null. With no allowed correction ID, use transcript evidence with correctionId=null. If the evidence catalog and allowed correction list are both empty, return empty evidence arrays and do not make an unsupported deduction. Make a missing, weak, or successful conclusion claim only when it is a distinct conclusion-specific observation supported by final-quarter transcript evidence or an allowed CONC correction. Never claim a conclusion is missing when transcriptComplete=false. If detailed instructions are unavailable, follow existing title-only/provisional rules.'
+    input.includeLanguageCategories
+      ? 'Assess CONTENT, ORGANIZATION, VOCABULARY, GRAMMAR, and MECHANICS directly from the complete transcript. Canonical corrections are unavailable, which is not evidence of error-free writing. Use transcript evidence for every deduction. Do not calculate Presentation or an overall score. Return strict JSON only, repeat sourceHash exactly, and return scores from 0 to 20 with maxScore exactly 20.'
+      : 'Assess CONTENT, ORGANIZATION, and VOCABULARY as specified, and assess every customRubric criterion when supplied. For each custom criterion, select exactly one configured levelTitle and copy that level’s configured percentage exactly; percentage is not a weighted score and must not be independently estimated. Do not calculate an overall or weighted total; backend code owns arithmetic. Friendly tolerates isolated/repeated low-impact errors, uses softer density thresholds, caps language-mechanics deductions, and requires especially strong evidence for large semantic deductions. Balanced applies normal academic standards with proportionate deductions. Strict applies tighter thresholds and stronger evidence-grounded deductions, including repeated low-impact patterns. Strictness never permits unsupported deductions and never overrides evidence grounding. When coherenceLogic=false, do not deduct for coherence, style, flow, or organization evidence. factChecking=false means no factual penalty; no external fact verification is available. Do not reorder, rename, alias, or add fixed categories. Return strict JSON only. Repeat sourceHash exactly. Scores must be numbers from 0 to 20 and maxScore exactly 20. Do not score Grammar, Mechanics, Presentation, or overall. Do not invent issue counts. Never return quotedText or occurrence. For transcript evidence, copy only an evidenceId from evidenceCatalog; the backend owns and resolves its exact text and offset. For correction evidence, copy only a correctionId from the same category correctionCatalog and set evidenceId=null. With no allowed correction ID, use transcript evidence with correctionId=null. If the evidence catalog and allowed correction list are both empty, return empty evidence arrays and do not make an unsupported deduction. Make a missing, weak, or successful conclusion claim only when it is a distinct conclusion-specific observation supported by final-quarter transcript evidence or an allowed CONC correction. Never claim a conclusion is missing when transcriptComplete=false. If detailed instructions are unavailable, follow existing title-only/provisional rules.'
   ].join('\n');
   const messages = [
     { role: 'system', content: 'You are a strict evidence-grounded writing rubric assessor. Output one JSON object only.' },
@@ -176,6 +180,7 @@ function buildRequest(input) {
   ];
   const length = JSON.stringify(messages).length;
   return { messages, promptCharacters: length, promptInputTokenEstimate: Math.ceil(length / 4), contextStatus,
+    assessedCategories,
     correctionCatalog: catalog, allowedCorrectionIds, evidenceCatalog, customCriteria };
 }
 
@@ -235,13 +240,13 @@ function assertQuote(transcript, quote, occurrence, path) {
 }
 
 function validateAssessment(parsed, { sourceHash, transcript, corrections = [], contextStatus = 'none', evidenceCatalog = null,
-  transcriptComplete = true, customRubric = null }) {
+  transcriptComplete = true, customRubric = null, assessedCategories = SEMANTIC_CATEGORIES }) {
   if (!parsed || typeof parsed !== 'object' || parsed.sourceHash !== sourceHash)
     throw semanticRubricError('SEMANTIC_RUBRIC_SOURCE_MISMATCH', 'Semantic rubric assessment source hash mismatch',
       'source_hash', 'sourceHash');
   const categories = parsed.categories || {};
   const returned = Object.keys(categories);
-  if (!SEMANTIC_CATEGORIES.every((category) => returned.includes(category)) || returned.some((category) => !SEMANTIC_CATEGORIES.includes(category)))
+  if (!assessedCategories.every((category) => returned.includes(category)) || returned.some((category) => !assessedCategories.includes(category)))
     throw semanticRubricError('SEMANTIC_RUBRIC_SCHEMA_INVALID', 'Semantic rubric assessment returned invalid categories',
       'schema_validation', 'categories');
   const correctionMap = new Map((corrections || []).map((item) => [String(item.id), item]));
@@ -250,7 +255,7 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
   const validated = {};
   const commentNormalizations = [];
   const seenEvidence = new Set();
-  for (const category of SEMANTIC_CATEGORIES) {
+  for (const category of assessedCategories) {
     const item = categories[category] || {};
     const maxScore = item.maxScore;
     const score = item.score;
@@ -443,7 +448,8 @@ async function assess(input, dependencies = {}) {
       return validateAssessment(normalizeAssessmentContract(parseJson(content)), {
         sourceHash: input.sourceHash, transcript: input.transcript,
         corrections: input.corrections, contextStatus: request.contextStatus, evidenceCatalog: request.evidenceCatalog,
-        transcriptComplete: input.transcriptComplete === true, customRubric: input.customRubric
+        transcriptComplete: input.transcriptComplete === true, customRubric: input.customRubric,
+        assessedCategories: request.assessedCategories
       });
     } finally {
       const durationMs = Date.now() - validationStartedAt;
@@ -455,11 +461,12 @@ async function assess(input, dependencies = {}) {
   };
   const completion = await runCompletion({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
-    validate, feature: 'semantic_rubric_assessment',
+    validate, feature: 'semantic_rubric_assessment', deadlineAt: input.deadlineAt,
     metadata: { submissionId: String(input.submissionId || '') },
     responseSchema: semanticRubricAssessmentSchema(input.sourceHash, {
       transcriptEvidenceIds: request.evidenceCatalog.map((item) => item.evidenceId),
-      correctionIds: request.allowedCorrectionIds, customCriteria: request.customCriteria
+      correctionIds: request.allowedCorrectionIds, customCriteria: request.customCriteria,
+      categories: request.assessedCategories
     }),
     schemaName: 'semantic_rubric_assessment' });
   const assessment = completion.value || validate(completion.content);
@@ -470,6 +477,6 @@ async function assess(input, dependencies = {}) {
       promptCharacters: request.promptCharacters, promptInputTokenEstimate: request.promptInputTokenEstimate } };
 }
 
-module.exports = { PROMPT_VERSION, SCHEMA_VERSION, SEMANTIC_CATEGORIES, correctionCatalog,
+module.exports = { PROMPT_VERSION, SCHEMA_VERSION, SEMANTIC_CATEGORIES, DEGRADED_CATEGORIES, correctionCatalog,
   allowedCorrectionIdsByCategory, transcriptEvidenceCatalog, buildRequest, parseJson, normalizeStatisticsComment,
   validateAssessment, normalizeAssessmentContract, assess, conclusionClaimKind };

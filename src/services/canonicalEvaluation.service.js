@@ -60,10 +60,175 @@ function supersededEvaluationError() {
   return error;
 }
 
-async function generate({ submission, assignment, prelockedJobId = null }) {
+function preparedRubricError(code, message, diagnostics = {}) {
+  const error = new Error(message);
+  error.code = code;
+  error.preparedRubricDiagnostics = diagnostics;
+  return error;
+}
+
+function preparedRubricDiagnostics(prepared, { sourceHash, policyHash, rubricHash, customRubricStatus }) {
+  const semantic = prepared?.semantic;
+  const categories = semantic?.categories;
+  const requiredScores = ['CONTENT', 'ORGANIZATION', 'VOCABULARY'];
+  const categoryScoresPresent = Boolean(categories && requiredScores.every((category) =>
+    Number.isFinite(Number(categories[category]?.score))));
+  const evidencePresent = Boolean(categories && Object.values(categories).some((category) =>
+    (Array.isArray(category?.strengthEvidence) && category.strengthEvidence.length > 0)
+    || (Array.isArray(category?.improvementEvidence) && category.improvementEvidence.length > 0)));
+  return {
+    preparedRubricPresent: Boolean(prepared && typeof prepared === 'object'),
+    preparedRubricStatus: prepared?.error ? 'rejected' : prepared ? 'available' : 'missing',
+    preparedRubricProvider: semantic?.provider || null,
+    preparedRubricModel: semantic?.model || null,
+    preparedRubricSourceHash: prepared?.sourceHash || null,
+    expectedSourceHash: sourceHash || null,
+    preparedRubricPolicyHash: prepared?.policyHash || null,
+    expectedPolicyHash: policyHash || null,
+    preparedRubricRubricHash: prepared?.rubricHash || null,
+    expectedRubricHash: rubricHash || null,
+    preparedRubricPromptVersion: prepared?.promptVersion || null,
+    expectedPromptVersion: semanticRubricAssessment.PROMPT_VERSION || null,
+    preparedRubricSchemaVersion: prepared?.schemaVersion || null,
+    expectedSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION || null,
+    preparedCustomRubricStatus: prepared?.customRubricStatus ?? null,
+    expectedCustomRubricStatus: customRubricStatus,
+    semanticSourceHash: semantic?.sourceHash || null,
+    categoryScoresPresent,
+    evidencePresent
+  };
+}
+
+function validatePreparedRubric(prepared, expected) {
+  const diagnostics = preparedRubricDiagnostics(prepared, expected);
+  if (!diagnostics.preparedRubricPresent) throw preparedRubricError(
+    'PREPARED_RUBRIC_MISSING', 'Prepared rubric evidence is required but missing', diagnostics);
+  const hashMismatch = prepared.sourceHash !== expected.sourceHash
+    || prepared.policyHash !== expected.policyHash || prepared.rubricHash !== expected.rubricHash
+    || prepared.customRubricStatus !== expected.customRubricStatus
+    || (prepared.semantic?.sourceHash && prepared.semantic.sourceHash !== expected.sourceHash);
+  if (hashMismatch) throw preparedRubricError(
+    'PREPARED_RUBRIC_HASH_MISMATCH', 'Prepared rubric evidence does not match the current evaluation inputs', diagnostics);
+  const versionMismatch = (semanticRubricAssessment.PROMPT_VERSION
+      && prepared.promptVersion !== semanticRubricAssessment.PROMPT_VERSION)
+    || (semanticRubricAssessment.SCHEMA_VERSION
+      && prepared.schemaVersion !== semanticRubricAssessment.SCHEMA_VERSION);
+  if (versionMismatch) throw preparedRubricError(
+    'PREPARED_RUBRIC_VERSION_MISMATCH', 'Prepared rubric evidence uses an incompatible contract version', diagnostics);
+  if (!prepared.semantic || !diagnostics.categoryScoresPresent) throw preparedRubricError(
+    'PREPARED_RUBRIC_INVALID', 'Prepared rubric evidence is missing required category scores', diagnostics);
+  return prepared;
+}
+
+async function prepareRubricAssessment({ submission, assignment, sourceHash, deadlineAt = null }) {
+  const rubricStartedAt = Date.now();
+  const classDoc = await Class.findById(submission.class).select('teacher').lean();
+  const teacher = classDoc?.teacher ? await User.findById(classDoc.teacher).select('aiConfig role').lean() : null;
+  const policy = normalizeTeacherEvaluationPolicy(teacher);
+  const policyHash = evaluationPolicyHash(policy);
+  const customRubricResult = normalizeAssignmentRubric(assignment || {});
+  if (customRubricResult.status === 'invalid') {
+    const error = new Error('Assignment rubric is invalid');
+    error.code = 'INVALID_ASSIGNMENT_RUBRIC';
+    error.diagnostics = customRubricResult.diagnostics;
+    throw error;
+  }
+  const rubricHash = customRubricResult.status === 'valid' ? hashNormalizedRubric(customRubricResult) : hashRubric(assignment);
+  const transcript = normalizedTranscript(submission);
+  logger.info({ message: 'Assessment pipeline timing', submissionId: String(submission._id), stage: 'rubricStartedAt',
+    timestamp: new Date(rubricStartedAt).toISOString(), sourceHash });
+  const semantic = await semanticRubricAssessment.assess({ submissionId: String(submission._id), transcript, sourceHash,
+    assignment, corrections: [], statistics: {}, pageManifest: submission.ocrPages || [],
+    transcriptComplete: submission.ocrStatus === 'completed' && Boolean(transcript.trim()), policy,
+    customRubric: customRubricResult.rubric, includeLanguageCategories: true, deadlineAt });
+  for (const category of ['CONTENT', 'ORGANIZATION', 'VOCABULARY']) {
+    semantic.categories[category] = applySemanticStrictness(semantic.categories[category], policy.strictness);
+  }
+  if (!policy.checks.coherenceLogic) semantic.categories.ORGANIZATION = {
+    ...semantic.categories.ORGANIZATION, score: 20, issueCount: 0,
+    comment: 'Coherence and organization scoring is disabled by the teacher evaluation policy.', improvementEvidence: []
+  };
+  const rubricEndedAt = Date.now();
+  logger.info({ message: 'Assessment pipeline timing', submissionId: String(submission._id), stage: 'rubricEndedAt',
+    timestamp: new Date(rubricEndedAt).toISOString(), sourceHash, durationMs: rubricEndedAt - rubricStartedAt,
+    provider: semantic.provider || null, model: semantic.model || null });
+  return { semantic, sourceHash, policyHash, rubricHash, customRubricStatus: customRubricResult.status,
+    promptVersion: semanticRubricAssessment.PROMPT_VERSION, schemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
+    rubricStartedAt, rubricEndedAt };
+}
+
+async function persistProvisionalScore({ submission, assignment, sourceHash, jobId, preparedRubricAssessment }) {
+  const prepared = preparedRubricAssessment;
+  if (!prepared) throw preparedRubricError('PREPARED_RUBRIC_MISSING',
+    'Prepared rubric evidence is required for provisional scoring');
+  const classDoc = await Class.findById(submission.class).select('teacher').lean();
+  const teacher = classDoc?.teacher ? await User.findById(classDoc.teacher).select('aiConfig role').lean() : null;
+  const policy = normalizeTeacherEvaluationPolicy(teacher);
+  const policyHash = evaluationPolicyHash(policy);
+  const customRubricResult = normalizeAssignmentRubric(assignment || {});
+  const rubricHash = customRubricResult.status === 'valid' ? hashNormalizedRubric(customRubricResult) : hashRubric(assignment);
+  validatePreparedRubric(prepared, { sourceHash, policyHash, rubricHash,
+    customRubricStatus: customRubricResult.status });
+  const semantic = prepared.semantic;
+  const transcript = normalizedTranscript(submission);
+  const stats = computeCanonicalCorrectionStatistics([]);
+  const rubricScores = synchronizedRubricScores({
+    CONTENT: semantic.categories.CONTENT,
+    ORGANIZATION: semantic.categories.ORGANIZATION,
+    VOCABULARY: semantic.categories.VOCABULARY,
+    GRAMMAR: { ...semantic.categories.GRAMMAR,
+      score: policy.checks.grammarSpelling ? Math.round(Number(semantic.categories.GRAMMAR.score) * 1.25 * 10) / 10 : 25,
+      maxScore: 25, comment: policy.checks.grammarSpelling ? semantic.categories.GRAMMAR.comment
+        : 'Grammar scoring is disabled by the teacher evaluation policy.' },
+    MECHANICS: { ...semantic.categories.MECHANICS,
+      score: policy.checks.grammarSpelling ? Math.round(Number(semantic.categories.MECHANICS.score) * 0.5 * 10) / 10 : 10,
+      maxScore: 10, comment: policy.checks.grammarSpelling ? semantic.categories.MECHANICS.comment
+        : 'Mechanics scoring is disabled by the teacher evaluation policy.' },
+    PRESENTATION: scorePresentation(submission)
+  }, stats);
+  if (!hasValidRubricScores(rubricScores)) throw new Error('Provisional assessment is missing required rubric categories');
+  const customRubricScores = customRubricResult.status === 'valid'
+    ? calculateCustomRubricScore(customRubricResult.rubric, semantic.customCriteria) : null;
+  const overallScore = customRubricScores ? customRubricScores.overallScore
+    : Object.values(rubricScores).reduce((sum, item) => sum + item.score, 0);
+  const grade = gradeFromOverallScore(overallScore);
+  const ownsJob = await submission.constructor.exists({ _id: submission._id, correctionSourceHash: sourceHash,
+    correctionJobId: jobId, evaluationJobId: jobId });
+  if (!ownsJob) throw supersededEvaluationError();
+  const feedback = await SubmissionFeedback.findOneAndUpdate({ submissionId: submission._id,
+    overriddenByTeacher: { $ne: true } }, { $set: {
+    submissionId: submission._id, classId: submission.class, studentId: submission.student,
+    teacherId: classDoc?.teacher, evaluationJobId: jobId,
+    assessmentVersion: ASSESSMENT_VERSION, evaluationVersion: VERSION,
+    evaluationSourceHash: sourceHash, evaluationRubricSourceHash: rubricHash,
+    evaluationPolicyHash: policyHash, evaluationBuiltInContextHash: hashBuiltInContext(assignment),
+    evaluationPolicy: { ...policy, scoringPolicyVersion: SCORING_POLICY_VERSION },
+    evaluationSource: 'provisional', evaluationStatus: 'partial', evaluationProvider: semantic.provider,
+    evaluationModel: semantic.model, evaluationErrorCode: null, correctionStats: stats,
+    evaluationAttempts: semantic.metrics?.attempts || [], rubricScores, customRubricScores,
+    sourceRubric: customRubricResult.rubric, overallScore, grade
+  } }, { new: true, runValidators: true, upsert: true });
+  if (!feedback) throw supersededEvaluationError();
+  const updated = await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash,
+    correctionJobId: jobId, evaluationJobId: jobId }, { $set: {
+    evaluationStatus: 'partial', evaluationSourceHash: sourceHash, evaluationVersion: VERSION,
+    evaluationRubricSourceHash: rubricHash, evaluationPolicyHash: policyHash,
+    evaluationProvider: semantic.provider, evaluationModel: semantic.model,
+    evaluationUpdatedAt: new Date(), evaluationError: null, evaluationErrorCode: null
+  } });
+  if (updated.modifiedCount !== 1) throw supersededEvaluationError();
+  logger.info({ message: 'Assessment pipeline timing', submissionId: String(submission._id), stage: 'scoreReadyAt',
+    timestamp: new Date().toISOString(), sourceHash, provisional: true, transcriptCharacters: transcript.length });
+  return { status: 'partial', sourceHash, rubricHash, policyHash, overallScore, grade, rubricScores,
+    provider: semantic.provider, model: semantic.model };
+}
+
+async function generate({ submission, assignment, prelockedJobId = null, allowDegradedCorrections = false,
+  preparedRubricAssessment = null, preparedRubricRequired = false }) {
   const totalStartedAt = Date.now();
   const sourceHash = submission.correctionSourceHash;
-  if (!sourceHash || submission.correctionStatus !== 'completed') return { status: 'superseded' };
+  const correctionsAvailable = submission.semanticStatus !== 'failed' && submission.correctionStatus === 'completed';
+  if (!sourceHash || (!correctionsAvailable && !allowDegradedCorrections)) return { status: 'superseded' };
   const classDoc = await Class.findById(submission.class).select('teacher').lean();
   const teacher = classDoc?.teacher ? await User.findById(classDoc.teacher).select('aiConfig role').lean() : null;
   const accountingEnabled = teacher?.role === 'teacher';
@@ -148,7 +313,7 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     if (!locked.modifiedCount) return { status: 'superseded', sourceHash };
   } else {
     const ownsLock = await submission.constructor.exists({ _id: submission._id, correctionSourceHash: sourceHash,
-      evaluationStatus: 'processing', evaluationJobId: jobId });
+      evaluationStatus: { $in: ['processing', 'partial'] }, evaluationJobId: jobId });
     if (!ownsLock) return { status: 'superseded', sourceHash };
   }
   if (accountingEnabled) await assessmentCompletion.start({ runId: jobId, submission,
@@ -165,6 +330,7 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     const wordCount = countWords(transcript);
     const corrections = correctionsAllowedByPolicy(submission.writingCorrections || [], policy);
     const reusableBuiltInScores = Boolean(persistedFeedback && !persistedFeedback.overriddenByTeacher
+      && persistedFeedback.evaluationSource !== 'provisional'
       && persistedFeedback.evaluationSourceHash === sourceHash
       && persistedFeedback.evaluationPolicyHash === policyHash
       && persistedFeedback.evaluationBuiltInContextHash === builtInContextHash
@@ -177,18 +343,16 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       errorCode: null, durationMs: 0 });
     console.info('[canonical-evaluation] semantic rubric assessment started', { submissionId: String(submission._id),
       sourceHashMatch: true, correctionCounts: stats });
-    const semantic = await semanticRubricAssessment.assess({ submissionId: String(submission._id), transcript, sourceHash, assignment,
-      corrections, statistics: stats, pageManifest: submission.ocrPages || [],
-      transcriptComplete: submission.ocrStatus === 'completed' && Boolean(transcript.trim()),
-      policy, customRubric: customRubricResult.rubric });
-    for (const category of ['CONTENT', 'ORGANIZATION', 'VOCABULARY']) {
-      semantic.categories[category] = applySemanticStrictness(semantic.categories[category], policy.strictness);
-    }
-    if (!policy.checks.coherenceLogic) semantic.categories.ORGANIZATION = {
-      ...semantic.categories.ORGANIZATION, score: 20, issueCount: 0,
-      comment: 'Coherence and organization scoring is disabled by the teacher evaluation policy.',
-      improvementEvidence: []
-    };
+    const expectedPrepared = { sourceHash, policyHash, rubricHash, customRubricStatus: customRubricResult.status };
+    const handoffDiagnostics = preparedRubricDiagnostics(preparedRubricAssessment, expectedPrepared);
+    if (process.env.NODE_ENV !== 'production') logger.info({ message: 'Prepared rubric handoff diagnostics',
+      submissionId: String(submission._id), ...handoffDiagnostics });
+    if (preparedRubricAssessment?.error) throw preparedRubricAssessment.error;
+    if (preparedRubricRequired && !preparedRubricAssessment) throw preparedRubricError(
+      'PREPARED_RUBRIC_MISSING', 'Parallel rubric evidence was not supplied to canonical finalization', handoffDiagnostics);
+    const prepared = preparedRubricAssessment || await prepareRubricAssessment({ submission, assignment, sourceHash });
+    validatePreparedRubric(prepared, expectedPrepared);
+    const semantic = prepared.semantic;
     console.info('[canonical-evaluation] semantic rubric assessment completed', { submissionId: String(submission._id),
       provider: semantic.provider, model: semantic.model, sourceHashMatch: semantic.sourceHash === sourceHash,
       categoryScores: Object.fromEntries(Object.entries(semantic.categories).map(([key, value]) => [key, value.score])),
@@ -201,10 +365,22 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       CONTENT: semantic.categories.CONTENT,
       ORGANIZATION: semantic.categories.ORGANIZATION,
       VOCABULARY: semantic.categories.VOCABULARY,
-      GRAMMAR: scoreGrammar({ corrections, wordCount, strictness: policy.strictness,
-        enabled: policy.checks.grammarSpelling }),
-      MECHANICS: scoreMechanics({ corrections, wordCount, strictness: policy.strictness,
-        enabled: policy.checks.grammarSpelling }),
+      GRAMMAR: correctionsAvailable ? scoreGrammar({ corrections, wordCount, strictness: policy.strictness,
+        enabled: policy.checks.grammarSpelling }) : {
+        ...semantic.categories.GRAMMAR,
+        score: policy.checks.grammarSpelling ? Math.round(Number(semantic.categories.GRAMMAR.score) * 1.25 * 10) / 10 : 25,
+        maxScore: 25,
+        comment: policy.checks.grammarSpelling ? semantic.categories.GRAMMAR.comment
+          : 'Grammar scoring is disabled by the teacher evaluation policy.'
+      },
+      MECHANICS: correctionsAvailable ? scoreMechanics({ corrections, wordCount, strictness: policy.strictness,
+        enabled: policy.checks.grammarSpelling }) : {
+        ...semantic.categories.MECHANICS,
+        score: policy.checks.grammarSpelling ? Math.round(Number(semantic.categories.MECHANICS.score) * 0.5 * 10) / 10 : 10,
+        maxScore: 10,
+        comment: policy.checks.grammarSpelling ? semantic.categories.MECHANICS.comment
+          : 'Mechanics scoring is disabled by the teacher evaluation policy.'
+      },
       PRESENTATION: scorePresentation(submission)
     }, stats);
     const rubricScores = reusableBuiltInScores
@@ -225,6 +401,8 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       builtInContextHash,
       builtInScoresReused: reusableBuiltInScores,
       overallMethod: customRubricScores ? 'custom_rubric_weighted_total' : 'fixed_six_category_sum',
+      correctionsAvailable,
+      languageScoringMode: correctionsAvailable ? 'canonical_corrections' : 'transcript_semantic_fallback',
       ...(customRubricScores ? {
         customRubric: {
           overallScore: customRubricScores.overallScore,
@@ -248,6 +426,8 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     const detailedFeedback = detailedFeedbackService.buildDeterministicDetailedFeedback({ corrections,
       statistics: stats, categoryScores: rubricScores, sourceHash, semanticAssessment: semantic });
     const detailedFeedbackMs = Date.now() - detailedFeedbackStartedAt;
+    logger.info({ message: 'Assessment pipeline timing', submissionId: String(submission._id), stage: 'feedbackReadyAt',
+      timestamp: new Date().toISOString(), sourceHash, durationMs: detailedFeedbackMs });
     const persistenceStartedAt = Date.now();
     const existing = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
     const jobStillCurrent = await submission.constructor.exists({ _id: submission._id, correctionSourceHash: sourceHash, evaluationJobId: jobId });
@@ -271,7 +451,7 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     if (!savedFeedback) throw supersededEvaluationError();
     feedbackPersisted = true;
     const completed = await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash,
-      evaluationStatus: 'processing', evaluationJobId: jobId }, { $set: {
+      evaluationStatus: { $in: ['processing', 'partial'] }, evaluationJobId: jobId }, { $set: {
       evaluationStatus: semantic.status === 'partial' ? 'partial' : 'completed', evaluationSourceHash: sourceHash, evaluationVersion: VERSION,
       evaluationRubricSourceHash: rubricHash, evaluationPolicyHash: policyHash,
       evaluationProvider: semantic.provider, evaluationModel: semantic.model,
@@ -281,6 +461,9 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     }});
     if (completed.modifiedCount !== 1) throw supersededEvaluationError();
     const persistenceMs = Date.now() - persistenceStartedAt;
+    const scoreReadyAt = Date.now();
+    logger.info({ message: 'Assessment pipeline timing', submissionId: String(submission._id), stage: 'scoreReadyAt',
+      timestamp: new Date(scoreReadyAt).toISOString(), sourceHash });
     const totalCanonicalEvaluationMs = Date.now() - totalStartedAt;
     logger.info({ message: 'Canonical evaluation timing', submissionId: String(submission._id),
       stage: 'persistence', attemptNumber: null, provider: semantic.provider || null,
@@ -321,7 +504,7 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
       const persisted = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
       const recoveredStatus = persisted?.evaluationStatus === 'partial' ? 'partial' : 'completed';
       const recovered = await submission.constructor.updateOne({ _id: submission._id,
-        correctionSourceHash: sourceHash, evaluationStatus: 'processing', evaluationJobId: jobId }, { $set: {
+        correctionSourceHash: sourceHash, evaluationStatus: { $in: ['processing', 'partial'] }, evaluationJobId: jobId }, { $set: {
         evaluationStatus: recoveredStatus, evaluationSourceHash: sourceHash, evaluationVersion: VERSION,
         evaluationRubricSourceHash: rubricHash, evaluationPolicyHash: policyHash,
         evaluationProvider: persisted?.evaluationProvider || null,
@@ -344,7 +527,10 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
     const attempts = Array.isArray(error?.attempts) ? error.attempts : [];
     const lastAttempt = attempts[attempts.length - 1] || {};
     const errorCode = error?.code || 'SEMANTIC_RUBRIC_FAILED';
-    console.warn('[canonical-evaluation] semantic rubric assessment failed', {
+    const preparedHandoffFailure = String(errorCode).startsWith('PREPARED_RUBRIC_');
+    console.warn(preparedHandoffFailure
+      ? '[canonical-evaluation] prepared rubric handoff failed'
+      : '[canonical-evaluation] semantic rubric assessment failed', {
       submissionId: String(submission._id), provider: error?.provider || lastAttempt.provider || null,
       model: error?.model || lastAttempt.model || null,
       attempt: lastAttempt.attemptNumber || null, fallbackIndex: Number.isInteger(lastAttempt.fallbackIndex)
@@ -384,7 +570,9 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
           durationMs: lastAttempt.durationMs || null, finishReason: lastAttempt.finishReason || null
         } }, correctionStats: stats } }, { runValidators: true });
     await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash, evaluationJobId: jobId },
-      { $set: { evaluationStatus: 'failed', evaluationError: `Canonical semantic rubric evaluation failed (${errorCode})`,
+      { $set: { evaluationStatus: 'failed', evaluationError: preparedHandoffFailure
+        ? `Canonical prepared rubric handoff failed (${errorCode})`
+        : `Canonical semantic rubric evaluation failed (${errorCode})`,
         evaluationErrorCode: errorCode, evaluationProvider: lastAttempt.provider || null, evaluationModel: lastAttempt.model || null,
         evaluationAttempts: attempts, evaluationDiagnostics: { terminalValidation: {
           provider: lastAttempt.provider || null, model: lastAttempt.model || null,
@@ -400,4 +588,5 @@ async function generate({ submission, assignment, prelockedJobId = null }) {
 }
 
 module.exports = { VERSION, stable, hashRubric, hashBuiltInContext, synchronizedRubricScores, hasValidRubricScores,
-  isEvaluationFresh, generate };
+  isEvaluationFresh, preparedRubricDiagnostics, validatePreparedRubric,
+  prepareRubricAssessment, persistProvisionalScore, generate };

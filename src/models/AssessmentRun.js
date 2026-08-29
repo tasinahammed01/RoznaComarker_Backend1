@@ -9,7 +9,7 @@ const assessmentRunSchema = new mongoose.Schema({
   status: { type: String, enum: ['started', 'processing', 'complete', 'failed'], default: 'started', index: true },
   components: {
     transcription: { type: String, enum: ['pending', 'complete', 'failed'], default: 'pending' },
-    issueDetection: { type: String, enum: ['pending', 'complete', 'failed'], default: 'pending' },
+    issueDetection: { type: String, enum: ['pending', 'complete', 'partial', 'failed'], default: 'pending' },
     evaluation: { type: String, enum: ['pending', 'complete', 'failed'], default: 'pending' },
     detailedFeedback: { type: String, enum: ['pending', 'complete', 'failed'], default: 'pending' },
     report: { type: String, enum: ['pending', 'complete', 'failed'], default: 'pending' },

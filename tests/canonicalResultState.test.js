@@ -33,6 +33,15 @@ const completedSubmission = (overrides = {}) => ({
 });
 
 describe('canonical result state contract', () => {
+  test('degraded corrections do not block a current completed score', () => {
+    const submission = completedSubmission({ correctionStatus: 'partial', semanticStatus: 'failed',
+      semanticErrorCode: 'AI_ATTEMPT_TIMEOUT' });
+    const feedback = currentEvaluation({ overallScore: 72, grade: 'B' });
+    const state = buildCanonicalResultState({ submission, feedback });
+    expect(state).toMatchObject({ semanticStatus: 'failed', semanticSucceeded: false, correctionsAvailable: false,
+      correctionStatus: 'partial', evaluationStatus: 'completed', score: 72, processingActive: false,
+      terminal: true, evaluationBlockedReason: null });
+  });
   test('preserves configured-chain exhaustion instead of labeling it missing configuration', () => {
     expect(safeErrorCode({ code: 'AI_CHAIN_EXHAUSTED', attempts: [{ code: 'AI_ATTEMPT_TIMEOUT' }] }))
       .toBe('AI_CHAIN_EXHAUSTED');

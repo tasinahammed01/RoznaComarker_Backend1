@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const semantic = require('./semanticWritingCorrections.service');
+const semanticCoordinator = require('./semanticCorrectionCoordinator.service');
 const canonical = require('./correctionCanonical.service');
 const { buildCanonicalSubmissionTranscript, CANONICAL_TRANSCRIPT_LAYOUT_VERSION } = require('../utils/ocrTranscriptNormalizer');
 const logger = require('../utils/logger');
@@ -10,6 +11,12 @@ const { safeErrorCode } = require('./canonicalResultState.service');
 const { getSemanticAIConfig, getSemanticAIConfigStatus } = require('./semanticAIClient.service');
 const semanticMetrics = require('./semanticMetrics.service');
 const { resolveLegend } = require('./correctionLegendResolver.service');
+
+function deepFreeze(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreeze(child);
+  return Object.freeze(value);
+}
 
 async function blockEvaluationAfterCorrectionFailure({ submissionId, errorCode, feedbackModel = SubmissionFeedback }) {
   return feedbackModel.updateOne({ submissionId, overriddenByTeacher: { $ne: true },
@@ -42,6 +49,7 @@ function buildCorrectionSourceHash({ transcript, pages = [], assignment = {},
   return crypto.createHash('sha256').update(JSON.stringify(canonicalEvaluation.stable({ transcript, assignment,
     orderedPages: orderedPageIdentity(pages), version: canonical.VERSION,
     promptVersion: semantic.SEMANTIC_PROMPT_VERSION, schemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
+    chunkCoordinatorVersion: semanticCoordinator.VERSION,
     transcriptLayoutVersion }))).digest('hex');
 }
 
@@ -85,8 +93,8 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const semanticConfig = getSemanticAIConfig();
   const legend = await resolveLegend();
   const assignmentHash = crypto.createHash('sha256').update(JSON.stringify(canonicalEvaluation.stable(assignment))).digest('hex');
-  const semanticSourceKey = semantic.semanticSourceKey({ correctionSourceHash: hash, config: semanticConfig,
-    legendVersion: legend.version, legendContentHash: legend.contentHash, assignmentHash });
+  const semanticSourceKey = buildSemanticSourceKey(semantic.semanticSourceKey({ correctionSourceHash: hash, config: semanticConfig,
+    legendVersion: legend.version, legendContentHash: legend.contentHash, assignmentHash }));
   if (!force && doc.correctionSourceHash === hash && doc.correctionVersion === canonical.VERSION
     && doc.correctionTranscriptLayoutVersion === CANONICAL_TRANSCRIPT_LAYOUT_VERSION && doc.correctionStatus === 'completed'
     && doc.semanticSourceKey === semanticSourceKey) {
@@ -97,10 +105,13 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const semanticMaxAttempts = plannedSemanticAttempts(semanticConfig);
   const locked = await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId,
     semanticStatus: { $nin: ['processing', 'retry_wait'] } }, { $set: { correctionStatus: 'processing', correctionJobId: jobId, correctionError: null,
+    correctionSourceHash: hash, correctionVersion: canonical.VERSION,
+    correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
     semanticStatus: 'processing', semanticAttempt: 0, semanticMaxAttempts,
     semanticNextRetryAt: null, semanticErrorCode: null,
     semanticSourceKey, semanticProvider: semanticConfig.provider, semanticModel: semanticConfig.model,
-    semanticPromptVersion: semantic.SEMANTIC_PROMPT_VERSION } });
+    semanticPromptVersion: semantic.SEMANTIC_PROMPT_VERSION,
+    evaluationStatus: 'processing', evaluationJobId: jobId, evaluationError: null, evaluationErrorCode: null } });
   if (!locked.modifiedCount) {
     semanticMetrics.increment('semanticJobsRejectedAsDuplicate');
     logger.info({ message: 'Semantic job rejected as duplicate', submissionId: String(doc._id), sourceHashMatch: doc.correctionSourceHash === hash });
@@ -109,13 +120,42 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   semanticMetrics.increment('semanticJobsStarted');
   await SubmissionFeedback.updateOne({ submissionId: doc._id, overriddenByTeacher: { $ne: true } },
     { $unset: { evaluationSourceHash: 1, evaluationRubricSourceHash: 1, evaluationPolicyHash: 1 } }).catch(() => {});
+  const transcriptReadyAt = Date.now();
+  const assessmentDeadlineAt = transcriptReadyAt + semanticConfig.totalBudgetMs;
+  logger.info({ message: 'Assessment pipeline timing', submissionId: String(doc._id), stage: 'transcriptReadyAt',
+    timestamp: new Date(transcriptReadyAt).toISOString(), correctionSourceHash: hash });
+  const evaluationSubmission = { ...(doc.toObject?.() || doc), correctionSourceHash: hash,
+    correctionVersion: canonical.VERSION, correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
+    correctionStatus: 'processing', semanticStatus: 'processing', evaluationStatus: 'processing', evaluationJobId: jobId };
+  const rubricPromise = canonicalEvaluation.prepareRubricAssessment({ submission: evaluationSubmission, assignment, sourceHash: hash,
+    deadlineAt: assessmentDeadlineAt }).then(async (rawValue) => {
+      // Retain the successful provider result independently from the optional
+      // provisional-score write. A persistence failure must never erase valid
+      // rubric evidence or turn it into a synthetic provider failure.
+      const value = deepFreeze(rawValue);
+      if (typeof canonicalEvaluation.persistProvisionalScore === 'function') {
+        try {
+          await canonicalEvaluation.persistProvisionalScore({ submission: evaluationSubmission, assignment,
+            sourceHash: hash, jobId, preparedRubricAssessment: value });
+        } catch (error) {
+          logger.warn({ message: 'Provisional score persistence failed after rubric preparation',
+            submissionId: String(doc._id), sourceHashMatch: value?.sourceHash === hash,
+            preparedRubricProvider: value?.semantic?.provider || null,
+            preparedRubricModel: value?.semantic?.model || null,
+            errorCode: error?.code || 'PROVISIONAL_SCORE_PERSIST_FAILED' });
+        }
+      }
+      return { status: 'fulfilled', value };
+    }, (error) => ({ status: 'rejected', reason: error })).catch((error) => ({ status: 'rejected', reason: error }));
   let ai = []; let semanticError = null; let semanticReturnedCount = 0; let semanticRun = null; let failedSemanticAttempt = 0;
   const rejectionReasons = {};
   let semanticValidationMs = 0; let semanticMappingMs = 0;
   const semanticStartedAt = Date.now();
+  logger.info({ message: 'Assessment pipeline timing', submissionId: String(doc._id), stage: 'semanticStartedAt',
+    timestamp: new Date(semanticStartedAt).toISOString(), correctionSourceHash: hash });
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'aiOnlyStarted' });
   try {
-    semanticRun = await semantic.analyze({ transcript, assignment, legend, transcriptHash: hash, spans,
+    semanticRun = await semanticCoordinator.analyze({ transcript, assignment, legend, transcriptHash: hash, spans,
       submissionId: String(doc._id),
       pageManifest: canonicalTranscript.pages.map((page) => ({ fileId: page.fileId, fileOrder: page.fileOrder,
         pageNumber: page.pageNumber, pageIndex: page.pageIndex, startChar: page.startChar, endChar: page.endChar })),
@@ -136,6 +176,13 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
         logger.info({ message: 'AI-only correction analysis retry scheduled', submissionId: String(doc._id), attempt, maxAttempts, retryDelayMs: delayMs,
           timeoutClassification: code, remainingBudgetMs, nextProvider, nextModel, jobIdPresent: true, sourceHashMatch: true });
       } });
+    if (semanticRun.status === 'failed') {
+      const error = new Error('All semantic correction chunks failed');
+      error.code = semanticRun.diagnostics?.chunking?.errors?.[0]?.code || 'SEMANTIC_ANALYSIS_FAILED';
+      error.validationDiagnostics = semanticRun.diagnostics;
+      error.attempts = semanticRun.metrics?.attempts || [];
+      throw error;
+    }
     const raw = semanticRun.corrections || [];
     semanticReturnedCount = semanticRun.diagnostics?.rawCorrectionCount ?? raw.length;
     Object.assign(rejectionReasons, semanticRun.diagnostics?.rejectionReasons || {});
@@ -167,6 +214,10 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     });
   }
   const semanticAiMs = Date.now() - semanticStartedAt;
+  const semanticEndedAt = Date.now();
+  logger.info({ message: 'Assessment pipeline timing', submissionId: String(doc._id), stage: 'semanticEndedAt',
+    timestamp: new Date(semanticEndedAt).toISOString(), correctionSourceHash: hash, durationMs: semanticAiMs,
+    semanticSucceeded: !semanticError, errorCode: safeErrorCode(semanticError) || null });
   const mergeStartedAt = Date.now();
   const merged = canonical.mergeCanonicalCorrections({ aiCorrections: ai });
   const corrections = merged.corrections;
@@ -187,7 +238,6 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const retainedAfterMergeByCategory = countByCategory(corrections.filter((item) => item.source === 'AI'));
   const removedDuringMergeByCategory = countByCategory(removedByMerge);
   const failedStage = safeErrorCode(semanticError);
-  const anyAnalysisStageAvailable = !semanticError;
   const terminalAttempts = semanticRun?.metrics?.attempts || semanticError?.attempts || [];
   const terminalAttempt = terminalAttempts[terminalAttempts.length - 1] || null;
   const gatewayMetrics = semanticRun?.metrics || (semanticError ? {
@@ -228,14 +278,13 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const finalWrite = await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
     writingCorrections: corrections, correctionStatistics: combinedStatistics, correctionSourceHash: hash,
     correctionVersion: canonical.VERSION, correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
-    correctionStatus: failedStage ? (anyAnalysisStageAvailable ? 'partial' : 'failed') : 'completed',
-    correctionError: failedStage, correctionUpdatedAt: new Date(), semanticStatus: semanticError ? 'failed' : 'completed',
+    correctionStatus: failedStage || semanticRun?.status === 'partial' ? 'partial' : 'completed',
+    correctionError: failedStage || (semanticRun?.status === 'partial' ? 'SEMANTIC_CHUNK_PARTIAL' : null),
+    correctionUpdatedAt: new Date(), semanticStatus: semanticError ? 'failed' : semanticRun?.status === 'partial' ? 'partial' : 'completed',
     semanticNextRetryAt: null, semanticErrorCode: safeErrorCode(semanticError) || null,
     semanticProvider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
     semanticModel: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
     semanticPromptVersion: semantic.SEMANTIC_PROMPT_VERSION,
-    evaluationStatus: semanticError && !['completed', 'partial'].includes(String(doc.evaluationStatus || ''))
-      ? 'blocked' : doc.evaluationStatus,
     correctionLegendSource: legend.source,
     correctionLegendVersion: legend.version, correctionLegendContentHash: legend.contentHash,
     deductionPolicyVersion: canonical.DEDUCTION_POLICY_VERSION,
@@ -245,10 +294,6 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     semanticMetrics.increment('semanticJobsSuperseded');
     logger.info({ message: 'Canonical correction job superseded before final persistence', submissionId: String(doc._id), stage: 'finalCorrectionsPersisted', persisted: false });
     return;
-  }
-  if (semanticError) {
-    await blockEvaluationAfterCorrectionFailure({ submissionId: doc._id,
-      errorCode: safeErrorCode(semanticError) || 'SEMANTIC_ANALYSIS_FAILED' }).catch(() => {});
   }
   const totalCorrectionsMs = Date.now() - totalStartedAt;
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id),
@@ -278,12 +323,19 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     aiOnlyCount: ai.length, totalCount: corrections.length });
   let evaluationMs = 0; let detailedFeedbackMs = 0; let holisticCorrectionCoverageMismatch = false;
   let holisticCorrectionCoverageMismatchCategories = [];
-  if (!semanticError) {
+  {
     const evaluationStartedAt = Date.now();
+    const preparedRubric = await rubricPromise;
     logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'evaluationStarted',
-      semanticSucceeded: true });
+      semanticSucceeded: !semanticError && semanticRun?.status === 'completed', correctionsAvailable: !semanticError,
+      preparedRubricAvailable: preparedRubric.status === 'fulfilled', preparedRubricStatus: preparedRubric.status,
+      preparedRubricProvider: preparedRubric.value?.semantic?.provider || null,
+      preparedRubricModel: preparedRubric.value?.semantic?.model || null });
     const refreshed = await doc.constructor.findById(doc._id);
-    const evaluationResult = refreshed ? await canonicalEvaluation.generate({ submission: refreshed, assignment }) : null;
+    const evaluationResult = refreshed ? await canonicalEvaluation.generate({ submission: refreshed, assignment,
+      prelockedJobId: jobId, allowDegradedCorrections: Boolean(semanticError || semanticRun?.status === 'partial'),
+      preparedRubricRequired: true,
+      preparedRubricAssessment: preparedRubric.status === 'fulfilled' ? preparedRubric.value : { error: preparedRubric.reason } }) : null;
     evaluationMs = Date.now() - evaluationStartedAt;
     detailedFeedbackMs = Number(evaluationResult?.timings?.detailedFeedbackMs || 0);
     holisticCorrectionCoverageMismatchCategories = holisticCoverageMismatchCategories(
@@ -304,9 +356,6 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
       promptVersion: semanticRubricAssessment.PROMPT_VERSION,
       schemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
       errorCode: evaluationResult?.errorCode || null });
-  } else {
-    logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'evaluationSkipped',
-      reason: 'aiOnlyAnalysisFailed', semanticErrorCode: safeErrorCode(semanticError) });
   }
   logger.debug({ message: 'Canonical correction analysis completed', submissionId: String(doc._id),
     fileCount: Array.isArray(doc.files) ? doc.files.length : (doc.file ? 1 : 0), ocrPageCount: canonicalTranscript.pages.length,
@@ -335,8 +384,16 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
       holisticCorrectionCoverageMismatchCategories,
       rubricDeductionWithZeroCorrectionsByCategory: holisticCorrectionCoverageMismatchCategories }
   }}).catch(() => {});
-  return { reused: false, semanticSourceKey, semanticMetrics: semanticRun?.metrics || null };
+  return { reused: false, semanticSourceKey, semanticSucceeded: !semanticError && semanticRun?.status === 'completed',
+    correctionsAvailable: !semanticError, correctionsCompleteness: semanticError ? 'none' : semanticRun?.status || 'complete',
+    semanticMetrics: semanticRun?.metrics || null };
+}
+
+function buildSemanticSourceKey(baseSourceKey, env = process.env) {
+  return crypto.createHash('sha256').update(JSON.stringify({ baseSourceKey,
+    coordinatorVersion: semanticCoordinator.VERSION, chunking: semanticCoordinator.config(env) })).digest('hex');
 }
 
 module.exports = { wordsFromSubmission, orderedPageIdentity, buildCorrectionSourceHash, plannedSemanticAttempts,
-  hasHolisticCoverageMismatch, holisticCoverageMismatchCategories, blockEvaluationAfterCorrectionFailure, generateAndPersist };
+  buildSemanticSourceKey, hasHolisticCoverageMismatch, holisticCoverageMismatchCategories,
+  blockEvaluationAfterCorrectionFailure, generateAndPersist };

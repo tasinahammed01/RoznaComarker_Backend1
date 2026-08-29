@@ -38,13 +38,15 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
   const corrections = layoutCurrent && Array.isArray(submission.writingCorrections) ? submission.writingCorrections : [];
   const sourceCounts = countSources(corrections);
   const semanticComplete = layoutCurrent && (submission.semanticStatus === 'completed' || (!submission.semanticStatus && correctionStatus === 'completed'));
+  const semanticPartial = layoutCurrent && submission.semanticStatus === 'partial';
   const semanticFailed = !layoutCurrent || submission.semanticStatus === 'failed'
     || (!submission.semanticStatus && ['partial', 'failed', 'stale'].includes(correctionStatus));
   const statistics = layoutCurrent ? (submission.correctionStatistics || null) : null;
   const categoryAvailability = {};
-  for (const category of SEMANTIC_CATEGORIES) categoryAvailability[category] = semanticComplete ? 'available' : semanticFailed ? 'failed' : 'pending';
+  for (const category of SEMANTIC_CATEGORIES) categoryAvailability[category] = semanticComplete ? 'available'
+    : semanticPartial ? 'partial' : semanticFailed ? 'failed' : 'pending';
   const canonicalComplete = semanticComplete && correctionStatus === 'completed';
-  const anyCategoryAvailable = semanticComplete;
+  const anyCategoryAvailable = semanticComplete || semanticPartial;
 
   const sourceHash = layoutCurrent ? (submission.correctionSourceHash || null) : null;
   const teacherOverride = layoutCurrent && Boolean(feedback?.overriddenByTeacher);
@@ -55,8 +57,10 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
     ? submission.semanticStatus || (correctionProcessing ? 'processing' : semanticComplete ? 'completed' : semanticFailed ? 'failed' : 'pending')
     : 'failed';
   const semanticProcessing = ['pending', 'processing', 'retry_wait'].includes(semanticStatus);
-  const evaluationJobActive = semanticComplete && persistedEvaluationStatus === 'processing' && Boolean(submission.evaluationJobId);
-  const evaluationPending = semanticComplete && persistedEvaluationStatus === 'pending';
+  const degradedEvaluationEligible = (semanticFailed || semanticPartial) && correctionStatus === 'partial' && Boolean(sourceHash);
+  const evaluationJobActive = (semanticComplete || degradedEvaluationEligible)
+    && persistedEvaluationStatus === 'processing' && Boolean(submission.evaluationJobId);
+  const evaluationPending = (semanticComplete || degradedEvaluationEligible) && persistedEvaluationStatus === 'pending';
   const evaluationProcessing = evaluationJobActive || evaluationPending
     || (semanticComplete && persistedEvaluationStatus === 'processing');
   const evaluationLifecycleComplete = ['completed', 'partial'].includes(persistedEvaluationStatus);
@@ -73,8 +77,8 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
     ? (!storedPolicyHash || storedPolicyHash === currentSettings.policyHash)
     : (!submission.evaluationPolicyHash
       || feedback?.evaluationPolicyHash === submission.evaluationPolicyHash);
-  const evaluationCurrent = Boolean(feedback && (teacherOverride || (semanticComplete
-    && evaluationLifecycleComplete && sourceHash && feedback.evaluationSourceHash === sourceHash
+  const evaluationCurrent = Boolean(feedback && (teacherOverride || (
+    evaluationLifecycleComplete && sourceHash && feedback.evaluationSourceHash === sourceHash
     && rubricHashCurrent && policyHashCurrent
     && feedback.assessmentVersion === ASSESSMENT_VERSION && feedback.evaluationVersion === EVALUATION_VERSION
     && submission.evaluationVersion === EVALUATION_VERSION)));
@@ -84,10 +88,11 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
     && feedback.evaluationVersion === EVALUATION_VERSION
     && submission.evaluationVersion === EVALUATION_VERSION);
   let evaluationStatus = teacherOverride ? 'completed' : persistedEvaluationStatus;
-  if ((correctionPending || semanticProcessing) && !teacherOverride) evaluationStatus = 'pending';
-  else if (semanticFailed && !teacherOverride) evaluationStatus = 'blocked';
+  if (evaluationCurrent && !teacherOverride) evaluationStatus = persistedEvaluationStatus;
+  else if ((correctionPending || semanticProcessing) && !teacherOverride) evaluationStatus = 'pending';
   else if (!teacherOverride && evaluationProcessing) evaluationStatus = evaluationJobActive ? 'processing' : 'pending';
   else if (!teacherOverride && evaluationCurrent) evaluationStatus = persistedEvaluationStatus;
+  else if (semanticFailed && !teacherOverride) evaluationStatus = 'blocked';
   else if (!teacherOverride && persistedEvaluationStatus === 'failed') evaluationStatus = 'failed';
   else if (!teacherOverride && semanticComplete) evaluationStatus = 'stale';
   const detailedHashCurrent = Boolean(sourceHash && feedback?.detailedFeedbackSourceHash === sourceHash);
@@ -98,8 +103,6 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
     : detailedHashCurrent && structuredDetailedFeedback));
   const detailedFeedbackStatus = correctionPending && !teacherOverride
     ? 'pending'
-    : semanticFailed && !teacherOverride
-    ? 'blocked'
     : evaluationProcessing && !teacherOverride
     ? 'processing'
     : invalidCanonicalFeedback
@@ -152,7 +155,7 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
     transcriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
     correctionStage: correctionStatus === 'completed' ? 'complete' : semanticFailed ? 'ai_only_failed' : 'ai_only',
     statisticsStatus: canonicalComplete ? 'complete' : anyCategoryAvailable ? 'partial' : semanticFailed ? 'failed' : 'processing',
-    statisticsCompleteness: canonicalComplete ? 'canonical' : 'none',
+    statisticsCompleteness: canonicalComplete ? 'canonical' : semanticPartial ? 'partial' : 'none',
     statistics,
     categoryAvailability,
     sourceCounts,
@@ -170,13 +173,16 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
     evaluationBlockedReason: evaluationStatus === 'blocked' ? 'corrections_incomplete' : null,
     detailedFeedbackBlockedReason: detailedFeedbackStatus === 'blocked' ? (semanticFailed ? 'evaluation_unavailable' : 'evaluation_unavailable') : null,
     semanticStatus,
+    semanticSucceeded: semanticStatus === 'completed' ? true : ['partial', 'failed'].includes(semanticStatus) ? false : null,
+    correctionsAvailable: canonicalComplete || semanticPartial,
+    correctionsCompleteness: canonicalComplete ? 'complete' : semanticPartial ? 'partial' : 'none',
     semanticAttempt: Number(submission.semanticAttempt || 0),
     semanticMaxAttempts: Number(submission.semanticMaxAttempts || 0),
     semanticNextRetryAt: submission.semanticNextRetryAt || null,
     semanticErrorCode,
     retryable: manualRetryAllowed,
-    score: !evaluationProcessing && evaluationCurrent && Number.isFinite(Number(feedback?.overallScore)) ? Number(feedback.overallScore) : null,
-    grade: !evaluationProcessing && evaluationCurrent && typeof feedback?.grade === 'string' ? feedback.grade : null,
+    score: evaluationCurrent && Number.isFinite(Number(feedback?.overallScore)) ? Number(feedback.overallScore) : null,
+    grade: evaluationCurrent && typeof feedback?.grade === 'string' ? feedback.grade : null,
     evaluationCurrent,
     evaluationFreshness,
     requiresCanonicalReevaluation,

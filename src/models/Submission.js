@@ -157,7 +157,7 @@ const submissionSchema = new Schema(
     languageToolVersion: { type: String, trim: true },
     languageToolMappingVersion: { type: String, trim: true },
     languageToolTranscriptLayoutVersion: { type: String, trim: true },
-    semanticStatus: { type: String, enum: ['pending', 'processing', 'retry_wait', 'completed', 'failed'], default: undefined, index: true },
+    semanticStatus: { type: String, enum: ['pending', 'processing', 'retry_wait', 'completed', 'partial', 'failed'], default: undefined, index: true },
     semanticAttempt: { type: Number, min: 0, default: undefined },
     semanticMaxAttempts: { type: Number, min: 0, default: undefined },
     semanticNextRetryAt: { type: Date, default: undefined },

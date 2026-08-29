@@ -148,9 +148,6 @@ async function loadOwnedSource(submissionId, studentId) {
     || ['pending', 'processing', 'retry_wait'].includes(submission.semanticStatus)) {
     throw new AdaptivePracticeError(202, 'ANALYSIS_PROCESSING', 'Writing analysis is still processing.');
   }
-  if (submission.semanticStatus === 'failed') {
-    throw new AdaptivePracticeError(400, 'SEMANTIC_FAILED', 'Semantic writing analysis failed; adaptive practice is not available.');
-  }
   if (submission.evaluationStatus !== 'completed' || !sourceHashMatch) {
     throw new AdaptivePracticeError(400, 'STALE_EVALUATION', 'The evaluation does not match the latest canonical corrections.');
   }

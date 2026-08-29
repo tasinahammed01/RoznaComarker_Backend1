@@ -11,9 +11,13 @@ const mockAssess = jest.fn().mockResolvedValue({ sourceHash: 'hash', status: 'co
 jest.mock('../src/models/SubmissionFeedback', () => ({ findOneAndUpdate: mockFindOneAndUpdate, findOne: mockFindOne }));
 jest.mock('../src/models/class.model', () => ({ findById: jest.fn(() => ({ select: () => ({ lean: mockClassLean }) })) }));
 jest.mock('../src/models/user.model', () => ({ findById: jest.fn(() => ({ select: () => ({ lean: jest.fn().mockResolvedValue(null) }) })) }));
-jest.mock('../src/services/semanticRubricAssessment.service', () => ({ assess: mockAssess }));
+jest.mock('../src/services/semanticRubricAssessment.service', () => ({
+  PROMPT_VERSION: 'semantic-rubric-assessment-v7-fixed-skill-isolation',
+  SCHEMA_VERSION: 'semantic-rubric-assessment-json-v5',
+  assess: mockAssess
+}));
 
-const { generate } = require('../src/services/canonicalEvaluation.service');
+const { generate, prepareRubricAssessment } = require('../src/services/canonicalEvaluation.service');
 
 function submission(jobStillCurrent) {
   const updateOne = jest.fn().mockResolvedValueOnce({ modifiedCount: 1 }).mockResolvedValue({ modifiedCount: 1 });
@@ -63,6 +67,75 @@ describe('canonical evaluation write guards', () => {
         expect.objectContaining({ category: 'MECHANICS', finalScore: 0 })
       ]
     });
+  });
+
+  test('reuses one prepared rubric provider result during final score and feedback persistence', async () => {
+    const record = submission(true);
+    const assignment = { title: 'Essay' };
+    const categoryPlan = [
+      ['CONTENT', 'REL', 5], ['ORGANIZATION', 'COH', 4], ['VOCABULARY', 'WC', 4],
+      ['GRAMMAR', 'T', 29], ['MECHANICS', 'SP', 4]
+    ];
+    record.value.writingCorrections = categoryPlan.flatMap(([category, symbol, count]) =>
+      Array.from({ length: count }, (_, index) => ({ id: `${category}-${index}`, source: 'AI', category, symbol,
+        quotedText: 'Essay', suggestedText: 'Revision', message: 'Concise correction.', correctionKind: 'localized',
+        severity: 'medium', confidence: 0.99, startChar: 0, endChar: 5, page: 1 })));
+    const prepared = await prepareRubricAssessment({ submission: record.value, assignment, sourceHash: 'hash' });
+    const result = await generate({ submission: record.value, assignment,
+      preparedRubricAssessment: prepared, preparedRubricRequired: true });
+
+    expect(result).toMatchObject({ status: 'completed', overallScore: expect.any(Number) });
+    expect(mockAssess).toHaveBeenCalledTimes(1);
+    expect(mockFindOneAndUpdate.mock.calls.at(-1)[1].$set).toMatchObject({
+      overallScore: expect.any(Number), detailedFeedback: expect.any(Object),
+      evaluationProvider: 'test', evaluationModel: 'rubric',
+      correctionStats: expect.objectContaining({ total: 46, grammar: 29, mechanics: 4 })
+    });
+  });
+
+  test('classifies a prepared rubric hash mismatch without a second provider request', async () => {
+    const record = submission(true);
+    const assignment = { title: 'Essay' };
+    const prepared = await prepareRubricAssessment({ submission: record.value, assignment, sourceHash: 'hash' });
+    const result = await generate({ submission: record.value, assignment,
+      preparedRubricAssessment: { ...prepared, sourceHash: 'stale-hash' }, preparedRubricRequired: true });
+
+    expect(result).toMatchObject({ status: 'failed', errorCode: 'PREPARED_RUBRIC_HASH_MISMATCH' });
+    expect(mockAssess).toHaveBeenCalledTimes(1);
+  });
+
+  test('classifies a missing required prepared rubric without making a provider request', async () => {
+    const record = submission(true);
+    const result = await generate({ submission: record.value, assignment: { title: 'Essay' },
+      preparedRubricAssessment: null, preparedRubricRequired: true });
+
+    expect(result).toMatchObject({ status: 'failed', errorCode: 'PREPARED_RUBRIC_MISSING' });
+    expect(mockAssess).not.toHaveBeenCalled();
+  });
+
+  test('semantic correction failure still produces transcript-grounded rubric scores without false zero-correction success', async () => {
+    const record = submission(true);
+    record.value.correctionStatus = 'partial';
+    record.value.semanticStatus = 'failed';
+    record.value.semanticErrorCode = 'AI_ATTEMPT_TIMEOUT';
+    mockAssess.mockResolvedValueOnce({ ...await mockAssess(), categories: {
+      ...(await mockAssess()).categories,
+      GRAMMAR: { score: 12, maxScore: 20, comment: 'Transcript evidence shows recurring grammar weaknesses.',
+        issueCount: 0, strengthEvidence: [], improvementEvidence: [{ quotedText: 'Essay text.', explanation: 'Grammar weakness.', suggestion: 'Revise grammar.' }] },
+      MECHANICS: { score: 14, maxScore: 20, comment: 'Transcript evidence shows mechanics weaknesses.',
+        issueCount: 0, strengthEvidence: [], improvementEvidence: [{ quotedText: 'Essay text.', explanation: 'Mechanics weakness.', suggestion: 'Revise mechanics.' }] }
+    } });
+
+    const result = await generate({ submission: record.value, assignment: { title: 'Essay' }, allowDegradedCorrections: true });
+    const persisted = mockFindOneAndUpdate.mock.calls[1][1].$set;
+
+    expect(result.status).toBe('completed');
+    expect(mockAssess).toHaveBeenCalledWith(expect.objectContaining({ includeLanguageCategories: true }));
+    expect(persisted.rubricScores.GRAMMAR).toMatchObject({ score: 15, maxScore: 25 });
+    expect(persisted.rubricScores.MECHANICS).toMatchObject({ score: 7, maxScore: 10 });
+    expect(persisted.scoringAudit).toMatchObject({ correctionsAvailable: false,
+      languageScoringMode: 'transcript_semantic_fallback' });
+    expect(record.value.writingCorrections).toEqual([]);
   });
 
   test('custom-rubric scoring audit reproduces the deterministic selected-level overall score', async () => {
