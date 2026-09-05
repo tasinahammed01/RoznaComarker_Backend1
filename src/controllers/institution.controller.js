@@ -87,7 +87,7 @@ async function dashboard(req, res) {
     const usageBy = new Map(usage.map((x) => [String(x._id), x.used]));
     return ok(res, { institution: { id: institution._id, name: institution.name, status: institution.status, plan: institution.plan },
       seats: { used: members.length, limit: institution.seatLimit ?? null },
-      credits: { monthly: wallet.monthlyCredits, used: wallet.monthlyCreditsUsed, remaining: credit.remaining(wallet), cycleStart: wallet.cycleStart, cycleEnd: wallet.cycleEnd },
+      credits: { monthly: wallet.monthlyCredits, topUp: wallet.topUpCredits || 0, used: wallet.monthlyCreditsUsed, remaining: credit.remaining(wallet), cycleStart: wallet.cycleStart, cycleEnd: wallet.cycleEnd },
       teachers: members.map((m) => ({ memberId: m._id, userId: m.userId?._id, name: m.userId?.displayName || m.userId?.email,
         email: m.userId?.email, role: m.role, creditsUsed: usageBy.get(String(m.userId?._id)) || 0, limit: m.monthlyCreditLimit ?? null })), classes });
   } catch (cause) { return fail(res, 500, 'Failed to load institution dashboard.', 'DASHBOARD_FAILED'); }

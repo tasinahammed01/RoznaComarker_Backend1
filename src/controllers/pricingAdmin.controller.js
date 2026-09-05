@@ -1,50 +1,65 @@
+'use strict';
 const Plan = require('../models/Plan');
 const CreditPack = require('../models/CreditPack');
+const {configuredProviderName}=require('../services/payments/paymentProvider.service');const {isPaypalEnabled}=require('../config/paypal');const pricingRealtime=require('../services/pricingRealtime.service');
 
-const fail = (res, status, message, code = 'PRICING_CONFIG_INVALID') => res.status(status).json({ success: false, code, message });
-const num = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+const PLAN_FIELDS = new Set(['name','monthlyCredits','monthlyPrice','annualPrice','active','displayOrder','recommended','softThresholdPercent','warningThresholdPercent','stripeProductId','stripeMonthlyPriceId','stripeAnnualPriceId']);
+const PACK_FIELDS = new Set(['name','credits','price','currency','active','allowedPlans','displayOrder','stripePriceId']);
+const CANONICAL = new Set(['free','essential','essential_monthly','essential_annual','pro','pro_monthly','pro_annual']);
+const fail = (res, status, message, code = 'PRICING_CONFIG_INVALID', field) => res.status(status).json({ success: false, code, message, ...(field ? { field } : {}) });
+const finite = value => typeof value === 'number' && Number.isFinite(value);
+const text = value => typeof value === 'string' ? value.trim() : '';
+const nested = (value, key, fallback) => value && value[key] !== undefined && value[key] !== null ? value[key] : fallback;
+const publishPricingUpdate=value=>{try{return pricingRealtime.publishPricingConfigUpdated(value)}catch{return null}};
+
+function planKind(slug) {
+  if (slug === 'institution' || slug === 'custom') return 'institution';
+  return CANONICAL.has(slug) ? 'canonical' : 'legacy';
+}
+function planDto(plan) {
+  const slug = text(plan.slug).toLowerCase();
+  return { name: text(plan.name) || 'Unnamed legacy plan', slug, monthlyPrice: finite(plan.price) ? plan.price : 0,
+    annualPrice: finite(plan.annualPrice) ? plan.annualPrice : null, currency: text(plan.currency).toUpperCase() || 'USD',
+    monthlyCredits: Number.isInteger(plan.features?.essayAnalysesPerMonth) ? plan.features.essayAnalysesPerMonth : 0,
+    active: plan.isActive === true, recommended: (plan.popular ?? plan.isPopular) === true,
+    displayOrder: Number.isInteger(plan.displayOrder) ? plan.displayOrder : 0,
+    assessmentCreditNudges: { softThresholdPercent: nested(plan.assessmentCreditNudges,'softThresholdPercent',50), warningThresholdPercent: nested(plan.assessmentCreditNudges,'warningThresholdPercent',80) },
+    stripe: { productId: text(plan.stripe?.productId), monthlyPriceId: text(plan.stripe?.monthlyPriceId || plan.stripe?.priceId), annualPriceId: text(plan.stripe?.annualPriceId) },
+    kind: planKind(slug), editable: Boolean(slug) };
+}
+function packDto(pack) { return { name:text(pack.name),code:text(pack.code).toUpperCase(),credits:Number(pack.credits)||0,
+  price:finite(pack.price)?pack.price:0,currency:text(pack.currency).toUpperCase()||'USD',active:pack.active===true,
+  allowedPlans:Array.isArray(pack.allowedPlans)?pack.allowedPlans.map(value=>text(value).toLowerCase()).filter(Boolean):[],
+  displayOrder:Number.isInteger(pack.displayOrder)?pack.displayOrder:0,stripePriceId:text(pack.stripePriceId) }; }
 
 async function getConfig(req, res) {
-  const [plans, packs] = await Promise.all([
-    Plan.find().sort({ displayOrder: 1, slug: 1 }).select('name slug price annualPrice currency features.essayAnalysesPerMonth isActive displayOrder popular stripe assessmentCreditNudges').lean(),
-    CreditPack.find().sort({ displayOrder: 1, code: 1 }).lean()
-  ]);
-  return res.json({ success: true, plans, packs });
+  const [plans, packs] = await Promise.all([Plan.find().sort({ displayOrder: 1, slug: 1 }).lean(), CreditPack.find().sort({ displayOrder: 1, code: 1 }).lean()]);
+  const activePaymentProvider=configuredProviderName();return res.json({ success: true, plans: plans.map(planDto), packs: packs.map(packDto), provider:{activePaymentProvider,paypalEnabled:isPaypalEnabled(),stripeEnabled:activePaymentProvider==='stripe'||Boolean(String(process.env.STRIPE_SECRET_KEY||'').trim())} });
 }
-
-async function updatePlan(req, res) {
-  const slug = String(req.params.slug || '').trim().toLowerCase();
-  const plan = await Plan.findOne({ slug });
-  if (!plan) return fail(res, 404, 'Plan not found', 'PLAN_NOT_FOUND');
-  const body = req.body || {}; const soft = num(body.softThresholdPercent); const warning = num(body.warningThresholdPercent);
-  if (!String(body.name || '').trim() || num(body.monthlyCredits) === null || body.monthlyCredits < 0 ||
-    num(body.monthlyPrice) === null || body.monthlyPrice < 0 || (body.annualPrice !== null && body.annualPrice !== undefined && (num(body.annualPrice) === null || body.annualPrice < 0)) ||
-    soft === null || warning === null || soft < 0 || warning > 100 || soft >= warning)
-    return fail(res, 400, 'Enter valid prices, credits, and thresholds. The soft threshold must be below the warning threshold.');
-  plan.name = String(body.name).trim(); plan.features.essayAnalysesPerMonth = body.monthlyCredits;
-  plan.price = body.monthlyPrice; plan.annualPrice = body.annualPrice ?? null; plan.isActive = !!body.active;
-  plan.displayOrder = Number(body.displayOrder || 0); plan.popular = !!body.recommended;
-  plan.assessmentCreditNudges = { softThresholdPercent: soft, warningThresholdPercent: warning };
-  plan.stripe.productId = String(body.stripeProductId || '').trim() || undefined;
-  plan.stripe.monthlyPriceId = String(body.stripeMonthlyPriceId || '').trim() || undefined;
-  plan.stripe.annualPriceId = String(body.stripeAnnualPriceId || '').trim() || undefined;
-  await plan.save();
-  return res.json({ success: true, plan });
+function validateExact(body, fields, res) { const unsupported=Object.keys(body).filter(key=>!fields.has(key));if(unsupported.length){fail(res,400,`Unsupported field: ${unsupported[0]}.`,'PRICING_FIELD_UNSUPPORTED',unsupported[0]);return false}return true; }
+function validatePlan(body,res){
+  if(!validateExact(body,PLAN_FIELDS,res))return false;
+  if(!text(body.name)){fail(res,400,'Display name is required.','PLAN_NAME_REQUIRED','name');return false}
+  if(!Number.isInteger(body.monthlyCredits)||body.monthlyCredits<0){fail(res,400,'Monthly Assessment Credits must be a non-negative integer.','PLAN_CREDITS_INVALID','monthlyCredits');return false}
+  if(!finite(body.monthlyPrice)||body.monthlyPrice<0){fail(res,400,'Monthly price must be zero or greater.','PLAN_MONTHLY_PRICE_INVALID','monthlyPrice');return false}
+  if(body.annualPrice!==null&&(!finite(body.annualPrice)||body.annualPrice<0)){fail(res,400,'Annual price must be zero or greater.','PLAN_ANNUAL_PRICE_INVALID','annualPrice');return false}
+  if(!Number.isInteger(body.displayOrder)||body.displayOrder<0){fail(res,400,'Display order must be a non-negative integer.','PLAN_DISPLAY_ORDER_INVALID','displayOrder');return false}
+  if(typeof body.active!=='boolean'){fail(res,400,'Active must be a boolean.','PLAN_ACTIVE_INVALID','active');return false}
+  if(typeof body.recommended!=='boolean'){fail(res,400,'Recommended must be a boolean.','PLAN_RECOMMENDED_INVALID','recommended');return false}
+  if(!finite(body.softThresholdPercent)||body.softThresholdPercent<0||body.softThresholdPercent>99){fail(res,400,'Soft threshold must be between 0 and 99.','PLAN_SOFT_THRESHOLD_INVALID','softThresholdPercent');return false}
+  if(!finite(body.warningThresholdPercent)||body.warningThresholdPercent<1||body.warningThresholdPercent>100){fail(res,400,'Warning threshold must be between 1 and 100.','PLAN_WARNING_THRESHOLD_INVALID','warningThresholdPercent');return false}
+  if(body.softThresholdPercent>=body.warningThresholdPercent){fail(res,400,'Soft threshold must be lower than warning threshold.','PLAN_THRESHOLD_ORDER_INVALID','softThresholdPercent');return false}
+  for(const field of ['stripeProductId','stripeMonthlyPriceId','stripeAnnualPriceId'])if(typeof body[field]!=='string'){fail(res,400,`${field} must be a string.`,'PLAN_STRIPE_FIELD_INVALID',field);return false}
+  return true;
 }
+async function updatePlan(req,res){const slug=text(req.params.slug).toLowerCase(),plan=await Plan.findOne({slug});if(!plan)return fail(res,404,'Plan not found.','PLAN_NOT_FOUND');const body=req.body||{};if(!validatePlan(body,res))return;
+  plan.name=text(body.name);plan.features=plan.features||{};plan.features.essayAnalysesPerMonth=body.monthlyCredits;plan.price=body.monthlyPrice;plan.annualPrice=body.annualPrice;
+  plan.isActive=body.active;plan.displayOrder=body.displayOrder;plan.popular=body.recommended;plan.assessmentCreditNudges={softThresholdPercent:body.softThresholdPercent,warningThresholdPercent:body.warningThresholdPercent};
+  plan.stripe=plan.stripe||{};plan.stripe.productId=text(body.stripeProductId)||undefined;plan.stripe.monthlyPriceId=text(body.stripeMonthlyPriceId)||undefined;plan.stripe.annualPriceId=text(body.stripeAnnualPriceId)||undefined;
+  await plan.save();publishPricingUpdate({entity:'plan',key:slug});return res.json({success:true,plan:planDto(plan.toObject())});}
+async function updatePack(req,res){const code=text(req.params.code).toUpperCase(),pack=await CreditPack.findOne({code});if(!pack)return fail(res,404,'Credit pack not found.','CREDIT_PACK_NOT_FOUND');const body=req.body||{};if(!validateExact(body,PACK_FIELDS,res))return;
+ const allowedPlans=Array.isArray(body.allowedPlans)?[...new Set(body.allowedPlans.map(value=>text(value).toLowerCase()).filter(Boolean))]:[];const validPlanCount=await Plan.countDocuments({slug:{$in:allowedPlans}});
+ if(!text(body.name))return fail(res,400,'Credit pack name is required.','PACK_NAME_REQUIRED','name');if(!Number.isInteger(body.credits)||body.credits<1)return fail(res,400,'Assessment Credits must be a positive integer.','PACK_CREDITS_INVALID','credits');if(!finite(body.price)||body.price<0)return fail(res,400,'Price must be zero or greater.','PACK_PRICE_INVALID','price');if(!/^[A-Z]{3}$/.test(text(body.currency).toUpperCase()))return fail(res,400,'Currency must be a three-letter code.','PACK_CURRENCY_INVALID','currency');if(!Number.isInteger(body.displayOrder)||body.displayOrder<0)return fail(res,400,'Display order must be a non-negative integer.','PACK_DISPLAY_ORDER_INVALID','displayOrder');if(typeof body.active!=='boolean')return fail(res,400,'Active must be a boolean.','PACK_ACTIVE_INVALID','active');if(!allowedPlans.length||validPlanCount!==allowedPlans.length)return fail(res,400,'Select only valid allowed plans.','PACK_ALLOWED_PLANS_INVALID','allowedPlans');if(typeof body.stripePriceId!=='string')return fail(res,400,'Stripe one-time Price ID must be a string.','PACK_STRIPE_PRICE_INVALID','stripePriceId');
+ pack.name=text(body.name);pack.credits=body.credits;pack.price=body.price;pack.currency=text(body.currency).toUpperCase();pack.active=body.active;pack.allowedPlans=allowedPlans;pack.displayOrder=body.displayOrder;pack.stripePriceId=text(body.stripePriceId)||null;await pack.save();publishPricingUpdate({entity:'credit_pack',key:code});return res.json({success:true,pack:packDto(pack.toObject())});}
 
-async function updatePack(req, res) {
-  const code = String(req.params.code || '').trim().toUpperCase(); const pack = await CreditPack.findOne({ code });
-  if (!pack) return fail(res, 404, 'Credit pack not found', 'CREDIT_PACK_NOT_FOUND');
-  const body = req.body || {}; const credits = num(body.credits); const price = num(body.price);
-  const allowedPlans = Array.isArray(body.allowedPlans) ? [...new Set(body.allowedPlans.map((item) => String(item).trim().toLowerCase()).filter(Boolean))] : [];
-  const validPlanCount = await Plan.countDocuments({ slug: { $in: allowedPlans } });
-  if (!String(body.name || '').trim() || credits === null || !Number.isInteger(credits) || credits < 1 || price === null || price < 0 ||
-    !String(body.currency || '').match(/^[A-Za-z]{3}$/) || !allowedPlans.length || validPlanCount !== allowedPlans.length)
-    return fail(res, 400, 'Enter a valid pack name, credits, price, currency, and allowed plans.');
-  pack.name = String(body.name).trim(); pack.credits = credits; pack.price = price; pack.currency = String(body.currency).toUpperCase();
-  pack.active = !!body.active; pack.allowedPlans = allowedPlans; pack.displayOrder = Number(body.displayOrder || 0);
-  pack.stripePriceId = String(body.stripePriceId || '').trim() || null; await pack.save();
-  return res.json({ success: true, pack });
-}
-
-module.exports = { getConfig, updatePlan, updatePack };
+module.exports={getConfig,updatePlan,updatePack,planDto,packDto,validatePlan,planKind};

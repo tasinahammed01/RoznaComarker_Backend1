@@ -40,7 +40,15 @@ function publishToUser({ userId, event, payload }) {
   }
 }
 
+function publishSystemEvent({ event, payload }) {
+  for (const [userId] of Array.from(userStreams)) publishToUser({ userId, event, payload });
+}
+
+function connectedUserCount() { return userStreams.size; }
+
 module.exports = {
   registerStream,
-  publishToUser
+  publishToUser,
+  publishSystemEvent,
+  connectedUserCount
 };

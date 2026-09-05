@@ -53,6 +53,11 @@ test('personal class continues using personal wallet', async () => {
   expect((await PersonalWallet.findOne({ userId: teacher._id })).monthlyCreditsUsed).toBe(1);
   expect((await Wallet.findOne({ institutionId: institution._id })).monthlyCreditsUsed).toBe(0);
 });
+test('uses carried institution top-up credits only after the monthly shared allowance', async () => {
+  await Wallet.updateOne({ institutionId: institution._id }, { $set: { monthlyCreditsUsed: 3, topUpCredits: 2 } });
+  await debit('topup'); const wallet = await Wallet.findOne({ institutionId: institution._id });
+  expect(wallet.monthlyCreditsUsed).toBe(3); expect(wallet.topUpCredits).toBe(1); expect(institutionCredits.remaining(wallet)).toBe(1);
+});
 test('retries a durable member-applied crash stage without double debit', async () => {
   const submissionId = new mongoose.Types.ObjectId(); const idempotencyKey = `institution-assessment:${submissionId}:crash-run`;
   const wallet = await Wallet.findOne({ institutionId: institution._id }); const key = institutionCredits.cycleKey(wallet);

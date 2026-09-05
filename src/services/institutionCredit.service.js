@@ -5,7 +5,7 @@ const InstitutionCreditTransaction = require('../models/InstitutionCreditTransac
 
 const error = (message, code, statusCode = 403) => Object.assign(new Error(message), { code, statusCode });
 const cycleKey = (wallet) => `${new Date(wallet.cycleStart).toISOString()}_${new Date(wallet.cycleEnd).toISOString()}`;
-const remaining = (wallet) => Math.max(Number(wallet.monthlyCredits) - Number(wallet.monthlyCreditsUsed), 0);
+const remaining = (wallet) => Math.max(Number(wallet.monthlyCredits) - Number(wallet.monthlyCreditsUsed), 0) + Number(wallet.topUpCredits || 0);
 function addUtcMonthsClamped(value, months = 1, anchorDay) {
   const date = new Date(value); const intended = anchorDay || date.getUTCDate();
   const first = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1,
@@ -86,9 +86,12 @@ async function consumeAssessmentCredit({ institutionId, teacherUserId, classId, 
   const memberAlreadyApplied = !member && await InstitutionMember.exists({ _id: state.member._id, appliedDebitKeys: idempotencyKey });
   if (!member && !memberAlreadyApplied) { await InstitutionCreditTransaction.updateOne({ _id: transaction._id }, { $set: { status: 'failed' } }); throw error('Your institution usage limit has been reached.', 'INSTITUTION_TEACHER_CAP_REACHED'); }
   await InstitutionCreditTransaction.updateOne({ _id: transaction._id }, { $set: { memberUsageApplied: true } });
-  const wallet = await InstitutionCreditWallet.findOneAndUpdate({ _id: state.wallet._id,
+  let wallet = await InstitutionCreditWallet.findOneAndUpdate({ _id: state.wallet._id,
     appliedDebitKeys: { $ne: idempotencyKey }, monthlyCreditsUsed: { $lt: state.wallet.monthlyCredits }, cycleStart: state.wallet.cycleStart },
     { $inc: { monthlyCreditsUsed: 1 }, $addToSet: { appliedDebitKeys: idempotencyKey } }, { new: true });
+  if (!wallet) wallet = await InstitutionCreditWallet.findOneAndUpdate({ _id: state.wallet._id,
+    appliedDebitKeys: { $ne: idempotencyKey }, topUpCredits: { $gte: 1 }, cycleStart: state.wallet.cycleStart },
+    { $inc: { topUpCredits: -1 }, $addToSet: { appliedDebitKeys: idempotencyKey } }, { new: true });
   const walletAlreadyApplied = !wallet && await InstitutionCreditWallet.findOne({ _id: state.wallet._id, appliedDebitKeys: idempotencyKey }).select('+appliedDebitKeys');
   if (!wallet && !walletAlreadyApplied) {
     await InstitutionMember.updateOne({ _id: state.member._id, cycleKey: key, appliedDebitKeys: idempotencyKey },

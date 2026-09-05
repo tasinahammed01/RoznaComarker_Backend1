@@ -10,6 +10,7 @@
     "test": "jest --runInBand",
     "seed:phase1b-pricing": "node scripts/seedPhase1bPricing.js",
     "seed:assessment-credit-packs": "node scripts/seedAssessmentCreditPacks.js",
+    "pricing:migrate": "node scripts/migrateAdminPricing.js",
     "paypal:provision:sandbox": "node scripts/paypal/provisionSandboxPlans.js",
     "paypal:webhook:sandbox": "node scripts/paypal/provisionSandboxWebhook.js",
     "paypal:check": "node scripts/paypal/checkConfiguration.js",
