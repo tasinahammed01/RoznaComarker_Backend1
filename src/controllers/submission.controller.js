@@ -34,11 +34,19 @@ const logger = require('../utils/logger');
 const { bytesToMB, ensureActivePlan, getLimit, incrementUsage } = require('../middlewares/usage.middleware');
 const { getPublicApiUrl, buildPublicUploadUrl } = require('../utils/publicApiUrl');
 const { showMarksToStudent, redactStudentMarks } = require('../services/assignmentAccessPolicy.service');
-const { scopeCanonicalPages, scopeCanonicalCorrections } = require('../services/canonicalCorrectionResponse.service');
+const { scopeCanonicalPages, scopeCanonicalCorrections,
+  normalizeCorrectionWordIds } = require('../services/canonicalCorrectionResponse.service');
 const { pendingAnalysisState, resetSubmissionAnalysisState } = require('../services/submissionAnalysisLifecycle.service');
 const submissionRemoval = require('../services/submissionRemoval.service');
 const { getAdaptiveCompletionForResubmission } = require('../services/adaptivePractice.service');
 const CreditService = require('../services/credit.service');
+const AssessmentCreditRouter = require('../services/assessmentCreditRouter.service');
+const { captureCurrentRevision } = require('../services/submissionRevision.service');
+const draftComparison = require('../services/draftComparison.service');
+const User = require('../models/user.model');
+const { normalizeTeacherEvaluationPolicy, evaluationPolicyHash } = require('../services/teacherEvaluationPolicy.service');
+const { ASSESSMENT_VERSION } = require('../services/rubricLanguageScoring.service');
+const { normalizeAssignmentRubric, hashNormalizedRubric } = require('../services/assignmentRubric.service');
 
 const ADAPTIVE_RESUBMISSION_MESSAGE = 'Complete the required Adaptive Learning activities before submitting another draft.';
 
@@ -181,6 +189,13 @@ function normalizeSubmissionForClient(req, submission) {
   if (doc.ocrText) doc.ocrText = normalizeOcrTranscript(doc.ocrText);
   if (doc.combinedOcrText) doc.combinedOcrText = normalizeOcrTranscript(doc.combinedOcrText);
   if (Array.isArray(doc.ocrPages)) {
+    const currentFileIds = new Set((Array.isArray(doc.files) ? doc.files : [])
+      .map((file) => String(file?._id || file || '')).filter(Boolean));
+    if (currentFileIds.size) {
+      doc.ocrPages = doc.ocrPages.filter((page) => !page?.fileId || currentFileIds.has(String(page.fileId?._id || page.fileId)));
+      if (Array.isArray(doc.writingCorrections)) doc.writingCorrections = doc.writingCorrections.filter((correction) =>
+        !correction?.fileId || currentFileIds.has(String(correction.fileId?._id || correction.fileId)));
+    }
     for (const page of doc.ocrPages) {
       if (!page) continue;
       if (typeof page.text === 'string') page.text = normalizeOcrTranscript(page.text);
@@ -322,6 +337,7 @@ async function persistUploadedFile(req, type, providedFile, uploadOrder) {
     uploadedBy: userId,
     role,
     type,
+    sizeBytes: Number.isFinite(Number(file.size)) ? Number(file.size) : undefined,
     uploadOrder: Number.isInteger(uploadOrder) ? uploadOrder : undefined
   });
 
@@ -378,6 +394,41 @@ async function assertStudentMembership(studentId, classId) {
   });
 
   return Boolean(membership);
+}
+
+async function fileContentIdentity(req) {
+  const files = Array.isArray(req.files) && req.files.length ? req.files : (req.file ? [req.file] : []);
+  const hashes = [];
+  for (const file of files) {
+    const bytes = await fs.promises.readFile(file.path);
+    hashes.push(crypto.createHash('sha256').update(bytes).digest('hex'));
+  }
+  return hashes.length
+    ? crypto.createHash('sha256').update(hashes.join(':')).digest('hex')
+    : undefined;
+}
+
+function remapDraftFileReferences(value, previousFileIds, currentFileIds) {
+  const replacements = new Map(previousFileIds.map((id, index) => [String(id), String(currentFileIds[index] || '')]));
+  const visit = (item) => {
+    if (item == null) return item;
+    if (Array.isArray(item)) return item.map(visit);
+    if (item instanceof mongoose.Types.ObjectId) {
+      const replacement = replacements.get(String(item));
+      return replacement ? new mongoose.Types.ObjectId(replacement) : item;
+    }
+    if (typeof item === 'string') {
+      let result = item;
+      for (const [before, after] of replacements) if (after) result = result.split(before).join(after);
+      return result;
+    }
+    if (typeof item === 'object') {
+      const source = typeof item.toObject === 'function' ? item.toObject({ depopulate: true }) : item;
+      return Object.fromEntries(Object.entries(source).map(([key, nested]) => [key, visit(nested)]));
+    }
+    return item;
+  };
+  return visit(value);
 }
 
 async function enforceResubmissionPermission(req, res, next) {
@@ -468,6 +519,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
     }
   }
 
+  const contentIdentity = await fileContentIdentity(req);
   const persistedMulti = await persistUploadedFiles(req, 'submissions');
   if (persistedMulti.error) {
     return sendError(res, persistedMulti.error.statusCode, persistedMulti.error.message);
@@ -486,6 +538,9 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
 
   try {
     if (existing) {
+      const previousFileIds = (Array.isArray(existing.files) && existing.files.length
+        ? existing.files : (existing.file ? [existing.file] : [])).map((id) => String(id?._id || id));
+      const previousRevision = await captureCurrentRevision(existing);
       if (firstFile) {
         existing.file = firstFile._id;
       }
@@ -500,16 +555,50 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       existing.submittedAt = now;
       existing.isLate = isLate;
       existing.qrToken = qrToken;
+      existing.previousRevision = previousRevision._id;
+      existing.draftNumber = Math.max(1, Number(existing.draftNumber) || 1) + 1;
+      existing.fileContentIdentity = contentIdentity;
+      const teacher = await User.findById(classDoc.teacher).select('aiConfig').lean();
+      const normalizedRubric = normalizeAssignmentRubric(assignment || {});
+      const currentRubricHash = normalizedRubric.status === 'valid'
+        ? hashNormalizedRubric(normalizedRubric) : canonicalEvaluation.hashRubric(assignment);
+      const currentPolicyHash = evaluationPolicyHash(normalizeTeacherEvaluationPolicy(teacher?.aiConfig));
+      const reusableAssessment = Boolean(contentIdentity && previousRevision.fileContentIdentity === contentIdentity
+        && previousFileIds.length === persistedFiles.length
+        && previousRevision.evaluationRubricSourceHash === currentRubricHash
+        && previousRevision.evaluationPolicyHash === currentPolicyHash
+        && previousRevision.feedbackSnapshot?.assessmentVersion === ASSESSMENT_VERSION
+        && previousRevision.feedbackSnapshot?.evaluationVersion === canonicalEvaluation.VERSION
+        && previousRevision.evaluationStatus === 'completed'
+        && ['complete', 'completed'].includes(String(previousRevision.assessmentStatus)));
 
-      resetSubmissionAnalysisState(existing, {
-        ocrJobId: new mongoose.Types.ObjectId().toString(), now: new Date()
-      });
+      if (reusableAssessment) {
+        const currentFileIds = persistedFiles.map((file) => String(file._id));
+        existing.ocrPages = remapDraftFileReferences(existing.ocrPages || [], previousFileIds, currentFileIds);
+        existing.ocrData = remapDraftFileReferences(existing.ocrData, previousFileIds, currentFileIds);
+        existing.writingCorrections = remapDraftFileReferences(existing.writingCorrections || [], previousFileIds, currentFileIds);
+        existing.reusedFromRevisionId = previousRevision._id;
+        existing.reusedAssessment = true;
+      } else {
+        existing.reusedFromRevisionId = undefined;
+        existing.reusedAssessment = false;
+        resetSubmissionAnalysisState(existing, {
+          ocrJobId: new mongoose.Types.ObjectId().toString(), now: new Date()
+        });
+        existing.ocrPages = [];
+        existing.writingCorrections = [];
+      }
 
       const saved = await existing.save();
+      const priorReview = await SubmissionFeedback.findOneAndUpdate(
+        { submissionId: saved._id },
+        { $unset: { teacherReviewedAt: 1, teacherReviewedBy: 1 } },
+        { returnDocument: 'before' }
+      ).select('teacherReviewedAt').lean();
 
       await incrementUsage(studentId, { storageMB: uploadedMB });
 
-      setImmediate(() => {
+      if (!reusableAssessment) setImmediate(() => {
         const ids = Array.isArray(saved.files) && saved.files.length
           ? saved.files
           : (firstFile ? [firstFile._id] : []);
@@ -543,7 +632,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
         try {
           const teacherId = populated?.assignment?.teacher?._id;
           const studentDisplay = populated?.student
-            ? String(populated.student.displayName || populated.student.email || 'Student')
+            ? String(populated.student.displayName || 'Student')
             : 'Student';
           const assignmentTitle = populated?.assignment
             ? String(populated.assignment.title || 'Assignment')
@@ -554,13 +643,16 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
               recipientId: teacherId,
               actorId: studentId,
               type: 'assignment_submitted',
-              title: 'Assignment submitted',
-              description: `${studentDisplay} submitted ${assignmentTitle}`,
+              title: 'Revised draft submitted',
+              description: `${studentDisplay} submitted a revised draft for ${assignmentTitle}`,
+              idempotencyKey: `submission:${populated._id}:revision:${Number(populated?.draftNumber || 2)}`,
               data: {
                 classId: String(populated?.class?._id || ''),
                 assignmentId: String(populated?.assignment?._id || ''),
                 submissionId: String(populated?._id || ''),
                 studentId: String(populated?.student?._id || ''),
+                draftNumber: Number(populated?.draftNumber || 2),
+                waitingReviewAdded: Boolean(priorReview?.teacherReviewedAt),
                 route: {
                   path: '/teacher/my-classes/detail/student-submissions',
                   params: [String(populated?.student?._id || '')],
@@ -594,6 +686,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       submittedAt: now,
       isLate,
       qrToken,
+      fileContentIdentity: contentIdentity,
       ...pendingAnalysisState({ ocrJobId: new mongoose.Types.ObjectId().toString(), now: new Date() })
     });
 
@@ -633,7 +726,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       try {
         const teacherId = populated?.assignment?.teacher?._id;
         const studentDisplay = populated?.student
-          ? String(populated.student.displayName || populated.student.email || 'Student')
+          ? String(populated.student.displayName || 'Student')
           : 'Student';
         const assignmentTitle = populated?.assignment
           ? String(populated.assignment.title || 'Assignment')
@@ -646,11 +739,14 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
             type: 'assignment_submitted',
             title: 'Assignment submitted',
             description: `${studentDisplay} submitted ${assignmentTitle}`,
+            idempotencyKey: `submission:${populated._id}:submitted`,
             data: {
               classId: String(populated?.class?._id || ''),
               assignmentId: String(populated?.assignment?._id || ''),
               submissionId: String(populated?._id || ''),
               studentId: String(populated?.student?._id || ''),
+              draftNumber: Number(populated?.draftNumber || 1),
+              waitingReviewAdded: true,
               route: {
                 path: '/teacher/my-classes/detail/student-submissions',
                 params: [String(populated?.student?._id || '')],
@@ -989,7 +1085,15 @@ async function getOcrCorrections(req, res) {
     const resultState = buildCanonicalResultState({ submission: doc, feedback: evaluationDoc });
     const hasCanonicalCorrections = resultState.correctionCurrent && Array.isArray(doc.writingCorrections);
     const allCorrections = hasCanonicalCorrections ? doc.writingCorrections : [];
-    const corrections = scopeCanonicalCorrections(allCorrections, requestedFileId);
+    const corrections = normalizeCorrectionWordIds(
+      scopeCanonicalCorrections(allCorrections, requestedFileId), canonicalTranscript, doc.ocrPages);
+    const currentWordIds = new Set(ocr.flatMap((page) => page.words || []).map((word) => String(word.id)));
+    const correctionsWithWordIds = corrections.filter((correction) => correction.wordIds?.length).length;
+    const correctionsMappedToCurrentWords = corrections.filter((correction) =>
+      correction.wordIds?.some((wordId) => currentWordIds.has(String(wordId)))).length;
+    logger.debug({ event: 'correction_word_mapping', submissionId: String(doc._id),
+      correctionCount: corrections.length, correctionsWithWordIds, correctionsMappedToCurrentWords,
+      unmappedCorrectionCount: corrections.length - correctionsMappedToCurrentWords });
     const statistics = resultState.statistics || (hasCanonicalCorrections ? require('../services/correctionCanonical.service').statistics(allCorrections) : null);
     const evaluationCurrent = resultState.evaluationCurrent;
     res.set('Cache-Control', 'private, no-store');
@@ -1081,7 +1185,8 @@ async function regenerateCanonicalCorrections(req, res) {
       return sendError(res, 409, 'Teacher-overridden evaluations cannot be regenerated');
     }
     if (mongoose.Types.ObjectId.isValid(req.user._id)) {
-      const creditState = await CreditService.canRunAssessment(req.user);
+      const creditState = await AssessmentCreditRouter.canRunAssessment({ teacherUserId: req.user._id,
+        submissionId: submission._id, assignmentId: submission.assignment, user: req.user });
       if (!creditState.allowed) return sendError(res, 403,
         'You have used all your Assessment Credits for this billing cycle.', 'INSUFFICIENT_ASSESSMENT_CREDITS');
     }
@@ -1118,7 +1223,8 @@ async function retryCanonicalEvaluation(req, res) {
       return sendError(res, 409, 'Teacher-overridden evaluations cannot be re-evaluated');
     }
     if (mongoose.Types.ObjectId.isValid(req.user._id)) {
-      const creditState = await CreditService.canRunAssessment(req.user);
+      const creditState = await AssessmentCreditRouter.canRunAssessment({ teacherUserId: req.user._id,
+        submissionId: submission._id, assignmentId: submission.assignment, user: req.user });
       if (!creditState.allowed) return sendError(res, 403,
         'You have used all your Assessment Credits for this billing cycle.', 'INSUFFICIENT_ASSESSMENT_CREDITS');
     }
@@ -1168,6 +1274,14 @@ async function retryCanonicalEvaluation(req, res) {
   }
 }
 
+async function getDraftComparison(req, res) {
+  try {
+    return sendSuccess(res, await draftComparison.comparisonForSubmission(req.params.submissionId, req.user));
+  } catch (error) {
+    return sendError(res, error?.statusCode || 500, error?.message || 'Failed to compare drafts');
+  }
+}
+
 module.exports = {
   enforceResubmissionPermission,
   submitByAssignmentId,
@@ -1179,6 +1293,7 @@ module.exports = {
   getOcrCorrections,
   regenerateCanonicalCorrections,
   retryCanonicalEvaluation,
+  getDraftComparison,
   uploadHandwrittenForOcr,
   normalizePublicUploadsUrlForDev,
   hasValidOcrPages,

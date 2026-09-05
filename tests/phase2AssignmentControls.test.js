@@ -17,6 +17,7 @@ const Assignment = require('../src/models/assignment.model');
 const Membership = require('../src/models/membership.model');
 const Submission = require('../src/models/Submission');
 const SubmissionFeedback = require('../src/models/SubmissionFeedback');
+const SubmissionRevision = require('../src/models/SubmissionRevision');
 const Feedback = require('../src/models/Feedback');
 const AdaptivePracticeSession = require('../src/models/AdaptivePracticeSession');
 const AdaptivePracticeAttempt = require('../src/models/AdaptivePracticeAttempt');
@@ -155,8 +156,13 @@ describe('Phase 2 assignment controls', () => {
     expect(second.status).toBe(200);
     expect(second.body.data._id).toBe(first.body.data._id);
     const saved = await Submission.findById(first.body.data._id).lean();
+    const revision = await SubmissionRevision.findOne({ sourceSubmissionId: saved._id, draftNumber: 1 }).lean();
     expect(saved.ocrStatus).toBe('pending');
     expect(saved.evaluationStatus).toBe('pending');
+    expect(saved.files).toHaveLength(1);
+    expect(revision.files).toHaveLength(1);
+    expect(String(saved.files[0])).not.toBe(String(revision.files[0]));
+    expect(saved.ocrPages).toEqual([]);
     expect(await Submission.countDocuments({ student: student._id, assignment: assignment._id })).toBe(1);
   });
 
@@ -173,6 +179,12 @@ describe('Phase 2 assignment controls', () => {
     const { submission, feedback } = await makeEvaluatedSubmission(assignment);
     await completeCurrentAdaptivePractice(submission, feedback);
     expect((await upload(assignment._id, 'next.pdf')).status).toBe(200);
+    const revised = await Submission.findById(submission._id).lean();
+    const snapshot = await SubmissionRevision.findOne({ sourceSubmissionId: submission._id, draftNumber: 1 }).lean();
+    expect(revised).toMatchObject({ draftNumber: 2, evaluationStatus: 'pending' });
+    expect(String(revised.previousRevision)).toBe(String(snapshot._id));
+    expect(snapshot.feedbackSnapshot.overallScore).toBe(feedback.overallScore);
+    expect(snapshot.ocrPages[0].text).toBe('A current evaluated student draft.');
   });
 
   test('does not let a completed stale adaptive session authorize a newer draft', async () => {

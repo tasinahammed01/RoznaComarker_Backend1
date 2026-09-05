@@ -4,7 +4,9 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const AdaptivePracticeSession = require('../models/AdaptivePracticeSession');
 const AdaptivePracticeAttempt = require('../models/AdaptivePracticeAttempt');
+const Assignment = require('../models/assignment.model');
 const checkAI = require('./adaptivePracticeCheckAI.service');
+const { publishToUser } = require('./notificationRealtime.service');
 const { normalizeQuestionType } = require('../utils/adaptivePracticeQuestionTypes');
 const { normalizePractice, resolvePracticeQuestion, questionAttemptKey } = require('../utils/adaptivePracticeQuestions');
 const {
@@ -223,7 +225,36 @@ async function checkResponse(sessionId, activityId, studentId, body = {}) {
       attempt.checking.model = questionType;
     }
     attempt.status = 'ready'; attempt.result = result; attempt.checking.completedAt = new Date(); await attempt.save();
-    return { state: 'ready', attempt, progress: await getProgressSummary(session), reused };
+    const progress = await getProgressSummary(session);
+    if (progress.completed) {
+      const completedAt = new Date();
+      const completion = await AdaptivePracticeSession.updateOne(
+        { _id: session._id, completedAt: { $exists: false } },
+        { $set: { completedAt } }
+      );
+      if (completion.modifiedCount) {
+        const assignment = await Assignment.findById(session.assignmentId).select('teacher title class').lean();
+        if (assignment?.teacher) {
+          try {
+            const student = await require('../models/user.model').findById(session.studentId).select('displayName').lean();
+            await require('./notification.service').createSmartNotification({ recipientId: assignment.teacher,
+              actorId: session.studentId, type: 'adaptive_completed', title: 'Adaptive Learning completed',
+              description: `${student?.displayName || 'A student'} completed Adaptive Learning for ${assignment.title || 'an assignment'}.`,
+              idempotencyKey: `adaptive:${session._id}:completed`, data: { sessionId: String(session._id),
+                assignmentId: String(assignment._id), classId: String(assignment.class || ''), route: {
+                  path: '/teacher/my-classes/detail/student-submissions', params: [String(session.studentId)],
+                  queryParams: { classId: String(assignment.class || ''), assignmentId: String(assignment._id), submissionId: String(session.submissionId) } } } });
+          } catch { /* notification is secondary to completion */ }
+          publishToUser({
+          userId: assignment.teacher,
+          event: 'teacher_activity_invalidated',
+          payload: { type: 'adaptive_completion', sessionId: String(session._id),
+            submissionId: String(session.submissionId), occurredAt: completedAt.toISOString() }
+          });
+        }
+      }
+    }
+    return { state: 'ready', attempt, progress, reused };
   } catch (error) {
     attempt.status = 'failed'; attempt.checking.completedAt = new Date(); attempt.checking.errorCode = error.code || 'AI_CHECK_FAILED'; attempt.checking.errorMessage = 'Your response could not be checked. Please try again.'; await attempt.save();
     throw new AttemptError(Number(error.status) || 502, error.code || 'ADAPTIVE_CHECK_AI_RESPONSE_INVALID', 'Your response could not be checked. Please try again.');

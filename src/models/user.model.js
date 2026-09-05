@@ -63,6 +63,8 @@ const userSchema = new mongoose.Schema(
       enum: ['teacher', 'student', 'admin'],
       default: null
     },
+    referralCode: { type: String, trim: true, uppercase: true, unique: true, sparse: true, index: true },
+    referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     plan: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Plan'
@@ -89,6 +91,17 @@ const userSchema = new mongoose.Schema(
     stripeLatestInvoiceId: { type: String, trim: true },
     stripeLatestInvoiceStatus: { type: String, trim: true },
     stripeLastPaymentFailedAt: { type: Date },
+    paypalSubscriptionId: { type: String, trim: true, index: true, unique: true, sparse: true },
+    paypalPlanId: { type: String, trim: true },
+    paypalSubscriptionStatus: {
+      type: String,
+      enum: ['APPROVAL_PENDING', 'APPROVAL_REQUIRED', 'APPROVED', 'CREATED', 'ACTIVE', 'SUSPENDED', 'CANCELLED', 'EXPIRED', 'FAILED'],
+      default: null
+    },
+    paypalCurrentPeriodStart: { type: Date },
+    paypalCurrentPeriodEnd: { type: Date },
+    paypalLastPaymentFailedAt: { type: Date },
+    paypalPaymentIssueActive: { type: Boolean, default: false },
     usage: {
       classes: { type: Number, default: 0, min: 0 },
       assignments: { type: Number, default: 0, min: 0 },
@@ -105,6 +118,12 @@ const userSchema = new mongoose.Schema(
     isActive: {
       type: Boolean,
       default: true
+    },
+    // Semantic baseline for the teacher dashboard activity summary. This is
+    // deliberately separate from updatedAt and authentication timestamps.
+    teacherActivityLastViewedAt: {
+      type: Date,
+      default: undefined
     }
   },
   {

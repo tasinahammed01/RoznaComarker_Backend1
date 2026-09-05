@@ -1,4 +1,6 @@
 const Plan = require('../models/Plan');
+const { configuredProviderName } = require('../services/payments/paymentProvider.service');
+const { getPaypalPlanId } = require('../config/paypal');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -16,6 +18,7 @@ function sendError(res, statusCode, message) {
 
 async function getActivePlans(req, res) {
   try {
+    const paymentProvider = configuredProviderName();
     const rawPlans = await Plan.find({ isActive: true }).lean();
     const preferredOrder = new Map([
       ['free', 0],
@@ -39,8 +42,13 @@ async function getActivePlans(req, res) {
           softThresholdPercent: plan.assessmentCreditNudges?.softThresholdPercent ?? 50,
           warningThresholdPercent: plan.assessmentCreditNudges?.warningThresholdPercent ?? 80
         },
-        purchasable: !!plan.stripe?.productId && !!(plan.stripe?.monthlyPriceId || plan.stripe?.priceId),
-        annualBillingAvailable: typeof plan.annualPrice === 'number' && !!plan.stripe?.annualPriceId,
+        paymentProvider,
+        purchasable: paymentProvider === 'paypal'
+          ? !!getPaypalPlanId(plan.slug, 'monthly').value
+          : !!plan.stripe?.productId && !!(plan.stripe?.monthlyPriceId || plan.stripe?.priceId),
+        annualBillingAvailable: paymentProvider === 'paypal'
+          ? typeof plan.annualPrice === 'number' && !!getPaypalPlanId(plan.slug, 'annual').value
+          : typeof plan.annualPrice === 'number' && !!plan.stripe?.annualPriceId,
         features: {
           maxClasses: plan.features?.maxClasses ?? null,
           maxStudents: plan.features?.maxStudents ?? null,

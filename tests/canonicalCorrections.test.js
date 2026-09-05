@@ -7,9 +7,44 @@ const canonical = require('../src/services/correctionCanonical.service');
 const semantic = require('../src/services/semanticWritingCorrections.service');
 const { normalizeOcrWordsFromStored, buildTranscriptAndSpans } = require('../src/services/ocrCorrections.service');
 const { buildCanonicalSubmissionTranscript } = require('../src/utils/ocrTranscriptNormalizer');
+const { canonicalOcrWordId } = require('../src/utils/ocrWordIdentity');
+const { normalizeCorrectionWordIds } = require('../src/services/canonicalCorrectionResponse.service');
 const realRuleMetadata = require('./fixtures/languageToolRuleMetadata');
 
 describe('canonical correction primitives', () => {
+  test('canonical OCR word identity normalizes raw IDs and is idempotent', () => {
+    const canonicalId = canonicalOcrWordId({ fileId: 'file-a', pageNumber: 1, storedWordId: '57', wordIndex: 0 });
+    expect(canonicalId).toBe('word_file-a_1_57');
+    expect(canonicalOcrWordId({ fileId: 'file-a', pageNumber: 1, storedWordId: canonicalId, wordIndex: 0 }))
+      .toBe(canonicalId);
+  });
+
+  test('canonical transcript and response serialization share IDs and repair legacy corrections', () => {
+    const storedPages = [{ fileId: 'file-a', pageNumber: 1, rawText: 'Bad word', words: [
+      { id: '57', text: 'Bad', bbox: { x0: 1, y0: 2, x1: 5, y1: 6 } },
+      { id: '58', text: 'word', bbox: { x0: 6, y0: 2, x1: 12, y1: 6 } }
+    ] }];
+    const transcript = buildCanonicalSubmissionTranscript({ files: ['file-a'], ocrPages: storedPages });
+    const responseWords = normalizeOcrWordsFromStored(transcript.pages[0].words, { fileId: 'file-a' });
+    expect(responseWords.map((word) => word.id)).toEqual(transcript.pages[0].words.map((word) => word.id));
+    expect(normalizeCorrectionWordIds([{ id: 'legacy', fileId: 'file-a', page: 1,
+      wordIds: ['57'] }], transcript, storedPages)[0].wordIds).toEqual(['word_file-a_1_57']);
+    expect(normalizeCorrectionWordIds([{ id: 'missing', fileId: 'file-a', page: 1,
+      wordIds: [], quotedText: 'Bad word' }], transcript, storedPages)[0].wordIds)
+      .toEqual(['word_file-a_1_57', 'word_file-a_1_58']);
+  });
+
+  test('response fallback is file/page scoped and does not guess repeated quotations', () => {
+    const storedPages = ['a', 'b'].map((fileId) => ({ fileId, pageNumber: 1, rawText: 'repeat repeat', words: [
+      { id: '1', text: 'repeat', bbox: { x0: 1, y0: 1, x1: 4, y1: 2 } },
+      { id: '2', text: 'repeat', bbox: { x0: 5, y0: 1, x1: 8, y1: 2 } }
+    ] }));
+    const transcript = buildCanonicalSubmissionTranscript({ files: ['a', 'b'], ocrPages: storedPages });
+    const corrected = normalizeCorrectionWordIds([{ id: 'c', fileId: 'b', page: 1,
+      wordIds: [], quotedText: 'repeat' }], transcript, storedPages)[0];
+    expect(corrected.wordIds).toEqual([]);
+    expect(transcript.pages[0].words[0].id).not.toBe(transcript.pages[1].words[0].id);
+  });
   test.each([
     ['MORFOLOGIK_RULE_EN_US', 'SP'], ['UPPERCASE_SENTENCE_START', 'CAP'],
     ['SUBJECT_VERB_AGREEMENT', 'AGR'], ['EN_A_VS_AN', 'ART'], ['PREPOSITION_ERROR', 'PREP']

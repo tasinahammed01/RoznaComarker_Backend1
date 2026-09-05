@@ -10,6 +10,7 @@
  * – normalizeGeneratedJsonText for cleaning AI responses
  */
 const mongoose = require("mongoose");
+const debugLog = (...args) => { if (process.env.NODE_ENV !== 'production') console.log(...args); };
 const { v4: uuidv4 } = require("uuid");
 const Worksheet = require("../models/Worksheet");
 const WorksheetSubmission = require("../models/WorksheetSubmission");
@@ -42,6 +43,7 @@ const {
 } = require("../config/activityTypes.config");
 const {
   extractContent,
+  extractDocumentContent,
   validateFile,
 } = require("../services/fileContentExtractor.service");
 const {
@@ -256,7 +258,7 @@ function boundedPositiveInt(value, fallback, max) {
  * @throws {Error} If JSON extraction fails, repair fails, or validation fails
  */
 function parseWorksheetAIResponse(aiText, fallbackTopic = "Worksheet") {
-  console.log("[PARSE AI] Input length:", aiText.length);
+  debugLog("[PARSE AI] Input length:", aiText.length);
 
   // Step 1: Extract JSON object from AI response (handles markdown code fences, extra text)
   const jsonMatch = aiText.match(/\{[\s\S]*\}/);
@@ -264,24 +266,24 @@ function parseWorksheetAIResponse(aiText, fallbackTopic = "Worksheet") {
     throw new Error("No JSON object found in AI response");
   }
   const extractedJson = jsonMatch[0];
-  console.log("[PARSE AI] Extracted JSON length:", extractedJson.length);
+  debugLog("[PARSE AI] Extracted JSON length:", extractedJson.length);
 
   // Step 2: Try to parse JSON directly
   let parsed;
   try {
     parsed = JSON.parse(extractedJson);
-    console.log("[PARSE AI] Direct parse successful");
+    debugLog("[PARSE AI] Direct parse successful");
   } catch (parseError) {
-    console.log(
+    debugLog(
       "[PARSE AI] Direct parse failed, attempting repair:",
       parseError.message,
     );
     // Step 3: Use jsonrepair to fix common JSON issues
     try {
       const repaired = jsonrepair(extractedJson);
-      console.log("[PARSE AI] Repaired JSON length:", repaired.length);
+      debugLog("[PARSE AI] Repaired JSON length:", repaired.length);
       parsed = JSON.parse(repaired);
-      console.log("[PARSE AI] Parse after repair successful");
+      debugLog("[PARSE AI] Parse after repair successful");
     } catch (repairError) {
       console.error("[PARSE AI] Repair failed:", repairError.message);
       throw new Error(`JSON parse and repair failed: ${parseError.message}`);
@@ -336,7 +338,7 @@ function parseWorksheetAIResponse(aiText, fallbackTopic = "Worksheet") {
   }
 
   parsed.activities = validActivities;
-  console.log(
+  debugLog(
     "[PARSE AI] Validation successful - activities:",
     validActivities.length,
     "| types:",
@@ -615,7 +617,7 @@ CRITICAL: Return complete valid JSON. Do not truncate.`;
  * Accepts: { inputType:'topic', content, questionCount, language, difficulty, questionTypes, templateStructure }
  */
 async function generateWorksheet(req, res) {
-  console.log("[GENERATE WORKSHEET] Request received", {
+  debugLog("[GENERATE WORKSHEET] Request received", {
     inputType: req.body?.inputType || "topic",
     contentLength: String(req.body?.content || "").length,
     activityTypeCount: Array.isArray(req.body?.activityTypes)
@@ -661,13 +663,13 @@ async function generateWorksheet(req, res) {
         ? activityTypes.filter((t) => typeof t === "string" && t.trim())
         : DEFAULT_TYPES;
     if (resolvedTypes.length === 0) resolvedTypes = DEFAULT_TYPES;
-    console.log("[GENERATE] Resolved activity types:", resolvedTypes);
-    console.log("[GENERATE] Topic:", sourceText.slice(0, 100));
+    debugLog("[GENERATE] Resolved activity types:", resolvedTypes);
+    debugLog("[GENERATE] Topic:", sourceText.slice(0, 100));
 
     // If templateStructure is provided, modify the prompt to include design structure
     let prompt;
     if (templateStructure && typeof templateStructure === "object") {
-      console.log("[GENERATE] Using template structure for design guidance");
+      debugLog("[GENERATE] Using template structure for design guidance");
       prompt = buildWorksheetPromptWithTemplate(
         sourceText,
         language,
@@ -699,7 +701,7 @@ async function generateWorksheet(req, res) {
     );
     const parsed = generated.value;
 
-    console.log(
+    debugLog(
       "[GENERATE] Success — activities:",
       parsed.activities.length,
       "| types:",
@@ -733,7 +735,7 @@ async function generateWorksheet(req, res) {
  * Accepts: multipart/form-data with file, language, difficulty, activityTypes
  */
 async function uploadAndGenerate(req, res) {
-  console.log("[UPLOAD AND GENERATE] Starting file upload");
+  debugLog("[UPLOAD AND GENERATE] Starting file upload");
 
   if (!req.file) {
     return sendError(res, 400, "No file uploaded");
@@ -746,7 +748,7 @@ async function uploadAndGenerate(req, res) {
       return sendError(res, 400, validation.error);
     }
 
-    console.log(
+    debugLog(
       "[UPLOAD AND GENERATE] File validated:",
       req.file.originalname,
       req.file.mimetype,
@@ -768,7 +770,7 @@ async function uploadAndGenerate(req, res) {
       return sendError(res, 400, extractionError.message);
     }
 
-    console.log(
+    debugLog(
       "[UPLOAD AND GENERATE] Content extracted, length:",
       extractedText.length,
     );
@@ -791,7 +793,7 @@ async function uploadAndGenerate(req, res) {
         ? rawActivityTypes.filter((t) => typeof t === "string" && t.trim())
         : DEFAULT_TYPES;
     if (resolvedTypes.length === 0) resolvedTypes = DEFAULT_TYPES;
-    console.log(
+    debugLog(
       "[UPLOAD AND GENERATE] Resolved activity types:",
       resolvedTypes,
     );
@@ -821,7 +823,7 @@ async function uploadAndGenerate(req, res) {
       },
     );
 
-    console.log("[UPLOAD AND GENERATE] AI response length:", rawText.length);
+    debugLog("[UPLOAD AND GENERATE] AI response length:", rawText.length);
 
     // Use robust parser with JSON repair and validation
     let parsed;
@@ -836,7 +838,7 @@ async function uploadAndGenerate(req, res) {
       });
     }
 
-    console.log(
+    debugLog(
       "[UPLOAD AND GENERATE] Success — activities:",
       parsed.activities.length,
       "| types:",
@@ -890,29 +892,33 @@ async function uploadAndGenerate(req, res) {
  * Accepts: multipart/form-data with file, language, subject, gradeLevel
  */
 async function extractWorksheetStructureController(req, res) {
-  console.log("[EXTRACT STRUCTURE] Starting worksheet structure extraction");
+  const requestId = String(req.id || req.headers?.["x-request-id"] || uuidv4());
 
   if (!req.file) {
-    return sendError(res, 400, "No file uploaded");
+    return res.status(400).json({ success: false, code: "FILE_VALIDATION_FAILED", message: "No file uploaded" });
   }
+
+  logger.info({ message: "Worksheet extraction started", event: "worksheet_extract_started",
+    feature: "worksheet_extract_structure", requestId, originalName: req.file.originalname,
+    mimeType: req.file.mimetype, sizeBytes: req.file.size });
 
   try {
     // Validate file
     const validation = validateFile(req.file);
     if (!validation.valid) {
-      return sendError(res, 400, validation.error);
+      return res.status(400).json({ success: false, code: "FILE_VALIDATION_FAILED", message: validation.error });
     }
 
-    console.log(
+    debugLog(
       "[EXTRACT STRUCTURE] File validated:",
       req.file.originalname,
       req.file.mimetype
     );
 
     // Extract content from file
-    let extractedText;
+    let extractedDocument;
     try {
-      extractedText = await extractContent(
+      extractedDocument = await extractDocumentContent(
         req.file.buffer,
         req.file.mimetype,
         req.file.originalname
@@ -924,18 +930,19 @@ async function extractWorksheetStructureController(req, res) {
         code: extractionError?.code || "WORKSHEET_FILE_EXTRACTION_FAILED",
         mimeType: req.file.mimetype,
       });
-      return sendError(
-        res,
-        400,
-        extractionError?.userMessage ||
-          "We couldn't read enough text from this file. Please try a clearer image, a text-based PDF, or another file."
-      );
+      const code = extractionError?.code || "WORKSHEET_FILE_EXTRACTION_FAILED";
+      return res.status(400).json({ success: false, code,
+        message: extractionError?.userMessage ||
+          "We couldn't read enough text from this file. Please try a clearer image, a text-based PDF, or another file." });
     }
 
-    console.log(
-      "[EXTRACT STRUCTURE] Content extracted, length:",
-      extractedText.length
-    );
+    const extractedText = extractedDocument.plainText;
+
+    logger.info({ message: "Worksheet text extracted", event: "worksheet_text_extracted",
+      feature: "worksheet_extract_structure", requestId, characters: extractedText.length,
+      blocks: extractedDocument.blocks?.length || 0, tables: extractedDocument.stats?.tables || 0,
+      ...(process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test"
+        ? { sanitizedPreview: extractedText.slice(0, 160).replace(/[\r\n]+/gu, " ") } : {}) });
 
     // Get extraction options from form data
     const language = req.body.language || "English";
@@ -950,9 +957,10 @@ async function extractWorksheetStructureController(req, res) {
       subject,
       gradeLevel,
       difficulty,
+      requestId,
     });
 
-    console.log(
+    debugLog(
       "[EXTRACT STRUCTURE] Success - activities:",
       result.activities.length,
       "sections:",
@@ -969,6 +977,7 @@ async function extractWorksheetStructureController(req, res) {
       },
       answerKey: result.answerKey,
       extractedStructure: result.extractedStructure,
+      extractionDiagnostics: result.extractionDiagnostics,
       sourceContent: extractedText.slice(0, 500),
       fileName: req.file.originalname,
     });
@@ -978,12 +987,15 @@ async function extractWorksheetStructureController(req, res) {
     const finalFailureCode = error.finalFailureCode || error.code || finalAttempt.code;
     logger.error({
       message: "Worksheet structure AI extraction failed",
-      event: "worksheet.extraction.failed",
+      event: "worksheet_ai_structuring_failed",
       feature: "worksheet_extract_structure",
+      requestId,
       code: error.code || "WORKSHEET_EXTRACTION_FAILED",
       finalFailureCode,
       attemptCount: error.attemptCount || attempts.length,
       timeoutCount: error.timeoutCount || 0,
+      repairAttempted: error.repairAttempted === true,
+      validationErrorsCount: error.validationDiagnostics?.length || error.diagnostics?.length || 0,
       attempts: attempts.map((attempt) => ({
         provider: attempt.provider, model: attempt.model, code: attempt.code,
         httpStatus: attempt.httpStatus, finishReason: attempt.finishReason,
@@ -1009,7 +1021,12 @@ async function extractWorksheetStructureController(req, res) {
     } else if (error.code === "WORKSHEET_EXTRACTION_INPUT_TOO_LARGE") {
       message = error.userMessage;
     }
-    return sendError(res, 500, message);
+    if (finalFailureCode === "AI_OUTPUT_VALIDATION_FAILED" ||
+        String(finalFailureCode || "").startsWith("EXTRACTION_") ||
+        String(finalAttempt.validationCode || "").startsWith("EXTRACTION_")) {
+      message = "We could read the document, but couldn't structure all worksheet questions reliably. Please review the document formatting or try again.";
+    }
+    return res.status(500).json({ success: false, code: finalFailureCode || "WORKSHEET_EXTRACTION_FAILED", message });
   }
 }
 
@@ -1021,7 +1038,7 @@ async function extractWorksheetStructureController(req, res) {
  * Accepts: multipart/form-data with file, topic, subject, gradeLevel, difficulty, language
  */
 async function generateFromFile(req, res) {
-  console.log("[GENERATE FROM FILE] Starting Gemini file analysis");
+  debugLog("[GENERATE FROM FILE] Starting Gemini file analysis");
 
   if (!req.file) {
     return sendError(res, 400, "No file uploaded");
@@ -1042,7 +1059,7 @@ async function generateFromFile(req, res) {
       return sendError(res, 400, validation.error);
     }
 
-    console.log(
+    debugLog(
       "[GENERATE FROM FILE] File validated:",
       req.file.originalname,
       req.file.mimetype
@@ -1064,7 +1081,7 @@ async function generateFromFile(req, res) {
       return sendError(res, 400, extractionError.message);
     }
 
-    console.log(
+    debugLog(
       "[GENERATE FROM FILE] Content extracted, length:",
       extractedText.length
     );
@@ -1106,7 +1123,7 @@ async function generateFromFile(req, res) {
       ),
     });
 
-    console.log(
+    debugLog(
       "[GENERATE FROM FILE] Sending to Gemini with",
       contentParts.length,
       "parts"
@@ -1136,7 +1153,7 @@ async function generateFromFile(req, res) {
       parsed.title = `${topic.slice(0, 50)} Worksheet`;
     }
 
-    console.log(
+    debugLog(
       "[GENERATE FROM FILE] Success — activities:",
       parsed.activities.length,
       "| types:",
@@ -1262,6 +1279,7 @@ async function createWorksheet(req, res) {
       gradeLevel,
       gradeCategory,
       assignmentDeadline,
+      sourceQuestionCount,
     } = req.body;
 
     if (!title || !String(title).trim()) {
@@ -1290,11 +1308,12 @@ async function createWorksheet(req, res) {
         if (
           activity.type === "ordering" ||
           activity.type === "classification" ||
-          activity.type === "matching" ||
           activity.type === "dragDrop" ||
           activity.type === "sorting"
         ) {
           totalPoints += data.items?.length || 0;
+        } else if (activity.type === "matching") {
+          totalPoints += data.pairs?.length || 0;
         } else if (
           activity.type === "multipleChoice" ||
           activity.type === "trueFalse" ||
@@ -1312,6 +1331,29 @@ async function createWorksheet(req, res) {
           totalPoints += data.words?.length || 0;
         }
       });
+
+      if (
+        generationSource === "uploaded_extracted" &&
+        Number.isInteger(sourceQuestionCount) &&
+        sourceQuestionCount >= 0 &&
+        totalPoints !== sourceQuestionCount
+      ) {
+        console.error("[WORKSHEET_QUESTION_COUNT_MISMATCH]", {
+          sourceQuestionCount,
+          persistedQuestionCount: totalPoints,
+          activityCount: activities.length,
+        });
+        return res.status(422).json({
+          success: false,
+          code: "WORKSHEET_QUESTION_COUNT_MISMATCH",
+          message: "Worksheet question count changed before persistence.",
+          metadata: {
+            sourceQuestionCount,
+            persistedQuestionCount: totalPoints,
+            activityCount: activities.length,
+          },
+        });
+      }
     } else {
       // Legacy activity1-4 fields for backward compatibility
       totalPoints =
@@ -1370,7 +1412,7 @@ async function createWorksheet(req, res) {
     });
 
     await worksheet.save();
-    console.log(
+    debugLog(
       "[CREATE WORKSHEET] Created:",
       worksheet._id,
       "totalPoints:",
@@ -1526,6 +1568,14 @@ async function getWorksheetById(req, res) {
 
       if (!assignment) {
         return sendError(res, 403, "You do not have access to this worksheet");
+      }
+
+      // Subjective model answers and extracted teacher guidance are grading
+      // keys. They remain available to teachers and scoring, never to the
+      // pre-submission student worksheet DTO.
+      delete worksheet.answerKey;
+      for (const activity of worksheet.activities || []) {
+        for (const question of activity?.data?.questions || []) delete question.modelAnswer;
       }
     } else {
       if (String(worksheet.createdBy) !== String(req.user._id)) {
@@ -1843,7 +1893,7 @@ async function submitWorksheet(req, res) {
       await existing.save();
       logger.metric({ event: 'worksheet.progress.submitted', userId: String(studentId),
         worksheetId: String(worksheetId), status: existing.status });
-      console.log(
+      debugLog(
         "[SUBMIT WORKSHEET] Updated:",
         existing._id,
         "score:",
@@ -1868,15 +1918,14 @@ async function submitWorksheet(req, res) {
       // Notify teacher via createNotification so the SSE fires as 'assignment_submitted'
       // (publishNotification was undefined — createNotification is the correct pattern)
       try {
-        const studentDisplay = String(
-          req.user.displayName || req.user.email || "A student",
-        );
+        const studentDisplay = String(req.user.displayName || "A student");
         await createNotification({
           recipientId: String(assignment.teacher),
           actorId: String(studentId),
           type: "assignment_submitted",
-          title: "Worksheet submitted",
-          description: `${studentDisplay} submitted "${worksheet.title}"`,
+          title: "Revised worksheet submitted",
+          description: `${studentDisplay} submitted a revised worksheet for "${worksheet.title}"`,
+          idempotencyKey: `worksheet-submission:${existing._id}:revision:${existing.attempts}`,
           data: {
             classId: String(classDoc._id),
             assignmentId: String(assignment._id),
@@ -1936,7 +1985,7 @@ async function submitWorksheet(req, res) {
     await created.save();
     logger.metric({ event: 'worksheet.progress.submitted', userId: String(studentId),
       worksheetId: String(worksheetId), status: created.status });
-    console.log(
+    debugLog(
       "[SUBMIT WORKSHEET] Saved:",
       created._id,
       "score:",
@@ -1961,15 +2010,14 @@ async function submitWorksheet(req, res) {
     // Notify teacher via createNotification so the SSE fires as 'assignment_submitted'
     // (publishNotification was undefined — createNotification is the correct pattern)
     try {
-      const studentDisplay = String(
-        req.user.displayName || req.user.email || "A student",
-      );
+      const studentDisplay = String(req.user.displayName || "A student");
       await createNotification({
         recipientId: String(assignment.teacher),
         actorId: String(studentId),
         type: "assignment_submitted",
         title: "Worksheet submitted",
         description: `${studentDisplay} submitted "${worksheet.title}"`,
+        idempotencyKey: `worksheet-submission:${created._id}:submitted`,
         data: {
           classId: String(classDoc._id),
           assignmentId: String(assignment._id),
@@ -2113,7 +2161,7 @@ async function getMySubmissionByAssignment(req, res) {
       .select("sections title totalPoints")
       .lean();
 
-    console.log('[GET SUBMISSION] Returning activity9Data:', {
+    debugLog('[GET SUBMISSION] Returning activity9Data:', {
       hasData: !!submission.activity9Answers,
       answerCount: Object.keys(submission.activity9Answers || {}).length
     });
@@ -2286,12 +2334,12 @@ async function getWorksheetReport(req, res) {
 
     // Convert Mongoose Map types to plain objects for proper serialization
     // This fixes the Teacher PDF bug where activity9Answers are not rendered
-    console.log('[GET WORKSHEET REPORT] === BEFORE MAP CONVERSION ===');
+    debugLog('[GET WORKSHEET REPORT] === BEFORE MAP CONVERSION ===');
     if (submissions.length > 0) {
       const firstSub = submissions[0];
-      console.log('[GET WORKSHEET REPORT] typeof activity9Answers:', typeof firstSub.activity9Answers);
-      console.log('[GET WORKSHEET REPORT] activity9Answers instanceof Map:', firstSub.activity9Answers instanceof Map);
-      console.log('[GET WORKSHEET REPORT] has toObject method:', typeof firstSub.activity9Answers?.toObject === 'function');
+      debugLog('[GET WORKSHEET REPORT] typeof activity9Answers:', typeof firstSub.activity9Answers);
+      debugLog('[GET WORKSHEET REPORT] activity9Answers instanceof Map:', firstSub.activity9Answers instanceof Map);
+      debugLog('[GET WORKSHEET REPORT] has toObject method:', typeof firstSub.activity9Answers?.toObject === 'function');
     }
 
     submissions.forEach(sub => {
@@ -2306,13 +2354,13 @@ async function getWorksheetReport(req, res) {
       }
     });
 
-    console.log('[GET WORKSHEET REPORT] === AFTER MAP CONVERSION ===');
+    debugLog('[GET WORKSHEET REPORT] === AFTER MAP CONVERSION ===');
     if (submissions.length > 0) {
       const firstSub = submissions[0];
-      console.log('[GET WORKSHEET REPORT] typeof activity9Answers:', typeof firstSub.activity9Answers);
-      console.log('[GET WORKSHEET REPORT] activity9Answers instanceof Map:', firstSub.activity9Answers instanceof Map);
-      console.log('[GET WORKSHEET REPORT] Object.keys(activity9Answers):', Object.keys(firstSub.activity9Answers || {}));
-      console.log('[GET WORKSHEET REPORT] full activity9Answers:', JSON.stringify(firstSub.activity9Answers, null, 2));
+      debugLog('[GET WORKSHEET REPORT] typeof activity9Answers:', typeof firstSub.activity9Answers);
+      debugLog('[GET WORKSHEET REPORT] activity9Answers instanceof Map:', firstSub.activity9Answers instanceof Map);
+      debugLog('[GET WORKSHEET REPORT] Object.keys(activity9Answers):', Object.keys(firstSub.activity9Answers || {}));
+      debugLog('[GET WORKSHEET REPORT] full activity9Answers:', JSON.stringify(firstSub.activity9Answers, null, 2));
     }
 
     // Get all assignments for this worksheet to calculate total assigned
@@ -3030,7 +3078,7 @@ async function deleteWorksheetDraft(req, res) {
  * The returned HTML is NOT saved to the database — the teacher downloads it as PDF.
  */
 async function generateHtmlWorksheet(req, res) {
-  console.log("[GEMINI HTML WORKSHEET] Request received");
+  debugLog("[GEMINI HTML WORKSHEET] Request received");
 
   if (!req.file) {
     return sendError(res, 400, "No file uploaded. Please attach a file.");
@@ -3043,7 +3091,7 @@ async function generateHtmlWorksheet(req, res) {
       return sendError(res, 400, validation.error);
     }
 
-    console.log(
+    debugLog(
       "[GEMINI HTML WORKSHEET] File validated:",
       req.file.originalname,
       req.file.mimetype,
@@ -3071,7 +3119,7 @@ async function generateHtmlWorksheet(req, res) {
       theme: req.body.theme || "modern",
     };
 
-    console.log("[GEMINI HTML WORKSHEET] Options:", JSON.stringify(options));
+    debugLog("[GEMINI HTML WORKSHEET] Options:", JSON.stringify(options));
 
     // Call generation service which may use Gemini or Groq fallback.
     const worksheetResult = await generateHtmlWorksheetFromFile(
@@ -3085,11 +3133,11 @@ async function generateHtmlWorksheet(req, res) {
     const html = worksheetResult.html;
     const title = worksheetResult.title;
 
-    console.log(
+    debugLog(
       `[GEMINI HTML WORKSHEET] Success — title: "${title}", html length: ${html?.length || 0}`,
     );
 
-    console.log('[WORKSHEET] Final response being sent. Provider:', usedProvider,
+    debugLog('[WORKSHEET] Final response being sent. Provider:', usedProvider,
       '| Data type:', typeof worksheetResult,
       '| Keys:', worksheetResult ? Object.keys(worksheetResult) : 'null');
 
@@ -3117,7 +3165,7 @@ async function generateHtmlWorksheet(req, res) {
  * Accepts: multipart/form-data with file field "templateFile"
  */
 async function analyzeTemplate(req, res) {
-  console.log("[ANALYZE TEMPLATE] Starting visual design analysis");
+  debugLog("[ANALYZE TEMPLATE] Starting visual design analysis");
 
   if (!req.file) {
     return sendError(res, 400, "No file uploaded");
@@ -3130,7 +3178,7 @@ async function analyzeTemplate(req, res) {
       return sendError(res, 400, validation.error);
     }
 
-    console.log(
+    debugLog(
       "[ANALYZE TEMPLATE] File validated:",
       req.file.originalname,
       req.file.mimetype,
@@ -3144,17 +3192,17 @@ async function analyzeTemplate(req, res) {
     // Convert file to image
     if (mimeType.startsWith("image/") || fileName.match(/\.(png|jpg|jpeg|gif|webp)$/)) {
       // IMAGE files: use directly
-      console.log("[ANALYZE TEMPLATE] Processing as image");
+      debugLog("[ANALYZE TEMPLATE] Processing as image");
       imageBase64 = req.file.buffer.toString("base64");
       imageMimeType = mimeType;
     } else if (mimeType === "application/pdf" || fileName.endsWith(".pdf")) {
       // PDF files: convert page 1 to image using pdfjs-dist + canvas
-      console.log("[ANALYZE TEMPLATE] Converting PDF to image");
+      debugLog("[ANALYZE TEMPLATE] Converting PDF to image");
       try {
         const base64Image = await convertPdfToBase64Image(req.file.buffer);
         imageBase64 = base64Image;
         imageMimeType = "image/jpeg";
-        console.log("[ANALYZE TEMPLATE] PDF converted to image successfully");
+        debugLog("[ANALYZE TEMPLATE] PDF converted to image successfully");
       } catch (pdfError) {
         console.error("[ANALYZE TEMPLATE] PDF render error:", pdfError.message);
         return res.status(422).json({
@@ -3180,7 +3228,7 @@ async function analyzeTemplate(req, res) {
       );
     }
 
-    console.log("[ANALYZE TEMPLATE] Image ready, sending to vision AI");
+    debugLog("[ANALYZE TEMPLATE] Image ready, sending to vision AI");
 
     // Call vision model with fallback chain
     let contentText;
@@ -3196,7 +3244,7 @@ async function analyzeTemplate(req, res) {
       });
     }
 
-    console.log("[ANALYZE TEMPLATE] AI response length:", contentText.length);
+    debugLog("[ANALYZE TEMPLATE] AI response length:", contentText.length);
 
     // Parse JSON response using shared utility
     let structure;
@@ -3227,7 +3275,7 @@ async function analyzeTemplate(req, res) {
       return sendError(res, 500, "Invalid structure: missing sections array");
     }
 
-    console.log(
+    debugLog(
       "[ANALYZE TEMPLATE] Success — sections:",
       structure.sections.length,
       "totalQuestions:",
@@ -3271,7 +3319,7 @@ function extractAndParseJSON(rawContent) {
   try {
     return JSON.parse(cleaned);
   } catch(e1) {
-    console.log('[DETECT FIELDS] Direct parse failed, trying extraction');
+    debugLog('[DETECT FIELDS] Direct parse failed, trying extraction');
   }
   
   // Try 2: Extract JSON object with regex
@@ -3281,7 +3329,7 @@ function extractAndParseJSON(rawContent) {
       return JSON.parse(jsonMatch[0]);
     }
   } catch(e2) {
-    console.log('[DETECT FIELDS] Regex extraction failed');
+    debugLog('[DETECT FIELDS] Regex extraction failed');
   }
   
   // Try 3: Find and fix truncated JSON
@@ -3306,7 +3354,7 @@ function extractAndParseJSON(rawContent) {
       }
     }
   } catch(e3) {
-    console.log('[DETECT FIELDS] Truncation fix failed');
+    debugLog('[DETECT FIELDS] Truncation fix failed');
   }
   
   // Try 4: Use jsonrepair if available
@@ -3314,13 +3362,13 @@ function extractAndParseJSON(rawContent) {
     const repaired = jsonrepair(cleaned);
     return JSON.parse(repaired);
   } catch(e4) {
-    console.log('[DETECT FIELDS] jsonrepair failed:', e4.message);
+    debugLog('[DETECT FIELDS] jsonrepair failed:', e4.message);
   }
   
   // Try 5: Manual field extraction using regex
   // Even if JSON is broken, extract individual field objects
   try {
-    console.log('[DETECT FIELDS] Trying manual field extraction');
+    debugLog('[DETECT FIELDS] Trying manual field extraction');
     
     const titleMatch = cleaned.match(/"worksheetTitle"\s*:\s*"([^"]+)"/);
     const subjectMatch = cleaned.match(/"subject"\s*:\s*"([^"]+)"/);
@@ -3362,7 +3410,7 @@ function extractAndParseJSON(rawContent) {
       };
     }
   } catch(e6) {
-    console.log('[DETECT FIELDS] Manual extraction failed:', e6.message);
+    debugLog('[DETECT FIELDS] Manual extraction failed:', e6.message);
   }
   
   throw new Error('Could not parse AI response after all attempts');

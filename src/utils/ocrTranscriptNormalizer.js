@@ -1,5 +1,7 @@
 'use strict';
 
+const { canonicalOcrWordId } = require('./ocrWordIdentity');
+
 // Increment whenever canonical reading-order or separator rules change. This is
 // intentionally independent from the correction prompt/schema version.
 const CANONICAL_TRANSCRIPT_LAYOUT_VERSION = 'ocr-layout-v5-native-text';
@@ -313,7 +315,8 @@ function buildCanonicalSubmissionTranscript(submission) {
   for (const entry of pages) {
     const identifiedWords = (Array.isArray(entry.page.words) ? entry.page.words : []).map((word, index) => ({
       ...word,
-      id: `word_${entry.fileId}_${entry.pageNumber}_${typeof word?.id === 'string' && word.id ? word.id : index + 1}`,
+      id: canonicalOcrWordId({ fileId: entry.fileId, pageNumber: entry.pageNumber,
+        storedWordId: word?.id, wordIndex: index }),
       fileId: entry.fileId,
       page: entry.pageNumber
     }));

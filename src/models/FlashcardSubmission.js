@@ -37,13 +37,17 @@ const flashcardSubmissionSchema = new Schema(
     cardResults: [cardResultSchema],
     score: { type: Number },
     timeTaken: { type: Number },
+    attempts: { type: Number, default: 1, min: 1 },
     submittedAt: { type: Date, default: Date.now }
   }
 );
 
 /** Original unique guard: one teacher study submission per set per user */
 flashcardSubmissionSchema.index({ flashcardSetId: 1, userId: 1 }, { unique: true, partialFilterExpression: { assignmentId: null } });
-/** Sparse guard: one submission per assignment per student */
-flashcardSubmissionSchema.index({ assignmentId: 1, userId: 1 }, { unique: true, sparse: true });
+/** One submission per assignment per student; self-study rows are excluded. */
+flashcardSubmissionSchema.index({ assignmentId: 1, userId: 1 }, {
+  unique: true,
+  partialFilterExpression: { assignmentId: { $type: 'objectId' } }
+});
 
 module.exports = mongoose.model('FlashcardSubmission', flashcardSubmissionSchema);

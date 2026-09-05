@@ -16,6 +16,15 @@ const rubricUpload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }
 });
 
+router.get('/', verifyJwtToken, requireRole('teacher'), rubricController.listSavedRubrics);
+router.post('/', verifyJwtToken, requireRole('teacher'), rubricController.createSavedRubric);
+router.post(
+  '/from-assignment/:assignmentId',
+  verifyJwtToken,
+  requireRole('teacher'),
+  rubricController.createSavedRubricFromAssignment
+);
+
 router.post(
   '/parse-rubric-file',
   createSensitiveRateLimiter(),
@@ -24,6 +33,11 @@ router.post(
   rubricUpload.single('file'),
   rubricController.parseRubricFile
 );
+
+router.get('/:id', verifyJwtToken, requireRole('teacher'), rubricController.getSavedRubric);
+router.patch('/:id', verifyJwtToken, requireRole('teacher'), rubricController.updateSavedRubric);
+router.post('/:id/duplicate', verifyJwtToken, requireRole('teacher'), rubricController.duplicateSavedRubric);
+router.delete('/:id', verifyJwtToken, requireRole('teacher'), rubricController.archiveSavedRubric);
 
 router.post(
   '/parse-template',

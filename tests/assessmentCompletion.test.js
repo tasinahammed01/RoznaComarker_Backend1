@@ -3,10 +3,12 @@ const mongoose = require('mongoose');
 const { connectInMemoryMongo, disconnectInMemoryMongo, clearDatabase } = require('./helpers/testServer');
 const Plan = require('../src/models/Plan'); const User = require('../src/models/user.model');
 const Submission = require('../src/models/Submission'); const SubmissionFeedback = require('../src/models/SubmissionFeedback');
+const Class = require('../src/models/class.model'); const Assignment = require('../src/models/assignment.model');
 const CreditTransaction = require('../src/models/CreditTransaction'); const AssessmentRun = require('../src/models/AssessmentRun');
 const AdaptivePracticeSession = require('../src/models/AdaptivePracticeSession');
 const adaptive = require('../src/services/adaptivePractice.service'); const report = require('../src/services/submissionFeedbackReport.service');
 const completion = require('../src/services/assessmentCompletion.service');
+const referralService = require('../src/services/referral.service');
 
 let teacher; let submission;
 beforeAll(connectInMemoryMongo); afterAll(disconnectInMemoryMongo);
@@ -15,7 +17,9 @@ beforeEach(async () => {
   const plan = await Plan.create({ name: 'Free', slug: 'free', isActive: true, features: { essayAnalysesPerMonth: 5 } });
   teacher = await User.create({ firebaseUid: `complete-${Date.now()}`, email: `complete-${Date.now()}@example.com`, role: 'teacher', plan: plan._id });
   const student = await User.create({ firebaseUid: `student-${Date.now()}`, email: `student-${Date.now()}@example.com`, role: 'student', plan: plan._id });
-  submission = await Submission.create({ student: student._id, assignment: new mongoose.Types.ObjectId(), class: new mongoose.Types.ObjectId(),
+  const classDoc = await Class.create({ name: 'Completion class', teacher: teacher._id, joinCode: `C${Date.now()}` });
+  const assignment = await Assignment.create({ title: 'Completion assignment', teacher: teacher._id, class: classDoc._id });
+  submission = await Submission.create({ student: student._id, assignment: assignment._id, class: classDoc._id,
     status: 'submitted', submittedAt: new Date(), correctionStatus: 'completed', semanticStatus: 'completed', evaluationStatus: 'completed',
     correctionSourceHash: 'source-1', evaluationSourceHash: 'source-1', transcriptText: 'A complete student response.' });
   await SubmissionFeedback.create({ submissionId: submission._id, classId: submission.class, studentId: student._id,
@@ -46,6 +50,13 @@ test('assessment completion does not invoke Adaptive Practice even if its genera
     status: 'complete', adaptiveState: 'not_generated', components: { adaptiveLearning: 'not_required' }
   });
   expect(generate).not.toHaveBeenCalled();
+  expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT', status: 'committed' })).toBe(1);
+});
+
+test('a referral reward failure cannot fail an otherwise successful assessment', async () => {
+  jest.spyOn(referralService, 'qualifyReferral').mockRejectedValue(new Error('temporary referral failure'));
+  await expect(completion.complete({ runId: 'run-referral-independent', submissionId: submission._id,
+    teacherId: teacher._id, sourceHash: 'source-1' })).resolves.toMatchObject({ run: { status: 'complete' } });
   expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT', status: 'committed' })).toBe(1);
 });
 

@@ -9,8 +9,10 @@ const FlashcardSubmission = require("../models/FlashcardSubmission");
 const WorksheetSubmission = require("../models/WorksheetSubmission");
 const Invitation = require("../models/invitation.model");
 const User = require("../models/user.model");
+const InstitutionMember = require('../models/InstitutionMember');
 const { sendInvitationEmail } = require("../services/email.service");
 const { generateShortJoinCode } = require("../utils/joinCode");
+const draftComparison = require("../services/draftComparison.service");
 const {
   withActiveStatus,
   isArchivedClass,
@@ -103,7 +105,7 @@ function normalizeClassroomDefaultsFromUser(user) {
 
 async function createClass(req, res) {
   try {
-    const { name, description, subjectLevel, startDate, endDate } =
+    const { name, description, subjectLevel, startDate, endDate, institutionId } =
       req.body || {};
 
     if (!isNonEmptyString(name)) {
@@ -116,6 +118,13 @@ async function createClass(req, res) {
     }
 
     const defaults = normalizeClassroomDefaultsFromUser(req.user);
+    let verifiedInstitutionId = null;
+    if (institutionId) {
+      if (!mongoose.Types.ObjectId.isValid(institutionId)) return sendError(res, 400, 'Invalid institution id');
+      const member = await InstitutionMember.findOne({ institutionId, userId: teacherId, status: 'ACTIVE' });
+      if (!member) return sendError(res, 403, 'Active institution membership is required', 'INSTITUTION_MEMBERSHIP_REQUIRED');
+      verifiedInstitutionId = member.institutionId;
+    }
 
     const normalizedSubjectLevel = toOptionalTrimmedString(subjectLevel);
 
@@ -144,12 +153,17 @@ async function createClass(req, res) {
           startDate: parsedStartDate || undefined,
           endDate: parsedEndDate || undefined,
           teacher: teacherId,
+          institutionId: verifiedInstitutionId,
           joinCode,
           qrCodeUrl,
           ...defaults,
         });
 
-        await incrementUsage(teacherId, { classes: 1 });
+        if (!verifiedInstitutionId) {
+          await incrementUsage(teacherId, { classes: 1 });
+          await require('../services/professionalMilestone.service')
+            .evaluateProfessionalMilestonesSafely(teacherId, ['CLASSES_CREATED']);
+        }
 
         return sendSuccess(res, createdClass);
       } catch (err) {
@@ -169,6 +183,23 @@ async function createClass(req, res) {
   } catch (err) {
     return sendError(res, 500, "Failed to create class");
   }
+}
+
+async function getCopyableClasses(req, res) {
+  try { return sendSuccess(res, await require('../services/semesterCopy.service').copyable(req.user._id, req.query?.search)); }
+  catch { return sendError(res, 500, 'Failed to load copyable classes'); }
+}
+
+async function getSemesterCopyPreview(req, res) {
+  try { return sendSuccess(res, await require('../services/semesterCopy.service').preview(req.user._id, req.params.id)); }
+  catch (error) { return sendError(res, error?.statusCode || 500, error?.statusCode ? error.message : 'Failed to load semester copy preview'); }
+}
+
+async function copySemester(req, res) {
+  try { return sendSuccess(res, await require('../services/semesterCopy.service').copySemester({ teacherId: req.user._id,
+    sourceClassId: req.params.id, requestId: req.body?.requestId, newClass: req.body?.newClass,
+    assignmentIds: req.body?.assignmentIds, deadlineMode: req.body?.deadlineMode, frontendUrl: process.env.FRONTEND_URL })); }
+  catch (error) { return sendError(res, error?.statusCode || 500, error?.statusCode ? error.message : 'Failed to copy previous semester'); }
 }
 
 async function updateClass(req, res) {
@@ -396,6 +427,7 @@ async function getClassStudents(req, res) {
       .sort({ joinedAt: -1 })
       .populate("student", "_id email displayName");
 
+    const progressByStudent = await draftComparison.classProgressSummaries(classDoc._id);
     const students = memberships
       .map((m) => {
         const student = m && m.student;
@@ -410,6 +442,7 @@ async function getClassStudents(req, res) {
           name,
           email,
           joinedAt,
+          progress: progressByStudent.get(String(student._id)) || null,
         };
       })
       .filter(Boolean);
@@ -417,6 +450,15 @@ async function getClassStudents(req, res) {
     return sendSuccess(res, students);
   } catch (err) {
     return sendError(res, 500, "Failed to fetch class students");
+  }
+}
+
+async function getStudentProgress(req, res) {
+  try {
+    const progress = await draftComparison.studentProgress(req.params.classId, req.params.studentId, req.user);
+    return sendSuccess(res, progress);
+  } catch (error) {
+    return sendError(res, error?.statusCode || 500, error?.message || "Failed to load student progress");
   }
 }
 
@@ -868,6 +910,9 @@ async function getClassInvitations(req, res) {
 
 module.exports = {
   createClass,
+  getCopyableClasses,
+  getSemesterCopyPreview,
+  copySemester,
   getMyClasses,
   updateClass,
   deleteClass,
@@ -876,6 +921,7 @@ module.exports = {
   joinByCode,
   getClassSummary,
   getClassStudents,
+  getStudentProgress,
   removeStudentFromClass,
   inviteStudents,
   getClassInvitations,

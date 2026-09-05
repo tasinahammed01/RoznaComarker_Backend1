@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const debugLog = (...args) => { if (process.env.NODE_ENV !== 'production') console.log(...args); };
 const { v4: uuidv4 } = require("uuid");
 const FlashcardSet = require("../models/FlashcardSet");
 const FlashcardSubmission = require("../models/FlashcardSubmission");
@@ -363,7 +364,7 @@ async function addImagesToCards(cards, content) {
 }
 
 async function generateFlashcards(req, res) {
-  console.log("[FLASHCARD GENERATION START] Request received");
+  debugLog("[FLASHCARD GENERATION START] Request received");
 
   try {
     const { content, template, cardCount, language, addImage, includeImages } =
@@ -380,7 +381,7 @@ async function generateFlashcards(req, res) {
       return sendError(res, 400, "Add a little more content so CoMarker can create useful flashcards.", "INSUFFICIENT_FLASHCARD_CONTENT");
     }
 
-    console.log("[FLASHCARD GENERATION] Parameters:", {
+    debugLog("[FLASHCARD GENERATION] Parameters:", {
       contentLength: String(content || "").length,
       template: resolvedTemplate,
       count,
@@ -419,12 +420,12 @@ No text before {. No text after }.`,
 
     // Add images if requested
     if (shouldAddImages) {
-      console.log(
+      debugLog(
         "[FLASHCARD GENERATION] Adding images to flashcards via Unsplash",
       );
       try {
         cards = await addImagesToCards(cards, content);
-        console.log(
+        debugLog(
           "[FLASHCARD GENERATION] Successfully added images to",
           cards.length,
           "cards",
@@ -438,7 +439,7 @@ No text before {. No text after }.`,
       }
     }
 
-    console.log(
+    debugLog(
       "[FLASHCARD GENERATION COMPLETE] Successfully generated",
       cards.length,
       "flashcards",
@@ -503,10 +504,6 @@ const TEMPLATE_MAP = {
 };
 
 async function createSet(req, res) {
-  console.log(
-    "[CREATE FLASHCARD] req.body:",
-    JSON.stringify(req.body, null, 2),
-  );
 
   try {
     const ownerId = req.user._id;
@@ -1024,7 +1021,7 @@ async function uploadFlashcardImage(req, res) {
     // Build the public URL
     const imageUrl = `/uploads/flashcards/${fileName}`;
 
-    console.log("[UPLOAD FLASHCARD IMAGE] File uploaded:", imageUrl);
+    debugLog("[UPLOAD FLASHCARD IMAGE] File uploaded:", imageUrl);
     return sendSuccess(res, { imageUrl });
   } catch (err) {
     console.error("[UPLOAD FLASHCARD IMAGE] Error:", err);

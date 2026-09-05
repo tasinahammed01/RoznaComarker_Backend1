@@ -1,7 +1,7 @@
 'use strict';
 
 const { analyzeSourceRichness, buildExtractionPrompt, parseExtractionResponse,
-  convertExtractedToActivities } = require('../src/services/worksheetExtractor.service');
+  convertExtractedToActivities, resolveCanonicalAnswer, buildRepairPrompt } = require('../src/services/worksheetExtractor.service');
 
 const potatoStyleSource = `Potato Life Cycle 101
 
@@ -44,6 +44,81 @@ describe('worksheet extraction quality policy', () => {
     expect(prompt).toContain('Cover distinct concepts');
     expect(prompt).toContain('Matching sections should normally contain 4-8 unique pairs');
     expect(prompt).toContain('hard uses source-grounded inference');
+    expect(prompt).toContain('question ID/number first');
+    expect(prompt).toContain('exact option value');
+  });
+
+  test.each([
+    ['explicit MCQ text', { type: 'multiple_choice', options: ['receive', 'believe', 'ceiling', 'science'], correct_answer: ' BELIEVE. ' }, 'believe'],
+    ['MCQ letter', { type: 'multiple_choice', options: ['receive', 'believe', 'ceiling', 'science'], correct_answer: 'B' }, 'believe'],
+    ['MCQ numeric index', { type: 'multiple_choice', options: ['receive', 'believe', 'ceiling', 'science'], correct_answer: '2' }, 'believe'],
+    ['true alias', { type: 'true_false', correct_answer: 'Yes' }, 'true'],
+    ['false boolean', { type: 'true_false', correct_answer: false }, 'false'],
+    ['fill blank whitespace', { type: 'fill_blank', correct_answer: ' accommodate ' }, 'accommodate'],
+  ])('normalizes %s deterministically', (_label, input, expected) => {
+    expect(resolveCanonicalAnswer(input)).toBe(expected);
+  });
+
+  test('does not invent an ambiguous or absent answer', () => {
+    expect(resolveCanonicalAnswer({ type: 'multiple_choice', options: ['Same!', 'same?', 'Other', 'Last'], correct_answer: 'same' })).toBe('same');
+    expect(resolveCanonicalAnswer({ type: 'fill_blank', correct_answer: '' })).toBe('');
+  });
+
+  test.each([2, 3, 4, 5])('accepts an extracted MCQ with %i unique source options', (count) => {
+    const options = Array.from({ length: count }, (_, index) => `Choice ${index + 1}`);
+    const output = { title: 'Source worksheet', sections: [{ instruction: 'Choose.', questions: [
+      question('q1', 'Choose the source answer.', 'multiple_choice', options.at(-1), { options })
+    ] }] };
+    expect(parseExtractionResponse(JSON.stringify(output)).sections[0].questions[0].options).toEqual(options);
+  });
+
+  test.each([
+    [['Only one'], 'Only one', 'EXTRACTION_INVALID_MCQ_OPTIONS'],
+    [['Same!', 'same?', 'Other'], 'Other', 'EXTRACTION_INVALID_MCQ_OPTIONS'],
+    [['Alpha', 'Beta', 'Gamma'], 'Missing', 'EXTRACTION_INVALID_MCQ_ANSWER'],
+  ])('rejects malformed extracted MCQ options or answer', (options, answer, code) => {
+    const output = { title: 'Source worksheet', sections: [{ instruction: 'Choose.', questions: [
+      question('q14', 'Choose.', 'multiple_choice', answer, { options })
+    ] }] };
+    expect(() => parseExtractionResponse(JSON.stringify(output))).toThrow(expect.objectContaining({ code }));
+  });
+
+  test('resolves aliases across variable option counts and leaves out-of-range aliases invalid', () => {
+    expect(resolveCanonicalAnswer({ type: 'multiple_choice', options: ['a', 'b', 'c'], correct_answer: 'C' })).toBe('c');
+    expect(resolveCanonicalAnswer({ type: 'multiple_choice', options: ['a', 'b', 'c', 'd', 'e'], correct_answer: 'E' })).toBe('e');
+    expect(resolveCanonicalAnswer({ type: 'multiple_choice', options: ['a', 'b', 'c'], correct_answer: 'E' })).toBe('E');
+  });
+
+  test('accepts the source-faithful three-option Q14 without padding', () => {
+    const output = { title: 'Spelling', sections: [{ instruction: 'Circle the correct spelling.', questions: [
+      question('q14', 'Circle the correct spelling:', 'multiple_choice', 'a',
+        { options: ['beginning', 'begining', 'beggining'], confidence: 'high' })
+    ] }] };
+    const parsed = parseExtractionResponse(JSON.stringify(output));
+    expect(parsed.sections[0].questions[0]).toEqual(expect.objectContaining({
+      options: ['beginning', 'begining', 'beggining'], correct_answer: 'beginning', confidence: 'high'
+    }));
+  });
+
+  test('MCQ repair guidance preserves source options rather than padding to four', () => {
+    const repair = buildRepairPrompt('{}', { diagnostics: [{ code: 'EXTRACTION_INVALID_MCQ_OPTIONS',
+      questionId: 'q14', optionCount: 3, reason: 'duplicate_options' }] });
+    expect(repair).toContain('preserve the exact source options');
+    expect(repair).toContain('Never pad a source question to four options');
+  });
+
+  test.each([
+    ['short_answer', 'q9', 'Explain one spelling rule you use to remember when to double a final consonant.', 'Accept any accurate explanation of the doubling rule.'],
+    ['essay', 'q15', "Write a sentence using the word 'necessary.'", "Accept any grammatically correct sentence using 'necessary'."],
+  ])('preserves numbered %s grading guidance as a high-confidence shortAnswer modelAnswer', (type, id, prompt, guidance) => {
+    const parsed = parseExtractionResponse(JSON.stringify({ title: 'Spelling', sections: [{ instruction: 'Respond.', questions: [
+      question(id, prompt, type, guidance, { confidence: 'high' })
+    ] }] }));
+    expect(parsed.sections[0].questions[0]).toEqual(expect.objectContaining({ correct_answer: guidance, confidence: 'high' }));
+    const activities = convertExtractedToActivities(parsed);
+    expect(activities).toHaveLength(1);
+    expect(activities[0].type).toBe('shortAnswer');
+    expect(activities[0].data.questions[0].modelAnswer).toBe(guidance);
   });
 
   test.each([

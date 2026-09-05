@@ -43,6 +43,7 @@ const {
 const {
   buildWritingAssessment,
 } = require("../services/writingAssessment.service");
+const { publishToUser } = require("../services/notificationRealtime.service");
 
 const {
   bytesToMB,
@@ -2727,11 +2728,13 @@ async function markSubmissionReviewed(req, res) {
     if (!classDoc) return sendError(res, 403, "No permission");
 
     const now = new Date();
+    let newlyReviewed = false;
     let saved = await SubmissionFeedback.findOneAndUpdate(
       { submissionId: submission._id, teacherReviewedAt: null },
       { $set: { teacherReviewedAt: now, teacherReviewedBy: teacherId } },
       { new: true, runValidators: true }
     );
+    newlyReviewed = Boolean(saved);
 
     if (!saved) {
       saved = await SubmissionFeedback.findOne({ submissionId: submission._id });
@@ -2752,12 +2755,17 @@ async function markSubmissionReviewed(req, res) {
           },
           { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
         );
+        newlyReviewed = Boolean(saved);
       } catch (error) {
         if (error?.code !== 11000) throw error;
         saved = await SubmissionFeedback.findOne({ submissionId: submission._id });
       }
     }
     if (!saved?.teacherReviewedAt) return sendError(res, 500, "Failed to mark submission reviewed");
+
+    if (newlyReviewed) publishToUser({ userId: teacherId, event: 'teacher_activity_invalidated', payload: {
+      type: 'review_completed', submissionId: String(submission._id), occurredAt: saved.teacherReviewedAt.toISOString()
+    } });
 
     return sendSuccess(res, {
       submissionId: String(submission._id),
@@ -3419,6 +3427,7 @@ async function persistUploadedFile(req, type) {
     uploadedBy: userId,
     role,
     type,
+    sizeBytes: Number.isFinite(Number(file.size)) ? Number(file.size) : undefined,
   });
 
   return {

@@ -3,6 +3,7 @@ const {
   buildCanonicalPageFromWords,
   getOcrWordSeparator
 } = require('../utils/ocrTranscriptNormalizer');
+const { canonicalOcrWordId } = require('../utils/ocrWordIdentity');
 
 function overlap(aStart, aEnd, bStart, bEnd) {
   const s = Math.max(aStart, bStart);
@@ -17,7 +18,7 @@ function normalizeOcrWordsFromStored(ocrDataWords, options = {}) {
   const perPageCounters = new Map();
 
   return list
-    .map((w) => {
+    .map((w, wordIndex) => {
       const text = typeof w?.text === 'string' ? w.text.trim() : '';
       if (!text) return null;
 
@@ -35,7 +36,8 @@ function normalizeOcrWordsFromStored(ocrDataWords, options = {}) {
       const next = (perPageCounters.get(page) || 0) + 1;
       perPageCounters.set(page, next);
 
-      const id = typeof w?.id === 'string' && w.id ? w.id : `word_${fileId}_${page}_${next}`;
+      const id = canonicalOcrWordId({ fileId, pageNumber: page, storedWordId: w?.id,
+        wordIndex: Number.isFinite(wordIndex) ? wordIndex : next - 1 });
 
       return {
         id,

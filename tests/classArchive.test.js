@@ -1,4 +1,6 @@
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
+jest.mock('../src/services/ocrPipeline.service',()=>({runOcrAndPersist:jest.fn(),runOcrAndPersistForFiles:jest.fn()}));
+jest.mock('../src/services/autoRubricDesigner.service',()=>({autoGenerateRubricDesignerForSubmission:jest.fn()}));
 
 const request = require('supertest');
 const mongoose = require('mongoose');
@@ -62,6 +64,14 @@ describe('archive classes', () => {
     const cls = await ownedClass(owner.user, 'AUTH');
     expect((await request(app).patch(`/api/classes/${cls._id}/archive`).set('Authorization', `Bearer ${other.token}`)).status).toBe(404);
     expect((await request(app).patch(`/api/classes/${cls._id}/archive`).set('Authorization', `Bearer ${student.token}`)).status).toBe(403);
+  });
+
+  test('delete remains owner-scoped and only removes the owned class', async()=>{
+    const owner=await actor('teacher','delete-owner'),other=await actor('teacher','delete-other');const cls=await ownedClass(owner.user,'DELETE');
+    expect((await request(app).delete(`/api/classes/${cls._id}`).set('Authorization',`Bearer ${other.token}`)).status).toBe(404);
+    expect((await Class.findById(cls._id)).isActive).toBe(true);
+    expect((await request(app).delete(`/api/classes/${cls._id}`).set('Authorization',`Bearer ${owner.token}`)).status).toBe(200);
+    expect((await Class.findById(cls._id)).isActive).toBe(false);
   });
 
   test('active and archived list filters are disjoint', async () => {

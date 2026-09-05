@@ -116,8 +116,8 @@ describe('Stripe billing integration', () => {
     });
     expect(stripeMock.customers.create).toHaveBeenCalledTimes(1);
     const keys = stripeMock.checkout.sessions.create.mock.calls.map((call) => call[1]?.idempotencyKey);
-    expect(keys[0]).toBe(`rozna-checkout:${teacher._id}:starter_monthly:${CHECKOUT_ATTEMPT_A}`);
-    expect(keys[1]).toBe(`rozna-checkout:${teacher._id}:starter_monthly:${CHECKOUT_ATTEMPT_B}`);
+    expect(keys[0]).toBe(`rozna-checkout:${teacher._id}:starter_monthly:monthly:${CHECKOUT_ATTEMPT_A}`);
+    expect(keys[1]).toBe(`rozna-checkout:${teacher._id}:starter_monthly:monthly:${CHECKOUT_ATTEMPT_B}`);
     expect(keys[1]).not.toBe(keys[0]);
     expect(stripeMock.checkout.sessions.create.mock.calls[1][0].customer).toBe('cus_test');
   });
@@ -164,14 +164,14 @@ describe('Stripe billing integration', () => {
     const customerKeys = stripeMock.customers.create.mock.calls.map((call) => call[1]?.idempotencyKey);
     expect(new Set(customerKeys)).toEqual(new Set([`rozna-customer-${teacher._id}`]));
     const checkoutKeys = stripeMock.checkout.sessions.create.mock.calls.map((call) => call[1]?.idempotencyKey);
-    expect(new Set(checkoutKeys)).toEqual(new Set([`rozna-checkout:${teacher._id}:starter_monthly:${CHECKOUT_ATTEMPT_A}`]));
+    expect(new Set(checkoutKeys)).toEqual(new Set([`rozna-checkout:${teacher._id}:starter_monthly:monthly:${CHECKOUT_ATTEMPT_A}`]));
     expect((await User.findById(teacher._id)).stripeCustomerId).toBe('cus_test');
   });
 
   test('unknown/custom plans and active duplicate subscription are rejected', async () => {
     const teacher = await createUser('teacher', 'reject');
     const auth = { Authorization: `Bearer ${token(teacher)}` };
-    expect((await request(app).post('/api/subscription/checkout-session').set(auth).send({ planSlug: 'unknown', checkoutAttemptId: CHECKOUT_ATTEMPT_A })).status).toBe(400);
+    expect((await request(app).post('/api/subscription/checkout-session').set(auth).send({ planSlug: 'unknown', checkoutAttemptId: CHECKOUT_ATTEMPT_A })).status).toBe(404);
     expect((await request(app).post('/api/subscription/checkout-session').set(auth).send({ planSlug: 'free', checkoutAttemptId: CHECKOUT_ATTEMPT_A })).status).toBe(400);
     expect((await request(app).post('/api/subscription/checkout-session').set(auth).send({ planSlug: 'custom', checkoutAttemptId: CHECKOUT_ATTEMPT_A })).status).toBe(400);
     teacher.stripeSubscriptionStatus = 'active'; await teacher.save();
@@ -199,7 +199,7 @@ describe('Stripe billing integration', () => {
     expect(Buffer.isBuffer(stripeMock.webhooks.constructEvent.mock.calls.at(-1)[0])).toBe(true);
     const teacher = await createUser('teacher', 'json');
     const parsed = await request(app).post('/api/subscription/checkout-session').set('Authorization', `Bearer ${token(teacher)}`).send({ planSlug: 'unknown', checkoutAttemptId: CHECKOUT_ATTEMPT_A });
-    expect(parsed.status).toBe(400);
+    expect(parsed.status).toBe(404);
   });
 
   test('subscription webhook activates existing plan and duplicate event is applied once', async () => {

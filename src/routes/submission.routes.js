@@ -280,6 +280,16 @@ router.get(
  */
 router.get('/my', noStore, verifyJwtToken, requireRole('student'), submissionController.getMySubmissions);
 
+router.get(
+  '/:submissionId/draft-comparison',
+  noStore,
+  verifyJwtToken,
+  requireRole(['student', 'teacher']),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  submissionController.getDraftComparison
+);
+
 router.delete(
   '/:submissionId',
   verifyJwtToken,

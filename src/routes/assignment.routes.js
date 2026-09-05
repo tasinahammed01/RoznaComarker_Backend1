@@ -99,6 +99,19 @@ router.post(
   assignmentController.createAssignment
 );
 
+router.post(
+  '/:id/duplicate',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  body('targetClassId').isMongoId().withMessage('Invalid target class id'),
+  body('title').isString().trim().notEmpty().withMessage('title is required'),
+  body('deadline').notEmpty().withMessage('deadline is required'),
+  handleValidationResult,
+  enforceUsageLimit('assignments', 1),
+  assignmentController.duplicateAssignment
+);
+
 /**
  * @openapi
  * /api/assignments/{id}:
@@ -171,6 +184,19 @@ router.patch(
 );
 
 // Teacher-only: generate rubric designer from a teacher prompt (for assignment rubric modal).
+router.post(
+  '/generate-rubric-prompt',
+  createSensitiveRateLimiter(),
+  verifyJwtToken,
+  requireRole('teacher'),
+  body('prompt').isString().trim().notEmpty().withMessage('prompt is required'),
+  body('title').optional().isString().trim().isLength({ max: 200 }),
+  body('writingType').optional().isString().trim().isLength({ max: 100 }),
+  body('instructions').optional().isString().trim().isLength({ max: 500 }),
+  handleValidationResult,
+  assignmentController.generateDraftRubricDesignerFromPrompt
+);
+
 router.post(
   '/:id/generate-rubric-prompt',
   createSensitiveRateLimiter(),

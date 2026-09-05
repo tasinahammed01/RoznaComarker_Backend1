@@ -8,11 +8,13 @@ const Submission = require('../models/Submission');
 const FlashcardSubmission = require('../models/FlashcardSubmission');
 const FlashcardSet = require('../models/FlashcardSet');
 const FlashcardAnswerCheck = require('../models/FlashcardAnswerCheck');
+const StudentFlashcardProgress = require('../models/StudentFlashcardProgress');
 const WorksheetSubmission = require('../models/WorksheetSubmission');
 const Worksheet = require('../models/Worksheet');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 const staleAssignmentEvaluation = require('../services/staleAssignmentEvaluation.service');
 const { currentEvaluationSettings } = require('../services/evaluationSettingsContext.service');
+const { assignmentCapabilities } = require('../config/assignmentCapabilities');
 
 const {
   RubricExcelTemplateError,
@@ -437,6 +439,24 @@ async function propagateAssignmentRubricToSubmissionFeedback({ assignmentId, rub
   });
 }
 
+function cloneAssignmentRubrics(value) {
+  if (!value) return undefined;
+  const raw = typeof value.toObject === 'function' ? value.toObject() : value;
+  const criteria = Array.isArray(raw.criteria) ? raw.criteria.map((criterion) => ({
+    name: criterion && criterion.name,
+    ...(Number.isFinite(Number(criterion && criterion.weight)) ? { weight: Number(criterion.weight) } : {}),
+    levels: Array.isArray(criterion && criterion.levels) ? criterion.levels.map((level) => ({
+      title: level && level.title,
+      score: level && level.score,
+      description: level && level.description
+    })) : []
+  })) : [];
+  return {
+    ...(Number.isFinite(Number(raw.totalPoints)) ? { totalPoints: Number(raw.totalPoints) } : {}),
+    criteria
+  };
+}
+
 function normalizeMimeForRubricUpload(file) {
   const name = safeString(file && file.originalname).toLowerCase();
   const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
@@ -726,11 +746,14 @@ async function createAssignment(req, res) {
           qrToken,
           allowLateResubmission: typeof allowLateResubmission === 'boolean' ? allowLateResubmission : undefined,
           showMarksToStudent: typeof showMarksToStudent === 'boolean' ? showMarksToStudent : undefined,
-          allowResubmission: typeof allowResubmission === 'boolean' ? allowResubmission : undefined,
-          requireAdaptiveBeforeResubmission: allowResubmission === true && requireAdaptiveBeforeResubmission === true
+          allowResubmission: resolvedResourceType === 'essay' && allowResubmission === true,
+          requireAdaptiveBeforeResubmission: resolvedResourceType === 'essay' && allowResubmission === true && requireAdaptiveBeforeResubmission === true
         });
 
         await incrementUsage(teacherId, { assignments: 1 });
+
+        await require('../services/professionalMilestone.service')
+          .evaluateProfessionalMilestonesSafely(teacherId, ['ASSIGNMENTS_CREATED']);
 
         const populated = await Assignment.findById(created._id)
           .populate('class')
@@ -827,6 +850,7 @@ async function updateAssignment(req, res) {
     if (!assignment) {
       return sendError(res, 404, 'Assignment not found');
     }
+    const capabilities = assignmentCapabilities(assignment);
 
     if (typeof title !== 'undefined') {
       if (!isNonEmptyString(title)) {
@@ -893,20 +917,21 @@ async function updateAssignment(req, res) {
       assignment.showMarksToStudent = showMarksToStudent;
     }
 
-    if (typeof allowResubmission !== 'undefined') {
+    if (capabilities.allowResubmission && typeof allowResubmission !== 'undefined') {
       if (typeof allowResubmission !== 'boolean') {
         return sendError(res, 400, 'allowResubmission must be a boolean');
       }
       assignment.allowResubmission = allowResubmission;
     }
 
-    if (typeof requireAdaptiveBeforeResubmission !== 'undefined') {
+    if (capabilities.requireAdaptiveBeforeResubmission && typeof requireAdaptiveBeforeResubmission !== 'undefined') {
       if (typeof requireAdaptiveBeforeResubmission !== 'boolean') {
         return sendError(res, 400, 'requireAdaptiveBeforeResubmission must be a boolean');
       }
       assignment.requireAdaptiveBeforeResubmission = requireAdaptiveBeforeResubmission;
     }
-    if (assignment.allowResubmission !== true) assignment.requireAdaptiveBeforeResubmission = false;
+    if (!capabilities.allowResubmission) assignment.allowResubmission = false;
+    if (!capabilities.requireAdaptiveBeforeResubmission || assignment.allowResubmission !== true) assignment.requireAdaptiveBeforeResubmission = false;
 
     const saved = await assignment.save();
 
@@ -1583,6 +1608,7 @@ async function submitFlashcardAssignment(req, res) {
     if (!membership) return sendError(res, 403, 'Not enrolled in this class');
 
     const existing = await FlashcardSubmission.findOne({ assignmentId, userId: studentId });
+    if (existing) return sendSuccess(res, existing);
     const { score, timeTaken, results, completedAt, template, totalCards, cardResults } = req.body || {};
     const canonicalFlashcardSet = await FlashcardSet.findById(filteredAssignment.resourceId).select('template cards').lean();
     const resolvedTemplate = ['term-def', 'qa', 'concept'].includes(canonicalFlashcardSet?.template)
@@ -1590,6 +1616,8 @@ async function submitFlashcardAssignment(req, res) {
     let authoritativeCardResults = Array.isArray(cardResults) ? cardResults : [];
     let authoritativeResults = Array.isArray(results) ? results : [];
     let authoritativeScore = typeof score === 'number' ? score : 0;
+    const completedProgress = await StudentFlashcardProgress.findOne({ assignmentId, studentId,
+      flashcardSetId: filteredAssignment.resourceId, status: 'completed' }).lean();
     if (resolvedTemplate === 'qa') {
       const checks = await FlashcardAnswerCheck.find({ assignmentId, userId: studentId,
         flashcardSetId: filteredAssignment.resourceId }).sort({ checkedAt: 1 }).lean();
@@ -1601,24 +1629,19 @@ async function submitFlashcardAssignment(req, res) {
         status: check.isCorrect ? 'know' : 'learning' }));
       const denominator = authoritativeCardResults.length;
       authoritativeScore = denominator ? Math.round((checks.filter((check) => check.isCorrect).length / denominator) * 100) : 0;
+    } else if (completedProgress) {
+      authoritativeResults = (completedProgress.cardProgress || []).filter((item) => item.selfRating)
+        .map((item) => ({ cardId: item.cardId, status: item.selfRating === 'knew' ? 'know' : 'learning' }));
+      authoritativeCardResults = authoritativeResults.map((item) => ({
+        cardId: item.cardId, known: item.status === 'know'
+      }));
+      const denominator = Number(completedProgress.totalCards) || authoritativeResults.length;
+      authoritativeScore = denominator
+        ? Math.round((authoritativeResults.filter((item) => item.status === 'know').length / denominator) * 100) : 0;
     }
 
     let sub;
-    if (existing) {
-      sub = await FlashcardSubmission.findOneAndUpdate(
-        { assignmentId, userId: studentId },
-        {
-          score:       authoritativeScore,
-          timeTaken:   typeof timeTaken === 'number' ? timeTaken : 0,
-          results:     authoritativeResults,
-          template:    resolvedTemplate,
-          totalCards:  typeof totalCards === 'number' ? totalCards : undefined,
-          cardResults: authoritativeCardResults,
-          submittedAt: completedAt ? new Date(completedAt) : new Date()
-        },
-        { new: true }
-      );
-    } else {
+    try {
       sub = await FlashcardSubmission.create({
         flashcardSetId: filteredAssignment.resourceId,
         userId: studentId,
@@ -1627,10 +1650,14 @@ async function submitFlashcardAssignment(req, res) {
         timeTaken:   typeof timeTaken === 'number' ? timeTaken : 0,
         results:     authoritativeResults,
         template:    resolvedTemplate,
-        totalCards:  typeof totalCards === 'number' ? totalCards : undefined,
+        totalCards:  Number(completedProgress?.totalCards) || (typeof totalCards === 'number' ? totalCards : undefined),
         cardResults: authoritativeCardResults,
         submittedAt: completedAt ? new Date(completedAt) : new Date()
       });
+    } catch (createError) {
+      if (createError?.code !== 11000) throw createError;
+      sub = await FlashcardSubmission.findOne({ assignmentId, userId: studentId });
+      if (!sub) throw createError;
     }
 
     setImmediate(async () => {
@@ -1640,15 +1667,21 @@ async function submitFlashcardAssignment(req, res) {
           return;
         }
 
-        const studentDisplay = String(req.user?.displayName || req.user?.email || 'Student');
+        const studentDisplay = String(req.user?.displayName || 'Student');
         const assignmentTitle = String(filteredAssignment.title || 'Flashcard assignment');
+        const isRevision = false;
 
         await createNotification({
           recipientId: teacherId,
           actorId: studentId,
           type: 'assignment_submitted',
-          title: 'Assignment submitted',
-          description: `${studentDisplay} submitted ${assignmentTitle}`,
+          title: isRevision ? 'Revised assignment submitted' : 'Assignment submitted',
+          description: isRevision
+            ? `${studentDisplay} submitted a revised attempt for ${assignmentTitle}`
+            : `${studentDisplay} submitted ${assignmentTitle}`,
+          idempotencyKey: isRevision
+            ? `flashcard-submission:${sub._id}:revision:${sub.attempts}`
+            : `flashcard-submission:${sub._id}:submitted`,
           data: {
             classId: String(filteredAssignment.class || ''),
             assignmentId: String(filteredAssignment._id || assignmentId),
@@ -1672,7 +1705,13 @@ async function submitFlashcardAssignment(req, res) {
 
     return sendSuccess(res, sub);
   } catch (err) {
-    logger.error('submitFlashcardAssignment error:', err);
+    logger.error({ event: 'flashcard_assignment_submit_failed',
+      assignmentId: String(req.params?.id || ''), studentId: String(req.user?._id || ''),
+      resourceId: String(req.body?.flashcardSetId || ''), errorName: err?.name,
+      errorCode: err?.code, errorMessage: err?.message,
+      duplicateKey: err?.keyPattern || err?.keyValue || undefined,
+      validationPaths: err?.errors ? Object.keys(err.errors) : undefined,
+      ...(process.env.NODE_ENV !== 'production' && err?.stack ? { stack: err.stack } : {}) });
     return sendError(res, 500, 'Failed to submit assignment');
   }
 }
@@ -1731,6 +1770,142 @@ async function getFlashcardAssignmentSubmissions(req, res) {
     return sendSuccess(res, subs);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch submissions');
+  }
+}
+
+async function generateDraftRubricDesignerFromPrompt(req, res) {
+  try {
+    const teacherId = req.user && req.user._id;
+    if (!teacherId) return sendError(res, 401, 'Unauthorized');
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const prompt = safeString(body.prompt).trim();
+    if (!prompt) return sendError(res, 400, 'prompt is required');
+    const title = safeString(body.title).trim() || 'Assignment';
+    const writingType = safeString(body.writingType).trim() || 'Writing';
+    const instructions = safeString(body.instructions).trim();
+    const systemInstruction = `You are a rubric generator. Return only valid JSON matching
+{"title":"string","totalPoints":100,"levels":[{"title":"string","maxPoints":number}],"criteria":[{"title":"string","weight":number,"cells":["string"]}]}.
+Use 3-5 uniquely named levels with descending integer percentages starting at 100. Use 3-10 uniquely named criteria with positive integer weights totaling 100. Every cell must be non-empty and each criteria row must have one cell per level.`;
+    const userPrompt = `${prompt}\n\nCreate a rubric for this unsaved assignment draft.\nTitle: ${title}\nWriting type: ${writingType}\nInstructions: ${instructions || 'N/A'}\nUse rubric title: Rubric: ${title}.`;
+    const rubricDesigner = await completeRubric({ systemInstruction, userPrompt,
+      caller: 'assignment_draft_rubric_request', purpose: 'rubric_designer' });
+    return sendSuccess(res, sanitizeRubricDesignerCriteria(normalizeRubricDesignerPayload(rubricDesigner)));
+  } catch (error) {
+    return sendError(res, error.statusCode || 500, error.message || 'Failed to generate rubric from prompt');
+  }
+}
+
+async function duplicateAssignment(req, res) {
+  try {
+    const { id } = req.params;
+    const { targetClassId, title, deadline } = req.body || {};
+    const teacherId = req.user && req.user._id;
+
+    if (!teacherId) return sendError(res, 401, 'Unauthorized');
+    if (!mongoose.Types.ObjectId.isValid(id)) return sendError(res, 400, 'Invalid assignment id');
+    if (!mongoose.Types.ObjectId.isValid(targetClassId)) return sendError(res, 400, 'Invalid target class id');
+    if (!isNonEmptyString(title)) return sendError(res, 400, 'title is required');
+
+    const parsedDeadline = toValidDate(deadline);
+    if (!parsedDeadline) return sendError(res, 400, 'deadline is required');
+    if (parsedDeadline.getTime() <= Date.now()) return sendError(res, 400, 'deadline must be in the future');
+
+    const source = await Assignment.findOne({ _id: id, teacher: teacherId, isActive: true });
+    if (!source) return sendError(res, 404, 'Assignment not found');
+
+    const [sourceClass, targetClass] = await Promise.all([
+      Class.findOne({ _id: source.class, teacher: teacherId, isActive: true }),
+      Class.findOne({
+        _id: targetClassId,
+        teacher: teacherId,
+        isActive: true,
+        $or: [{ status: 'active' }, { status: { $exists: false } }]
+      })
+    ]);
+    if (!sourceClass) return sendError(res, 404, 'Source class not found');
+    if (!targetClass) return sendError(res, 404, 'Target class not found');
+
+    if (source.resourceType === 'flashcard') {
+      const resource = mongoose.Types.ObjectId.isValid(source.resourceId)
+        ? await FlashcardSet.findById(source.resourceId).select('_id') : null;
+      if (!resource) return sendError(res, 409, 'The source flashcard set is no longer available');
+    }
+    if (source.resourceType === 'worksheet') {
+      const resource = mongoose.Types.ObjectId.isValid(source.resourceId)
+        ? await Worksheet.findById(source.resourceId).select('_id') : null;
+      if (!resource) return sendError(res, 409, 'The source worksheet is no longer available');
+    }
+
+    const duplicateData = {
+      title: title.trim(),
+      writingType: source.writingType,
+      resourceType: source.resourceType || 'essay',
+      resourceId: source.resourceId || null,
+      instructions: source.instructions,
+      rubric: source.rubric,
+      rubrics: cloneAssignmentRubrics(source.rubrics),
+      deadline: parsedDeadline,
+      class: targetClass._id,
+      teacher: teacherId,
+      allowLateResubmission: source.allowLateResubmission === true,
+      showMarksToStudent: source.showMarksToStudent !== false,
+      allowResubmission: source.resourceType === 'essay' && source.allowResubmission === true,
+      requireAdaptiveBeforeResubmission: source.resourceType === 'essay'
+        && source.allowResubmission === true && source.requireAdaptiveBeforeResubmission === true,
+      isActive: true
+    };
+
+    let created = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        created = await Assignment.create({ ...duplicateData, qrToken: uuidv4() });
+        break;
+      } catch (err) {
+        if (err && err.code === 11000 && err.keyPattern && err.keyPattern.qrToken) continue;
+        throw err;
+      }
+    }
+    if (!created) return sendError(res, 500, 'Failed to generate unique qr token');
+
+    if (created.resourceType === 'flashcard' && created.resourceId) {
+      await FlashcardSet.updateOne({ _id: created.resourceId }, { $addToSet: { assignedClasses: targetClass._id } });
+    }
+    await incrementUsage(teacherId, { assignments: 1 });
+    targetClass.updatedAt = new Date();
+    await targetClass.save();
+
+    const populated = await Assignment.findById(created._id)
+      .populate('class')
+      .populate('teacher', '_id email displayName photoURL role');
+
+    setImmediate(async () => {
+      try {
+        const memberships = await Membership.find({ class: targetClass._id, status: 'active' }).select('student');
+        const studentIds = (memberships || []).map((membership) => membership && membership.student).filter(Boolean);
+        const teacherDisplay = String(req.user.displayName || req.user.email || 'Teacher');
+        const typeLabel = created.resourceType === 'flashcard' ? 'flashcard set'
+          : created.resourceType === 'worksheet' ? 'worksheet' : 'assignment';
+        await Promise.all(studentIds.map((studentId) => createNotification({
+          recipientId: studentId,
+          actorId: teacherId,
+          type: 'assignment_uploaded',
+          title: `New ${typeLabel} assigned`,
+          description: `${teacherDisplay} assigned a new ${typeLabel} in ${targetClass.name || 'Class'}: ${created.title}`,
+          data: {
+            classId: String(targetClass._id), assignmentId: String(created._id),
+            resourceType: created.resourceType, resourceId: created.resourceId || null,
+            route: { path: '/student/my-classes/detail', params: [String(targetClass._id)] }
+          }
+        })));
+      } catch {
+        logger.warn('Failed to create student notifications for duplicated assignment');
+      }
+    });
+
+    return sendSuccess(res, populated);
+  } catch (err) {
+    logger.error('Failed to duplicate assignment', err);
+    return sendError(res, 500, 'Failed to duplicate assignment');
   }
 }
 
@@ -1813,6 +1988,7 @@ async function retryStaleEvaluations(req, res) {
 
 module.exports = {
   createAssignment,
+  duplicateAssignment,
   updateAssignment,
   updateAssignmentRubrics,
   deleteAssignment,
@@ -1822,6 +1998,7 @@ module.exports = {
   getAssignmentByQrToken,
   getAssignmentByIdForTeacher,
   generateRubricDesignerFromPrompt,
+  generateDraftRubricDesignerFromPrompt,
   uploadRubricFileForAssignment,
   submitFlashcardAssignment,
   getMyFlashcardSubmission,

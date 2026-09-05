@@ -32,5 +32,6 @@ const membershipSchema = new Schema(
 );
 
 membershipSchema.index({ student: 1, class: 1 }, { unique: true });
+membershipSchema.index({ class: 1, status: 1, student: 1 });
 
 module.exports = mongoose.model('Membership', membershipSchema);

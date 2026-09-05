@@ -8,22 +8,20 @@
 
 const { generateChatCompletion } = require('./aiGeneration.service');
 const { getWorksheetExtractionAIConfig } = require('./aiGateway.service');
+const { jsonrepair } = require('jsonrepair');
 const logger = require('../utils/logger');
 
 const EXTRACTION_FEATURE = 'worksheet_extract_structure';
-const RETRYABLE_OUTPUT_CODES = [
-  'AI_OUTPUT_VALIDATION_FAILED',
-  'AI_RESPONSE_EMPTY',
-  'AI_RESPONSE_INVALID',
-  'AI_RESPONSE_TRUNCATED',
-];
 const DEFAULT_MAX_INPUT_CHARACTERS = 120000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 8000;
+const EXTRACTED_MCQ_MIN_OPTIONS = 2;
+const EXTRACTED_MCQ_MAX_OPTIONS = 8;
 
 function extractionValidationError(message, validationCode) {
   const error = new Error(message);
   error.code = validationCode;
   error.validationCode = validationCode;
+  error.diagnostics = [{ code: validationCode, message }];
   return error;
 }
 
@@ -41,6 +39,35 @@ function boundedInteger(value, fallback, minimum, maximum) {
 function normalizeComparable(value) {
   return String(value || '').toLowerCase().replace(/_+/gu, ' blank ')
     .replace(/[^a-z0-9\s]/gu, ' ').replace(/\s+/gu, ' ').trim();
+}
+
+function stripOptionLabel(value) {
+  return String(value ?? '').trim().replace(/^\s*(?:[A-Z]|\d+)\s*[.)\]:-]\s*/iu, '').trim();
+}
+
+/** Resolve representational aliases only; never infer an absent answer. */
+function resolveCanonicalAnswer(question) {
+  if (!question || typeof question !== 'object') return question?.correct_answer;
+  const raw = Array.isArray(question.correct_answer)
+    ? question.correct_answer.map(value => String(value).trim()).filter(Boolean)
+    : String(question.correct_answer ?? '').trim();
+  if (question.type === 'true_false') {
+    const value = normalizeComparable(Array.isArray(raw) ? raw[0] : raw);
+    if (['true', 't', 'yes', '1'].includes(value)) return 'true';
+    if (['false', 'f', 'no', '0'].includes(value)) return 'false';
+    return raw;
+  }
+  if (question.type !== 'multiple_choice' || !Array.isArray(question.options)) return raw;
+  const answer = Array.isArray(raw) ? raw[0] : raw;
+  if (!answer) return '';
+  const alias = answer.match(/^\s*([a-z]|\d+)\s*[.)\]:-]?\s*$/iu)?.[1]?.toUpperCase();
+  if (alias) {
+    const index = /^\d+$/u.test(alias) ? Number(alias) - 1 : alias.charCodeAt(0) - 65;
+    if (index >= 0 && index < question.options.length) return question.options[index];
+  }
+  const comparableAnswer = normalizeComparable(stripOptionLabel(answer));
+  const matches = question.options.filter(option => normalizeComparable(stripOptionLabel(option)) === comparableAnswer);
+  return matches.length === 1 ? matches[0] : raw;
 }
 
 function analyzeSourceRichness(extractedText) {
@@ -93,7 +120,7 @@ function buildExtractionPrompt(extractedText, options = {}) {
           "id": "string - unique identifier (e.g., q1, q2, q3)",
           "prompt": "string - the question or prompt text",
           "type": "fill_blank | multiple_choice | matching | true_false | short_answer | essay",
-          "options": ["string", "..."] - exactly 4 unique options for multiple_choice; omit otherwise,
+          "options": ["string", "..."] - the unique answer choices present in the source for multiple_choice; omit otherwise,
           "correct_answer": "string | string[] - the correct answer(s)",
           "topic": "string - skill/topic being tested (e.g., 'present tense verbs', 'multiplication facts')",
           "confidence": "high | medium | low - how confident you are about this extraction"
@@ -132,8 +159,11 @@ ${schema}
 - The top-level "sections" field must always be an array and must not be renamed or wrapped in another object
 - No markdown, no code fences, no explanation
 - Start your response with { and end with }
-- If you cannot determine a correct answer with high confidence, mark confidence as 'low' and leave correct_answer empty
-- For multiple_choice, provide 4 options in the options array
+- For objective types (multiple_choice, fill_blank, matching, true_false), correct_answer must contain the canonical answer required by the schema
+- For subjective types (short_answer, essay), correct_answer means the source's model/reference answer OR its teacher grading guidance; it does not require one literal student response
+- Preserve subjective guidance such as "Accept any accurate explanation..." verbatim and mark confidence high when the question boundary, type, and numbered answer-key mapping are clear
+- If neither an objective answer nor subjective grading guidance is present reliably in the source, mark confidence low and leave correct_answer empty; never invent a sample answer
+- For multiple_choice, preserve exactly the answer choices present in the source. Do not invent, remove, or pad options. A valid extracted multiple-choice question may contain 2 or more source choices
 - Each matching question represents ONE pair: prompt is the left term and correct_answer is its right-side match. Generate several pairs in the same section; do not put pairs in options
 - Each fill_blank prompt must contain an underscore blank marker and correct_answer must contain only the missing word or short phrase, never the incomplete prompt
 - Treat every MCQ, fill blank, matching pair, and true/false statement as one assessable item
@@ -143,6 +173,16 @@ ${schema}
 - Matching sections should normally contain 4-8 unique pairs when supported
 - Difficulty rules: easy uses direct source recall; medium emphasizes sequence, comparison, and relationships; hard uses source-grounded inference and cause/effect only
 - Be precise with question boundaries - each question should be a single, clear prompt
+- Preserve the source section order, question meaning, numbering, answer choices, and underscore blanks
+- Do not invent questions or answers. Use an answer key only when it is clearly present in the source
+- When an answer key exists, connect entries by question ID/number first, then explicit source numbering, and only then normalized question text; never rely only on array position
+- Preserve every known source answer. For multiple choice, convert key letters or 1-based option numbers to the exact option value in the options array
+- Normalize harmless answer-key whitespace, case, punctuation, and true/false representations without changing meaning
+- Treat answer-key table cells as key/value relationships belonging to their labeled question row
+- Do not merge unrelated questions or drop valid questions because their formatting is unusual
+- Lines beginning with [HEADING], list markers, and TABLE ROW describe source structure, not worksheet content to copy literally
+- For table rows, keep each row's cell relationships and treat labeled cells as belonging to that row
+- Ignore unsupported visual decoration while retaining all readable question content
 - CRITICAL for fill_blank questions: create exactly one clear underscore blank per item and preserve it in prompt. Put only that blank's missing word or short phrase in correct_answer. The application builds the shared word bank from these answers.`;
 }
 
@@ -151,25 +191,78 @@ ${schema}
  * @param {string} aiText - Raw LLM response
  * @returns {Object} Parsed and validated structure
  */
+function extractJsonCandidate(responseText) {
+  const fenceMatch = responseText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu);
+  if (fenceMatch) return fenceMatch[1].trim();
+  const start = responseText.indexOf('{');
+  if (start < 0) return responseText;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = start; index < responseText.length; index += 1) {
+    const character = responseText[index];
+    if (escaped) { escaped = false; continue; }
+    if (quoted && character === '\\') { escaped = true; continue; }
+    if (character === '"') { quoted = !quoted; continue; }
+    if (quoted) continue;
+    if (character === '{') depth += 1;
+    if (character === '}' && --depth === 0) return responseText.slice(start, index + 1);
+  }
+  return responseText.slice(start);
+}
+
+function normalizeExtractionShape(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const parsed = { ...value };
+  ['title', 'description', 'subject'].forEach((key) => {
+    if (typeof parsed[key] === 'string') parsed[key] = parsed[key].trim();
+  });
+  if (!Array.isArray(parsed.sections)) return parsed;
+  parsed.sections = parsed.sections.filter((section) => section && typeof section === 'object')
+    .map((section) => ({ ...section,
+      instruction: typeof section.instruction === 'string' ? section.instruction.trim() : section.instruction,
+      questions: Array.isArray(section.questions) ? section.questions.filter(Boolean).map((question) => {
+        const q = { ...question };
+        if (q.prompt == null && typeof q.question === 'string') q.prompt = q.question;
+        if (q.options == null && Array.isArray(q.choices)) q.options = q.choices;
+        if (q.correct_answer == null && q.answer != null) q.correct_answer = q.answer;
+        const aliases = { mcq: 'multiple_choice', 'multiple-choice': 'multiple_choice',
+          fill_in_blank: 'fill_blank', 'fill-in-the-blank': 'fill_blank',
+          open_ended: 'short_answer', 'open-ended': 'short_answer', truefalse: 'true_false' };
+        q.type = aliases[String(q.type || '').toLowerCase()] || String(q.type || '').toLowerCase();
+        ['id', 'prompt', 'topic', 'confidence', 'correct_answer'].forEach((key) => {
+          if (typeof q[key] === 'string') q[key] = q[key].trim();
+        });
+        if (Array.isArray(q.options)) q.options = q.options.map((option) => String(option).trim()).filter(Boolean);
+        q.correct_answer = resolveCanonicalAnswer(q);
+        if (typeof q.confidence === 'string') q.confidence = q.confidence.toLowerCase();
+        return q;
+      }) : section.questions,
+    })).filter((section) => !Array.isArray(section.questions) || section.questions.length > 0);
+  return parsed;
+}
+
 function parseExtractionResponse(aiText) {
   const responseText = typeof aiText === 'string' ? aiText.trim() : '';
   logger.info({ message: 'Worksheet extraction response validation started',
+    event: 'worksheet_validation', stage: 'parse_normalize', status: 'started',
     feature: EXTRACTION_FEATURE, responseTextLength: responseText.length });
   if (!responseText) {
     throw extractionValidationError('Empty LLM response', 'EXTRACTION_RESPONSE_EMPTY');
   }
 
-  // Tolerate only an optional whole-response markdown JSON fence. Do not scan
-  // prose for an arbitrary object or repair malformed/truncated JSON.
-  const fenceMatch = responseText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu);
-  const extractedJson = (fenceMatch ? fenceMatch[1] : responseText).trim();
+  const extractedJson = extractJsonCandidate(responseText).trim();
 
   let parsed;
   try {
     parsed = JSON.parse(extractedJson);
   } catch (parseError) {
-    throw extractionValidationError('Invalid JSON in LLM response', 'EXTRACTION_INVALID_JSON');
+    try { parsed = JSON.parse(jsonrepair(extractedJson)); }
+    catch { throw extractionValidationError('Invalid JSON in LLM response', 'EXTRACTION_INVALID_JSON'); }
   }
+  parsed = normalizeExtractionShape(parsed);
+  logger.info({ message: 'Worksheet extraction response parsed and normalized', event: 'worksheet_validation',
+    stage: 'parse_normalize', status: 'passed', feature: EXTRACTION_FEATURE });
 
   // Validate required fields
   if (!parsed || typeof parsed !== 'object') {
@@ -212,9 +305,21 @@ function parseExtractionResponse(aiText) {
         throw extractionValidationError(`Invalid question type: ${q.type}`, 'EXTRACTION_INVALID_QUESTION_TYPE');
       }
       if (q.type === 'multiple_choice') {
-        if (!Array.isArray(q.options) || q.options.length !== 4 ||
-            new Set(q.options.map(normalizeComparable)).size !== 4) {
-          throw extractionValidationError('Multiple choice requires four unique options', 'EXTRACTION_INVALID_MCQ_OPTIONS');
+        const optionCount = Array.isArray(q.options) ? q.options.length : 0;
+        const normalizedOptions = Array.isArray(q.options) ? q.options.map(normalizeComparable) : [];
+        let optionReason = null;
+        if (!Array.isArray(q.options)) optionReason = 'options_not_array';
+        else if (optionCount < EXTRACTED_MCQ_MIN_OPTIONS) optionReason = 'too_few_options';
+        else if (optionCount > EXTRACTED_MCQ_MAX_OPTIONS) optionReason = 'too_many_options';
+        else if (normalizedOptions.some(option => !option)) optionReason = 'empty_option';
+        else if (new Set(normalizedOptions).size !== optionCount) optionReason = 'duplicate_options';
+        if (optionReason) {
+          const error = extractionValidationError(
+            `Multiple-choice question ${q.id} must contain ${EXTRACTED_MCQ_MIN_OPTIONS}-${EXTRACTED_MCQ_MAX_OPTIONS} unique, non-empty source options.`,
+            'EXTRACTION_INVALID_MCQ_OPTIONS');
+          error.diagnostics = [{ code: error.code, questionId: q.id, optionCount, reason: optionReason,
+            message: error.message }];
+          throw error;
         }
         if (typeof q.correct_answer !== 'string' || !q.options.includes(q.correct_answer)) {
           throw extractionValidationError('Multiple choice answer must match one option', 'EXTRACTION_INVALID_MCQ_ANSWER');
@@ -256,7 +361,6 @@ function parseExtractionResponse(aiText) {
     }
   }
 
-  logger.info('[EXTRACTION] Validation successful - sections:', parsed.sections.length);
   return parsed;
 }
 
@@ -461,6 +565,73 @@ function convertExtractedToActivities(extractedStructure) {
   return activities;
 }
 
+function validateExtractionForSource(parsed, richness) {
+  const counts = parsed.sections.flatMap((section) => section.questions)
+    .reduce((acc, question) => ({ ...acc, [question.type]: (acc[question.type] || 0) + 1 }), {});
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+  const minimumTotal = richness.sparse ? Math.max(1, richness.targetItems - 3)
+    : Math.max(5, Math.floor(richness.targetItems * 0.7));
+  if (total < minimumTotal) throw extractionValidationError('Too few assessable items for source richness', 'EXTRACTION_INSUFFICIENT_ITEMS');
+  return parsed;
+}
+
+function validationStageForCode(code) {
+  if (['EXTRACTION_RESPONSE_EMPTY', 'EXTRACTION_INVALID_JSON', 'EXTRACTION_INVALID_ROOT'].includes(code)) {
+    return 'parse_normalize';
+  }
+  if (['EXTRACTION_INVALID_TITLE', 'EXTRACTION_MISSING_SECTIONS',
+    'EXTRACTION_INVALID_SECTION_INSTRUCTION', 'EXTRACTION_MISSING_QUESTIONS',
+    'EXTRACTION_INVALID_QUESTION_ID', 'EXTRACTION_INVALID_QUESTION_PROMPT',
+    'EXTRACTION_INVALID_QUESTION_TYPE'].includes(code)) return 'schema';
+  return code === 'EXTRACTION_INSUFFICIENT_ITEMS' ? 'source_coverage' : 'semantic';
+}
+
+function validateExtractionPipeline(aiText, richness, context = {}) {
+  let parsed;
+  try {
+    parsed = parseExtractionResponse(aiText);
+  } catch (error) {
+    const stage = validationStageForCode(error.code);
+    logger.warn({ message: 'Worksheet validation failed', event: 'worksheet_validation', stage,
+      status: 'failed', code: error.code, feature: EXTRACTION_FEATURE,
+      requestId: context.requestId || null });
+    return { ok: false, stage, code: error.code, errors: error.diagnostics || [], error };
+  }
+  logger.info({ message: 'Worksheet schema validation passed', event: 'worksheet_validation',
+    stage: 'schema', status: 'passed', feature: EXTRACTION_FEATURE, requestId: context.requestId || null });
+  logger.info({ message: 'Worksheet semantic validation passed', event: 'worksheet_validation',
+    stage: 'semantic', status: 'passed', feature: EXTRACTION_FEATURE, requestId: context.requestId || null });
+  try {
+    validateExtractionForSource(parsed, richness);
+  } catch (error) {
+    logger.warn({ message: 'Worksheet source coverage validation failed', event: 'worksheet_validation',
+      stage: 'source_coverage', status: 'failed', code: error.code, feature: EXTRACTION_FEATURE,
+      requestId: context.requestId || null });
+    return { ok: false, stage: 'source_coverage', code: error.code,
+      errors: error.diagnostics || [], error };
+  }
+  logger.info({ message: 'Worksheet source coverage validation passed', event: 'worksheet_validation',
+    stage: 'source_coverage', status: 'passed', feature: EXTRACTION_FEATURE,
+    requestId: context.requestId || null });
+  return { ok: true, value: parsed, errors: [], finalFailureCode: null };
+}
+
+function buildRepairPrompt(aiOutput, validationError) {
+  const diagnostics = Array.isArray(validationError?.diagnostics) ? validationError.diagnostics
+    : [{ code: validationError?.code || 'EXTRACTION_SCHEMA_INVALID', message: validationError?.message || 'Invalid schema' }];
+  const sourceAwareMcqInstruction = diagnostics.some(item => item.code === 'EXTRACTION_INVALID_MCQ_OPTIONS')
+    ? '\nFor multiple-choice corrections, preserve the exact source options. Ensure they are unique and non-empty and that the correct answer matches exactly one option. Never pad a source question to four options or fabricate a distractor.\n'
+    : '';
+  return `Correct the worksheet JSON below so it matches the schema and semantic rules from the prior request.${sourceAwareMcqInstruction}
+Return JSON only. Preserve the same worksheet content and order. Do not add or remove worksheet content unless required by validation.
+
+VALIDATOR ERRORS:
+${JSON.stringify(diagnostics.slice(0, 20))}
+
+ORIGINAL AI OUTPUT:
+${String(aiOutput || '').slice(0, 40000)}`;
+}
+
 /**
  * Main extraction function.
  * @param {string} extractedText - Raw text from file extraction
@@ -490,7 +661,7 @@ async function extractWorksheetStructure(extractedText, options = {}) {
   try {
     let gatewayResult = null;
     const config = getWorksheetExtractionAIConfig(process.env);
-    const parsed = await generateChatCompletion(
+    const firstOutput = await generateChatCompletion(
       [
         {
           role: 'system',
@@ -505,31 +676,55 @@ async function extractWorksheetStructure(extractedText, options = {}) {
         feature: EXTRACTION_FEATURE,
         env: process.env,
         config,
-        validate: (content) => {
-          const parsed = parseExtractionResponse(content);
-          const counts = parsed.sections.flatMap((section) => section.questions)
-            .reduce((acc, question) => ({ ...acc, [question.type]: (acc[question.type] || 0) + 1 }), {});
-          const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
-          const minimumTotal = richness.sparse ? Math.max(1, richness.targetItems - 3)
-            : Math.max(5, Math.floor(richness.targetItems * 0.7));
-          if (total < minimumTotal) throw extractionValidationError('Too few assessable items for source richness', 'EXTRACTION_INSUFFICIENT_ITEMS');
-          if (!richness.sparse && richness.targetItems >= 10 && (counts.matching || 0) < 4) {
-            throw extractionValidationError('Matching activity has too few pairs', 'EXTRACTION_INSUFFICIENT_MATCHING_PAIRS');
-          }
-          if (!richness.sparse && richness.targetItems >= 10 &&
-              ((counts.multiple_choice || 0) < 3 || (counts.fill_blank || 0) < 2 ||
-               (counts.true_false || 0) < 2)) {
-            throw extractionValidationError('Generated activity distribution is too shallow', 'EXTRACTION_INSUFFICIENT_TYPE_COVERAGE');
-          }
-          return parsed;
-        },
-        returnValidated: true,
-        retryableSameModelCodes: RETRYABLE_OUTPUT_CODES,
+        metadata: { requestId: options.requestId, purpose: 'initial_structure' },
         terminalCodes: ['AI_PROVIDER_AUTH_ERROR', 'AI_PROVIDER_PERMISSION_DENIED',
           'AI_PROVIDER_PAYMENT_REQUIRED', 'AI_PROVIDER_INVALID_REQUEST'],
         onResponse: (result) => { gatewayResult = result; },
       },
     );
+
+    let repairAttempted = false;
+    const validationHistory = [];
+    let validation = validateExtractionPipeline(firstOutput, richness, options);
+    let parsed;
+    if (!validation.ok) {
+      const initialValidationError = validation.error;
+      validationHistory.push({ stage: validation.stage, code: validation.code });
+      repairAttempted = true;
+      logger.warn({ message: 'Worksheet extraction output requires bounded repair',
+        event: 'worksheet_ai_repair_started', feature: EXTRACTION_FEATURE,
+        requestId: options.requestId || null, validationCode: initialValidationError.code,
+        validationErrorsCount: initialValidationError.diagnostics?.length || 1 });
+      let repairOutput;
+      try {
+        repairOutput = await generateChatCompletion([
+          { role: 'system', content: 'You repair worksheet JSON. Return only the corrected JSON object.' },
+          { role: 'user', content: buildRepairPrompt(firstOutput, initialValidationError) },
+        ], {
+          temperature: 0, max_tokens: maxOutputTokens, response_format: { type: 'json_object' },
+          feature: `${EXTRACTION_FEATURE}_repair`, env: process.env, config,
+          metadata: { requestId: options.requestId, purpose: 'schema_repair' },
+          terminalCodes: ['AI_PROVIDER_AUTH_ERROR', 'AI_PROVIDER_PERMISSION_DENIED',
+            'AI_PROVIDER_PAYMENT_REQUIRED', 'AI_PROVIDER_INVALID_REQUEST'],
+        });
+        validation = validateExtractionPipeline(repairOutput, richness, options);
+        if (!validation.ok) throw validation.error;
+        parsed = validation.value;
+        logger.info({ message: 'Worksheet repair accepted', event: 'worksheet_repair', status: 'success',
+          feature: EXTRACTION_FEATURE, requestId: options.requestId || null });
+      } catch (repairError) {
+        if (repairError?.code?.startsWith('AI_') && !repairError?.code?.startsWith('AI_OUTPUT')) throw repairError;
+        const finalCode = repairError?.code || 'AI_OUTPUT_VALIDATION_FAILED';
+        const error = extractionValidationError('AI worksheet output remained invalid after one repair pass', finalCode);
+        error.finalFailureCode = finalCode;
+        error.repairAttempted = true;
+        error.diagnostics = repairError?.diagnostics || [{ code: repairError?.code || 'EXTRACTION_REPAIR_INVALID',
+          message: repairError?.message || 'Repair output invalid' }];
+        throw error;
+      }
+    } else {
+      parsed = validation.value;
+    }
 
     logger.info({ message: 'Worksheet extraction AI output accepted', feature: EXTRACTION_FEATURE,
       attemptCount: gatewayResult?.attempts?.length || 1, provider: gatewayResult?.provider || null,
@@ -556,7 +751,10 @@ async function extractWorksheetStructure(extractedText, options = {}) {
       })),
     };
 
-    logger.info('[EXTRACTION] Extraction complete - activities:', activities.length, 'sections:', parsed.sections.length);
+    const questionCount = parsed.sections.reduce((sum, section) => sum + section.questions.length, 0);
+    logger.info({ message: 'Worksheet extraction complete', event: 'worksheet_extract_completed',
+      feature: EXTRACTION_FEATURE, requestId: options.requestId || null, sections: parsed.sections.length,
+      questions: questionCount, repairUsed: repairAttempted });
 
     return {
       title: parsed.title,
@@ -565,6 +763,8 @@ async function extractWorksheetStructure(extractedText, options = {}) {
       activities,
       answerKey,
       extractedStructure: parsed, // Keep original for review
+      extractionDiagnostics: { repairAttempted, validationErrors: [], validationHistory,
+        finalFailureCode: null },
     };
   } catch (error) {
     logger.error({ message: 'Worksheet extraction failed', feature: EXTRACTION_FEATURE,
@@ -590,4 +790,11 @@ module.exports = {
   buildExtractionPrompt,
   parseExtractionResponse,
   analyzeSourceRichness,
+  normalizeExtractionShape,
+  validateExtractionForSource,
+  validateExtractionPipeline,
+  buildRepairPrompt,
+  resolveCanonicalAnswer,
+  EXTRACTED_MCQ_MIN_OPTIONS,
+  EXTRACTED_MCQ_MAX_OPTIONS,
 };

@@ -63,7 +63,7 @@ const assignmentSchema = new Schema(
     },
     deadline: {
       type: Date,
-      required: true
+      required: false
     },
     class: {
       type: Schema.Types.ObjectId,

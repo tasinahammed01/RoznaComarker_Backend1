@@ -4,6 +4,7 @@ const CreditTransaction = require('../models/CreditTransaction');
 const User = require('../models/user.model');
 const { ensureActivePlan } = require('../middlewares/usage.middleware');
 const logger = require('../utils/logger');
+const { evaluateCreditUsageNudge } = require('./creditUsageNudge.service');
 
 const DAY = 24 * 60 * 60 * 1000;
 const insufficient = () => Object.assign(new Error('You have used all your Assessment Credits for this billing cycle.'), {
@@ -56,8 +57,10 @@ async function resetMonthlyCreditsIfNeeded(user, plan, wallet, now = new Date())
   const expired = new Date(wallet.billingCycleEnd) <= now;
   const changed = Number(wallet.monthlyCredits) !== nextAllowance;
   if (!expired && !changed) return wallet;
+  const cycleKey = `${cycle.start.toISOString()}_${cycle.end.toISOString()}`;
   const set = expired ? { monthlyCredits: nextAllowance, monthlyCreditsUsed: 0, billingCycleStart: cycle.start,
-    billingCycleEnd: cycle.end, lastCreditReset: now, nudgeCycleStart: cycle.start, nudge80AcknowledgedAt: null } : { monthlyCredits: nextAllowance };
+    billingCycleEnd: cycle.end, lastCreditReset: now, nudgeCycleStart: cycle.start, nudge80AcknowledgedAt: null,
+    usageNudges: { cycleKey, handledThresholds: [], updatedAt: now } } : { monthlyCredits: nextAllowance };
   const updated = await CreditWallet.findOneAndUpdate({ _id: wallet._id, updatedAt: wallet.updatedAt }, { $set: set }, { new: true });
   if (!updated) return CreditWallet.findById(wallet._id);
   const key = expired ? `monthly-reset:${user._id}:${cycle.start.toISOString()}` : `allowance-change:${user._id}:${nextAllowance}:${cycle.start.toISOString()}`;
@@ -99,7 +102,8 @@ async function consumeAssessmentCredit({ userId, submissionId, assignmentId, ass
     if (transaction) return { charged: false, transaction, availableCredits: transaction.balanceAfter };
     throw Object.assign(new Error('Assessment credit transaction is still processing'), { code: 'CREDIT_DEBIT_PROCESSING', statusCode: 409 });
   }
-  const state = await getOrCreateWallet(userId); const monthlyRemaining = Math.max(state.wallet.monthlyCredits - state.wallet.monthlyCreditsUsed, 0);
+  const state = await getOrCreateWallet(userId); const beforeWallet = state.wallet.toObject();
+  const monthlyRemaining = Math.max(state.wallet.monthlyCredits - state.wallet.monthlyCreditsUsed, 0);
   const purchasedRemaining = Number(state.wallet.purchasedCredits || 0);
   const bucket = monthlyRemaining > 0 ? 'monthly' : purchasedRemaining > 0 ? 'purchased' : 'bonus';
   const inc = bucket === 'monthly' ? { monthlyCreditsUsed: 1 } : bucket === 'purchased' ? { purchasedCredits: -1 } : { bonusCredits: -1 };
@@ -111,10 +115,16 @@ async function consumeAssessmentCredit({ userId, submissionId, assignmentId, ass
   if (!wallet) { await CreditTransaction.deleteOne({ idempotencyKey, status: 'pending' }); throw insufficient(); }
   try {
     const transaction = await CreditTransaction.findOneAndUpdate({ idempotencyKey, status: 'pending' }, { $set: {
-      status: 'committed', balanceAfter: available(wallet) } }, { returnDocument: 'after' });
+      status: 'committed', balanceAfter: available(wallet), 'metadata.creditBucket': bucket } }, { returnDocument: 'after' });
     if (!transaction) throw new Error('Assessment debit claim was lost');
     logger.info({ event: 'credit.assessment.consumed', userId: String(userId), submissionId: String(submissionId), assessmentId,
       transactionId: String(transaction._id), remainingCredits: available(wallet) });
+    try {
+      await evaluateCreditUsageNudge({ userId, beforeWallet, afterWallet: wallet, transaction });
+    } catch (nudgeError) {
+      logger.error({ event: 'credit_usage_nudge_failed', userId: String(userId), transactionId: String(transaction._id),
+        error: nudgeError?.message });
+    }
     return { charged: true, transaction, availableCredits: available(wallet) };
   } catch (error) {
     await CreditWallet.updateOne({ _id: wallet._id }, { $inc: bucket === 'monthly' ? { monthlyCreditsUsed: -1 } : bucket === 'purchased' ? { purchasedCredits: 1 } : { bonusCredits: 1 } });
@@ -123,7 +133,7 @@ async function consumeAssessmentCredit({ userId, submissionId, assignmentId, ass
   }
 }
 
-async function adjustBonusCredits({ userId, amount, reason, idempotencyKey, actorId, metadata = {} }) {
+async function adjustBonusCredits({ userId, amount, reason, idempotencyKey, actorId, metadata = {}, transactionType, referralId, rewardGrantId, _casAttempt = 0 }) {
   if (!Number.isInteger(amount) || amount === 0) throw Object.assign(new Error('amount must be a non-zero integer'), { statusCode: 400 });
   if (!reason || !String(reason).trim()) throw Object.assign(new Error('reason is required'), { statusCode: 400 });
   const old = await CreditTransaction.findOne({ idempotencyKey }); if (old) return old;
@@ -135,9 +145,21 @@ async function adjustBonusCredits({ userId, amount, reason, idempotencyKey, acto
   const wallet = await CreditWallet.findOneAndUpdate({ _id: state.wallet._id, updatedAt: state.wallet.updatedAt,
     ...(amount < 0 ? { $expr: { $gte: [{ $add: [{ $max: [{ $subtract: ['$monthlyCredits', '$monthlyCreditsUsed'] }, 0] }, '$bonusCredits'] }, -amount] } } : {}) },
     { $inc: increments }, { new: true });
-  if (!wallet) throw Object.assign(new Error('Insufficient available credits'), { statusCode: 409, code: 'INSUFFICIENT_ASSESSMENT_CREDITS' });
-  try { return await CreditTransaction.create({ userId, type: actorId ? (amount > 0 ? 'ADMIN_CREDIT' : 'ADMIN_DEBIT') : 'BONUS_CREDIT',
-    amount, balanceAfter: available(wallet), reason: String(reason).trim(), idempotencyKey,
+  if (!wallet) {
+    if (amount > 0 && _casAttempt < 3) {
+      for (let attempt = 0; attempt < 25; attempt += 1) {
+        const committed = await CreditTransaction.findOne({ idempotencyKey });
+        if (committed) return committed;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      return adjustBonusCredits({ userId, amount, reason, idempotencyKey, actorId, metadata,
+        transactionType, referralId, rewardGrantId, _casAttempt: _casAttempt + 1 });
+    }
+    throw Object.assign(new Error('Insufficient available credits'), { statusCode: 409, code: 'INSUFFICIENT_ASSESSMENT_CREDITS' });
+  }
+  const type = transactionType || (actorId ? (amount > 0 ? 'ADMIN_CREDIT' : 'ADMIN_DEBIT') : 'BONUS_CREDIT');
+  try { return await CreditTransaction.create({ userId, type,
+    amount, balanceAfter: available(wallet), reason: String(reason).trim(), idempotencyKey, referralId, rewardGrantId,
     metadata: { ...metadata, ...(actorId ? { adminActorId: String(actorId) } : {}) } });
   } catch (error) {
     await CreditWallet.updateOne({ _id: wallet._id }, { $inc: Object.fromEntries(Object.entries(increments).map(([key, value]) => [key, -value])) });

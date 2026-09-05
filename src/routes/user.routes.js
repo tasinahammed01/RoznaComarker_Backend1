@@ -16,6 +16,14 @@ const { handleValidationResult } = require('../middlewares/validation.middleware
 
 const router = express.Router();
 
+router.post(
+  '/me/referral',
+  verifyJwtToken,
+  body('code').isString().trim().isLength({ min: 4, max: 32 }).withMessage('Valid referral code is required'),
+  handleValidationResult,
+  userController.claimMyReferral
+);
+
 /**
  * @openapi
  * tags:

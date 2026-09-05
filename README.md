@@ -112,3 +112,12 @@ File uploads:
   "timestamp": "2026-01-01T00:00:00.000Z"
 }
 ```
+## PayPal operations
+
+PayPal environment selection and readiness are documented in:
+
+- `docs/paypal-production-readiness.md`
+- `docs/paypal-sandbox-e2e-runbook.md`
+- `docs/paypal-production-cutover.md`
+
+Run `npm run paypal:check` for configuration-only validation, `npm run paypal:check:auth` for an optional read-only authentication check, and `npm run paypal:validate-resources` for non-mutating Product/Plan validation against MongoDB.

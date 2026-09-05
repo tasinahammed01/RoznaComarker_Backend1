@@ -70,6 +70,7 @@ router.post(
   body('subjectLevel').optional({ nullable: true }).isString().trim().withMessage('subjectLevel must be a string'),
   body('startDate').optional({ nullable: true }).isISO8601().withMessage('startDate must be a valid date'),
   body('endDate').optional({ nullable: true }).isISO8601().withMessage('endDate must be a valid date'),
+  body('institutionId').optional({ nullable: true }).isMongoId().withMessage('institutionId must be valid'),
   handleValidationResult,
   enforceUsageLimit('classes', 1),
   classController.createClass
@@ -116,6 +117,20 @@ router.delete(
   param('studentId').isMongoId().withMessage('Invalid student id'),
   handleValidationResult,
   classController.removeStudentFromClass
+);
+
+router.get('/copyable', verifyJwtToken, requireRole('teacher'), classController.getCopyableClasses);
+router.get('/:id/copy-preview', verifyJwtToken, requireRole('teacher'), classController.getSemesterCopyPreview);
+router.post('/:id/copy-semester', verifyJwtToken, requireRole('teacher'), classController.copySemester);
+
+router.get(
+  '/:classId/students/:studentId/progress',
+  verifyJwtToken,
+  requireRole(['teacher', 'student']),
+  param('classId').isMongoId().withMessage('Invalid class id'),
+  param('studentId').isMongoId().withMessage('Invalid student id'),
+  handleValidationResult,
+  classController.getStudentProgress
 );
 
 router.patch(

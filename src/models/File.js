@@ -38,6 +38,7 @@ const fileSchema = new mongoose.Schema(
       required: [true, 'type is required']
     },
     uploadOrder: { type: Number, min: 0, required: false },
+    sizeBytes: { type: Number, min: 0, required: false },
     createdAt: {
       type: Date,
       default: Date.now

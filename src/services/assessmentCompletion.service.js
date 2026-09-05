@@ -4,14 +4,39 @@ const SubmissionFeedback = require('../models/SubmissionFeedback');
 const Feedback = require('../models/Feedback');
 require('../models/File');
 const reportService = require('./submissionFeedbackReport.service');
-const CreditService = require('./credit.service');
+const AssessmentCreditRouter = require('./assessmentCreditRouter.service');
 const logger = require('../utils/logger');
 const { publishToUser } = require('./notificationRealtime.service');
+const ReferralService = require('./referral.service');
+const BonusRewardService = require('./bonusReward.service');
 
 function publishCreditUpdate(teacherId, submissionId, runId) {
   publishToUser({ userId: teacherId, event: 'credits_updated', payload: {
     submissionId: String(submissionId), assessmentRunId: String(runId)
   } });
+}
+
+async function processReferralQualification(teacherId, runId) {
+  try {
+    await ReferralService.qualifyReferral({ referredUserId: teacherId, qualificationId: runId,
+      qualificationType: 'FIRST_SUCCESSFUL_AI_ASSESSMENT' });
+  } catch (error) {
+    logger.error({ event: 'referral_reward_failed', referredUserId: String(teacherId),
+      qualificationId: String(runId), error: error?.message });
+  }
+}
+
+async function processFirstAssessmentBonus(teacherId, runId) {
+  try {
+    await BonusRewardService.grantConfiguredBonus({ eventType: 'FIRST_SUCCESSFUL_ASSESSMENT',
+      eventKey: String(teacherId), userId: teacherId, sourceId: runId });
+  } catch (error) {
+    logger.error({ event: 'bonus_reward_failed', userId: String(teacherId), eventType: 'FIRST_SUCCESSFUL_ASSESSMENT',
+      sourceId: String(runId), error: error?.message });
+  }
+}
+async function processAssessmentMilestones(teacherId) {
+  await require('./professionalMilestone.service').evaluateProfessionalMilestonesSafely(teacherId, ['SUCCESSFUL_ASSESSMENTS']);
 }
 
 function completionError(code, cause) {
@@ -37,9 +62,12 @@ async function complete({ runId, submissionId, teacherId, sourceHash }) {
     runId, submissionId, assignmentId: submission.assignment, teacherId, sourceHash
   }, $set: { status: 'processing', errorCode: null } }, { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true });
   if (run.status === 'complete') {
-    const existing = await CreditService.consumeAssessmentCredit({ userId: teacherId, submissionId,
+    const existing = await AssessmentCreditRouter.consumeAssessmentCredit({ teacherUserId: teacherId, submissionId,
       assignmentId: submission.assignment, assessmentId: runId, reason: 'AI Assessment' });
     publishCreditUpdate(teacherId, submissionId, runId);
+    await processReferralQualification(teacherId, runId);
+    await processFirstAssessmentBonus(teacherId, runId);
+    await processAssessmentMilestones(teacherId);
     return { run, credit: existing };
   }
   try {
@@ -71,10 +99,13 @@ async function complete({ runId, submissionId, teacherId, sourceHash }) {
     await Submission.updateOne({ _id: submissionId, assessmentRunId: runId }, { $set: {
       assessmentStatus: 'complete', assessmentCompletedAt: completed.completedAt || new Date(), assessmentErrorCode: null
     } });
-    const credit = await CreditService.consumeAssessmentCredit({ userId: teacherId, submissionId,
+    const credit = await AssessmentCreditRouter.consumeAssessmentCredit({ teacherUserId: teacherId, submissionId,
       assignmentId: submission.assignment, assessmentId: runId,
       reason: submission.draftVersion && Number(submission.draftVersion) > 1 ? 'Revised Draft Assessment' : 'AI Assessment' });
     publishCreditUpdate(teacherId, submissionId, runId);
+    await processReferralQualification(teacherId, runId);
+    await processFirstAssessmentBonus(teacherId, runId);
+    await processAssessmentMilestones(teacherId);
     logger.info({ message: 'Assessment pipeline timing', submissionId: String(submissionId), stage: 'assessmentCompleteAt',
       timestamp: new Date().toISOString(), sourceHash, runId: String(runId) });
     return { run: completed, credit };
@@ -89,4 +120,4 @@ async function complete({ runId, submissionId, teacherId, sourceHash }) {
   }
 }
 
-module.exports = { start, complete, completionError };
+module.exports = { start, complete, completionError, processReferralQualification, processFirstAssessmentBonus };

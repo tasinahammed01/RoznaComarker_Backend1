@@ -1,6 +1,7 @@
 const Plan = require('../models/Plan');
 const User = require('../models/user.model');
 const logger = require('../utils/logger');
+const BonusRewardService = require('./bonusReward.service');
 
 const ENTITLED_STATUSES = new Set(['active', 'trialing']);
 const CHECKOUT_BLOCKING_STATUSES = new Set(['active', 'trialing', 'past_due', 'unpaid', 'incomplete', 'paused']);
@@ -49,6 +50,7 @@ async function syncSubscription(subscription, invoice) {
   const user = await findUser(subscription);
   if (!user || user.role !== 'teacher') return null;
 
+  const previousPlan = user.plan ? await Plan.findById(user.plan).lean() : null;
   const priceId = getPriceId(subscription);
   const paidPlan = priceId
     ? await Plan.findOne({ isActive: true, 'stripe.priceId': priceId })
@@ -82,6 +84,19 @@ async function syncSubscription(subscription, invoice) {
     user.planExpiresAt = null;
   }
   await user.save();
+  if (entitled) {
+    const interval = String(paidPlan.billingInterval || paidPlan.billingType || '').toLowerCase();
+    const previousInterval = String(previousPlan?.billingInterval || previousPlan?.billingType || '').toLowerCase();
+    try {
+      if (invoice?.status === 'paid' && invoice?.billing_reason === 'subscription_cycle') await BonusRewardService.grantConfiguredBonus({ eventType: 'SUBSCRIPTION_RENEWAL',
+        eventKey: `${user.stripeSubscriptionId}:${period.start?.toISOString() || idOf(invoice)}`, userId: user._id, sourceId: idOf(invoice) });
+      if (['annual', 'year', 'yearly'].includes(interval) && !['annual', 'year', 'yearly'].includes(previousInterval) && previousPlan?.price > 0) {
+        await BonusRewardService.grantConfiguredBonus({ eventType: 'ANNUAL_UPGRADE',
+          eventKey: `${user.stripeSubscriptionId}:${period.start?.toISOString() || priceId}`, userId: user._id, sourceId: idOf(subscription) });
+      }
+    } catch (error) { logger.error({ event: 'bonus_reward_failed', userId: String(user._id),
+      eventType: invoice?.status === 'paid' ? 'SUBSCRIPTION_RENEWAL' : 'ANNUAL_UPGRADE', error: error?.message }); }
+  }
   logger.info(`stripe subscription sync userId=${user._id} customer=${user.stripeCustomerId || '-'} subscription=${user.stripeSubscriptionId || '-'} plan=${entitled ? paidPlan.slug : 'free'} status=${subscription.status}`);
   return user;
 }

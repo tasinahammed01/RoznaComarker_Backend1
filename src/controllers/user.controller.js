@@ -396,6 +396,16 @@ async function setMyRole(req, res) {
     user.role = normalizedRole;
     await user.save();
 
+    if (normalizedRole === 'teacher') {
+      try {
+        await require('../services/bonusReward.service').grantConfiguredBonus({ eventType: 'ONBOARDING_COMPLETION',
+          eventKey: String(user._id), userId: user._id, sourceId: user._id });
+      } catch (rewardError) {
+        require('../utils/logger').error({ event: 'bonus_reward_failed', userId: String(user._id),
+          eventType: 'ONBOARDING_COMPLETION', error: rewardError?.message });
+      }
+    }
+
     const token = signJwt(user);
 
     return res.json({
@@ -477,6 +487,17 @@ async function deactivateUser(req, res) {
   }
 }
 
+async function claimMyReferral(req, res) {
+  try {
+    if (!req.user) return sendError(res, 401, 'Unauthorized');
+    const { claimReferral } = require('../services/referral.service');
+    const result = await claimReferral(req.user, req.body?.code);
+    return sendSuccess(res, result);
+  } catch (err) {
+    return sendError(res, 500, 'Failed to apply referral');
+  }
+}
+
 module.exports = {
   createOrGetUser,
   setMyRole,
@@ -485,5 +506,6 @@ module.exports = {
   uploadMyAvatar,
   getUserById,
   getUserByFirebaseUid,
+  claimMyReferral,
   deactivateUser
 };

@@ -5,6 +5,7 @@ const User = require('../models/user.model');
 const Class = require('../models/class.model');
 const logger = require('../utils/logger');
 const { isSubscriptionEntitled } = require('../services/stripeSubscription.service');
+const { getPlanByPayPalPlanId } = require('../services/paypal/paypalPlanMapping.service');
 
 function sendError(res, statusCode, message) {
   return res.status(statusCode).json({
@@ -54,6 +55,24 @@ async function assignPlanToUser(user, planDoc, startedAt) {
 
 async function ensureActivePlan(user) {
   const freePlan = await getFreePlan();
+
+  if (user.role === 'teacher' && user.paypalSubscriptionStatus) {
+    if (user.paypalSubscriptionStatus === 'ACTIVE' && user.paypalPlanId) {
+      try {
+        const paypalPlan = await getPlanByPayPalPlanId(user.paypalPlanId);
+        if (String(user.plan || '') !== String(paypalPlan._id)) {
+          user.plan = paypalPlan._id;
+          user.planStartedAt = user.paypalCurrentPeriodStart || user.planStartedAt || new Date();
+          user.planExpiresAt = user.paypalCurrentPeriodEnd || null;
+          await user.save({ validateModifiedOnly: true });
+        }
+        return paypalPlan;
+      } catch { /* unknown provider Plan must not grant paid entitlement */ }
+    }
+    if (!freePlan) throw new Error('Free plan is not configured');
+    if (String(user.plan || '') !== String(freePlan._id) || user.planExpiresAt) await assignPlanToUser(user, freePlan, new Date());
+    return freePlan;
+  }
 
   // Synchronized Stripe fields are authoritative for paid entitlements. This
   // also repairs a missing/stale plan ObjectId without trusting browser input.
@@ -170,6 +189,7 @@ function enforceUsageLimit(metric, amountOrGetter) {
       const current = metric === 'classes'
         ? await Class.countDocuments({
             teacher: user._id,
+            institutionId: null,
             isActive: true,
             $or: [{ status: 'active' }, { status: { $exists: false } }]
           })
@@ -325,14 +345,21 @@ function reserveAiFeatureUsage({ metric, featureFlag, label }) {
         reserved = true;
       }
 
-      res.once('finish', () => {
-        if (reserved && res.statusCode >= 400) {
-          User.updateOne(
+      let reservationSettled = false;
+      const rollbackReservation = () => {
+        if (!reserved || reservationSettled) return;
+        reservationSettled = true;
+        User.updateOne(
             { _id: user._id, [`usage.${metric}`]: { $gt: 0 } },
             { $inc: { [`usage.${metric}`]: -1 } }
-          ).catch(() => {});
-        }
+          ).catch(() => logger.error({ event: 'AI_USAGE_ROLLBACK_FAILED', userId: String(user._id), operation: metric }));
+      };
+      res.once('finish', () => {
+        if (res.statusCode >= 400) rollbackReservation();
       });
+      // A disconnected client may close the response before Express emits a
+      // successful finish. That abandoned operation must not consume quota.
+      res.once('close', () => { if (!res.writableEnded) rollbackReservation(); });
       return next();
     } catch (err) {
       return sendError(res, 500, `Failed to validate ${label} entitlement`);

@@ -22,4 +22,6 @@ const assessmentRunSchema = new mongoose.Schema({
 }, { timestamps: true, versionKey: false });
 
 assessmentRunSchema.index({ submissionId: 1, createdAt: -1 });
+assessmentRunSchema.index({ teacherId: 1, status: 1 });
+assessmentRunSchema.index({ teacherId: 1, status: 1, completedAt: 1, assignmentId: 1 });
 module.exports = mongoose.model('AssessmentRun', assessmentRunSchema);

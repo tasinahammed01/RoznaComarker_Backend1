@@ -100,6 +100,10 @@ const adaptivePracticeSessionSchema = new Schema({
     }
   },
   targetSkills: [{ type: String, enum: skillIds }],
+  // Set once, when every generated activity has been passed. Individual
+  // question attempts remain in AdaptivePracticeAttempt and are not counted
+  // as separate activity completions.
+  completedAt: { type: Date, default: undefined },
   activities: { type: [activitySchema], default: [] },
   generation: {
     provider: { type: String, trim: true },
@@ -118,5 +122,7 @@ adaptivePracticeSessionSchema.index(
   { unique: true, name: 'unique_adaptive_practice_source' }
 );
 adaptivePracticeSessionSchema.index({ updatedAt: -1 });
+adaptivePracticeSessionSchema.index({ completedAt: 1, submissionId: 1 });
+adaptivePracticeSessionSchema.index({ assignmentId: 1, completedAt: 1 });
 
 module.exports = mongoose.model('AdaptivePracticeSession', adaptivePracticeSessionSchema);

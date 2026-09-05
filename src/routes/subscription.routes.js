@@ -1,6 +1,7 @@
 const express = require('express');
 
 const subscriptionController = require('../controllers/subscription.controller');
+const paypalSubscriptionController = require('../controllers/paypalSubscription.controller');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { requireRole } = require('../middlewares/role.middleware');
 
@@ -34,6 +35,49 @@ const router = express.Router();
  */
 router.get('/me', verifyJwtToken, subscriptionController.getMySubscription);
 router.get('/checkout-plan', verifyJwtToken, requireRole('teacher'), subscriptionController.getCheckoutPlan);
+router.post(
+  '/paypal/create',
+  verifyJwtToken,
+  requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'paypal_checkout_user' }),
+  body('planCode').isString().trim().notEmpty(),
+  body('checkoutAttemptId').isUUID(4),
+  body('price').not().exists(), body('currency').not().exists(), body('planId').not().exists(),
+  body('credits').not().exists(), body('entitlements').not().exists(),
+  handleValidationResult,
+  paypalSubscriptionController.create
+);
+router.post(
+  '/paypal/cancel',
+  verifyJwtToken,
+  requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'paypal_cancel_user' }),
+  body('subscriptionId').not().exists(), body('paypalSubscriptionId').not().exists(),
+  body('reason').not().exists(),
+  handleValidationResult,
+  paypalSubscriptionController.cancel
+);
+router.post(
+  '/paypal/change-plan',
+  verifyJwtToken,
+  requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'paypal_change_plan_user' }),
+  body('targetPlanCode').isString().trim().isLength({ min: 1, max: 80 }),
+  body('changeAttemptId').isUUID(4),
+  body('targetPayPalPlanId').not().exists(), body('providerSubscriptionId').not().exists(),
+  body('subscriptionId').not().exists(), body('price').not().exists(), body('credits').not().exists(),
+  handleValidationResult,
+  paypalSubscriptionController.changePlan
+);
+router.post(
+  '/paypal/change-plan/cancelled',
+  verifyJwtToken,
+  requireRole('teacher'),
+  body('changeAttemptId').isUUID(4),
+  body('subscriptionId').not().exists(), body('targetPayPalPlanId').not().exists(),
+  handleValidationResult,
+  paypalSubscriptionController.changePlanCancelled
+);
 router.post(
   '/checkout-session',
   verifyJwtToken,

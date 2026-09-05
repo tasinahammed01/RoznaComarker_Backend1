@@ -5,6 +5,10 @@ const User = require('../models/user.model');
 const { getStripe, getFrontendUrl } = require('../services/stripe.service');
 const { CHECKOUT_BLOCKING_STATUSES, getPriceId } = require('../services/stripeSubscription.service');
 const logger = require('../utils/logger');
+const { configuredProviderName } = require('../services/payments/paymentProvider.service');
+const PaymentManagementAttempt = require('../models/PaymentManagementAttempt');
+const { referralSummary } = require('../services/referral.service');
+const { calculateOwnedStorageUsage, buildStorageContract } = require('../services/ownedStorage.service');
 
 const { ensureActivePlan, assignPlanToUser } = require('../middlewares/usage.middleware');
 
@@ -61,26 +65,54 @@ async function getMySubscription(req, res) {
     }
 
     const planDoc = await ensureActivePlan(user);
+    const [pendingPayPalChange, pendingPayPalCancellation] = user.paypalSubscriptionId ? await Promise.all([
+      PaymentManagementAttempt.findOne({ provider: 'paypal', userId: user._id, providerSubscriptionId: user.paypalSubscriptionId,
+        operation: 'CHANGE_PLAN', status: { $in: ['processing', 'approval_pending', 'provider_pending'] } }).sort({ createdAt: -1 }).lean(),
+      PaymentManagementAttempt.findOne({ provider: 'paypal', userId: user._id, providerSubscriptionId: user.paypalSubscriptionId,
+        operation: 'CANCEL', status: { $in: ['processing', 'provider_pending'] } }).sort({ createdAt: -1 }).lean()
+    ]) : [null, null];
+    const billingProvider = user.paypalSubscriptionId ? 'paypal' : (user.stripeSubscriptionId || user.stripeCustomerId ? 'stripe' : configuredProviderName());
+    const providerStatus = user.paypalSubscriptionStatus || user.stripeSubscriptionStatus || null;
+    const referrals = user.role === 'teacher' ? await referralSummary(user) : null;
 
+    const ownedStorage = user.role === 'teacher' ? await calculateOwnedStorageUsage(user._id)
+      : { usedBytes: Math.round(Number(user.usage?.storageMB || 0) * 1024 * 1024), fileCount: 0 };
+    const storage = buildStorageContract(ownedStorage.usedBytes, planDoc);
     return sendSuccess(res, {
       plan: planDoc,
       planStartedAt: user.planStartedAt || null,
       planExpiresAt: user.planExpiresAt || null,
       billing: user.role === 'teacher' ? {
-        customerConfigured: !!user.stripeCustomerId,
-        subscriptionId: user.stripeSubscriptionId || null,
-        status: user.stripeSubscriptionStatus || null,
-        currentPeriodEnd: user.stripeCurrentPeriodEnd || null,
-        cancelAtPeriodEnd: !!user.stripeCancelAtPeriodEnd,
-        paymentIssue: ['past_due', 'unpaid'].includes(user.stripeSubscriptionStatus)
+        provider: billingProvider,
+        customerConfigured: !!(user.paypalSubscriptionId || user.stripeCustomerId),
+        subscriptionId: user.paypalSubscriptionId || user.stripeSubscriptionId || null,
+        status: providerStatus,
+        currentPeriodEnd: user.paypalCurrentPeriodEnd || user.stripeCurrentPeriodEnd || null,
+        cancelAtPeriodEnd: user.paypalSubscriptionId ? false : !!user.stripeCancelAtPeriodEnd,
+        paymentIssue: user.paypalSubscriptionId
+          ? user.paypalSubscriptionStatus === 'SUSPENDED' || !!user.paypalPaymentIssueActive
+          : ['past_due', 'unpaid'].includes(user.stripeSubscriptionStatus),
+        canManageSubscription: billingProvider === 'paypal'
+          ? ['ACTIVE', 'SUSPENDED'].includes(providerStatus)
+          : !!user.stripeCustomerId,
+        canCancel: billingProvider === 'paypal' && ['ACTIVE', 'SUSPENDED'].includes(providerStatus),
+        canChangePlan: billingProvider === 'paypal' && ['ACTIVE', 'SUSPENDED'].includes(providerStatus),
+        planCode: planDoc.slug,
+        billingPeriod: ['year', 'yearly', 'annual'].includes(String(planDoc.billingInterval || planDoc.billingType || '').toLowerCase()) ? 'annual' : 'monthly',
+        subscriptionStatus: providerStatus,
+        pendingPlanChange: !!pendingPayPalChange,
+        pendingTargetPlanCode: pendingPayPalChange?.targetPlanKey || null,
+        pendingCancellation: !!pendingPayPalCancellation
       } : null,
-      usage: user.usage || {
+      usage: { ...(user.usage || {
         classes: 0,
         assignments: 0,
         students: 0,
         submissions: 0,
         storageMB: 0
-      }
+      }), storageMB: storage.usedMb },
+      storage,
+      referrals
     });
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch subscription');
@@ -150,7 +182,8 @@ async function getCheckoutPlan(req, res) {
       currency: plan.currency,
       billingInterval: plan.billingInterval,
       features: plan.features,
-      display: plan.display
+      display: plan.display,
+      paymentProvider: configuredProviderName()
     });
   } catch {
     return sendError(res, 500, 'Failed to fetch checkout plan');
@@ -240,6 +273,7 @@ async function createCheckoutSession(req, res) {
 async function createCustomerPortal(req, res) {
   try {
     const user = req.user;
+    if (user.paypalSubscriptionId) return sendError(res, 409, 'PayPal subscription management is not available in this phase', 'PAYPAL_MANAGE_NOT_AVAILABLE');
     if (!user.stripeCustomerId) return sendError(res, 404, 'No billing account found');
     const session = await getStripe().billingPortal.sessions.create({
       customer: user.stripeCustomerId,

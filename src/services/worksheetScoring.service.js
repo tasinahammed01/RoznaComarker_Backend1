@@ -509,7 +509,7 @@ async function gradeSubjectiveAnswer(question, studentAnswer, topic) {
 
 Question: ${prompt}
 Topic being tested: ${topic}
-Reference/expected answer: ${modelAnswer}
+Reference answer / grading guidance: ${modelAnswer}
 Student's answer: ${studentAnswer}
 
 Score the answer as:
@@ -559,10 +559,11 @@ Output strict JSON only (no markdown):
     };
   } catch (error) {
     console.error('[SUBJECTIVE GRADING] Error:', error.message);
-    // Fallback to basic string comparison if LLM fails
+    // Conservative existing-schema fallback. Guidance prose must never be
+    // treated as text that a student's response is expected to contain.
     const normalizedStudent = lowerTrim(studentAnswer);
     const normalizedModel = lowerTrim(modelAnswer);
-    const isMatch = normalizedStudent === normalizedModel || normalizedStudent.includes(normalizedModel);
+    const isMatch = Boolean(normalizedModel) && normalizedStudent === normalizedModel;
 
     return {
       result: isMatch ? 'correct' : 'incorrect',

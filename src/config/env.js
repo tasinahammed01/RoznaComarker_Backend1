@@ -1,5 +1,6 @@
 const dotenv = require('dotenv');
 const path = require('path');
+const { validatePaypalRuntimeConfig } = require('./paypal');
 
 dotenv.config({ path: path.join(__dirname, '..', '..', '.env') });
 
@@ -14,6 +15,12 @@ function assertHttpsUrl(name, value, expectedHost) {
     throw new Error(`${name} must be a trusted HTTPS URL`);
   }
   return url;
+}
+
+function paymentProvider(environment = process.env) {
+  const provider = String(environment.PAYMENT_PROVIDER || 'stripe').trim().toLowerCase();
+  if (!['stripe', 'paypal'].includes(provider)) throw new Error('PAYMENT_PROVIDER must be stripe or paypal');
+  return provider;
 }
 
 function validateProductionSecurity(environment = process.env) {
@@ -38,17 +45,21 @@ function validateProductionSecurity(environment = process.env) {
     throw new Error('Production CORS must allow exactly https://comarkers.roznahub.com');
   }
 
-  const stripeSecret = String(environment.STRIPE_SECRET_KEY || '');
-  const webhookSecret = String(environment.STRIPE_WEBHOOK_SECRET || '');
-  if (!/^sk_(test|live)_/u.test(stripeSecret) || !/^whsec_/u.test(webhookSecret)) {
-    throw new Error('Stripe production configuration is missing or malformed');
-  }
-  const publishable = String(environment.STRIPE_PUBLISHABLE_KEY || '');
-  if (publishable) {
-    const secretMode = stripeSecret.startsWith('sk_live_') ? 'live' : 'test';
-    if (!publishable.startsWith(`pk_${secretMode}_`)) {
-      throw new Error('Stripe publishable and secret key modes do not match');
+  if (paymentProvider(environment) === 'stripe') {
+    const stripeSecret = String(environment.STRIPE_SECRET_KEY || '');
+    const webhookSecret = String(environment.STRIPE_WEBHOOK_SECRET || '');
+    if (!/^sk_(test|live)_/u.test(stripeSecret) || !/^whsec_/u.test(webhookSecret)) {
+      throw new Error('Stripe production configuration is missing or malformed');
     }
+    const publishable = String(environment.STRIPE_PUBLISHABLE_KEY || '');
+    if (publishable) {
+      const secretMode = stripeSecret.startsWith('sk_live_') ? 'live' : 'test';
+      if (!publishable.startsWith(`pk_${secretMode}_`)) {
+        throw new Error('Stripe publishable and secret key modes do not match');
+      }
+    }
+  } else {
+    validatePaypalRuntimeConfig(environment);
   }
 }
 
@@ -65,12 +76,13 @@ const required = [
 
 if (process.env.NODE_ENV === 'production') {
   required.push('FRONTEND_URL', 'PUBLIC_API_URL', 'BASE_URL');
-  required.push('STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET');
+  if (paymentProvider(process.env) === 'stripe') required.push('STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET');
   if (!String(process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGINS || '').trim()) {
     throw new Error('Missing required env var: CORS_ALLOWED_ORIGINS');
   }
 }
 
+validatePaypalRuntimeConfig(process.env);
 validateProductionSecurity(process.env);
 
 // Validate each required variable with a clear, individual error message
@@ -86,6 +98,7 @@ const env = {
   PORT: Number(process.env.PORT),
   MONGO_URI: process.env.MONGO_URI,
   NODE_ENV: process.env.NODE_ENV,
+  PAYMENT_PROVIDER: paymentProvider(process.env),
   JWT_SECRET: process.env.JWT_SECRET,
   FRONTEND_URL: process.env.FRONTEND_URL,
   CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGINS,
@@ -108,3 +121,5 @@ const env = {
 
 module.exports = env;
 module.exports.validateProductionSecurity = validateProductionSecurity;
+module.exports.validatePayPalRuntimeConfig = validatePaypalRuntimeConfig;
+module.exports.paymentProvider = paymentProvider;

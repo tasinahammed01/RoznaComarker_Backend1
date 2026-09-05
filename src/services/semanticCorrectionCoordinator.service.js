@@ -5,6 +5,7 @@ const semanticWriting = require('./semanticWritingCorrections.service');
 const canonical = require('./correctionCanonical.service');
 const { getSemanticAIConfig } = require('./semanticAIClient.service');
 const { CORRECTION_CATEGORIES } = require('./structuredOutputSchemas.service');
+const logger = require('../utils/logger');
 const VERSION = 'semantic-chunk-coordinator-v2-explicit-coverage';
 
 const integer = (value, fallback, minimum = 1) => {
@@ -16,10 +17,11 @@ function config(env = process.env) {
   return {
     enabled: String(env.SEMANTIC_AI_CHUNKING_ENABLED || 'true').toLowerCase() !== 'false',
     singleRequestThresholdTokens: integer(env.SEMANTIC_AI_SINGLE_REQUEST_THRESHOLD_TOKENS, 5000),
-    chunkInputTokens: integer(env.SEMANTIC_AI_CHUNK_INPUT_TOKENS, 3500),
+    chunkInputTokens: integer(env.SEMANTIC_AI_CHUNK_INPUT_TOKENS, 2500),
     overlapTokens: integer(env.SEMANTIC_AI_CHUNK_OVERLAP_TOKENS, 150, 0),
     chunkMaxOutputTokens: integer(env.SEMANTIC_AI_CHUNK_MAX_OUTPUT_TOKENS, 2500),
     maxConcurrency: integer(env.SEMANTIC_AI_MAX_CONCURRENCY, 2),
+    failedChunkRetries: integer(env.SEMANTIC_AI_FAILED_CHUNK_RETRIES, 1, 0),
     maxChunks: integer(env.SEMANTIC_AI_MAX_CHUNKS, 12),
     totalBudgetMs: integer(env.SEMANTIC_AI_CHUNK_TOTAL_BUDGET_MS, 180000, 1000)
   };
@@ -85,6 +87,44 @@ function remapCorrections(items, chunk, input) {
     startChar: Number(item.startChar) + chunk.startChar,
     endChar: Number(item.endChar) + chunk.startChar
   }, input.transcript, input.spans || [], input.legend, 'AI')).filter(Boolean);
+}
+
+function chunkIdentity(input, chunk, suffix = '') {
+  return hash([input.transcriptHash, chunk.startChar, chunk.endChar,
+    semanticWriting.SEMANTIC_PROMPT_VERSION, semanticWriting.SEMANTIC_SCHEMA_VERSION, suffix].join('|'));
+}
+
+function splitChunk(chunk) {
+  if (!chunk?.text || chunk.text.length < 2) return [];
+  const localMidpoint = preferredBoundary(chunk.text, 0, Math.floor(chunk.text.length / 2),
+    Math.floor(chunk.text.length / 2));
+  const midpoint = Math.max(1, Math.min(chunk.text.length - 1, localMidpoint));
+  return [
+    { ...chunk, index: `${chunk.index}a`, endChar: chunk.startChar + midpoint, text: chunk.text.slice(0, midpoint) },
+    { ...chunk, index: `${chunk.index}b`, startChar: chunk.startChar + midpoint, text: chunk.text.slice(midpoint) }
+  ];
+}
+
+function recoverableFailure(error) {
+  const code = String(error?.code || '');
+  const finishReason = String(error?.finishReason || '');
+  return code.includes('TIMEOUT') || code.includes('TRUNCATED')
+    || ['length', 'max_tokens', 'MAX_TOKENS'].includes(finishReason);
+}
+
+function deterministicLanguageCandidateCount(transcript) {
+  const text = String(transcript || '');
+  if (!text.trim()) return 0;
+  const patterns = [
+    /\s{2,}/g,
+    /\s+[,.!?;:]/g,
+    /[.!?]\s+[a-z]/g,
+    /\b(?:he|she|it)\s+(?:are|were|have|do)\b/gi,
+    /\b(?:they|we|you)\s+(?:is|was|has|does)\b/gi,
+    /\b(?:a)\s+[aeiou]\w*/gi,
+    /\b(?:an)\s+[^aeiou\W]\w*/gi
+  ];
+  return patterns.reduce((count, pattern) => count + (text.match(pattern)?.length || 0), 0);
 }
 
 async function runBounded(tasks, concurrency) {
@@ -194,45 +234,121 @@ async function analyze(input, dependencies = {}) {
   const baseConfig = dependencies.config || getSemanticAIConfig();
   const chunkConfig = { ...baseConfig, maxOutputTokens: Math.min(Number(baseConfig.maxOutputTokens) || settings.chunkMaxOutputTokens,
     settings.chunkMaxOutputTokens) };
-  const tasks = chunks.map((chunk) => async () => {
-    const chunkHash = hash(`${input.transcriptHash}|local|${chunk.startChar}|${chunk.endChar}|${chunk.text}`);
+  const executeChunk = async (chunk, stage = 'initial') => {
+    const chunkHash = chunkIdentity(input, chunk, stage === 'initial' ? '' : stage);
     const result = await semanticService.analyze({ ...input, transcript: chunk.text, transcriptHash: chunkHash,
       spans: localSpans(input.spans, chunk), pageManifest: localPages(input.pageManifest, chunk),
       analysisMode: 'local_chunk', categories: CORRECTION_CATEGORIES, disableCategoryAudit: true, deadlineAt },
     { ...dependencies, config: chunkConfig });
-    return { ...result, corrections: remapCorrections(result.corrections, chunk, input), chunk };
-  });
+    return { ...result, corrections: remapCorrections(result.corrections, chunk, input), chunk,
+      chunkId: chunkIdentity(input, chunk) };
+  };
+  const tasks = chunks.map((chunk) => async () => executeChunk(chunk));
   tasks.push(async () => semanticService.analyze({ ...input, analysisMode: 'document_structure',
     categories: ['CONTENT', 'ORGANIZATION'], disableCategoryAudit: true, deadlineAt },
   { ...dependencies, config: chunkConfig }));
   const results = await runBounded(tasks, settings.maxConcurrency);
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (results[index]?.status === 'fulfilled') continue;
+    const originalFailure = results[index].reason;
+    let recovered = null;
+    for (let retry = 1; retry <= settings.failedChunkRetries && !recovered; retry += 1) {
+      try { recovered = await executeChunk(chunks[index], `retry-${retry}`); }
+      catch (error) { results[index] = { status: 'rejected', reason: error }; }
+    }
+    let splitUsed = false;
+    if (!recovered && recoverableFailure(results[index]?.reason || originalFailure)) {
+      const subchunks = splitChunk(chunks[index]);
+      const subresults = await runBounded(subchunks.map((chunk) => () => executeChunk(chunk, 'split')), settings.maxConcurrency);
+      if (subresults.length === 2 && subresults.every((result) => result.status === 'fulfilled')) {
+        splitUsed = true;
+        const subvalues = subresults.map((result) => result.value);
+        const submerge = canonical.mergeCanonicalCorrections({ aiCorrections: subvalues.flatMap((value) => value.corrections || []) });
+        recovered = { ...subvalues[0], corrections: submerge.corrections, chunk: chunks[index],
+          chunkId: chunkIdentity(input, chunks[index]), recoverySubchunks: subvalues,
+          metrics: { attempts: subvalues.flatMap((value) => value.metrics?.attempts || []) } };
+      } else {
+        results[index] = { status: 'rejected', reason: subresults.find((result) => result.status === 'rejected')?.reason || originalFailure };
+      }
+    }
+    if (recovered) {
+      recovered.recovery = { retryCount: splitUsed ? settings.failedChunkRetries : 1,
+        splitUsed, originalFailureCode: originalFailure?.code || 'SEMANTIC_CHUNK_FAILED' };
+      results[index] = { status: 'fulfilled', value: recovered };
+    }
+    logger.info({ event: 'semantic_chunk_recovery', submissionId: input.submissionId || null,
+      assessmentRunId: input.assessmentRunId || null, chunkId: chunkIdentity(input, chunks[index]),
+      retryStage: recovered ? (splitUsed ? 'split_recovered' : 'retry_recovered') : 'recovery_exhausted',
+      originalFailureCode: originalFailure?.code || 'SEMANTIC_CHUNK_FAILED',
+      provider: recovered?.provider || null, model: recovered?.model || null, splitUsed,
+      resultingCoverage: recovered ? 'recovered' : 'failed' });
+  }
   const successful = results.filter((result) => result.status === 'fulfilled');
-  const merged = canonical.mergeCanonicalCorrections({ aiCorrections: successful.flatMap((result) => result.value.corrections || []) });
+  let merged = canonical.mergeCanonicalCorrections({ aiCorrections: successful.flatMap((result) => result.value.corrections || []) });
+  const deterministicCandidates = deterministicLanguageCandidateCount(input.transcript);
+  let zeroResultAudit = { required: false, status: 'not_required', deterministicCandidates };
+  let zeroResultReliable = true;
+  if (!merged.corrections.length && String(input.transcript || '').length >= 400) {
+    zeroResultAudit = { required: true, status: 'processing', deterministicCandidates };
+    try {
+      const auditResult = await semanticService.analyze({ ...input, analysisMode: 'zero_result_audit',
+        categories: ['GRAMMAR', 'VOCABULARY', 'MECHANICS'], disableCategoryAudit: true, deadlineAt },
+      { ...dependencies, config: typeof semanticWriting.preferStrongerAuditConfig === 'function'
+        ? semanticWriting.preferStrongerAuditConfig(baseConfig) : baseConfig });
+      const auditCorrections = Array.isArray(auditResult.corrections) ? auditResult.corrections : [];
+      merged = canonical.mergeCanonicalCorrections({ aiCorrections: [...merged.corrections, ...auditCorrections] });
+      zeroResultReliable = Boolean(merged.corrections.length || deterministicCandidates < 3);
+      zeroResultAudit = { required: true, status: merged.corrections.length ? 'findings_recovered'
+        : zeroResultReliable ? 'zero_confirmed' : 'suspicious_zero', deterministicCandidates,
+        provider: auditResult.provider || null, model: auditResult.model || null };
+    } catch (error) {
+      zeroResultReliable = deterministicCandidates < 3;
+      zeroResultAudit = { required: true, status: zeroResultReliable ? 'audit_failed_no_contradiction' : 'audit_failed_suspicious',
+        deterministicCandidates, errorCode: error?.code || 'SEMANTIC_ZERO_FIND_SUSPICIOUS' };
+    }
+  }
   const localSuccessCount = results.slice(0, chunks.length).filter((result) => result.status === 'fulfilled').length;
   const structuralSucceeded = results[chunks.length]?.status === 'fulfilled';
   const localCoverageComplete = localSuccessCount === chunks.length;
   const expectedTextRangesCovered = localCoverageComplete && chunks[0]?.startChar === 0
     && chunks[chunks.length - 1]?.endChar === input.transcript.length
     && chunks.every((chunk, index) => index === 0 || chunk.startChar <= chunks[index - 1].endChar);
-  const coverageComplete = localCoverageComplete && structuralSucceeded && expectedTextRangesCovered;
+  const coverageComplete = localCoverageComplete && structuralSucceeded && expectedTextRangesCovered && zeroResultReliable;
   const categoryCoverageComplete = {
     CONTENT: coverageComplete, ORGANIZATION: coverageComplete,
-    VOCABULARY: localCoverageComplete && expectedTextRangesCovered,
-    GRAMMAR: localCoverageComplete && expectedTextRangesCovered,
-    MECHANICS: localCoverageComplete && expectedTextRangesCovered
+    VOCABULARY: localCoverageComplete && expectedTextRangesCovered && zeroResultReliable,
+    GRAMMAR: localCoverageComplete && expectedTextRangesCovered && zeroResultReliable,
+    MECHANICS: localCoverageComplete && expectedTextRangesCovered && zeroResultReliable
   };
   const status = coverageComplete ? 'completed'
     : successful.length ? 'partial' : 'failed';
-  const errors = results.filter((result) => result.status === 'rejected').map((result, index) => ({ index,
-    code: result.reason?.code || 'SEMANTIC_CHUNK_FAILED' }));
+  const errors = results.slice(0, chunks.length).map((result, index) => ({ result, index }))
+    .filter(({ result }) => result.status === 'rejected').map(({ result, index }) => ({ index,
+      chunkId: chunkIdentity(input, chunks[index]), code: result.reason?.code || 'SEMANTIC_CHUNK_FAILED' }));
   const metrics = { ...aggregateMetrics(results, chunks, startedAt, 'chunked'),
     configuredChunkInputTokens: settings.chunkInputTokens, localPromptOverheadTokens };
   const coveredCharacters = coveredCharactersForSuccessfulChunks(results, chunks);
+  const chunkOutcomes = results.slice(0, chunks.length).map((result, index) => {
+    const value = result.status === 'fulfilled' ? result.value : null;
+    const attempts = value?.metrics?.attempts || result.reason?.attempts || [];
+    const last = attempts[attempts.length - 1] || {};
+    return { chunkIndex: index, totalChunks: chunks.length, chunkId: chunkIdentity(input, chunks[index]),
+      startChar: chunks[index].startChar, endChar: chunks[index].endChar,
+      status: result.status === 'fulfilled' ? 'completed' : 'failed', provider: value?.provider || last.provider || null,
+      model: value?.model || last.model || null,
+      inputTokenEstimate: Number(value?.metrics?.promptInputTokenEstimate || last.promptTokenCount) || null,
+      outputTokenCount: Number(value?.metrics?.outputTokenCount || last.candidateTokenCount) || null,
+      durationMs: Number(value?.metrics?.totalDurationMs || last.durationMs) || null,
+      timeoutMs: Number(last.attemptTimeoutMs) || null, finishReason: last.finishReason || result.reason?.finishReason || null,
+      validationStatus: result.status === 'fulfilled' ? 'passed' : (last.validationCode ? 'failed' : null),
+      retryCount: Number(value?.recovery?.retryCount || 0), splitUsed: value?.recovery?.splitUsed === true,
+      failureCode: result.status === 'rejected' ? (result.reason?.code || 'SEMANTIC_CHUNK_FAILED') : null };
+  });
   return { status, corrections: merged.corrections, provider: successful[0]?.value.provider || null,
     model: successful[0]?.value.model || null, diagnostics: { ...aggregateValidationDiagnostics(successful, merged),
       chunking: { localChunkCount: chunks.length, localSuccessCount,
         localFailureCount: chunks.length - localSuccessCount, structuralSucceeded, errors,
-        mergeDiagnostics: merged.diagnostics } }, metrics,
+        chunks: chunkOutcomes, zeroResultAudit, mergeDiagnostics: merged.diagnostics } }, metrics,
     coverage: { complete: coverageComplete, coverageComplete, coveredCharacters,
       totalCharacters: input.transcript.length, successfulChunks: localSuccessCount, totalChunks: chunks.length,
       failedChunks: chunks.length - localSuccessCount,
@@ -241,4 +357,5 @@ async function analyze(input, dependencies = {}) {
 }
 
 module.exports = { VERSION, config, preferredBoundary, buildChunks, localSpans, localPages, remapCorrections,
-  runBounded, aggregateMetrics, aggregateValidationDiagnostics, coveredCharactersForSuccessfulChunks, analyze };
+  chunkIdentity, splitChunk, recoverableFailure, deterministicLanguageCandidateCount, runBounded, aggregateMetrics,
+  aggregateValidationDiagnostics, coveredCharactersForSuccessfulChunks, analyze };

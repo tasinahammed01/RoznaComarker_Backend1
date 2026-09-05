@@ -123,6 +123,11 @@ const submissionSchema = new Schema(
     ocrUpdatedAt: {
       type: Date
     },
+    draftNumber: { type: Number, min: 1, default: 1 },
+    previousRevision: { type: Schema.Types.ObjectId, ref: 'SubmissionRevision', default: null },
+    fileContentIdentity: { type: String, trim: true, index: true },
+    reusedFromRevisionId: { type: Schema.Types.ObjectId, ref: 'SubmissionRevision', default: null },
+    reusedAssessment: { type: Boolean, default: false },
     // Changes on every resubmission so an older background OCR job cannot overwrite it.
     ocrJobId: {
       type: String,
@@ -201,6 +206,9 @@ const submissionSchema = new Schema(
 submissionSchema.index({ student: 1, assignment: 1 }, { unique: true });
 submissionSchema.index({ assignment: 1 });
 submissionSchema.index({ class: 1 });
+submissionSchema.index({ class: 1, student: 1, submittedAt: 1 });
+submissionSchema.index({ class: 1, assignment: 1, submittedAt: 1, draftNumber: 1 });
+submissionSchema.index({ class: 1, assignment: 1, createdAt: 1 });
 submissionSchema.index({ feedback: 1 });
 
 module.exports = mongoose.model('Submission', submissionSchema);

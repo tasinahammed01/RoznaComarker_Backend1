@@ -22,6 +22,9 @@ const notificationSchema = new Schema(
       trim: true,
       index: true
     },
+    category: { type: String, enum: ['ACTION_REQUIRED', 'STUDENT_PROGRESS', 'WORKFLOW', 'REWARD', 'ACCOUNT'],
+      default: 'WORKFLOW', required: true, index: true },
+    priority: { type: String, enum: ['HIGH', 'NORMAL', 'LOW'], default: 'NORMAL', required: true, index: true },
     title: {
       type: String,
       required: true,
@@ -36,6 +39,11 @@ const notificationSchema = new Schema(
       type: Schema.Types.Mixed,
       default: undefined
     },
+    idempotencyKey: {
+      type: String,
+      trim: true,
+      default: undefined
+    },
     readAt: {
       type: Date,
       default: undefined,
@@ -48,5 +56,7 @@ const notificationSchema = new Schema(
 );
 
 notificationSchema.index({ recipient: 1, createdAt: -1 });
+notificationSchema.index({ recipient: 1, category: 1, createdAt: -1 });
+notificationSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Notification', notificationSchema);

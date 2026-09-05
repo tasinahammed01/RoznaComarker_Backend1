@@ -45,7 +45,8 @@ async function persistAndRespond(req, res, type) {
       url,
       uploadedBy: userId,
       role,
-      type
+      type,
+      sizeBytes: Number.isFinite(Number(file.size)) ? Number(file.size) : undefined
     });
 
     const uploadedMB =

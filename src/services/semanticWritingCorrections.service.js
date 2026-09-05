@@ -62,6 +62,8 @@ function buildSemanticRequest({ transcript, assignment = {}, legend: resolvedLeg
     ? 'Analyze this bounded overlapping excerpt sentence by sentence. Review every requested category. Treat excerpt edges as incomplete context and do not infer a missing introduction or conclusion from an excerpt boundary.'
     : analysisMode === 'document_structure'
       ? 'Perform a compact whole-document structural review of only the requested categories. Focus on weaknesses that require global context and avoid duplicating localized sentence-level issues.'
+      : analysisMode === 'zero_result_audit'
+        ? 'The previous pass returned no findings. Independently inspect the supplied transcript sentence by sentence. Do not assume the first result was correct. Return zero only if no valid issues matching the allowed legend exist.'
       : 'Analyze the entire canonical transcript independently and sentence by sentence, from the first page through the final page.';
   const prompt = [
     `schema=${SEMANTIC_SCHEMA_VERSION};prompt=${SEMANTIC_PROMPT_VERSION}`,

@@ -36,6 +36,9 @@ const worksheetRoutes = require("./routes/worksheet.routes");
 const unsplashRoutes = require("./routes/unsplash.routes");
 const adaptivePracticeRoutes = require("./routes/adaptivePractice.routes");
 const creditRoutes = require("./routes/credit.routes");
+const teacherActivityRoutes = require("./routes/teacherActivity.routes");
+const institutionRoutes = require('./routes/institution.routes');
+const retentionAdminRoutes = require('./routes/retentionAdmin.routes');
 // TypeScript worksheet generator routes
 // Method 1: text prompt → WorksheetDocument
 const { default: worksheetTextRoute } = require("./routes/worksheetTextRoute");
@@ -107,6 +110,7 @@ fs.mkdirSync(path.join(uploadsRoot, "templates"), { recursive: true });
 
 // Stripe signature verification must see the exact bytes. Mount this before JSON parsing.
 app.use('/api/stripe', require('./routes/stripeWebhook.routes'));
+app.use('/api/webhooks/paypal', require('./routes/paypalWebhook.routes'));
 // Keep ordinary JSON/form requests bounded. Multipart uploads are parsed by
 // Multer on their individual routes and retain their feature-specific limits.
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "1mb" }));
@@ -203,6 +207,9 @@ app.use("/api/worksheets", worksheetRoutes);
 app.use("/api/unsplash", unsplashRoutes);
 app.use("/api/adaptive-practice", adaptivePracticeRoutes);
 app.use("/api/credits", creditRoutes);
+app.use("/api/teacher", teacherActivityRoutes);
+app.use('/api/institutions', institutionRoutes);
+app.use('/api/admin', retentionAdminRoutes);
 
 app.post(
   "/upload",

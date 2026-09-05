@@ -1,6 +1,7 @@
 'use strict';
 
 const mammoth = require('mammoth');
+const JSZip = require('jszip');
 const {
   WorksheetOcrError,
   googleOcrPages,
@@ -10,9 +11,19 @@ const {
   extractContent,
   extractFromPDF,
   extractFromImage,
+  extractDocumentContent,
+  normalizedDocxFromHtml,
   validateFile,
   SAFE_PDF_OCR_MESSAGE,
 } = require('../src/services/fileContentExtractor.service');
+
+async function docxFixture(documentBody) {
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`);
+  zip.folder('_rels').file('.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`);
+  zip.folder('word').file('document.xml', `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${documentBody}</w:body></w:document>`);
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
 
 describe('worksheet upload text extraction', () => {
   afterEach(() => jest.restoreAllMocks());
@@ -127,10 +138,47 @@ describe('worksheet upload text extraction', () => {
   test('keeps TXT and DOCX extraction behavior intact', async () => {
     await expect(extractContent(Buffer.from('Plain worksheet text'), 'text/plain', 'work.txt'))
       .resolves.toBe('Plain worksheet text');
-    jest.spyOn(mammoth, 'extractRawText').mockResolvedValue({ value: 'DOCX worksheet text' });
+    jest.spyOn(mammoth, 'convertToHtml').mockResolvedValue({ value: '<p>DOCX worksheet text</p>' });
     await expect(extractContent(Buffer.from('docx'),
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'work.docx'))
       .resolves.toBe('DOCX worksheet text');
+  });
+
+  test('extracts a real DOCX fixture while preserving paragraph order', async () => {
+    const buffer = await docxFixture('<w:p><w:r><w:t>Spelling Rules</w:t></w:r></w:p><w:p><w:r><w:t>1. Add the suffix.</w:t></w:r></w:p><w:p><w:r><w:t>hope ______</w:t></w:r></w:p>');
+    const result = await extractDocumentContent(buffer,
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'Spelling Rules.docx');
+    expect(result.plainText).toContain('Spelling Rules');
+    expect(result.plainText.indexOf('1. Add')).toBeLessThan(result.plainText.indexOf('hope ______'));
+  });
+
+  test('preserves headings, numbered lists, MCQ choices, blanks, answer keys and table cells', () => {
+    const result = normalizedDocxFromHtml(`<h1>Spelling Rules</h1><p>Choose the answer.</p>
+      <ol><li>Which spelling is correct?<ul><li>A) hoping</li><li>B) hopeing</li></ul></li></ol>
+      <p>Complete: hope ______</p><table><tr><th>No</th><th>Question</th><th>Answer</th></tr>
+      <tr><td>1</td><td>True or false: drop final e.</td><td>True</td></tr></table><h2>Answer Key</h2><p>1. A</p>`);
+    expect(result.plainText).toContain('[HEADING 1] Spelling Rules');
+    expect(result.plainText).toContain('1. Which spelling is correct?');
+    expect(result.plainText).toContain('A) hoping');
+    expect(result.plainText).toContain('hope ______');
+    expect(result.plainText).toContain('Question: True or false: drop final e.');
+    expect(result.plainText).toContain('[HEADING 2] Answer Key');
+    expect(result.stats.tables).toBe(1);
+  });
+
+  test('returns controlled failures for corrupt and mostly empty DOCX files', async () => {
+    await expect(extractDocumentContent(Buffer.from('not a zip'),
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'broken.docx'))
+      .rejects.toMatchObject({ code: 'WORKSHEET_DOCX_PARSE_FAILED' });
+    const empty = await docxFixture('<w:p><w:r><w:t> </w:t></w:r></w:p>');
+    await expect(extractDocumentContent(empty,
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'empty.docx'))
+      .rejects.toMatchObject({ code: 'WORKSHEET_DOCX_TEXT_EMPTY' });
+  });
+
+  test('does not claim legacy binary DOC is supported by the DOCX parser', () => {
+    expect(validateFile({ originalname: 'legacy.doc', mimetype: 'application/msword', size: 100 }))
+      .toMatchObject({ valid: false });
   });
 
   test('retains file-size and type validation', () => {

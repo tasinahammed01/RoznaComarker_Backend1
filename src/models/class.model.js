@@ -61,6 +61,12 @@ const classSchema = new Schema(
       type: Boolean,
       default: true
     },
+    institutionId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Institution',
+      default: null,
+      index: true
+    },
     status: {
       type: String,
       enum: ['active', 'archived'],

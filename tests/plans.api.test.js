@@ -173,4 +173,23 @@ describe('GET /api/plans', () => {
     expect(idsAfter).toEqual(idsBefore);
     expect(idsAfter).toHaveLength(4);
   });
+
+  test('marks PayPal plans purchasable from PayPal mapping without Stripe product or price IDs', async () => {
+    const previousProvider = process.env.PAYMENT_PROVIDER;
+    const previousEnv = process.env.PAYPAL_ENV;
+    const previousPlan = process.env.PAYPAL_SANDBOX_PLAN_ESSENTIAL_MONTHLY;
+    process.env.PAYMENT_PROVIDER = 'paypal'; process.env.PAYPAL_ENV = 'sandbox';
+    process.env.PAYPAL_SANDBOX_PLAN_ESSENTIAL_MONTHLY = 'P-ESSENTIAL-SANDBOX';
+    try {
+      const { _id, ...starterTemplate } = activePlans[2];
+      await Plan.create({ ...starterTemplate, name: 'Essential', slug: 'essential', popular: false });
+      const response = await request(app).get('/api/plans');
+      const plan = response.body.data.find((entry) => entry.slug === 'essential');
+      expect(plan).toMatchObject({ paymentProvider: 'paypal', purchasable: true });
+    } finally {
+      if (previousProvider === undefined) delete process.env.PAYMENT_PROVIDER; else process.env.PAYMENT_PROVIDER = previousProvider;
+      if (previousEnv === undefined) delete process.env.PAYPAL_ENV; else process.env.PAYPAL_ENV = previousEnv;
+      if (previousPlan === undefined) delete process.env.PAYPAL_SANDBOX_PLAN_ESSENTIAL_MONTHLY; else process.env.PAYPAL_SANDBOX_PLAN_ESSENTIAL_MONTHLY = previousPlan;
+    }
+  });
 });

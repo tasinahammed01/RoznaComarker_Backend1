@@ -53,7 +53,7 @@ describe('semantic correction chunk coordinator', () => {
       semanticFallbackCalls: 0, timeoutCount: 0, truncationCount: 0 });
   });
 
-  test('retains successful chunks and reports partial instead of discarding all corrections', async () => {
+  test('retries only a failed timeout chunk and restores complete coverage', async () => {
     const transcript = `${'a'.repeat(1580)}badword ${'b'.repeat(2400)}`;
     let localIndex = 0;
     const semanticService = { analyze: jest.fn(async (input) => {
@@ -67,15 +67,36 @@ describe('semantic correction chunk coordinator', () => {
       settings: { enabled: true, singleRequestThresholdTokens: 1, chunkInputTokens: 3100,
         overlapTokens: 10, chunkMaxOutputTokens: 1000, maxConcurrency: 2, maxChunks: 8, totalBudgetMs: 5000 },
       config: { maxOutputTokens: 2000 } });
-    expect(result.status).toBe('partial');
+    expect(result.status).toBe('completed');
     expect(result.corrections).toHaveLength(1);
-    expect(result.coverage).toMatchObject({ coverageComplete: false, failedChunks: 1,
+    expect(result.coverage).toMatchObject({ coverageComplete: true, failedChunks: 0,
       structuralPassStatus: 'completed', categoryCoverageComplete: {
-        CONTENT: false, ORGANIZATION: false, VOCABULARY: false, GRAMMAR: false, MECHANICS: false
+        CONTENT: true, ORGANIZATION: true, VOCABULARY: true, GRAMMAR: true, MECHANICS: true
       } });
-    expect(result.diagnostics.chunking.errors).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'AI_ATTEMPT_TIMEOUT' })
-    ]));
+    expect(result.diagnostics.chunking.errors).toEqual([]);
+  });
+
+  test('splits a repeatedly truncated failed range and merges subchunk results canonically', async () => {
+    const transcript = `${'a'.repeat(1580)}badword ${'b'.repeat(2400)}`;
+    let failedOriginal = '';
+    const calls = [];
+    const semanticService = { analyze: jest.fn(async (input) => {
+      calls.push(input.transcript);
+      if (input.analysisMode === 'local_chunk' && !failedOriginal) failedOriginal = input.transcript;
+      if (input.analysisMode === 'local_chunk' && input.transcript === failedOriginal) {
+        const error = new Error('response length'); error.code = 'AI_RESPONSE_TRUNCATED'; error.finishReason = 'length'; throw error;
+      }
+      return semanticResult(input);
+    }) };
+    const result = await coordinator.analyze({ transcript, transcriptHash: 'source', legend: defaultLegend(),
+      spans: [], pageManifest: [], assignment: {}, submissionId: 'submission-1', assessmentRunId: 'run-1' }, {
+      semanticService, settings: { enabled: true, singleRequestThresholdTokens: 1, chunkInputTokens: 3100,
+        overlapTokens: 10, chunkMaxOutputTokens: 1000, maxConcurrency: 2, maxChunks: 8,
+        totalBudgetMs: 5000, failedChunkRetries: 1 }, config: { maxOutputTokens: 2000 } });
+    expect(result.coverage).toMatchObject({ coverageComplete: true, failedChunks: 0 });
+    expect(calls.filter((text) => text === failedOriginal)).toHaveLength(2);
+    expect(calls.some((text) => text.length < failedOriginal.length && failedOriginal.includes(text))).toBe(true);
+    expect(result.corrections).toHaveLength(1);
   });
 
   test('marks structural categories incomplete while retaining complete local-language findings', async () => {
@@ -110,5 +131,19 @@ describe('semantic correction chunk coordinator', () => {
       config: { maxOutputTokens: 2000 } });
     expect(result).toMatchObject({ status: 'failed', corrections: [],
       coverage: { complete: false, successfulChunks: 0 } });
+  });
+
+  test('audits an implausible long zero result and keeps unresolved zero non-authoritative', async () => {
+    const transcript = (`he are writing badly . this sentence has  two spaces. `).repeat(90);
+    const semanticService = { analyze: jest.fn(async () => ({ corrections: [], diagnostics: {},
+      provider: 'test', model: 'test-model', metrics: { attempts: [] } })) };
+    const result = await coordinator.analyze({ transcript, transcriptHash: 'source', legend: defaultLegend(),
+      spans: [], pageManifest: [], assignment: {} }, { semanticService,
+      settings: { enabled: true, singleRequestThresholdTokens: 1, chunkInputTokens: 3100,
+        overlapTokens: 10, chunkMaxOutputTokens: 1000, maxConcurrency: 2, maxChunks: 8, totalBudgetMs: 5000 },
+      config: { maxOutputTokens: 2000 } });
+    expect(semanticService.analyze).toHaveBeenCalledWith(expect.objectContaining({ analysisMode: 'zero_result_audit' }), expect.anything());
+    expect(result).toMatchObject({ status: 'partial', coverage: { coverageComplete: false },
+      diagnostics: { chunking: { zeroResultAudit: { required: true, status: 'suspicious_zero' } } } });
   });
 });

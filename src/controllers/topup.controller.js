@@ -6,7 +6,8 @@ const fail = (res, error) => res.status(error?.statusCode || 500).json({ success
   ...(error?.code ? { code: error.code } : {}), message: error?.statusCode ? error.message : "We couldn't start the payment. Please try again." });
 
 async function packs(req, res) {
-  try { return res.json({ success: true, packs: await TopupService.listPacks() }); }
+  try { return res.json({ success: true, paymentProvider: String(process.env.PAYMENT_PROVIDER || 'stripe').toLowerCase(),
+    packs: await TopupService.listPacks() }); }
   catch (error) { return fail(res, error); }
 }
 

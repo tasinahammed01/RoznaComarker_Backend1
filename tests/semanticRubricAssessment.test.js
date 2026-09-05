@@ -91,6 +91,17 @@ describe('semantic rubric assessment validation', () => {
     })).toThrow(expect.objectContaining({ code: 'CUSTOM_RUBRIC_EVIDENCE_REQUIRED' }));
   });
 
+  test('requires affirmative transcript evidence for the highest custom-rubric level', () => {
+    expect(() => validateAssessment(withCustomCriterion({
+      levelTitle: 'Excellent', percentage: 100, evidenceIds: []
+    }), { sourceHash: 'hash', transcript, corrections, customRubric }))
+      .toThrow(expect.objectContaining({ code: 'CUSTOM_RUBRIC_EVIDENCE_REQUIRED' }));
+    expect(validateAssessment(withCustomCriterion({
+      levelTitle: 'Excellent', percentage: 100, evidenceIds: [evidence[0].evidenceId]
+    }), { sourceHash: 'hash', transcript, corrections, customRubric }).customCriteria[0])
+      .toMatchObject({ levelTitle: 'Excellent', percentage: 100 });
+  });
+
   test('rejects a custom percentage inconsistent with the selected configured level', () => {
     expect(() => validateAssessment(withCustomCriterion({ percentage: 27 }), {
       sourceHash: 'hash', transcript, corrections, customRubric

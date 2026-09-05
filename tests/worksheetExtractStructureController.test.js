@@ -1,11 +1,12 @@
 'use strict';
 
-const mockExtractContent = jest.fn();
+const mockExtractDocumentContent = jest.fn();
 const mockExtractWorksheetStructure = jest.fn();
 
 jest.mock('../src/services/fileContentExtractor.service', () => ({
   validateFile: () => ({ valid: true }),
-  extractContent: mockExtractContent,
+  extractContent: jest.fn(),
+  extractDocumentContent: mockExtractDocumentContent,
 }));
 jest.mock('../src/services/worksheetExtractor.service', () => ({
   extractWorksheetStructure: mockExtractWorksheetStructure,
@@ -29,35 +30,35 @@ const request = () => ({
 
 describe('worksheet extract-structure controller sequencing', () => {
   beforeEach(() => {
-    mockExtractContent.mockReset();
+    mockExtractDocumentContent.mockReset();
     mockExtractWorksheetStructure.mockReset();
   });
 
   test('does not call structure AI when OCR/extraction fails', async () => {
-    mockExtractContent.mockRejectedValue(Object.assign(new Error('private provider detail'), {
+    mockExtractDocumentContent.mockRejectedValue(Object.assign(new Error('private provider detail'), {
       code: 'WORKSHEET_OCR_FAILED',
       userMessage: 'Please upload a clearer worksheet image.',
     }));
     const res = response();
     await controller.extractWorksheetStructure(request(), res);
     expect(res.statusCode).toBe(400);
-    expect(res.body).toEqual({ success: false, message: 'Please upload a clearer worksheet image.' });
+    expect(res.body).toEqual({ success: false, code: 'WORKSHEET_OCR_FAILED', message: 'Please upload a clearer worksheet image.' });
     expect(JSON.stringify(res.body)).not.toContain('private provider detail');
     expect(mockExtractWorksheetStructure).not.toHaveBeenCalled();
   });
 
   test('calls structure AI only after extraction succeeds', async () => {
-    mockExtractContent.mockResolvedValue('Extracted worksheet text');
+    mockExtractDocumentContent.mockResolvedValue({ plainText: 'Extracted worksheet text', blocks: [], stats: {} });
     mockExtractWorksheetStructure.mockResolvedValue({
       title: 'Math', description: 'Practice', subject: 'Math', activities: [], answerKey: {},
       extractedStructure: { sections: [] },
     });
     const res = response();
     await controller.extractWorksheetStructure(request(), res);
-    expect(mockExtractContent).toHaveBeenCalledTimes(1);
-    expect(mockExtractWorksheetStructure).toHaveBeenCalledWith('Extracted worksheet text', {
-      language: 'English', subject: 'Math', gradeLevel: '4', difficulty: 'medium',
-    });
+    expect(mockExtractDocumentContent).toHaveBeenCalledTimes(1);
+    expect(mockExtractWorksheetStructure).toHaveBeenCalledWith('Extracted worksheet text', expect.objectContaining({
+      language: 'English', subject: 'Math', gradeLevel: '4', difficulty: 'medium', requestId: expect.any(String),
+    }));
     expect(res.statusCode).toBe(200);
     expect(res.body.success).toBe(true);
   });
@@ -67,9 +68,9 @@ describe('worksheet extract-structure controller sequencing', () => {
     ['AI_PROVIDER_RATE_LIMIT', 429, 'AI service is temporarily busy. Please try again.'],
     ['AI_PROVIDER_PAYMENT_REQUIRED', 402, 'AI service credits are unavailable. Please contact admin.'],
     ['AI_PROVIDER_AUTH_ERROR', 401, 'AI service configuration error. Please contact admin.'],
-    ['AI_OUTPUT_VALIDATION_FAILED', null, "We couldn't structure this worksheet reliably. Please try again."],
+    ['AI_OUTPUT_VALIDATION_FAILED', null, "We could read the document, but couldn't structure all worksheet questions reliably. Please review the document formatting or try again."],
   ])('maps %s to a safe client message', async (code, httpStatus, expected) => {
-    mockExtractContent.mockResolvedValue('Extracted worksheet text');
+    mockExtractDocumentContent.mockResolvedValue({ plainText: 'Extracted worksheet text', blocks: [], stats: {} });
     mockExtractWorksheetStructure.mockRejectedValue(Object.assign(new Error('private provider detail'), {
       code: code === 'AI_TOTAL_BUDGET_EXHAUSTED' ? code : 'AI_CHAIN_EXHAUSTED',
       finalFailureCode: code,
@@ -79,7 +80,7 @@ describe('worksheet extract-structure controller sequencing', () => {
     const res = response();
     await controller.extractWorksheetStructure(request(), res);
     expect(res.statusCode).toBe(500);
-    expect(res.body).toEqual({ success: false, message: expected });
+    expect(res.body).toEqual({ success: false, code, message: expected });
     expect(JSON.stringify(res.body)).not.toContain('private provider detail');
   });
 });

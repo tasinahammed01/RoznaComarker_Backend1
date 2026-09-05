@@ -4,6 +4,7 @@ const CreditTransaction = require('../models/CreditTransaction');
 const User = require('../models/user.model');
 const CreditService = require('../services/credit.service');
 const logger = require('../utils/logger');
+const BonusRewardService = require('../services/bonusReward.service');
 
 const fail = (res, error) => res.status(error?.statusCode || 500).json({ success: false,
   ...(error?.code ? { code: error.code } : {}), message: error?.message || 'Credit operation failed' });
@@ -28,6 +29,11 @@ async function transactions(req, res) {
   } catch (error) { return fail(res, error); }
 }
 
+async function rewards(req, res) {
+  try { return res.json({ success: true, rewards: await BonusRewardService.rewardHistory(req.user._id) }); }
+  catch (error) { return fail(res, error); }
+}
+
 async function adminWallet(req, res) {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.userId)) return res.status(400).json({ success: false, message: 'Invalid user id' });
@@ -46,13 +52,28 @@ async function adminWallet(req, res) {
 
 async function adminTeachers(req, res) {
   try {
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 25));
     const q = String(req.query.q || '').trim().slice(0, 100);
     const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const filter = { role: 'teacher', isActive: { $ne: false }, ...(q ? { $or: [
       { email: { $regex: escaped, $options: 'i' } }, { displayName: { $regex: escaped, $options: 'i' } }
     ] } : {}) };
-    const teachers = await User.find(filter).sort({ displayName: 1, email: 1 }).limit(25).select('_id displayName email').lean();
-    return res.json({ success: true, teachers });
+    const [result] = await User.aggregate([{ $match: filter }, { $sort: { displayName: 1, email: 1, _id: 1 } },
+      { $facet: { items: [{ $skip: (page - 1) * limit }, { $limit: limit },
+        { $lookup: { from: 'creditwallets', localField: '_id', foreignField: 'userId', as: 'wallet' } },
+        { $lookup: { from: 'plans', localField: 'plan', foreignField: '_id', as: 'planRecord' } },
+        { $project: { _id: 1, displayName: 1, email: 1,
+          plan: { $ifNull: [{ $first: '$planRecord.slug' }, { $ifNull: ['$planName', 'Unknown'] }] },
+          monthlyRemaining: { $max: [0, { $subtract: [{ $ifNull: [{ $first: '$wallet.monthlyCredits' }, 0] },
+            { $ifNull: [{ $first: '$wallet.monthlyCreditsUsed' }, 0] }] }] },
+          purchasedCredits: { $ifNull: [{ $first: '$wallet.purchasedCredits' }, 0] },
+          bonusCredits: { $ifNull: [{ $first: '$wallet.bonusCredits' }, 0] } } }],
+        total: [{ $count: 'count' }] } }]);
+    const total = Number(result?.total?.[0]?.count || 0);
+    const teachers = (result?.items || []).map((teacher) => ({ ...teacher,
+      totalAvailable: Number(teacher.monthlyRemaining || 0) + Number(teacher.purchasedCredits || 0) + Number(teacher.bonusCredits || 0) }));
+    return res.json({ success: true, teachers, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
   } catch (error) { return fail(res, error); }
 }
 
@@ -68,4 +89,4 @@ async function adminAdjust(req, res) {
   } catch (error) { return fail(res, error); }
 }
 
-module.exports = { wallet, acknowledgeNudge, transactions, adminTeachers, adminWallet, adminAdjust };
+module.exports = { wallet, acknowledgeNudge, transactions, rewards, adminTeachers, adminWallet, adminAdjust };
