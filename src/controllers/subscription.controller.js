@@ -102,6 +102,8 @@ async function getMySubscription(req, res) {
         subscriptionStatus: providerStatus,
         pendingPlanChange: !!pendingPayPalChange,
         pendingTargetPlanCode: pendingPayPalChange?.targetPlanKey || null,
+        pendingChangeAttemptId: pendingPayPalChange?.attemptId || null,
+        pendingChangeApprovalUrl: pendingPayPalChange?.approvalUrl || null,
         pendingCancellation: !!pendingPayPalCancellation
       } : null,
       usage: { ...(user.usage || {

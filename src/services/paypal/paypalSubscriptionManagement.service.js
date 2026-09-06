@@ -295,5 +295,18 @@ async function markChangePlanCancelled({ user, changeAttemptId }) {
   return attempt;
 }
 
+async function reconcileManagement({ user, client }) {
+  assertPayPalUser(user);
+  const subscription = await authoritativeSubscription(user, client, 'PAYPAL_SUBSCRIPTION_NOT_MANAGEABLE');
+  const User = require('../../models/user.model');
+  const freshUser = await User.findById(user._id);
+  if (!freshUser) throw domainError('PAYPAL_SUBSCRIPTION_NOT_MANAGEABLE', 'User not found', 404);
+  const { syncSubscription } = require('./paypalSubscription.service');
+  const result = await syncSubscription(subscription);
+  const status = String(subscription.status || '').toUpperCase();
+  const isTerminal = TERMINAL.has(status);
+  return { status, pendingCancellation: !isTerminal && freshUser.paypalSubscriptionStatus !== status && status !== 'ACTIVE', cancelledOrTerminal: isTerminal };
+}
+
 module.exports = { ACTIVE_STATUSES, CANCEL_REASON, MANAGEABLE, PROCESSING_LEASE_MS, TERMINAL,
-  activeOperationKey, cancelSubscription, changePlan, markChangePlanCancelled, domainError };
+  activeOperationKey, cancelSubscription, changePlan, markChangePlanCancelled, reconcileManagement, domainError };

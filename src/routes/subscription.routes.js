@@ -57,6 +57,11 @@ router.post(
   handleValidationResult,
   paypalSubscriptionController.cancel
 );
+router.post('/paypal/reconcile', verifyJwtToken, requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 20, event: 'BILLING_RATE_LIMITED', reason: 'paypal_reconcile_user' }),
+  body('checkoutAttemptId').isUUID(4),
+  body().custom((value) => Object.keys(value || {}).every((key) => key === 'checkoutAttemptId')),
+  handleValidationResult, paypalSubscriptionController.reconcile);
 router.post(
   '/paypal/change-plan',
   verifyJwtToken,
@@ -77,6 +82,38 @@ router.post(
   body('subscriptionId').not().exists(), body('targetPayPalPlanId').not().exists(),
   handleValidationResult,
   paypalSubscriptionController.changePlanCancelled
+);
+router.post(
+  '/paypal/reconcile-management',
+  verifyJwtToken,
+  requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 20, event: 'BILLING_RATE_LIMITED', reason: 'paypal_reconcile_management_user' }),
+  body('subscriptionId').not().exists(), body('paypalSubscriptionId').not().exists(),
+  body('providerSubscriptionId').not().exists(), body('userId').not().exists(),
+  body('status').not().exists(), body('cancelled').not().exists(), body('planId').not().exists(),
+  handleValidationResult,
+  paypalSubscriptionController.reconcileManagement
+);
+router.post(
+  '/paypal/change-plan/context',
+  verifyJwtToken,
+  requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 20, event: 'BILLING_RATE_LIMITED', reason: 'paypal_change_plan_context_user' }),
+  body('targetPlanCode').isString().trim().isLength({ min: 1, max: 80 }),
+  body('changeAttemptId').isUUID(4),
+  body('providerSubscriptionId').not().exists(), body('targetPayPalPlanId').not().exists(),
+  handleValidationResult,
+  paypalSubscriptionController.getChangePlanContext
+);
+router.post(
+  '/paypal/change-plan/reconcile',
+  verifyJwtToken,
+  requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 20, event: 'BILLING_RATE_LIMITED', reason: 'paypal_change_plan_reconcile_user' }),
+  body('changeAttemptId').isUUID(4),
+  body('providerSubscriptionId').not().exists(), body('targetPlanCode').not().exists(),
+  handleValidationResult,
+  paypalSubscriptionController.reconcilePlanChange
 );
 router.post(
   '/checkout-session',

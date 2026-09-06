@@ -10,6 +10,14 @@ The frontend uses backend-generated approval URLs, filters them to HTTPS PayPal 
 
 ## PayPal webhook events required by this application
 
+## Advanced card checkout
+
+One-time Assessment Credit card checkout uses the supported PayPal JavaScript SDK v5 `CardFields` component and Orders v2. Card number, expiry, and CVV remain in PayPal-hosted iframes. The authenticated capabilities endpoint returns the public client ID and a short-lived PayPal browser client token only when `PAYPAL_ADVANCED_CARD_PAYMENTS_ENABLED=true` and token generation succeeds. Browser eligibility is checked again with `CardFields.isEligible()`.
+
+Enable `PAYPAL_ADVANCED_CARD_PAYMENTS_ENABLED` separately in each environment only after Apps & Credentials → Features → Accept payments confirms Advanced Credit and Debit Card Payments for that REST app. A card-funded Order uses `CAPTURE`, `SCA_WHEN_REQUIRED`, the existing `PaymentPurchaseAttempt`, capture fetch-back, credit ledger, and refund/reversal handlers.
+
+Recurring plans deliberately remain on the existing PayPal Subscriptions approval architecture. PayPal may offer eligible debit/credit-card funding on its hosted subscription approval page. Embedded Card Fields are not used to simulate a subscription, and a one-time Order has no code path to plan entitlement.
+
 The endpoint is `POST /api/webhooks/paypal`. `src/app.js` mounts it before generic `express.json`; `src/routes/paypalWebhook.routes.js` supplies the raw JSON body used by `src/controllers/paypalWebhook.controller.js` verification. Verification posts to the selected API host with the selected Webhook ID before any event claim or business-state mutation.
 
 | Event type | Why | Handler/module | Internal behavior |

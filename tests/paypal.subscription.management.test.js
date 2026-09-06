@@ -287,4 +287,57 @@ describe('PayPal subscription management Phase 3', () => {
     const attempt = await PaymentManagementAttempt.findOne({ attemptId: CHANGE_ATTEMPT });
     expect(attempt.status).toBe('completed'); expect(attempt.activeOperationKey).toBeUndefined();
   });
+
+  test('reconcile-management rejects browser-supplied subscription ID', async () => {
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth())
+      .send({ subscriptionId: SUBSCRIPTION });
+    expect(response.status).toBe(400);
+  });
+
+  test('reconcile-management rejects browser-supplied providerSubscriptionId', async () => {
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth())
+      .send({ providerSubscriptionId: SUBSCRIPTION });
+    expect(response.status).toBe(400);
+  });
+
+  test('reconcile-management rejects browser-supplied userId', async () => {
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth())
+      .send({ userId: teacher._id.toString() });
+    expect(response.status).toBe(400);
+  });
+
+  test('reconcile-management rejects browser-supplied status', async () => {
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth())
+      .send({ status: 'CANCELLED' });
+    expect(response.status).toBe(400);
+  });
+
+  test('reconcile-management fetches authoritative provider state and returns terminal status', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('CANCELLED'));
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.status).toBe('CANCELLED');
+    expect(response.body.data.cancelledOrTerminal).toBe(true);
+    expect(paypalMock.getSubscription).toHaveBeenCalledWith(SUBSCRIPTION);
+  });
+
+  test('reconcile-management returns pendingCancellation when provider is ACTIVE but local state differs', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('ACTIVE'));
+    await User.findByIdAndUpdate(teacher._id, { paypalSubscriptionStatus: 'SUSPENDED' });
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe('ACTIVE');
+    expect(response.body.data.pendingCancellation).toBe(false);
+    expect(response.body.data.cancelledOrTerminal).toBe(false);
+  });
+
+  test('reconcile-management is idempotent when webhook already updated state', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('CANCELLED'));
+    await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    const response2 = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response2.status).toBe(200);
+    expect(response2.body.data.cancelledOrTerminal).toBe(true);
+    expect(paypalMock.getSubscription).toHaveBeenCalledTimes(2);
+  });
 });

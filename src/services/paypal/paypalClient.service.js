@@ -189,6 +189,9 @@ class PayPalClient {
       headers: { ...(requestId ? { 'PayPal-Request-Id': requestId } : {}), Prefer: 'return=representation' } });
   }
   getCapture(captureId) { return this.request(`/v2/payments/captures/${encodeURIComponent(captureId)}`); }
+  generateClientToken() {
+    return this.request('/v1/identity/generate-token', { method: 'POST', body: {} });
+  }
   verifyWebhookSignature(payload) {
     return this.request('/v1/notifications/verify-webhook-signature', { method: 'POST', body: payload });
   }

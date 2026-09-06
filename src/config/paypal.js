@@ -39,6 +39,10 @@ function isPaypalEnabled(environment = process.env) {
   return enabled(environment.PAYPAL_ENABLED) || value(environment, 'PAYMENT_PROVIDER').toLowerCase() === 'paypal';
 }
 
+function isPaypalAdvancedCardEnabled(environment = process.env) {
+  return isPaypalEnabled(environment) && enabled(environment.PAYPAL_ADVANCED_CARD_PAYMENTS_ENABLED);
+}
+
 function planMappingKey(planKey, billingInterval) {
   let key = String(planKey || '').trim().toLowerCase().replace(/[^a-z0-9]+/gu, '_').replace(/^_+|_+$/gu, '');
   const annual = ['year', 'yearly', 'annual'].includes(String(billingInterval || '').trim().toLowerCase());
@@ -199,4 +203,4 @@ function assertPaypalLiveEnabled(environment = process.env) {
 module.exports = { PAYPAL_BASE_URLS, PAYPAL_VALIDATION_PURPOSES, REQUIRED_PLAN_MAPPINGS, PayPalConfigError, appPublicUrl,
   assertPaypalLiveEnabled, getPaypalApiBaseUrl, getPaypalConfig, getPaypalEnvironment, getPaypalPlanId,
   getPaypalPlanVariableName, getPaypalRedirectUrls, isPaypalEnabled, isPaypalLive, isPaypalSandbox,
-  legacyPlanVariable, planMappingKey, selectedValue, validatePaypalConfig, validatePaypalRuntimeConfig };
+  isPaypalAdvancedCardEnabled, legacyPlanVariable, planMappingKey, selectedValue, validatePaypalConfig, validatePaypalRuntimeConfig };

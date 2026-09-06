@@ -7,10 +7,11 @@ process.env.PAYPAL_ENV = 'sandbox';
 process.env.PAYPAL_CLIENT_ID = 'sandbox-client';
 process.env.PAYPAL_CLIENT_SECRET = 'sandbox-secret';
 process.env.PAYPAL_WEBHOOK_ID = 'WH-SAFE';
+process.env.PAYPAL_ADVANCED_CARD_PAYMENTS_ENABLED = 'true';
 process.env.FRONTEND_URL = 'http://localhost:4200';
 
 const paypalMock = { createOrder: jest.fn(), captureOrder: jest.fn(), getOrder: jest.fn(), getCapture: jest.fn(),
-  verifyWebhookSignature: jest.fn() };
+  generateClientToken: jest.fn(), verifyWebhookSignature: jest.fn() };
 jest.mock('../src/services/paypal/paypalClient.service', () => ({
   PayPalClient: jest.fn(() => paypalMock), PayPalApiError: class PayPalApiError extends Error {}
 }));
@@ -75,18 +76,44 @@ describe('PayPal Orders Assessment Credit purchases', () => {
     paypalMock.getCapture.mockResolvedValue({ id: CAPTURE, status: 'REFUNDED', amount: { value: '4.99', currency_code: 'USD' },
       seller_receivable_breakdown: { total_refunded_amount: { value: '4.99', currency_code: 'USD' } } });
     paypalMock.verifyWebhookSignature.mockResolvedValue({ verification_status: 'SUCCESS' });
+    paypalMock.generateClientToken.mockResolvedValue({ client_token: 'browser-safe-token' });
   });
 
   test('active backend pack is resolved and exact trusted Order shape is sent', async () => {
     const res = await create(); expect(res.status).toBe(200);
     expect(paypalMock.createOrder).toHaveBeenCalledWith({ intent: 'CAPTURE', purchase_units: [{ reference_id: ATTEMPT,
       custom_id: `paypal-topup:${ATTEMPT}`, description: '10 Assessment Credits (TOPUP_SMALL)',
-      amount: { currency_code: 'USD', value: '4.99' } }], payment_source: { paypal: { experience_context: {
+      amount: { currency_code: 'USD', value: '4.99' } }], application_context: {
       return_url: `http://localhost:4200/teacher/dashboard?topup=paypal-confirming&attempt=${ATTEMPT}`,
       cancel_url: `http://localhost:4200/teacher/dashboard?topup=paypal-cancelled&attempt=${ATTEMPT}`,
       user_action: 'PAY_NOW', shipping_preference: 'NO_SHIPPING'
-    } } } }, `topup-create:${ATTEMPT}`);
+    } }, `topup-create:${ATTEMPT}`);
     expect(res.body.data).toEqual(expect.objectContaining({ attemptId: ATTEMPT, orderId: ORDER, amount: '4.99', currency: 'USD' }));
+  });
+
+  test('card order uses the same authoritative pack and attempt with SCA when required', async () => {
+    paypalMock.createOrder.mockResolvedValue({ id: ORDER, status: 'CREATED' });
+    const res = await request(app).post('/api/credits/paypal/card/create-order').set(auth()).send({
+      packCode: 'TOPUP_SMALL', checkoutAttemptId: ATTEMPT
+    });
+    expect(res.status).toBe(200);
+    expect(paypalMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ intent: 'CAPTURE',
+      purchase_units: [expect.objectContaining({ amount: { currency_code: 'USD', value: '4.99' } })],
+      payment_source: { card: { attributes: { verification: { method: 'SCA_WHEN_REQUIRED' } } } }
+    }), `topup-create:${ATTEMPT}`);
+    expect(await PaymentPurchaseAttempt.countDocuments({ attemptId: ATTEMPT })).toBe(1);
+  });
+
+  test('card order rejects browser supplied money while standard funding remains available', async () => {
+    const bad = await request(app).post('/api/credits/paypal/card/create-order').set(auth()).send({
+      packCode: 'TOPUP_SMALL', checkoutAttemptId: ATTEMPT, amount: '0.01'
+    });
+    expect(bad.status).toBe(400); expect(paypalMock.createOrder).not.toHaveBeenCalled();
+    process.env.PAYPAL_ADVANCED_CARD_PAYMENTS_ENABLED = 'false';
+    const capability = await request(app).get('/api/credits/paypal/capabilities').set(auth());
+    expect(capability.body.data).toMatchObject({ advancedCardPayments: false, cardTopups: true, cardSubscriptions: false });
+    expect(JSON.stringify(capability.body)).not.toMatch(/sandbox-secret|access.token|webhook/iu);
+    process.env.PAYPAL_ADVANCED_CARD_PAYMENTS_ENABLED = 'true';
   });
 
   test.each([

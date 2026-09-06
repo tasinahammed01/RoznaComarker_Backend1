@@ -23,6 +23,9 @@ const paypalPurchaseBody = [
 ];
 router.post('/paypal/create-order', verifyJwtToken, requireRole('teacher'), paypalPurchaseBody,
   handleValidationResult, paypalPurchase.createOrder);
+router.get('/paypal/capabilities', verifyJwtToken, requireRole('teacher'), paypalPurchase.capabilities);
+router.post('/paypal/card/create-order', verifyJwtToken, requireRole('teacher'), paypalPurchaseBody,
+  handleValidationResult, paypalPurchase.createCardOrder);
 router.post('/paypal/capture', verifyJwtToken, requireRole('teacher'), body('checkoutAttemptId').isUUID(4),
   body().custom((value) => Object.keys(value || {}).every((key) => key === 'checkoutAttemptId')),
   handleValidationResult, paypalPurchase.capture);

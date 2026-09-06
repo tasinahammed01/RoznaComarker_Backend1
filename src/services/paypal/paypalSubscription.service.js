@@ -11,6 +11,7 @@ const { CHECKOUT_BLOCKING_STATUSES } = require('../stripeSubscription.service');
 const { getPaypalRedirectUrls } = require('../../config/paypal');
 const BonusRewardService = require('../bonusReward.service');
 const logger = require('../../utils/logger');
+const { PayPalClient } = require('./paypalClient.service');
 
 const PAYPAL_BLOCKING_STATUSES = new Set(['ACTIVE', 'SUSPENDED']);
 const PAYPAL_PENDING_STATUSES = new Set(['APPROVAL_PENDING', 'APPROVAL_REQUIRED', 'APPROVED', 'CREATED']);
@@ -276,5 +277,17 @@ async function syncSubscription(subscription, { eventType } = {}) {
   return { user, plan, attempt, managementAttempt, status };
 }
 
+async function reconcileCheckout({ user, attemptId, client = new PayPalClient() }) {
+  const attempt = await PaymentCheckoutAttempt.findOne({ provider: 'paypal', attemptId, userId: user._id });
+  if (!attempt?.providerSubscriptionId) throw paypalError('PAYPAL_SUBSCRIPTION_NOT_FOUND', 'Subscription checkout was not found', 404);
+  const subscription = await client.getSubscription(attempt.providerSubscriptionId);
+  if (!subscription?.id || String(subscription.id) !== attempt.providerSubscriptionId) {
+    throw paypalError('PAYPAL_SUBSCRIPTION_CORRELATION_FAILED', 'Fetched PayPal subscription does not match checkout attempt', 422);
+  }
+  const result = await syncSubscription(subscription);
+  return { attemptId: attempt.attemptId, subscriptionId: attempt.providerSubscriptionId,
+    status: result.status, active: result.status === 'ACTIVE' };
+}
+
 module.exports = { ATTEMPT_PROCESSING_LEASE_MS, PAYPAL_BLOCKING_STATUSES, PAYPAL_PENDING_STATUSES,
-  PAYPAL_TERMINAL_STATUSES, approvalUrl, createSubscription, syncSubscription, subscriptionPeriod };
+  PAYPAL_TERMINAL_STATUSES, approvalUrl, createSubscription, reconcileCheckout, syncSubscription, subscriptionPeriod };

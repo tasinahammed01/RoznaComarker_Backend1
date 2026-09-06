@@ -4,7 +4,7 @@ const PaymentPurchaseAttempt = require('../../models/PaymentPurchaseAttempt');
 const CreditTransaction = require('../../models/CreditTransaction');
 const TopupService = require('../topup.service');
 const { PayPalClient } = require('./paypalClient.service');
-const { getPaypalRedirectUrls } = require('../../config/paypal');
+const { getPaypalRedirectUrls, isPaypalAdvancedCardEnabled } = require('../../config/paypal');
 
 const PROCESSING_LEASE_MS = 2 * 60 * 1000;
 const ACTIVE_STATUSES = new Set(['creating', 'capturing']);
@@ -84,23 +84,29 @@ async function claimExisting(attempt, fromStatuses, nextStatus) {
   }, $inc: { retryCount: 1 } }, { returnDocument: 'after' });
 }
 
-function createPayload(attempt, environment) {
+function createPayload(attempt, environment, fundingSource = 'paypal') {
   const attemptId = encodeURIComponent(attempt.attemptId);
   const redirects = getPaypalRedirectUrls('topup', environment, {
     return: { topup: 'paypal-confirming', attempt: attemptId },
     cancel: { topup: 'paypal-cancelled', attempt: attemptId }
   });
+  const paymentSource = fundingSource === 'card'
+    ? { card: { attributes: { verification: { method: 'SCA_WHEN_REQUIRED' } } } }
+    : undefined;
   return { intent: 'CAPTURE', purchase_units: [{ reference_id: attempt.attemptId,
     custom_id: `paypal-topup:${attempt.attemptId}`, description: `${attempt.credits} Assessment Credits (${attempt.packCode})`,
-    amount: { currency_code: attempt.currency, value: attempt.expectedAmount } }], payment_source: { paypal: { experience_context: {
-      return_url: redirects.returnUrl,
-      cancel_url: redirects.cancelUrl,
+    amount: { currency_code: attempt.currency, value: attempt.expectedAmount } }],
+    ...(paymentSource ? { payment_source: paymentSource } : {}), application_context: {
+      return_url: redirects.returnUrl, cancel_url: redirects.cancelUrl,
       user_action: 'PAY_NOW', shipping_preference: 'NO_SHIPPING'
-    } } } };
+    } };
 }
 
-async function createOrder({ user, packCode, attemptId, client = new PayPalClient(), environment = process.env }) {
+async function createOrder({ user, packCode, attemptId, fundingSource = 'paypal', client = new PayPalClient(), environment = process.env }) {
   if (paymentProvider(environment) !== 'paypal') throw purchaseError('PAYPAL_PROVIDER_NOT_ENABLED', 'PayPal credit purchases are not enabled', 409);
+  if (fundingSource === 'card' && !isPaypalAdvancedCardEnabled(environment)) {
+    throw purchaseError('CARD_NOT_ELIGIBLE', 'Credit or debit card checkout is not available for this PayPal account.', 409);
+  }
   const { pack } = await TopupService.eligiblePack(user, packCode, { provider: 'paypal' });
   const money = trustedMoney(pack.price, pack.currency);
   let attempt;
@@ -124,12 +130,12 @@ async function createOrder({ user, packCode, attemptId, client = new PayPalClien
     attempt = claimed;
   }
   let order;
-  try { order = await client.createOrder(createPayload(attempt, environment), attempt.createRequestId); }
+  try { order = await client.createOrder(createPayload(attempt, environment, fundingSource), attempt.createRequestId); }
   catch (error) { return markFailure(attempt, error); }
   if (!order?.id) return markFailure(attempt, purchaseError('PAYPAL_ORDER_ID_MISSING', 'PayPal did not return an Order ID', 502));
-  const approvalUrl = safeApprovalUrl(order);
+  const approvalUrl = fundingSource === 'card' ? undefined : safeApprovalUrl(order);
   const saved = await PaymentPurchaseAttempt.findOneAndUpdate({ _id: attempt._id, status: 'creating' }, { $set: {
-    providerOrderId: order.id, approvalUrl, status: 'approval_pending', processingLeaseExpiresAt: null,
+    providerOrderId: order.id, ...(approvalUrl ? { approvalUrl } : {}), status: 'approval_pending', processingLeaseExpiresAt: null,
     failureClass: undefined, failureCode: null, safeFailureMessage: null
   } }, { returnDocument: 'after' });
   if (!saved) throw purchaseError('PAYPAL_ORDER_PERSISTENCE_FAILED', 'Order was created but confirmation is still recovering. Retry shortly.', 503);
