@@ -72,27 +72,29 @@ async function getChangePlanContext(req, res) {
       return res.status(400).json({ success: false, code: 'INVALID_REQUEST', message: 'targetPlanCode and changeAttemptId are required' });
     }
     const Plan = require('../models/Plan');
-    const PaymentManagementAttempt = require('../models/PaymentManagementAttempt');
     const { getPayPalPlanId } = require('../services/paypal/paypalPlanMapping.service');
     const targetPlan = await Plan.findOne({ slug: targetPlanCode.toLowerCase(), isActive: true }).lean();
     if (!targetPlan) {
       return res.status(404).json({ success: false, code: 'PLAN_NOT_FOUND', message: 'Target plan not found' });
     }
-    const attempt = await PaymentManagementAttempt.findOne({ provider: 'paypal', attemptId: changeAttemptId, userId: req.user._id });
-    if (!attempt || attempt.operation !== 'CHANGE_PLAN') {
-      return res.status(404).json({ success: false, code: 'ATTEMPT_NOT_FOUND', message: 'Plan change attempt not found' });
-    }
-    if (attempt.status === 'cancelled') {
-      return res.status(409).json({ success: false, code: 'ATTEMPT_CANCELLED', message: 'Plan change attempt was cancelled' });
-    }
-    if (attempt.status === 'completed') {
-      return res.status(409).json({ success: false, code: 'ATTEMPT_COMPLETED', message: 'Plan change already completed' });
-    }
+
+    // Prepare or reuse the PaymentManagementAttempt WITHOUT calling PayPal revise
+    // Note: Frontend may send extra fields (price, providerSubscriptionId, targetPayPalPlanId)
+    // but we ignore them and use authoritative backend values
+    const prepareResult = await PayPalManagement.prepareChangePlan({
+      user: req.user,
+      targetPlanCode,
+      changeAttemptId
+    });
+
+    const attempt = prepareResult.attempt;
+    const canonicalAttemptId = prepareResult.canonicalAttemptId || attempt.attemptId;
     const targetPayPalPlanId = await getPayPalPlanId({ planKey: targetPlan.slug, billingInterval: targetPlan.billingInterval === 'year' ? 'yearly' : 'monthly' });
+
     return res.json({
       success: true,
       data: {
-        changeAttemptId,
+        changeAttemptId: canonicalAttemptId,
         providerSubscriptionId: attempt.providerSubscriptionId,
         targetPayPalPlanId,
         targetPlanCode: targetPlan.slug,

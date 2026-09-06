@@ -12,6 +12,7 @@ process.env.PAYPAL_PRO_MONTHLY_PLAN_ID = 'P-PRO-MONTHLY';
 process.env.PAYPAL_WEBHOOK_ID = 'WH-SAFE';
 process.env.PAYPAL_CHANGE_PLAN_RETURN_URL = 'http://localhost:4200/billing/paypal/change-plan/success';
 process.env.PAYPAL_CHANGE_PLAN_CANCEL_URL = 'http://localhost:4200/billing/paypal/change-plan/cancel';
+process.env.GOOGLE_CLOUD_KEY_FILE = process.env.TEMP + '\\mock-vision-key.json';
 
 const paypalMock = { getSubscription: jest.fn(), getPlan: jest.fn(), cancelSubscription: jest.fn(),
   reviseSubscription: jest.fn(), verifyWebhookSignature: jest.fn() };
@@ -339,5 +340,156 @@ describe('PayPal subscription management Phase 3', () => {
     expect(response2.status).toBe(200);
     expect(response2.body.data.cancelledOrTerminal).toBe(true);
     expect(paypalMock.getSubscription).toHaveBeenCalledTimes(2);
+  });
+
+  describe('change-plan context prepare phase', () => {
+    test('context with brand-new valid UUID creates PaymentManagementAttempt and returns 200 without calling PayPal revise', async () => {
+      const newAttemptId = '00000000-0000-4000-8000-000000000099';
+      const response = await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
+        .send({ targetPlanCode: 'pro_monthly', changeAttemptId: newAttemptId });
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.changeAttemptId).toBe(newAttemptId);
+      expect(response.body.data.providerSubscriptionId).toBe(SUBSCRIPTION);
+      expect(response.body.data.targetPayPalPlanId).toBe('P-PRO-MONTHLY');
+      expect(response.body.data.targetPlanCode).toBe('pro_monthly');
+      expect(paypalMock.reviseSubscription).not.toHaveBeenCalled();
+      const attempt = await PaymentManagementAttempt.findOne({ attemptId: newAttemptId });
+      expect(attempt).toBeTruthy();
+      expect(attempt.operation).toBe('CHANGE_PLAN');
+      expect(attempt.status).toBe('processing');
+      expect(attempt.targetPlanKey).toBe('pro_monthly');
+    });
+
+    test('context called twice with same UUID returns same attempt idempotently', async () => {
+      const newAttemptId = '00000000-0000-4000-8000-000000000098';
+      const response1 = await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
+        .send({ targetPlanCode: 'pro_monthly', changeAttemptId: newAttemptId });
+      expect(response1.status).toBe(200);
+      const response2 = await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
+        .send({ targetPlanCode: 'pro_monthly', changeAttemptId: newAttemptId });
+      expect(response2.status).toBe(200);
+      expect(response2.body.data.changeAttemptId).toBe(newAttemptId);
+      expect(await PaymentManagementAttempt.countDocuments({ attemptId: newAttemptId })).toBe(1);
+      expect(paypalMock.reviseSubscription).not.toHaveBeenCalled();
+    });
+
+    test('context with invalid target plan returns safe 4xx', async () => {
+      const response = await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
+        .send({ targetPlanCode: 'invalid_plan', changeAttemptId: CHANGE_ATTEMPT });
+      expect(response.status).toBe(404);
+      expect(response.body.code).toBe('PLAN_NOT_FOUND');
+      expect(paypalMock.reviseSubscription).not.toHaveBeenCalled();
+    });
+
+    test('context for user without active manageable PayPal subscription returns safe domain error', async () => {
+      const noPaypalUser = await User.create({
+        firebaseUid: 'no-paypal-teacher',
+        email: 'no-paypal@example.com',
+        role: 'teacher',
+        plan: free._id
+      });
+      const noPaypalAttemptId = '00000000-0000-4000-8000-000000000090';
+      const response = await request(app).post('/api/subscription/paypal/change-plan/context').set(auth(noPaypalUser))
+        .send({ targetPlanCode: 'pro_monthly', changeAttemptId: noPaypalAttemptId });
+      expect(response.status).toBe(409);
+      expect(response.body.code).toBe('PAYPAL_SUBSCRIPTION_NOT_MANAGEABLE');
+      expect(paypalMock.reviseSubscription).not.toHaveBeenCalled();
+    });
+
+
+
+    test('context never invokes provider revise', async () => {
+      const newAttemptId = '00000000-0000-4000-8000-000000000097';
+      await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
+        .send({ targetPlanCode: 'pro_monthly', changeAttemptId: newAttemptId });
+      expect(paypalMock.reviseSubscription).not.toHaveBeenCalled();
+      expect(paypalMock.cancelSubscription).not.toHaveBeenCalled();
+    });
+
+    test('context returns conflict when existing pending change exists', async () => {
+      const existingAttemptId = '00000000-0000-4000-8000-000000000096';
+      await PaymentManagementAttempt.create({
+        provider: 'paypal',
+        attemptId: existingAttemptId,
+        userId: teacher._id,
+        providerSubscriptionId: SUBSCRIPTION,
+        operation: 'CHANGE_PLAN',
+        sourcePlanKey: 'essential_monthly',
+        sourceProviderPlanId: 'P-ESSENTIAL-MONTHLY',
+        targetPlanKey: 'pro_monthly',
+        targetProviderPlanId: 'P-PRO-MONTHLY',
+        status: 'processing',
+        activeOperationKey: `paypal:${SUBSCRIPTION}`
+      });
+      const newAttemptId = '00000000-0000-4000-8000-000000000095';
+      const response = await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
+        .send({ targetPlanCode: 'pro_monthly', changeAttemptId: newAttemptId });
+      // When there's an existing active change, return conflict
+      expect(response.status).toBe(409);
+      expect(response.body.code).toBe('PAYPAL_MANAGEMENT_ATTEMPT_CONFLICT');
+    });
+
+    test('context reuses existing attempt with same UUID', async () => {
+      const existingAttemptId = '00000000-0000-4000-8000-000000000094';
+      await PaymentManagementAttempt.create({
+        provider: 'paypal',
+        attemptId: existingAttemptId,
+        userId: teacher._id,
+        providerSubscriptionId: SUBSCRIPTION,
+        operation: 'CHANGE_PLAN',
+        sourcePlanKey: 'essential_monthly',
+        sourceProviderPlanId: 'P-ESSENTIAL-MONTHLY',
+        targetPlanKey: 'pro_monthly',
+        targetProviderPlanId: 'P-PRO-MONTHLY',
+        status: 'processing'
+      });
+      const response = await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
+        .send({ targetPlanCode: 'pro_monthly', changeAttemptId: existingAttemptId });
+      expect(response.status).toBe(200);
+      expect(response.body.data.changeAttemptId).toBe(existingAttemptId);
+      expect(await PaymentManagementAttempt.countDocuments({ attemptId: existingAttemptId })).toBe(1);
+      expect(paypalMock.reviseSubscription).not.toHaveBeenCalled();
+    });
+
+    test('context rejects cancelled attempt', async () => {
+      const cancelledAttemptId = '00000000-0000-4000-8000-000000000093';
+      await PaymentManagementAttempt.create({
+        provider: 'paypal',
+        attemptId: cancelledAttemptId,
+        userId: teacher._id,
+        providerSubscriptionId: SUBSCRIPTION,
+        operation: 'CHANGE_PLAN',
+        sourcePlanKey: 'essential_monthly',
+        sourceProviderPlanId: 'P-ESSENTIAL-MONTHLY',
+        targetPlanKey: 'pro_monthly',
+        targetProviderPlanId: 'P-PRO-MONTHLY',
+        status: 'cancelled'
+      });
+      const response = await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
+        .send({ targetPlanCode: 'pro_monthly', changeAttemptId: cancelledAttemptId });
+      expect(response.status).toBe(409);
+      expect(response.body.code).toBe('PAYPAL_MANAGEMENT_ATTEMPT_CONFLICT');
+    });
+
+    test('context rejects completed attempt', async () => {
+      const completedAttemptId = '00000000-0000-4000-8000-000000000092';
+      await PaymentManagementAttempt.create({
+        provider: 'paypal',
+        attemptId: completedAttemptId,
+        userId: teacher._id,
+        providerSubscriptionId: SUBSCRIPTION,
+        operation: 'CHANGE_PLAN',
+        sourcePlanKey: 'essential_monthly',
+        sourceProviderPlanId: 'P-ESSENTIAL-MONTHLY',
+        targetPlanKey: 'pro_monthly',
+        targetProviderPlanId: 'P-PRO-MONTHLY',
+        status: 'completed'
+      });
+      const response = await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
+        .send({ targetPlanCode: 'pro_monthly', changeAttemptId: completedAttemptId });
+      expect(response.status).toBe(409);
+      expect(response.body.code).toBe('PAYPAL_MANAGEMENT_ATTEMPT_CONFLICT');
+    });
   });
 });
