@@ -323,14 +323,143 @@ describe('PayPal subscription management Phase 3', () => {
     expect(paypalMock.getSubscription).toHaveBeenCalledWith(SUBSCRIPTION);
   });
 
-  test('reconcile-management returns pendingCancellation when provider is ACTIVE but local state differs', async () => {
-    paypalMock.getSubscription.mockResolvedValue(providerSubscription('ACTIVE'));
+  test('reconcile-management returns pendingCancellation when provider is SUSPENDED', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('SUSPENDED'));
     await User.findByIdAndUpdate(teacher._id, { paypalSubscriptionStatus: 'SUSPENDED' });
     const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
     expect(response.status).toBe(200);
-    expect(response.body.data.status).toBe('ACTIVE');
-    expect(response.body.data.pendingCancellation).toBe(false);
-    expect(response.body.data.cancelledOrTerminal).toBe(false);
+    expect(response.body.data.pendingCancellation).toBe(true);
+  });
+
+  test('cancelled plan change becomes terminal and clears metadata', async () => {
+    paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=CANCEL-TEST' }] });
+    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+      .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
+
+    const attempt = await PaymentManagementAttempt.findOne({ attemptId: CHANGE_ATTEMPT });
+    expect(attempt.status).toBe('approval_pending');
+    expect(attempt.approvalUrl).toBe('https://www.sandbox.paypal.com/approve?token=CANCEL-TEST');
+    expect(attempt.activeOperationKey).toBe(`paypal:${SUBSCRIPTION}`);
+
+    const cancelRes = await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
+    expect(cancelRes.status).toBe(200);
+    expect(cancelRes.body.data.status).toBe('cancelled');
+
+    const cancelledAttempt = await PaymentManagementAttempt.findOne({ attemptId: CHANGE_ATTEMPT });
+    expect(cancelledAttempt.status).toBe('cancelled');
+    expect(cancelledAttempt.cancelledAt).toBeDefined();
+    expect(cancelledAttempt.approvalUrl).toBeNull();
+    expect(cancelledAttempt.activeOperationKey).toBeUndefined();
+    expect(cancelledAttempt.processingLeaseExpiresAt).toBeNull();
+  });
+
+  test('cancelled attempt excluded from active-operation query', async () => {
+    paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=ACTIVE-TEST' }] });
+    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+      .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
+
+    await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
+
+    const { findActive } = require('../src/services/paypal/paypalSubscriptionManagement.service');
+    const activeAttempt = await findActive(SUBSCRIPTION);
+    expect(activeAttempt).toBeNull();
+  });
+
+  test('subscription me returns no pending plan change after cancellation', async () => {
+    paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=ME-TEST' }] });
+    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+      .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
+
+    let data = (await request(app).get('/api/subscription/me').set(auth())).body.data;
+    expect(data.billing.pendingPlanChange).toBe(true);
+    expect(data.billing.pendingTargetPlanCode).toBe('pro_monthly');
+    expect(data.billing.pendingChangeAttemptId).toBe(CHANGE_ATTEMPT);
+    expect(data.billing.pendingChangeApprovalUrl).toBe('https://www.sandbox.paypal.com/approve?token=ME-TEST');
+
+    await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
+
+    data = (await request(app).get('/api/subscription/me').set(auth())).body.data;
+    expect(data.billing.pendingPlanChange).toBe(false);
+    expect(data.billing.pendingTargetPlanCode).toBeNull();
+    expect(data.billing.pendingChangeAttemptId).toBeNull();
+    expect(data.billing.pendingChangeApprovalUrl).toBeNull();
+  });
+
+  test('cancelled attempt does not block subscription cancellation', async () => {
+    paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=BLOCK-TEST' }] });
+    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+      .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
+
+    await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
+
+    paypalMock.cancelSubscription.mockResolvedValue(null);
+    const cancelRes = await request(app).post('/api/subscription/paypal/cancel').set(auth()).send({});
+    expect(cancelRes.status).toBe(200);
+    expect(cancelRes.body.data.pending).toBe(true);
+  });
+
+  test('cancelled attempt does not block starting another plan change', async () => {
+    paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=CHANGE-TEST' }] });
+    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+      .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
+
+    await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
+
+    paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=NEW-CHANGE' }] });
+    const newChangeRes = await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+      .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT_B });
+    expect(newChangeRes.status).toBe(200);
+    expect(newChangeRes.body.data.status).toBe('approval_pending');
+  });
+
+  test('duplicate cancellation is idempotent', async () => {
+    paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=IDEMP-TEST' }] });
+    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+      .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
+
+    const firstCancel = await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
+    expect(firstCancel.status).toBe(200);
+    expect(firstCancel.body.data.status).toBe('cancelled');
+
+    const secondCancel = await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
+    expect(secondCancel.status).toBe(200);
+    expect(secondCancel.body.data.status).toBe('cancelled');
+
+    const attempt = await PaymentManagementAttempt.findOne({ attemptId: CHANGE_ATTEMPT });
+    expect(attempt.status).toBe('cancelled');
+  });
+
+  test('cancelled processing attempt becomes terminal', async () => {
+    await PaymentManagementAttempt.create({ provider: 'paypal', attemptId: CHANGE_ATTEMPT, userId: teacher._id,
+      providerSubscriptionId: SUBSCRIPTION, operation: 'CHANGE_PLAN', sourcePlanKey: 'essential_monthly',
+      sourceProviderPlanId: 'P-ESSENTIAL-MONTHLY', targetPlanKey: 'pro_monthly', targetProviderPlanId: 'P-PRO-MONTHLY',
+      providerRequestId: `revise-${CHANGE_ATTEMPT}`, status: 'processing', activeOperationKey: `paypal:${SUBSCRIPTION}`,
+      processingLeaseExpiresAt: new Date(Date.now() + 10000) });
+
+    const cancelRes = await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
+    expect(cancelRes.status).toBe(200);
+    expect(cancelRes.body.data.status).toBe('cancelled');
+
+    const attempt = await PaymentManagementAttempt.findOne({ attemptId: CHANGE_ATTEMPT });
+    expect(attempt.status).toBe('cancelled');
+    expect(attempt.activeOperationKey).toBeUndefined();
+  });
+
+  test('historical cancelled plus newer active exposes only active', async () => {
+    paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=HIST-1' }] });
+    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+      .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
+
+    await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
+
+    paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=HIST-2' }] });
+    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+      .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT_B });
+
+    const data = (await request(app).get('/api/subscription/me').set(auth())).body.data;
+    expect(data.billing.pendingPlanChange).toBe(true);
+    expect(data.billing.pendingChangeAttemptId).toBe(CHANGE_ATTEMPT_B);
+    expect(data.billing.pendingTargetPlanCode).toBe('pro_monthly');
   });
 
   test('reconcile-management is idempotent when webhook already updated state', async () => {
@@ -340,6 +469,120 @@ describe('PayPal subscription management Phase 3', () => {
     expect(response2.status).toBe(200);
     expect(response2.body.data.cancelledOrTerminal).toBe(true);
     expect(paypalMock.getSubscription).toHaveBeenCalledTimes(2);
+  });
+
+  test('ACTIVE subscription reconcile returns 200 with correct state', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('ACTIVE'));
+    await User.findByIdAndUpdate(teacher._id, { paypalSubscriptionStatus: 'ACTIVE' });
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe('ACTIVE');
+    expect(response.body.data.cancelledOrTerminal).toBe(false);
+    expect(response.body.data.pendingCancellation).toBe(false);
+  });
+
+  test('SUSPENDED subscription reconcile returns pendingCancellation true', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('SUSPENDED'));
+    await User.findByIdAndUpdate(teacher._id, { paypalSubscriptionStatus: 'SUSPENDED' });
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe('SUSPENDED');
+    expect(response.body.data.cancelledOrTerminal).toBe(false);
+    expect(response.body.data.pendingCancellation).toBe(true);
+  });
+
+  test('CANCELLED subscription reconcile returns 200 without 422', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('CANCELLED'));
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe('CANCELLED');
+    expect(response.body.data.cancelledOrTerminal).toBe(true);
+    expect(response.body.data.pendingCancellation).toBe(false);
+  });
+
+  test('EXPIRED subscription reconcile returns 200 without 422', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('EXPIRED'));
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe('EXPIRED');
+    expect(response.body.data.cancelledOrTerminal).toBe(true);
+    expect(response.body.data.pendingCancellation).toBe(false);
+  });
+
+  test('terminal state does NOT throw 422 during sync', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('CANCELLED'));
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response.status).not.toBe(422);
+    expect(response.body.success).toBe(true);
+  });
+
+  test('syncSubscription called before fresh user reload in reconcileManagement', async () => {
+    const User = require('../src/models/user.model');
+    const findByIdSpy = jest.spyOn(User, 'findById');
+
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('CANCELLED'));
+    await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+
+    // Verify findById was called (it should be called after syncSubscription)
+    expect(findByIdSpy).toHaveBeenCalled();
+    findByIdSpy.mockRestore();
+  });
+
+  test('fresh user reload happens after sync', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('CANCELLED'));
+
+    // Set local state to ACTIVE before sync
+    await User.findByIdAndUpdate(teacher._id, { paypalSubscriptionStatus: 'ACTIVE' });
+
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+
+    // After sync, local state should reflect terminal state
+    const syncedUser = await User.findById(teacher._id);
+    expect(syncedUser.paypalSubscriptionStatus).toBe('CANCELLED');
+    expect(response.body.data.status).toBe('CANCELLED');
+  });
+
+  test('cancelledOrTerminal=true for CANCELLED status', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('CANCELLED'));
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response.body.data.cancelledOrTerminal).toBe(true);
+  });
+
+  test('pendingCancellation=false for CANCELLED status', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('CANCELLED'));
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response.body.data.pendingCancellation).toBe(false);
+  });
+
+  test('cancelledOrTerminal=true for EXPIRED status', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('EXPIRED'));
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response.body.data.cancelledOrTerminal).toBe(true);
+  });
+
+  test('pendingCancellation=false for EXPIRED status', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('EXPIRED'));
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response.body.data.pendingCancellation).toBe(false);
+  });
+
+  test('real sync failure still returns safe error', async () => {
+    paypalMock.getSubscription.mockRejectedValue(new Error('Provider unavailable'));
+    const response = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(response.body.success).toBe(false);
+    expect(response.body).not.toHaveProperty('providerSecret');
+  });
+
+  test('repeated reconciliation is idempotent for terminal states', async () => {
+    paypalMock.getSubscription.mockResolvedValue(providerSubscription('CANCELLED'));
+    const response1 = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response1.status).toBe(200);
+
+    const response2 = await request(app).post('/api/subscription/paypal/reconcile-management').set(auth()).send({});
+    expect(response2.status).toBe(200);
+
+    expect(response1.body.data).toEqual(response2.body.data);
   });
 
   describe('change-plan context prepare phase', () => {

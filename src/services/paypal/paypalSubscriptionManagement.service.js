@@ -288,13 +288,25 @@ async function markChangePlanCancelled({ user, changeAttemptId }) {
   const attempt = await PaymentManagementAttempt.findOne({ provider: 'paypal', attemptId: changeAttemptId,
     userId: user._id, operation: 'CHANGE_PLAN' });
   if (!attempt) throw domainError('PAYPAL_PLAN_CHANGE_TARGET_INVALID', 'Plan change attempt was not found', 404);
-  if (attempt.status === 'approval_pending') {
-    return PaymentManagementAttempt.findOneAndUpdate({ _id: attempt._id, status: 'approval_pending' }, {
-      $set: { status: 'cancelled', cancelledAt: new Date(), processingLeaseExpiresAt: null },
-      $unset: { activeOperationKey: 1 }
-    }, { returnDocument: 'after' });
+
+  // Idempotent: if already cancelled, return success
+  if (attempt.status === 'cancelled') {
+    return attempt;
   }
-  return attempt;
+
+  // Only cancel attempts that are still active (not already terminal)
+  const activeStatuses = ['processing', 'approval_pending', 'provider_pending'];
+  if (!activeStatuses.includes(attempt.status)) {
+    // Attempt is already in a terminal state (completed, failed, etc.)
+    // Return as-is - no-op for idempotency
+    return attempt;
+  }
+
+  // Set to terminal cancelled status and clear active operation metadata
+  return PaymentManagementAttempt.findOneAndUpdate({ _id: attempt._id }, {
+    $set: { status: 'cancelled', cancelledAt: new Date(), processingLeaseExpiresAt: null, approvalUrl: null },
+    $unset: { activeOperationKey: 1 }
+  }, { returnDocument: 'after' });
 }
 
 async function prepareChangePlan({ user, targetPlanCode, changeAttemptId, environment = process.env }) {
@@ -372,15 +384,15 @@ async function prepareChangePlan({ user, targetPlanCode, changeAttemptId, enviro
 async function reconcileManagement({ user, client }) {
   assertPayPalUser(user);
   const subscription = await authoritativeSubscription(user, client, 'PAYPAL_SUBSCRIPTION_NOT_MANAGEABLE');
+  const { syncSubscription } = require('./paypalSubscription.service');
+  const result = await syncSubscription(subscription);
   const User = require('../../models/user.model');
   const freshUser = await User.findById(user._id);
   if (!freshUser) throw domainError('PAYPAL_SUBSCRIPTION_NOT_MANAGEABLE', 'User not found', 404);
-  const { syncSubscription } = require('./paypalSubscription.service');
-  const result = await syncSubscription(subscription);
   const status = String(subscription.status || '').toUpperCase();
   const isTerminal = TERMINAL.has(status);
-  return { status, pendingCancellation: !isTerminal && freshUser.paypalSubscriptionStatus !== status && status !== 'ACTIVE', cancelledOrTerminal: isTerminal };
+  return { status, pendingCancellation: !isTerminal && status === 'SUSPENDED', cancelledOrTerminal: isTerminal };
 }
 
 module.exports = { ACTIVE_STATUSES, CANCEL_REASON, MANAGEABLE, PROCESSING_LEASE_MS, TERMINAL,
-  activeOperationKey, cancelSubscription, changePlan, markChangePlanCancelled, prepareChangePlan, reconcileManagement, domainError };
+  activeOperationKey, cancelSubscription, changePlan, findActive, markChangePlanCancelled, prepareChangePlan, reconcileManagement, domainError };
