@@ -57,7 +57,18 @@ async function ensureActivePlan(user) {
   const freePlan = await getFreePlan();
 
   if (user.role === 'teacher' && user.paypalSubscriptionStatus) {
-    if (user.paypalSubscriptionStatus === 'ACTIVE' && user.paypalPlanId) {
+    const paypalStatus = String(user.paypalSubscriptionStatus || '').toUpperCase();
+    const paypalPeriodEnd = user.paypalCurrentPeriodEnd ? new Date(user.paypalCurrentPeriodEnd) : null;
+    const planExpiry = user.planExpiresAt ? new Date(user.planExpiresAt) : null;
+    const paidThrough = paypalPeriodEnd && !Number.isNaN(paypalPeriodEnd.getTime())
+      ? paypalPeriodEnd
+      : planExpiry && !Number.isNaN(planExpiry.getTime())
+        ? planExpiry
+        : null;
+    const cancelledButStillEntitled = paypalStatus === 'CANCELLED' && paidThrough && paidThrough.getTime() > Date.now();
+
+    // ACTIVE: entitled to paid plan
+    if (paypalStatus === 'ACTIVE' && user.paypalPlanId) {
       try {
         const paypalPlan = await getPlanByPayPalPlanId(user.paypalPlanId);
         if (String(user.plan || '') !== String(paypalPlan._id)) {
@@ -69,6 +80,22 @@ async function ensureActivePlan(user) {
         return paypalPlan;
       } catch { /* unknown provider Plan must not grant paid entitlement */ }
     }
+
+    // CANCELLED with valid future paid-through date: still entitled to paid plan
+    if (cancelledButStillEntitled && user.paypalPlanId) {
+      try {
+        const paypalPlan = await getPlanByPayPalPlanId(user.paypalPlanId);
+        // Repair stale/missing user.plan without recalculating duration
+        if (String(user.plan || '') !== String(paypalPlan._id)) {
+          user.plan = paypalPlan._id;
+          user.planExpiresAt = paidThrough;
+          await user.save({ validateModifiedOnly: true });
+        }
+        return paypalPlan;
+      } catch { /* unknown provider Plan must not grant paid entitlement */ }
+    }
+
+    // CANCELLED with period ended, or other non-entitled statuses: assign Free
     if (!freePlan) throw new Error('Free plan is not configured');
     if (String(user.plan || '') !== String(freePlan._id) || user.planExpiresAt) await assignPlanToUser(user, freePlan, new Date());
     return freePlan;

@@ -228,8 +228,12 @@ async function syncSubscription(subscription, { eventType } = {}) {
   user.paypalSubscriptionId = subscriptionId;
   user.paypalPlanId = subscription.plan_id;
   user.paypalSubscriptionStatus = status;
-  user.paypalCurrentPeriodStart = period.start;
-  user.paypalCurrentPeriodEnd = period.end;
+  if (period.start) {
+    user.paypalCurrentPeriodStart = period.start;
+  }
+  if (period.end) {
+    user.paypalCurrentPeriodEnd = period.end;
+  }
   if (eventType === 'BILLING.SUBSCRIPTION.PAYMENT.FAILED') {
     user.paypalLastPaymentFailedAt = new Date();
     user.paypalPaymentIssueActive = true;
@@ -261,11 +265,37 @@ async function syncSubscription(subscription, { eventType } = {}) {
       managementAttempt.status = 'completed'; managementAttempt.completedAt ||= new Date();
       managementAttempt.activeOperationKey = undefined; managementAttempt.processingLeaseExpiresAt = null;
     }
-  } else if (['CANCELLED', 'SUSPENDED', 'EXPIRED'].includes(status)) {
+  } else if (status === 'CANCELLED') {
+    user.paypalPaymentIssueActive = false;
+    // Preserve existing paid plan and entitlement dates. Do NOT call assignPlanToUser(free).
+    // Do NOT clear paypalPlanId, paypalCurrentPeriodEnd, or planExpiresAt if still future.
+    if (user.paypalCurrentPeriodEnd && (!user.planExpiresAt || user.planExpiresAt < user.paypalCurrentPeriodEnd)) {
+      user.planExpiresAt = user.paypalCurrentPeriodEnd;
+    }
+    await user.save({ validateModifiedOnly: true });
+    if (attempt) {
+      attempt.status = 'cancelled';
+      attempt.cancelledAt ||= new Date();
+    }
+    if (managementAttempt?.operation === 'CANCEL') {
+      managementAttempt.status = 'completed';
+      managementAttempt.completedAt ||= new Date();
+      managementAttempt.activeOperationKey = undefined;
+      managementAttempt.processingLeaseExpiresAt = null;
+    }
+  } else if (status === 'EXPIRED') {
     const free = await Plan.findOne({ slug: 'free', isActive: true });
     if (free) await assignPlanToUser(user, free, new Date());
     if (attempt) { attempt.status = 'cancelled'; attempt.cancelledAt ||= new Date(); }
-    if (managementAttempt?.operation === 'CANCEL' && ['CANCELLED', 'EXPIRED'].includes(status)) {
+    if (managementAttempt?.operation === 'CANCEL') {
+      managementAttempt.status = 'completed'; managementAttempt.completedAt ||= new Date();
+      managementAttempt.activeOperationKey = undefined; managementAttempt.processingLeaseExpiresAt = null;
+    }
+  } else if (status === 'SUSPENDED') {
+    const free = await Plan.findOne({ slug: 'free', isActive: true });
+    if (free) await assignPlanToUser(user, free, new Date());
+    if (attempt) { attempt.status = 'cancelled'; attempt.cancelledAt ||= new Date(); }
+    if (managementAttempt?.operation === 'CANCEL' && status === 'EXPIRED') {
       managementAttempt.status = 'completed'; managementAttempt.completedAt ||= new Date();
       managementAttempt.activeOperationKey = undefined; managementAttempt.processingLeaseExpiresAt = null;
     }
