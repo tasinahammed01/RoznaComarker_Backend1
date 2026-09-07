@@ -413,8 +413,32 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
       ? synchronizedRubricScores(persistedFeedback.rubricScores, stats)
       : generatedRubricScores;
     if (!hasValidRubricScores(rubricScores)) throw new Error('Canonical assessment is missing required rubric categories');
+    
+    // Perform final custom-rubric semantic assessment using authoritative corrections
+    let finalSemanticCustomCriteria = semantic.customCriteria;
+    let customRubricEvidenceAuthority = 'prepared_rubric';
+    if (customRubricResult.status === 'valid' && correctionCountsAuthoritativeForScoring) {
+      const finalCustomRubricAssessment = await semanticRubricAssessment.assess({
+        submissionId: String(submission._id),
+        transcript,
+        sourceHash,
+        assignment,
+        corrections,
+        statistics: stats,
+        pageManifest: submission.ocrPages || [],
+        transcriptComplete: submission.ocrStatus === 'completed' && Boolean(transcript.trim()),
+        policy,
+        customRubric: customRubricResult.rubric,
+        includeLanguageCategories: false
+      });
+      finalSemanticCustomCriteria = finalCustomRubricAssessment.customCriteria;
+      customRubricEvidenceAuthority = 'canonical_corrections_and_transcript';
+      logger.info({ message: 'Final custom rubric assessment with authoritative corrections',
+        submissionId: String(submission._id), sourceHash, customRubricEvidenceAuthority });
+    }
+    
     const customRubricScores = customRubricResult.status === 'valid'
-      ? calculateCustomRubricScore(customRubricResult.rubric, semantic.customCriteria) : null;
+      ? calculateCustomRubricScore(customRubricResult.rubric, finalSemanticCustomCriteria) : null;
     const overallScore = customRubricScores
       ? customRubricScores.overallScore
       : Object.values(rubricScores).reduce((sum, item) => sum + item.score, 0);
@@ -454,7 +478,8 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
             selectedLevel: criterion.selectedLevel,
             configuredLevelPercentage: criterion.configuredLevelPercentage,
             weightedPoints: criterion.weightedPoints
-          }))
+          })),
+          evidenceAuthority: customRubricEvidenceAuthority
         }
       } : {}),
       categories: correctionCountsAuthoritativeForScoring ? [
