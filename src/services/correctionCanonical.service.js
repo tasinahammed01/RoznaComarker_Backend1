@@ -200,11 +200,11 @@ function statistics(items) {
 const computeCanonicalCorrectionStatistics = statistics;
 
 function canonicalFingerprint(items, sourceHash = '') {
-  const identity = [...(items || [])].filter(Boolean).sort(canonicalSort).map((item) => ({
+  const identity = [...(items || [])].filter(Boolean).map((item) => ({
     page: Number(item.page || 0), startChar: Number(item.startChar), endChar: Number(item.endChar),
     symbol: String(item.symbol || '').toUpperCase(), sourceText: normalizedText(item.quotedText),
     correctedText: correctedText(item)
-  }));
+  })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   return crypto.createHash('sha256').update(JSON.stringify({ sourceHash: String(sourceHash || ''), identity })).digest('hex');
 }
 

@@ -306,10 +306,13 @@ function normalizeRubric(value) {
   }
 
   if (typeof value === 'string') {
+    const parsed = safeJsonParse(value);
+    if (!parsed || require('../services/assignmentRubric.service').validateAssignmentRubricInput(parsed, Array.isArray(parsed.levels)).length) return null;
     return value;
   }
 
   try {
+    if (require('../services/assignmentRubric.service').validateAssignmentRubricInput(value, Array.isArray(value?.levels)).length) return null;
     return JSON.stringify(value);
   } catch (err) {
     return null;
@@ -317,6 +320,7 @@ function normalizeRubric(value) {
 }
 
 function normalizeRubrics(value) {
+  if (value != null && require('../services/assignmentRubric.service').validateAssignmentRubricInput(value).length) return null;
   if (value === null) {
     return undefined;
   }
@@ -433,7 +437,14 @@ async function propagateAssignmentRubricToSubmissionFeedback({ assignmentId, rub
   if (!invalidatedIds.length) return;
   await SubmissionFeedback.updateMany({
     submissionId: { $in: invalidatedIds }, overriddenByTeacher: { $ne: true }
-  }, { $set: { evaluationStatus: 'pending' } });
+  }, [{ $set: {
+    previousEvaluation: { $cond: [{ $eq: ['$evaluationStatus', 'stale'] }, '$previousEvaluation', {
+      overallScore: '$overallScore', grade: '$grade', rubricScores: '$rubricScores',
+      customRubricScores: '$customRubricScores', detailedFeedback: '$detailedFeedback',
+      evaluationSourceHash: '$evaluationSourceHash', evaluationRubricSourceHash: '$evaluationRubricSourceHash'
+    }] },
+    evaluationStatus: 'stale', evaluationStaleReason: 'rubric'
+  } }], { updatePipeline: true });
   await Submission.updateMany({ _id: { $in: invalidatedIds } }, {
     $set: { evaluationStatus: 'stale' }
   });
@@ -561,8 +572,9 @@ async function uploadRubricFileForAssignment(req, res) {
     try {
       const designer = rubricsToRubricDesigner({ rubrics: saved.rubrics, assignmentTitle: saved.title });
       await propagateAssignmentRubricToSubmissionFeedback({ assignmentId: saved._id, rubricDesigner: designer });
-    } catch {
-      // ignore propagation failures
+    } catch (error) {
+      logger.error({ event: 'assignment.rubric.propagation_failed', assignmentId: String(saved._id), error: error?.message });
+      return sendError(res, 503, 'Rubric saved, but evaluation invalidation failed. Please save the rubric again.');
     }
 
     await Class.updateOne(
@@ -581,6 +593,7 @@ async function uploadRubricFileForAssignment(req, res) {
 }
 
 function rubricDesignerToRubrics(value) {
+  if (require('../services/assignmentRubric.service').validateAssignmentRubricInput(value, true).length) return null;
   const d = value && typeof value === 'object' ? value : null;
   if (!d) return null;
 
@@ -614,7 +627,7 @@ function rubricDesignerToRubrics(value) {
       const score = Number(lvl.maxPoints);
       return {
         title: safeString(lvl.title).trim(),
-        score: Number.isFinite(score) ? Math.max(1, Math.floor(score)) : 1
+        score: Number.isFinite(score) ? score : 1
       };
     })
     .slice(0, 10);
@@ -945,8 +958,9 @@ async function updateAssignment(req, res) {
           assignmentId: saved._id, rubricDesigner: designer, updateRubricDesigner
         });
       }
-    } catch {
-      // ignore propagation failures
+    } catch (error) {
+      logger.error({ event: 'assignment.rubric.propagation_failed', assignmentId: String(saved._id), error: error?.message });
+      return sendError(res, 503, 'Rubric saved, but evaluation invalidation failed. Please save the rubric again.');
     }
 
     await Class.updateOne(
@@ -1009,6 +1023,8 @@ async function updateAssignmentRubrics(req, res) {
         if (!rawDesigner) {
           return sendError(res, 400, 'rubricDesigner must be valid JSON');
         }
+        const validationErrors = require('../services/assignmentRubric.service').validateAssignmentRubricInput(rawDesigner, true);
+        if (validationErrors.length) return sendError(res, 400, validationErrors.join(' '));
 
         // Repair and normalize rubric designer shape.
         const repaired = repairAiRubric(rawDesigner);
@@ -1026,7 +1042,7 @@ async function updateAssignmentRubrics(req, res) {
             const maxPoints = Number(lvl.maxPoints);
             return {
               title: safeString(lvl.title).trim(),
-              maxPoints: Number.isFinite(maxPoints) ? Math.max(1, Math.floor(maxPoints)) : 1
+              maxPoints: Number.isFinite(maxPoints) ? maxPoints : 1
             };
           }),
           criteria: safeCriteria.map((c) => {
@@ -1078,8 +1094,9 @@ async function updateAssignmentRubrics(req, res) {
     try {
       const designer = rubricsToRubricDesigner({ rubrics: saved.rubrics, assignmentTitle: saved.title });
       await propagateAssignmentRubricToSubmissionFeedback({ assignmentId: saved._id, rubricDesigner: designer });
-    } catch {
-      // ignore propagation failures
+    } catch (error) {
+      logger.error({ event: 'assignment.rubric.propagation_failed', assignmentId: String(saved._id), error: error?.message });
+      return sendError(res, 503, 'Rubric saved, but evaluation invalidation failed. Please save the rubric again.');
     }
 
     await Class.updateOne(
@@ -1263,30 +1280,21 @@ async function getClassAssignments(req, res) {
     }));
 
     // Add submission counts for each assignment
-    const assignmentsWithCounts = await Promise.all(
-      filteredAssignments.map(async (assignment) => {
-        let submittedCount = 0;
-        
-        if (assignment.resourceType === 'essay') {
-          submittedCount = await Submission.countDocuments({
-            assignmentId: assignment._id
-          });
-        } else if (assignment.resourceType === 'flashcard') {
-          submittedCount = await FlashcardSubmission.countDocuments({
-            assignmentId: assignment._id
-          });
-        } else if (assignment.resourceType === 'worksheet') {
-          submittedCount = await WorksheetSubmission.countDocuments({
-            assignmentId: assignment._id
-          });
-        }
-
-        return {
-          ...assignment.toObject(),
-          submitted: submittedCount
-        };
-      })
-    );
+    const counts = await Promise.all([
+      ['essay', Submission, 'assignment'],
+      ['flashcard', FlashcardSubmission, 'assignmentId'],
+      ['worksheet', WorksheetSubmission, 'assignmentId']
+    ].map(async ([type, model, field]) => {
+      const ids = filteredAssignments.filter(item => item.resourceType === type).map(item => item._id);
+      return ids.length ? model.aggregate([
+        { $match: { [field]: { $in: ids } } },
+        { $group: { _id: `$${field}`, count: { $sum: 1 } } }
+      ]) : [];
+    }));
+    const countsByAssignment = new Map(counts.flat().map(item => [String(item._id), item.count]));
+    const assignmentsWithCounts = filteredAssignments.map(assignment => ({
+      ...assignment.toObject(), submitted: countsByAssignment.get(String(assignment._id)) || 0
+    }));
 
     return sendSuccess(res, assignmentsWithCounts);
   } catch (err) {

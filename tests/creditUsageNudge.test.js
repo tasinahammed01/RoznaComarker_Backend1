@@ -215,10 +215,15 @@ test('different teachers receive independent cycle notifications', async () => {
   expect(await Notification.countDocuments({ recipient: second._id, type: 'credit_usage_nudge' })).toBe(1);
 });
 
-test('a debit finalization rollback restores the wallet and emits no nudge', async () => {
+test('interrupted debit finalization is reconciled once and then emits its nudge', async () => {
   await setUsed(4);
   jest.spyOn(CreditTransaction, 'findOneAndUpdate').mockRejectedValueOnce(new Error('commit failed'));
   await expect(consume('rolled-back')).rejects.toThrow('commit failed');
-  expect((await wallet()).monthlyCreditsUsed).toBe(4);
+  expect((await wallet()).monthlyCreditsUsed).toBe(5);
   expect(await nudges()).toHaveLength(0);
+  const transaction = await CreditTransaction.findOne({ status: 'pending' });
+  await CreditService.consumeAssessmentCredit({ userId: teacher._id, submissionId: transaction.submissionId,
+    assessmentId: transaction.assessmentId });
+  expect((await wallet()).monthlyCreditsUsed).toBe(5);
+  expect(await nudges()).toHaveLength(1);
 });

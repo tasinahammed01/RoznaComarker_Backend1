@@ -7,6 +7,7 @@ function requireRole(roles) {
     if (!role || !allowedRoles.includes(role)) {
       return res.status(403).json({
         success: false,
+        code: 'FORBIDDEN',
         message: 'Forbidden'
       });
     }

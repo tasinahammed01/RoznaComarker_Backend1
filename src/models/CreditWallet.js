@@ -17,6 +17,7 @@ const usageNudgesSchema = new mongoose.Schema({
 
 const creditWalletSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true, index: true },
+  creditMutationVersion: { type: Number, min: 0, default: 0 },
   monthlyCredits: { type: Number, min: 0, required: true, default: 0 },
   monthlyCreditsUsed: { type: Number, min: 0, required: true, default: 0 },
   purchasedCredits: { type: Number, min: 0, required: true, default: 0 },
@@ -27,7 +28,15 @@ const creditWalletSchema = new mongoose.Schema({
   nudgeCycleStart: { type: Date, default: null },
   nudge80AcknowledgedAt: { type: Date, default: null },
   usageNudges: { type: usageNudgesSchema, default: undefined },
-  pendingPurchaseOperation: { type: purchaseOperationSchema, default: undefined, select: false }
+  pendingPurchaseOperation: { type: purchaseOperationSchema, default: undefined, select: false },
+  // Atomic wallet receipt: retained until the corresponding ledger entry is committed.
+  pendingCreditOperation: { type: new mongoose.Schema({
+    idempotencyKey: { type: String, required: true },
+    balanceAfter: { type: Number, required: true },
+    outcome: { type: String, enum: ['committed', 'failed'], default: 'committed' },
+    failure: mongoose.Schema.Types.Mixed,
+    creditBucket: String
+  }, { _id: false }), default: undefined }
 }, { timestamps: true, versionKey: false });
 
 module.exports = mongoose.model('CreditWallet', creditWalletSchema);

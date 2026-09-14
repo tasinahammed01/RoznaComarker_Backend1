@@ -101,8 +101,11 @@ function parseRubricDesignerFromExcelTemplate(params) {
 
   return {
     title: safeString(params && params.title).trim() || `Rubric: ${sheetName}`,
+    // Legacy table templates have no weight column; expose equal, editable weights.
+    totalPoints: 100,
     levels,
-    criteria: criteriaRows
+    criteria: criteriaRows.map((criterion, index) => ({ ...criterion,
+      weight: Math.floor(100 / criteriaRows.length) + (index < 100 % criteriaRows.length ? 1 : 0) }))
   };
 }
 

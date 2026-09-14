@@ -45,7 +45,6 @@ const { captureCurrentRevision } = require('../services/submissionRevision.servi
 const draftComparison = require('../services/draftComparison.service');
 const User = require('../models/user.model');
 const { normalizeTeacherEvaluationPolicy, evaluationPolicyHash } = require('../services/teacherEvaluationPolicy.service');
-const { ASSESSMENT_VERSION } = require('../services/rubricLanguageScoring.service');
 const { normalizeAssignmentRubric, hashNormalizedRubric } = require('../services/assignmentRubric.service');
 
 const ADAPTIVE_RESUBMISSION_MESSAGE = 'Complete the required Adaptive Learning activities before submitting another draft.';
@@ -410,21 +409,26 @@ async function fileContentIdentity(req) {
 
 function remapDraftFileReferences(value, previousFileIds, currentFileIds) {
   const replacements = new Map(previousFileIds.map((id, index) => [String(id), String(currentFileIds[index] || '')]));
-  const visit = (item) => {
+  const visit = (item, key = '') => {
     if (item == null) return item;
-    if (Array.isArray(item)) return item.map(visit);
+    if (Array.isArray(item)) return item.map(value => visit(value, key));
+    if (item instanceof Date) return item;
     if (item instanceof mongoose.Types.ObjectId) {
       const replacement = replacements.get(String(item));
       return replacement ? new mongoose.Types.ObjectId(replacement) : item;
     }
     if (typeof item === 'string') {
+      if (!['fileId', 'wordId', 'wordIds', 'id'].includes(key)) return item;
       let result = item;
-      for (const [before, after] of replacements) if (after) result = result.split(before).join(after);
+      for (const [before, after] of replacements) if (after) {
+        if (result === before) result = after;
+        else if (result.startsWith(`word_${before}_`)) result = `word_${after}_${result.slice(`word_${before}_`.length)}`;
+      }
       return result;
     }
     if (typeof item === 'object') {
       const source = typeof item.toObject === 'function' ? item.toObject({ depopulate: true }) : item;
-      return Object.fromEntries(Object.entries(source).map(([key, nested]) => [key, visit(nested)]));
+      return Object.fromEntries(Object.entries(source).map(([nestedKey, nested]) => [nestedKey, visit(nested, nestedKey)]));
     }
     return item;
   };
@@ -538,6 +542,8 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
 
   try {
     if (existing) {
+      const previousTranscript = buildCanonicalSubmissionTranscript(existing);
+      const previousFeedback = await SubmissionFeedback.findOne({ submissionId: existing._id }).lean();
       const previousFileIds = (Array.isArray(existing.files) && existing.files.length
         ? existing.files : (existing.file ? [existing.file] : [])).map((id) => String(id?._id || id));
       const previousRevision = await captureCurrentRevision(existing);
@@ -563,22 +569,38 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       const currentRubricHash = normalizedRubric.status === 'valid'
         ? hashNormalizedRubric(normalizedRubric) : canonicalEvaluation.hashRubric(assignment);
       const currentPolicyHash = evaluationPolicyHash(normalizeTeacherEvaluationPolicy(teacher?.aiConfig));
-      const reusableAssessment = Boolean(contentIdentity && previousRevision.fileContentIdentity === contentIdentity
+      const legend = await require('../services/correctionLegendResolver.service').resolveLegend();
+      const expectedCorrectionHash = canonicalCorrectionsPipeline.buildCorrectionSourceHash({
+        transcript: previousTranscript.text, pages: previousTranscript.pages, assignment,
+        fileContentIdentity: contentIdentity, legend });
+      const reusableCorrections = Boolean(contentIdentity && previousRevision.fileContentIdentity === contentIdentity
         && previousFileIds.length === persistedFiles.length
-        && previousRevision.evaluationRubricSourceHash === currentRubricHash
-        && previousRevision.evaluationPolicyHash === currentPolicyHash
-        && previousRevision.feedbackSnapshot?.assessmentVersion === ASSESSMENT_VERSION
-        && previousRevision.feedbackSnapshot?.evaluationVersion === canonicalEvaluation.VERSION
-        && previousRevision.evaluationStatus === 'completed'
-        && ['complete', 'completed'].includes(String(previousRevision.assessmentStatus)));
+        && previousTranscript.isComplete && existing.ocrStatus === 'completed'
+        && existing.correctionStatus === 'completed' && existing.semanticStatus === 'completed'
+        && existing.correctionSourceHash === expectedCorrectionHash
+        && existing.correctionVersion === correctionCanonical.VERSION);
+      const expectedAnalysisHash = canonicalEvaluation.analysisInputHash({ sourceHash: expectedCorrectionHash,
+        rubricHash: currentRubricHash, policyHash: currentPolicyHash, contextHash: canonicalEvaluation.hashBuiltInContext(assignment) });
+      const reusableAssessment = Boolean(reusableCorrections && normalizedRubric.status !== 'invalid'
+        && previousFeedback?.analysisInputHash === expectedAnalysisHash
+        && previousFeedback?.evaluationSourceHash === expectedCorrectionHash
+        && previousFeedback?.evaluationStatus === 'completed' && previousFeedback?.detailedFeedback?.status === 'completed'
+        && existing.evaluationStatus === 'completed' && existing.assessmentStatus === 'complete');
 
-      if (reusableAssessment) {
+      if (reusableCorrections) {
         const currentFileIds = persistedFiles.map((file) => String(file._id));
         existing.ocrPages = remapDraftFileReferences(existing.ocrPages || [], previousFileIds, currentFileIds);
         existing.ocrData = remapDraftFileReferences(existing.ocrData, previousFileIds, currentFileIds);
         existing.writingCorrections = remapDraftFileReferences(existing.writingCorrections || [], previousFileIds, currentFileIds);
         existing.reusedFromRevisionId = previousRevision._id;
-        existing.reusedAssessment = true;
+        existing.reusedAssessment = reusableAssessment;
+        if (!reusableAssessment) {
+          existing.evaluationStatus = 'stale';
+          existing.assessmentStatus = 'started';
+          existing.assessmentRunId = undefined;
+          existing.assessmentCompletedAt = undefined;
+          existing.evaluationJobId = undefined;
+        }
       } else {
         existing.reusedFromRevisionId = undefined;
         existing.reusedAssessment = false;
@@ -590,6 +612,14 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       }
 
       const saved = await existing.save();
+      if (reusableCorrections && previousFeedback) {
+        const mapped = remapDraftFileReferences(previousFeedback, previousFileIds, persistedFiles.map(file => String(file._id)));
+        await SubmissionFeedback.updateOne({ _id: previousFeedback._id }, { $set: {
+          detailedFeedback: mapped.detailedFeedback, customRubricScores: mapped.customRubricScores,
+          rubricScores: mapped.rubricScores, scoringAudit: mapped.scoringAudit,
+          ...(!reusableAssessment && !previousFeedback.overriddenByTeacher ? { evaluationStatus: 'stale' } : {})
+        } });
+      }
       const priorReview = await SubmissionFeedback.findOneAndUpdate(
         { submissionId: saved._id },
         { $unset: { teacherReviewedAt: 1, teacherReviewedBy: 1 } },
@@ -598,7 +628,12 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
 
       await incrementUsage(studentId, { storageMB: uploadedMB });
 
-      if (!reusableAssessment) setImmediate(() => {
+      if (reusableCorrections && !reusableAssessment) setImmediate(() => {
+        canonicalEvaluation.generate({ submission: saved, assignment }).catch(error => {
+          logger.error({ event: 'submission.reupload.evaluation_failed', submissionId: String(saved._id), code: error?.code });
+        });
+      });
+      if (!reusableCorrections) setImmediate(() => {
         const ids = Array.isArray(saved.files) && saved.files.length
           ? saved.files
           : (firstFile ? [firstFile._id] : []);

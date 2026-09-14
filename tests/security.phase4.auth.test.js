@@ -89,5 +89,19 @@ describe('Phase 4 backend JWT boundary', () => {
     requireRole('teacher')(result.req, result.res, roleNext);
     expect(roleNext).not.toHaveBeenCalled();
     expect(result.res.statusCode).toBe(403);
+    expect(result.res.body.code).toBe('FORBIDDEN');
+  });
+
+  test('reports database and account refresh failures as authentication infrastructure outages', async () => {
+    const token = signJwt({ _id: userId, firebaseUid: 'firebase-user', role: 'teacher' });
+    mockFindById.mockRejectedValueOnce(new Error('database unavailable'));
+    let result = await authenticate(token);
+    expect(result.res.statusCode).toBe(503);
+    expect(result.res.body.code).toBe('AUTH_UNAVAILABLE');
+
+    mockEnsureActivePlan.mockRejectedValueOnce(new Error('database unavailable'));
+    result = await authenticate(token);
+    expect(result.res.statusCode).toBe(503);
+    expect(result.res.body.code).toBe('AUTH_UNAVAILABLE');
   });
 });

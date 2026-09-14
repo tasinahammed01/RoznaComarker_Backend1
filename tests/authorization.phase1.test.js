@@ -5,6 +5,7 @@ process.env.SENSITIVE_RATE_LIMIT_MAX = '1000';
 const fs = require('fs');
 const path = require('path');
 const request = require('supertest');
+const jwt = require('jsonwebtoken');
 
 const textGenerate = jest.fn();
 const fileGenerate = jest.fn();
@@ -54,6 +55,7 @@ describe('Phase 1 authorization boundaries', () => {
   let otherTeacher;
   let student;
   let otherStudent;
+  let admin;
   let classDoc;
   let submissionFile;
 
@@ -76,11 +78,12 @@ describe('Phase 1 authorization boundaries', () => {
       name: 'Free', slug: 'free', isActive: true,
       features: { aiWorksheets: true, aiWorksheetsLimit: 25, maxClasses: 10, maxStudents: 50, essayAnalysesPerMonth: 100, storageMB: 1000 }
     });
-    [teacher, otherTeacher, student, otherStudent] = await User.create([
+    [teacher, otherTeacher, student, otherStudent, admin] = await User.create([
       { firebaseUid: 'teacher-1', email: 'teacher1@example.test', role: 'teacher', plan: plan._id, stripeCustomerId: 'cus_private_1' },
       { firebaseUid: 'teacher-2', email: 'teacher2@example.test', role: 'teacher', plan: plan._id },
       { firebaseUid: 'student-1', email: 'student1@example.test', role: 'student', plan: plan._id },
-      { firebaseUid: 'student-2', email: 'student2@example.test', role: 'student', plan: plan._id }
+      { firebaseUid: 'student-2', email: 'student2@example.test', role: 'student', plan: plan._id },
+      { firebaseUid: 'admin-1', email: 'admin1@example.test', role: 'admin', plan: plan._id }
     ]);
     classDoc = await Class.create({ name: 'Owned class', teacher: teacher._id, joinCode: 'AUTH01' });
     await Membership.create({ student: student._id, class: classDoc._id, status: 'active' });
@@ -127,11 +130,30 @@ describe('Phase 1 authorization boundaries', () => {
 
   test('private submission files require auth and enforce owner/class relationships', async () => {
     expect((await request(app).get(`/files/submissions/${privateFilename}`)).status).toBe(401);
+    expect((await request(app).get(`/files/submissions/${privateFilename}`).set('Authorization', 'Bearer not-a-jwt')).status).toBe(401);
+    const expired = jwt.sign({ id: String(student._id), role: 'student' }, process.env.JWT_SECRET,
+      { algorithm: 'HS256', expiresIn: -1 });
+    expect((await request(app).get(`/files/submissions/${privateFilename}`).set('Authorization', `Bearer ${expired}`)).status).toBe(401);
     expect((await request(app).get(`/files/submissions/${privateFilename}`).set('Authorization', `Bearer ${token(otherStudent)}`)).status).toBe(403);
     expect((await request(app).get(`/files/submissions/${privateFilename}`).set('Authorization', `Bearer ${token(otherTeacher)}`)).status).toBe(403);
-    expect((await request(app).get(`/files/submissions/${privateFilename}`).set('Authorization', `Bearer ${token(student)}`)).status).toBe(200);
+    const ownerResponse = await request(app).get(`/files/submissions/${privateFilename}`)
+      .set('Authorization', `Bearer ${token(student)}`).set('Origin', 'http://localhost:4200');
+    expect(ownerResponse.status).toBe(200);
+    expect(ownerResponse.headers['access-control-allow-origin']).toBe('http://localhost:4200');
+    expect(ownerResponse.headers['cache-control']).toBe('private, no-store');
     expect((await request(app).get(`/files/submissions/${privateFilename}`).set('Authorization', `Bearer ${token(teacher)}`)).status).toBe(200);
+    expect((await request(app).get(`/files/submissions/${privateFilename}`).set('Authorization', `Bearer ${token(admin)}`)).status).toBe(200);
     expect((await request(app).get(`/uploads/submissions/${privateFilename}`)).status).toBe(401);
+    expect((await request(app).get(`/uploads/submissions/${privateFilename}`).set('Authorization', `Bearer ${token(student)}`)).status).toBe(200);
+    expect((await request(app).get('/files/submissions/not-a-stored-name.png').set('Authorization', `Bearer ${token(student)}`)).status).toBe(400);
+    expect((await request(app).get('/files/submissions/..%2Fsecret.pdf').set('Authorization', `Bearer ${token(student)}`)).status).toBe(400);
+    expect((await request(app).get('/files/submissions/99999999-9999-4999-8999-999999999999.png')
+      .set('Authorization', `Bearer ${token(student)}`)).status).toBe(404);
+    fs.unlinkSync(privatePath);
+    const missingOnDisk = await request(app).get(`/files/submissions/${privateFilename}`)
+      .set('Authorization', `Bearer ${token(student)}`);
+    expect(missingOnDisk.status).toBe(404);
+    expect(JSON.stringify(missingOnDisk.body)).not.toContain(path.resolve(__dirname, '..'));
   });
 
   test('worksheet document CRUD is teacher-only, owner-scoped, and ignores browser identity', async () => {

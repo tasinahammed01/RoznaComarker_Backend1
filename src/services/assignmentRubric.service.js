@@ -121,4 +121,43 @@ function calculateCustomRubricScore(rubric, assessments) {
   return { overallScore: Math.max(0, Math.min(100, overallScore)), criteria };
 }
 
-module.exports = { CUSTOM_RUBRIC_VERSION, normalizeAssignmentRubric, hashNormalizedRubric, calculateCustomRubricScore };
+function validateAssignmentRubricInput(raw, designer = false) {
+  if (raw == null) return [];
+  const errors = [];
+  const rows = raw.criteria;
+  if (!Array.isArray(rows) || rows.length < 1 || rows.length > 100) return ['Rubric requires 1–100 criteria.'];
+  if (raw.totalPoints !== 100) errors.push('totalPoints must equal 100.');
+  const names = new Set();
+  let sum = 0;
+  for (const row of rows) {
+    const name = String(row?.name || row?.title || '').trim().toLowerCase();
+    if (!name || names.has(name)) errors.push('Criterion names must be non-empty and unique.');
+    names.add(name);
+    if (typeof row?.weight !== 'number' || !Number.isFinite(row.weight) || row.weight <= 0) errors.push('Weights must be positive finite numbers.');
+    sum += row?.weight;
+    const levels = designer ? raw.levels : row?.levels;
+    if (!Array.isArray(levels) || levels.length < 2 || levels.length > 10) {
+      errors.push('Each criterion requires 2–10 performance levels.');
+      continue;
+    }
+    const levelNames = new Set();
+    let maximum = 0;
+    levels.forEach((level, index) => {
+      const title = String(level?.title || '').trim().toLowerCase();
+      const score = designer ? level?.maxPoints : level?.score;
+      const description = designer ? row?.cells?.[index] : level?.description;
+      if (!title || levelNames.has(title)) errors.push('Performance level titles must be non-empty and unique.');
+      levelNames.add(title);
+      if (typeof score !== 'number' || !Number.isFinite(score) || score < 0) errors.push('Level points must be finite and non-negative.');
+      maximum = Math.max(maximum, score);
+      if (typeof description !== 'string' || !description.trim()) errors.push('Every performance level requires a description.');
+    });
+    if (!(maximum > 0)) errors.push('Performance levels require a positive maximum.');
+    if (designer && (!Array.isArray(row?.cells) || row.cells.length !== levels.length)) errors.push('Cells must align exactly with levels.');
+    if (!designer && Array.isArray(rows[0]?.levels) && JSON.stringify(levels.map(l => [l?.title, l?.score])) !== JSON.stringify(rows[0].levels.map(l => [l?.title, l?.score]))) errors.push('Criteria must use aligned performance levels.');
+  }
+  if (Math.abs(sum - 100) > 1e-8 || !Number.isFinite(sum)) errors.push('Weights must total exactly 100.');
+  return [...new Set(errors)];
+}
+
+module.exports = { CUSTOM_RUBRIC_VERSION, normalizeAssignmentRubric, hashNormalizedRubric, calculateCustomRubricScore, validateAssignmentRubricInput };

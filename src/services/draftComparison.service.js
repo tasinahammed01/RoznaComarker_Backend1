@@ -103,7 +103,9 @@ function compareDrafts(previous, current) {
   const previousScore = number(previous.feedback.overallScore); const currentScore = number(current.feedback.overallScore);
   const identicalContent = Boolean(previous.submission.fileContentIdentity && current.submission.fileContentIdentity
     && previous.submission.fileContentIdentity === current.submission.fileContentIdentity);
-  if (identicalContent) {
+  const identicalAssessment = Boolean(previous.feedback.analysisInputHash
+    && previous.feedback.analysisInputHash === current.feedback.analysisInputHash);
+  if (identicalContent && identicalAssessment && previousScore === currentScore) {
     const rubricCategories = matchCategories(previous.feedback, previous.feedback).map((item) => ({ ...item, delta: 0 }));
     return { available: true, ...ids, identicalContent: true,
       message: 'The submitted files are unchanged from the previous draft.',
@@ -121,7 +123,7 @@ function compareDrafts(previous, current) {
   const rubricChanged = String(previous.submission.evaluationRubricSourceHash || previous.feedback.evaluationRubricSourceHash || '')
     !== String(current.submission.evaluationRubricSourceHash || current.feedback.evaluationRubricSourceHash || '');
   const issuesAvailable = correctionSetReliable(previous.submission) && correctionSetReliable(current.submission);
-  return { available: true, ...ids, previousDraftNumber: previous.draftNumber, currentDraftNumber: current.draftNumber,
+  return { available: true, ...ids, identicalContent, previousDraftNumber: previous.draftNumber, currentDraftNumber: current.draftNumber,
     overall: { previousScore, currentScore, delta, status: delta > 0 ? 'IMPROVED' : delta < 0 ? 'DECLINED' : 'UNCHANGED' },
     rubricCategories, rubricChanged, rubricMessage: rubricChanged && rubricCategories.some((item) => !item.available)
       ? 'Rubric changed between drafts; category-level comparison is partially unavailable.' : null,

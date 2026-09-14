@@ -85,7 +85,7 @@ function normalizeRubricJson(obj) {
         ? c.descriptions
         : (Array.isArray(c && c.cells) ? c.cells : []);
       const descriptions = Array.from({ length: levels.length }).map((_, i) => safeString(descRaw[i]).trim());
-      return cTitle ? { title: cTitle, descriptions } : null;
+      return cTitle ? { title: cTitle, weight: c.weight, descriptions } : null;
     })
     .filter(Boolean);
 
@@ -95,6 +95,7 @@ function normalizeRubricJson(obj) {
 
   return {
     title,
+    totalPoints: o.totalPoints,
     levels: levels.map((l, idx) => ({
       name: safeString(l.name).trim() || `Level ${idx + 1}`,
       score: Number.isFinite(Number(l.score)) ? Math.max(0, Math.floor(Number(l.score))) : 0

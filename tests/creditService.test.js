@@ -8,6 +8,7 @@ const CreditTransaction = require('../src/models/CreditTransaction');
 const service = require('../src/services/credit.service');
 
 let teacher;
+afterEach(() => jest.restoreAllMocks());
 beforeAll(connectInMemoryMongo);
 afterAll(disconnectInMemoryMongo);
 beforeEach(async () => {
@@ -44,6 +45,62 @@ test('duplicate and concurrent success callbacks charge exactly once', async () 
   expect(calls.filter((item) => item.charged).length).toBe(1);
   expect((await CreditWallet.findOne({ userId: teacher._id })).monthlyCreditsUsed).toBe(1);
   expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT' })).toBe(1);
+});
+
+test.each(['assessment', 'bonus'])('recovers %s after wallet receipt persisted but ledger commit failed', async (kind) => {
+  const submissionId = new mongoose.Types.ObjectId();
+  const invoke = () => kind === 'assessment'
+    ? service.consumeAssessmentCredit({ userId: teacher._id, submissionId, assessmentId: 'interrupted' })
+    : service.adjustBonusCredits({ userId: teacher._id, amount: 3, reason: 'Referral', idempotencyKey: 'bonus:interrupted' });
+  const commit = jest.spyOn(CreditTransaction, 'findOneAndUpdate').mockRejectedValueOnce(new Error('simulated process interruption'));
+  await expect(invoke()).rejects.toThrow('simulated process interruption');
+  const before = await CreditWallet.findOne({ userId: teacher._id });
+  expect(before.pendingCreditOperation).toBeTruthy();
+  expect(await CreditTransaction.countDocuments({ status: 'pending' })).toBe(1);
+  commit.mockRestore();
+  await invoke();
+  await invoke();
+  const after = await CreditWallet.findById(before._id);
+  expect(after.monthlyCreditsUsed).toBe(before.monthlyCreditsUsed);
+  expect(after.bonusCredits).toBe(before.bonusCredits);
+  expect(after.creditMutationVersion).toBe(before.creditMutationVersion);
+  expect(after.pendingCreditOperation).toBeUndefined();
+  expect(await CreditTransaction.countDocuments({ status: 'pending' })).toBe(0);
+  expect(await CreditTransaction.countDocuments({ status: 'committed' })).toBe(1);
+});
+
+test('an interruption before wallet mutation leaves a replayable pending claim', async () => {
+  const state = await service.getOrCreateWallet(teacher);
+  const original = CreditWallet.findOneAndUpdate.bind(CreditWallet);
+  jest.spyOn(CreditWallet, 'findOneAndUpdate').mockImplementation((filter, update, options) => {
+    if (update.$set?.pendingCreditOperation) throw new Error('interrupted before debit');
+    return original(filter, update, options);
+  });
+  const args = { userId: teacher._id, submissionId: new mongoose.Types.ObjectId(), assessmentId: 'before-write' };
+  await expect(service.consumeAssessmentCredit(args)).rejects.toThrow('interrupted before debit');
+  expect((await CreditWallet.findById(state.wallet._id)).monthlyCreditsUsed).toBe(0);
+  jest.restoreAllMocks();
+  await service.consumeAssessmentCredit(args);
+  await service.consumeAssessmentCredit(args);
+  expect((await CreditWallet.findById(state.wallet._id)).monthlyCreditsUsed).toBe(1);
+});
+
+test('insufficient credit creates neither a ledger claim nor a wallet mutation', async () => {
+  const state = await service.getOrCreateWallet(teacher);
+  await CreditWallet.updateOne({ _id: state.wallet._id }, { $set: { monthlyCreditsUsed: 2 } });
+  const before = await CreditWallet.findById(state.wallet._id);
+  await expect(service.consumeAssessmentCredit({ userId: teacher._id, submissionId: new mongoose.Types.ObjectId(),
+    assessmentId: 'insufficient' })).rejects.toMatchObject({ code: 'INSUFFICIENT_ASSESSMENT_CREDITS' });
+  const after = await CreditWallet.findById(state.wallet._id);
+  expect(after.monthlyCreditsUsed).toBe(before.monthlyCreditsUsed);
+  expect(after.creditMutationVersion).toBe(before.creditMutationVersion);
+  expect(after.pendingCreditOperation).toBeUndefined();
+  expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT' })).toBe(0);
+});
+
+test('the database enforces the unique idempotency index', async () => {
+  await require('../src/services/durableCreditMutation.service').verifyIndex();
+  expect((await CreditTransaction.collection.indexes()).some(index => index.unique && index.key.idempotencyKey === 1)).toBe(true);
 });
 
 test('concurrent final-credit consumption cannot overspend', async () => {

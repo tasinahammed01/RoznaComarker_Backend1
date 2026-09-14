@@ -4,7 +4,7 @@
 
 `src/config/paypal.js` is authoritative for `PAYPAL_ENV`, API hosts, selected credentials/resources, trusted redirects, and the Live guard. `NODE_ENV` does not select PayPal. Sandbox may use the legacy generic variables for compatibility; Live never does. Business code receives internal plan codes and resolves the selected environment's Plan ID on the backend.
 
-`PAYMENT_PROVIDER` remains deterministic and defaults to Stripe. `PAYPAL_ENABLED=true` can validate/operate PayPal support independently (for example, already-active PayPal subscriptions) without changing which provider is offered for new checkout.
+Production requires `PAYMENT_PROVIDER=paypal`. `PAYPAL_ENABLED=true` validates and operates PayPal checkout, management, and webhooks.
 
 The frontend uses backend-generated approval URLs, filters them to HTTPS PayPal hosts, and then fetches backend status. It has no PayPal Client Secret or Plan ID selection and does not grant entitlement or credits.
 

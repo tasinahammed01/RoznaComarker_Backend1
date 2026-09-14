@@ -40,7 +40,7 @@ async function processAssessmentMilestones(teacherId) {
 }
 
 function completionError(code, cause) {
-  const error = new Error('Complete assessment pipeline did not finish successfully. No credit was used.');
+  const error = new Error('Assessment finalization did not finish successfully. Retry the same assessment to complete it safely.');
   error.code = 'ASSESSMENT_COMPLETION_FAILED'; error.componentCode = code; error.cause = cause;
   return error;
 }
@@ -60,7 +60,7 @@ async function complete({ runId, submissionId, teacherId, sourceHash }) {
   if (!submission) throw completionError('SUBMISSION_NOT_FOUND');
   const run = await AssessmentRun.findOneAndUpdate({ runId }, { $setOnInsert: {
     runId, submissionId, assignmentId: submission.assignment, teacherId, sourceHash
-  }, $set: { status: 'processing', errorCode: null } }, { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true });
+  } }, { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true });
   if (run.status === 'complete') {
     const existing = await AssessmentCreditRouter.consumeAssessmentCredit({ teacherUserId: teacherId, submissionId,
       assignmentId: submission.assignment, assessmentId: runId, reason: 'AI Assessment' });
@@ -114,7 +114,7 @@ async function complete({ runId, submissionId, teacherId, sourceHash }) {
     await AssessmentRun.updateOne({ _id: run._id }, { $set: { status: 'failed', failedAt: new Date(), errorCode: code } });
     await Submission.updateOne({ _id: submissionId }, { $set: { assessmentRunId: runId,
       assessmentStatus: 'failed', assessmentErrorCode: code }, $unset: { assessmentCompletedAt: 1 } });
-    logger.info({ event: 'credit.assessment.not_charged', userId: String(teacherId), submissionId: String(submissionId),
+    logger.error({ event: 'assessment.completion.failed', userId: String(teacherId), submissionId: String(submissionId),
       assessmentId: runId, reason: code });
     throw cause?.code === 'ASSESSMENT_COMPLETION_FAILED' ? cause : completionError(code, cause);
   }

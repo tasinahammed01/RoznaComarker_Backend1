@@ -3,13 +3,13 @@ const mongoose = require('mongoose');
 const creditPackSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   code: { type: String, required: true, trim: true, uppercase: true, unique: true, index: true },
-  credits: { type: Number, required: true, min: 1 },
+  credits: { type: Number, required: true, min: 1, validate: Number.isSafeInteger },
   price: { type: Number, required: true, min: 0 },
   currency: { type: String, required: true, trim: true, uppercase: true, default: 'USD' },
   stripePriceId: { type: String, trim: true, default: null },
   allowedPlans: [{ type: String, trim: true }],
   active: { type: Boolean, default: true, index: true },
-  displayOrder: { type: Number, default: 0, index: true },
+  displayOrder: { type: Number, default: 0, min: 0, validate: Number.isSafeInteger, index: true },
   metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
 }, { timestamps: true, versionKey: false });
 

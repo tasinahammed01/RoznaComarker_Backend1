@@ -8,7 +8,6 @@ const OcrUpload = require('../models/OcrUpload');
 const Submission = require('../models/Submission');
 const Upload = require('../models/Upload');
 
-const logger = require('../utils/logger');
 const uploadService = require('../services/upload.service');
 const { ApiError } = require('../middlewares/error.middleware');
 
@@ -19,7 +18,7 @@ function isSafeStoredFilename(filename) {
   return /^[0-9a-fA-F-]{36}\.(pdf|jpg|jpeg|png|webp)$/.test(value);
 }
 
-function sendStoredFile(res, type, filename) {
+function sendStoredFile(res, type, filename, next) {
   const absolute = uploadService.getAbsolutePathForStoredFile(type, filename);
   const contentTypes = {
     '.pdf': 'application/pdf', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -32,6 +31,10 @@ function sendStoredFile(res, type, filename) {
       'X-Content-Type-Options': 'nosniff',
       'Content-Disposition': `inline; filename=\"${filename}\"`
     }
+  }, (error) => {
+    if (!error) return;
+    const missing = error.statusCode === 404 || error.code === 'ENOENT';
+    return next(new ApiError(missing ? 404 : 500, missing ? 'File not found' : 'Unable to serve file'));
   });
 }
 
@@ -81,9 +84,8 @@ async function servePrivateFile(req, res, next) {
     if (!req.user) throw new ApiError(401, 'Unauthorized');
     if (!(await canAccessPrivateFile(req.user, file))) throw new ApiError(403, 'Forbidden');
 
-    return sendStoredFile(res, type, filename);
+    return sendStoredFile(res, type, filename, next);
   } catch (err) {
-    logger.warn(err);
     return next(err);
   }
 }
@@ -119,9 +121,8 @@ async function serveOriginal(req, res, next) {
       throw new ApiError(403, 'Forbidden');
     }
 
-    return sendStoredFile(res, 'original', filename);
+    return sendStoredFile(res, 'original', filename, next);
   } catch (err) {
-    logger.warn(err);
     return next(err);
   }
 }
@@ -160,9 +161,8 @@ async function serveProcessed(req, res, next) {
       throw new ApiError(403, 'Forbidden');
     }
 
-    return sendStoredFile(res, 'processed', filename);
+    return sendStoredFile(res, 'processed', filename, next);
   } catch (err) {
-    logger.warn(err);
     return next(err);
   }
 }

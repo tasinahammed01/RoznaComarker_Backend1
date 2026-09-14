@@ -2,17 +2,20 @@ const CreditPack = require('../models/CreditPack');
 const CreditTransaction = require('../models/CreditTransaction');
 const CreditWallet = require('../models/CreditWallet');
 const CreditService = require('./credit.service');
+const { purchasablePack } = require('./creditPackPolicy');
 
 function publicPack(pack) {
   return { name: pack.name, code: pack.code, credits: pack.credits, price: pack.price,
     currency: pack.currency, allowedPlans: pack.allowedPlans, displayOrder: pack.displayOrder };
 }
 
-async function listPacks() {
-  return (await CreditPack.find({ active: true }).sort({ displayOrder: 1, code: 1 }).lean()).map(publicPack);
+async function listPacks(user,{provider='paypal'}={}) {
+  const state=await CreditService.getOrCreateWallet(user);const planSlug=String(state.plan.slug||state.plan.name).toLowerCase();
+  const packs=await CreditPack.find({active:true,allowedPlans:planSlug}).sort({displayOrder:1,code:1}).lean();
+  return packs.filter(pack=>purchasablePack(pack,provider)).map(publicPack);
 }
 
-async function eligiblePack(user, code, { provider = 'stripe' } = {}) {
+async function eligiblePack(user, code, { provider = 'paypal' } = {}) {
   const pack = await CreditPack.findOne({ code: String(code || '').trim().toUpperCase(), active: true });
   if (!pack) throw Object.assign(new Error('This credit pack is not available.'), { statusCode: 404, code: 'CREDIT_PACK_NOT_FOUND' });
   const state = await CreditService.getOrCreateWallet(user);
@@ -20,7 +23,7 @@ async function eligiblePack(user, code, { provider = 'stripe' } = {}) {
   if (!pack.allowedPlans.map((item) => String(item).toLowerCase()).includes(planSlug)) {
     throw Object.assign(new Error("This credit pack isn't available for your current plan."), { statusCode: 403, code: 'CREDIT_PACK_NOT_ELIGIBLE' });
   }
-  if (provider === 'stripe' && !pack.stripePriceId) throw Object.assign(new Error("We couldn't start the payment. Please try again."), { statusCode: 503, code: 'CREDIT_PACK_PAYMENT_NOT_CONFIGURED' });
+  if (!purchasablePack(pack,provider)) throw Object.assign(new Error('Credit purchases are temporarily unavailable.'),{statusCode:503,code:'CREDIT_PACK_INVALID'});
   return { pack, state };
 }
 

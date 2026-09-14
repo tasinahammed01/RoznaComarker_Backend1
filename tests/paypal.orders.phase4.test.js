@@ -15,6 +15,9 @@ const paypalMock = { createOrder: jest.fn(), captureOrder: jest.fn(), getOrder: 
 jest.mock('../src/services/paypal/paypalClient.service', () => ({
   PayPalClient: jest.fn(() => paypalMock), PayPalApiError: class PayPalApiError extends Error {}
 }));
+jest.mock('../src/services/ocrPipeline.service', () => ({
+  runOcrAndPersist: jest.fn(), runOcrAndPersistForFiles: jest.fn()
+}));
 
 const request = require('supertest');
 const app = require('../src/app');

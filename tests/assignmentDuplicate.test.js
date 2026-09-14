@@ -15,6 +15,7 @@ const User = require('../src/models/user.model');
 const Class = require('../src/models/class.model');
 const Assignment = require('../src/models/assignment.model');
 const Submission = require('../src/models/Submission');
+const SubmissionFeedback = require('../src/models/SubmissionFeedback');
 const FlashcardSet = require('../src/models/FlashcardSet');
 const Worksheet = require('../src/models/Worksheet');
 const { connectInMemoryMongo, disconnectInMemoryMongo, clearDatabase } = require('./helpers/testServer');
@@ -53,6 +54,64 @@ describe('duplicate assignment', () => {
       allowResubmission: true, requireAdaptiveBeforeResubmission: true, ...overrides
     });
   }
+
+  test('rubric save/reload preserves weighting, stales evaluation only, and protects manual grades', async () => {
+    const source = await makeSource();
+    const student = await User.create({ firebaseUid: 'rubric-student', email: 'rubric-student@example.com', role: 'student' });
+    const submission = await Submission.create({ student: student._id, assignment: source._id, class: sourceClass._id,
+      status: 'submitted', submittedAt: new Date(), ocrStatus: 'completed', ocrText: 'Preserved essay', correctionStatus: 'completed',
+      correctionSourceHash: 'source-hash', semanticStatus: 'completed', evaluationStatus: 'completed', evaluationRubricSourceHash: 'old-rubric' });
+    await SubmissionFeedback.create({ submissionId: submission._id, studentId: student._id, teacherId: teacher._id,
+      classId: sourceClass._id, overallScore: 76, evaluationStatus: 'completed', evaluationSourceHash: 'source-hash',
+      evaluationRubricSourceHash: 'old-rubric', overriddenByTeacher: false });
+    const designer = { title: 'Essay', totalPoints: 100,
+      levels: [{ title: 'Strong', maxPoints: 4 }, { title: 'Developing', maxPoints: 0 }],
+      criteria: [{ title: 'Ideas', weight: 70, cells: ['Strong ideas', 'Develop ideas'] },
+        { title: 'Structure', weight: 30, cells: ['Clear structure', 'Improve structure'] }] };
+    const save = () => request(app).patch(`/api/assignments/${source._id}/rubrics`)
+      .set('Authorization', `Bearer ${token}`).send({ rubricDesigner: designer });
+    const response = await save();
+    expect(response.status).toBe(200);
+    const reloaded = await Assignment.findById(source._id).lean();
+    expect(reloaded.rubrics.totalPoints).toBe(100);
+    expect(reloaded.rubrics.criteria.map(row => row.weight)).toEqual([70, 30]);
+    expect(reloaded.rubrics.criteria[0].levels[1].score).toBe(0);
+    const feedback = await SubmissionFeedback.findOne({ submissionId: submission._id });
+    expect(feedback).toMatchObject({ evaluationStatus: 'stale', overriddenByTeacher: false,
+      previousEvaluation: { overallScore: 76 } });
+    expect(await Submission.findById(submission._id)).toMatchObject({ ocrStatus: 'completed', ocrText: 'Preserved essay',
+      correctionStatus: 'completed', correctionSourceHash: 'source-hash', evaluationStatus: 'stale' });
+    await SubmissionFeedback.updateOne({ _id: feedback._id }, { $set: { overriddenByTeacher: true, overallScore: 88, evaluationStatus: 'completed' } });
+    await Submission.updateOne({ _id: submission._id }, { $set: { evaluationStatus: 'completed' } });
+    designer.criteria[0].weight = 60;
+    designer.criteria[1].weight = 40;
+    expect((await save()).status).toBe(200);
+    expect(await SubmissionFeedback.findById(feedback._id)).toMatchObject({ overriddenByTeacher: true, overallScore: 88, evaluationStatus: 'completed' });
+  });
+
+  test('invalid rubric is rejected before changing the stored assignment', async () => {
+    const source = await makeSource();
+    const original = (await Assignment.findById(source._id).lean()).rubrics;
+    const response = await request(app).patch(`/api/assignments/${source._id}/rubrics`)
+      .set('Authorization', `Bearer ${token}`).send({ rubrics: { totalPoints: 100, criteria: [
+        { name: 'Ideas', weight: -10, levels: [{ title: 'Strong', score: 4, description: 'Good' }] }
+      ] } });
+    expect(response.status).toBe(400);
+    expect((await Assignment.findById(source._id).lean()).rubrics).toEqual(original);
+  });
+
+  test('essay list counts actual assignment references without per-assignment countDocuments calls', async () => {
+    const source = await makeSource();
+    await makeSource({ title: 'Second assignment' });
+    await Submission.create({ student: otherTeacher._id, assignment: source._id, class: sourceClass._id, status: 'submitted', submittedAt: new Date() });
+    const count = jest.spyOn(Submission, 'countDocuments');
+    const response = await request(app).get(`/api/assignments/class/${sourceClass._id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(200);
+    expect(response.body.data.find(item => item._id === String(source._id)).submitted).toBe(1);
+    expect(count).not.toHaveBeenCalled();
+    count.mockRestore();
+  });
 
   test('copies only configuration into a clean cross-class assignment with fresh identity', async () => {
     const source = await makeSource();

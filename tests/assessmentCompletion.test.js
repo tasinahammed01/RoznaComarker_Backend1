@@ -40,6 +40,21 @@ test('all required components transition run to complete before exactly one debi
   expect(generate).not.toHaveBeenCalled();
   expect(await AdaptivePracticeSession.countDocuments()).toBe(0);
   expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT', status: 'committed' })).toBe(1);
+  expect(report.buildPersistedSubmissionFeedbackReport).toHaveBeenCalledTimes(1);
+});
+
+test('completion replay reconciles an interrupted debit without a second wallet mutation', async () => {
+  const args = { runId: 'interrupted-completion', submissionId: submission._id, teacherId: teacher._id, sourceHash: 'source-1' };
+  await completion.start({ ...args, submission });
+  const commit = jest.spyOn(CreditTransaction, 'findOneAndUpdate').mockRejectedValueOnce(new Error('ledger interrupted'));
+  await expect(completion.complete(args)).rejects.toMatchObject({ code: 'ASSESSMENT_COMPLETION_FAILED' });
+  const Wallet = require('../src/models/CreditWallet');
+  expect(await Wallet.findOne({ userId: teacher._id })).toMatchObject({ monthlyCreditsUsed: 1 });
+  commit.mockRestore();
+  await completion.complete(args);
+  await completion.complete(args);
+  expect(await Wallet.findOne({ userId: teacher._id })).toMatchObject({ monthlyCreditsUsed: 1 });
+  expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT', status: 'committed' })).toBe(1);
 });
 
 test('assessment completion does not invoke Adaptive Practice even if its generator would fail', async () => {

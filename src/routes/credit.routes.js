@@ -13,8 +13,6 @@ router.get('/wallet', verifyJwtToken, requireRole('teacher'), controller.wallet)
 router.post('/nudges/acknowledge', verifyJwtToken, requireRole('teacher'), body('threshold').isInt().equals('80'),
   handleValidationResult, controller.acknowledgeNudge);
 router.get('/packs', verifyJwtToken, requireRole('teacher'), topup.packs);
-router.post('/topups/checkout-session', verifyJwtToken, requireRole('teacher'),
-  body('packCode').isString().trim().isLength({ min: 2, max: 80 }), handleValidationResult, topup.checkout);
 const paypalPurchaseBody = [
   body('packCode').isString().trim().isLength({ min: 2, max: 80 }),
   body('checkoutAttemptId').isUUID(4),
@@ -40,6 +38,7 @@ router.get('/admin/teachers', verifyJwtToken, requireRole('admin'), controller.a
 router.get('/admin/pricing', verifyJwtToken, requireRole('admin'), pricingAdmin.getConfig);
 router.put('/admin/pricing/plans/:slug', verifyJwtToken, requireRole('admin'),
   param('slug').isString().trim().isLength({ min: 2, max: 80 }), handleValidationResult, pricingAdmin.updatePlan);
+router.post('/admin/pricing/packs', verifyJwtToken, requireRole('admin'), pricingAdmin.createPack);
 router.put('/admin/pricing/packs/:code', verifyJwtToken, requireRole('admin'),
   param('code').isString().trim().isLength({ min: 2, max: 80 }), handleValidationResult, pricingAdmin.updatePack);
 router.get('/admin/:userId', verifyJwtToken, requireRole('admin'), param('userId').isMongoId(), handleValidationResult, controller.adminWallet);

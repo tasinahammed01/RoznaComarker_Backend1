@@ -55,7 +55,7 @@ A provable full refund/reversal removes exactly the original pack credits only w
 
 ## Frontend and accessibility
 
-The existing Usage → Add Credits dialog loads active packs from the backend and displays their actual credits, price, and currency. `PAYMENT_PROVIDER=stripe` retains existing Stripe Checkout. `PAYMENT_PROVIDER=paypal` creates an Order and redirects only after PayPal-host validation. A component-memory UUID is stable across transient retries for the same pack, changes with the selected pack, and is discarded when the dialog is explicitly abandoned.
+The existing Usage → Add Credits dialog loads active packs from the backend and displays their actual credits, price, and currency. `PAYMENT_PROVIDER=paypal` is required. The dialog creates a PayPal Order and redirects only after PayPal-host validation. A component-memory UUID is stable across transient retries for the same pack, changes with the selected pack, and is discarded when the dialog is explicitly abandoned.
 
 The modal keeps dialog semantics, an accessible label, live loading/error announcements, Escape handling, a keyboard focus loop, at least 44px controls, bounded viewport height, one-column layout at 430px and below, and overflow-safe content for 320–430px widths.
 

@@ -218,8 +218,11 @@ function parseRubricDesignerFromDocxTemplate(params) {
 
       return {
         title: title || 'Rubric',
+        // Legacy table templates have no weight column; expose equal, editable weights.
+        totalPoints: 100,
         levels,
-        criteria: allCriteria
+        criteria: allCriteria.map((criterion, index) => ({ ...criterion,
+          weight: Math.floor(100 / allCriteria.length) + (index < 100 % allCriteria.length ? 1 : 0) }))
       };
     })
     .catch((err) => {

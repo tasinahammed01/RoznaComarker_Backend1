@@ -1,5 +1,5 @@
 describe('canonical evaluation interrupted-finalization recovery', () => {
-  test('finalizes matching persisted feedback without regenerating or inserting another record', async () => {
+  test.each(['processing', 'completed'])('reuses matching complete persisted feedback from %s without AI', async (status) => {
     const sourceHash = 'source-hash';
     const assignment = { title: 'Essay' };
     let service;
@@ -25,10 +25,13 @@ describe('canonical evaluation interrupted-finalization recovery', () => {
       const policyHash = require('../src/services/teacherEvaluationPolicy.service').evaluationPolicyHash(null);
       jest.doMock('../src/models/SubmissionFeedback', () => ({
         findOne: jest.fn(() => ({ lean: jest.fn().mockResolvedValue({
-          submissionId: 'submission-1', evaluationJobId: 'job-1', evaluationSourceHash: sourceHash,
+          submissionId: 'submission-1', evaluationStatus: 'completed', evaluationJobId: 'job-1', evaluationSourceHash: sourceHash,
           assessmentVersion: 'writing-rubric-100-v5-teacher-policy', evaluationVersion: 'canonical-evaluation-9-fixed-skill-isolation',
           evaluationRubricSourceHash: require('../src/services/canonicalEvaluation.service').hashRubric(assignment),
           evaluationPolicyHash: policyHash,
+          analysisInputHash: require('../src/services/canonicalEvaluation.service').analysisInputHash({ sourceHash,
+            rubricHash: require('../src/services/canonicalEvaluation.service').hashRubric(assignment), policyHash,
+            contextHash: require('../src/services/canonicalEvaluation.service').hashBuiltInContext(assignment) }),
           detailedFeedbackSourceHash: sourceHash, detailedFeedbackVersion: 'canonical-detailed-feedback-2',
           detailedFeedback: { sourceHash, areasForImprovement: [], strengths: [], actionSteps: [] },
           rubricScores: Object.fromEntries(['CONTENT', 'ORGANIZATION', 'GRAMMAR', 'VOCABULARY', 'MECHANICS', 'PRESENTATION']
@@ -43,13 +46,16 @@ describe('canonical evaluation interrupted-finalization recovery', () => {
       _id: 'submission-1', correctionStatus: 'completed', correctionSourceHash: sourceHash,
       semanticStatus: 'completed', semanticMetrics: { coverage: { coverageComplete: true,
         failedChunks: 0, structuralPassStatus: 'not_required' } },
-      evaluationStatus: 'processing', evaluationJobId: 'job-1', writingCorrections: [], correctionStatistics: {},
+      evaluationStatus: status, evaluationJobId: 'job-1', writingCorrections: [], correctionStatistics: {},
+      evaluationSourceHash: sourceHash, evaluationRubricSourceHash: service.hashRubric(assignment),
+      evaluationPolicyHash: require('../src/services/teacherEvaluationPolicy.service').evaluationPolicyHash(null),
+      evaluationVersion: 'canonical-evaluation-9-fixed-skill-isolation',
       constructor: { updateOne: submissionUpdateOne }
     }, assignment });
 
-    expect(result).toMatchObject({ sourceHash, recovered: true, overallScore: 6 });
-    expect(submissionUpdateOne).toHaveBeenCalledTimes(1);
-    expect(submissionUpdateOne.mock.calls[0][0]).toMatchObject({ correctionSourceHash: sourceHash,
+    expect(result).toMatchObject({ status: 'reused', sourceHash, overallScore: 6 });
+    expect(submissionUpdateOne).toHaveBeenCalledTimes(status === 'processing' ? 1 : 0);
+    if (status === 'processing') expect(submissionUpdateOne.mock.calls[0][0]).toMatchObject({ correctionSourceHash: sourceHash,
       evaluationStatus: 'processing', evaluationJobId: 'job-1' });
     expect(semanticAssess).not.toHaveBeenCalled();
     expect(feedbackFindOneAndUpdate).not.toHaveBeenCalled();

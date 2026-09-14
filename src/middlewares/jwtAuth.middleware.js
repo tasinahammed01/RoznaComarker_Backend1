@@ -60,10 +60,7 @@ async function verifyJwtToken(req, res, next) {
           stack: err.stack
         } : err
       });
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to initialize subscription'
-      });
+      return authError(res, 503, 'AUTH_UNAVAILABLE', 'Authentication is temporarily unavailable');
     }
 
     req.user = user;
@@ -72,6 +69,10 @@ async function verifyJwtToken(req, res, next) {
     return next();
   } catch (err) {
     const expired = err && err.name === 'TokenExpiredError';
+    if (!expired && !['JsonWebTokenError','NotBeforeError'].includes(err?.name)) {
+      logger.error({event:'auth.lookup.failed',errorName:err?.name});
+      return authError(res,503,'AUTH_UNAVAILABLE','Authentication is temporarily unavailable');
+    }
     return authError(
       res,
       401,

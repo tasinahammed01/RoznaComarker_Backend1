@@ -96,24 +96,42 @@ describe('canonical evaluation write guards', () => {
     });
   });
 
-  test('classifies a prepared rubric hash mismatch without a second provider request', async () => {
+  test('replaces a stale prepared rubric with exactly one fresh final request', async () => {
     const record = submission(true);
     const assignment = { title: 'Essay' };
     const prepared = await prepareRubricAssessment({ submission: record.value, assignment, sourceHash: 'hash' });
     const result = await generate({ submission: record.value, assignment,
       preparedRubricAssessment: { ...prepared, sourceHash: 'stale-hash' }, preparedRubricRequired: true });
 
-    expect(result).toMatchObject({ status: 'failed', errorCode: 'PREPARED_RUBRIC_HASH_MISMATCH' });
-    expect(mockAssess).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ status: 'completed' });
+    expect(mockAssess).toHaveBeenCalledTimes(2);
   });
 
-  test('classifies a missing required prepared rubric without making a provider request', async () => {
+  test('a missing prepared rubric gets exactly one final request', async () => {
     const record = submission(true);
     const result = await generate({ submission: record.value, assignment: { title: 'Essay' },
       preparedRubricAssessment: null, preparedRubricRequired: true });
 
-    expect(result).toMatchObject({ status: 'failed', errorCode: 'PREPARED_RUBRIC_MISSING' });
+    expect(result).toMatchObject({ status: 'completed' });
+    expect(mockAssess).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([401, 402, 403])('does not retry terminal prepared-provider HTTP %s errors', async (status) => {
+    const record = submission(true);
+    const result = await generate({ submission: record.value, assignment: { title: 'Essay' }, preparedRubricRequired: true,
+      preparedRubricAssessment: { error: Object.assign(new Error('Provider refused'), { status, code: `HTTP_${status}` }) } });
+    expect(result.status).toBe('failed');
     expect(mockAssess).not.toHaveBeenCalled();
+  });
+
+  test('a failed fresh fallback is not attempted a second time', async () => {
+    const record = submission(true);
+    mockAssess.mockRejectedValueOnce(Object.assign(new Error('timeout'), { code: 'AI_ATTEMPT_TIMEOUT' }));
+    const result = await generate({ submission: record.value, assignment: { title: 'Essay' }, preparedRubricRequired: true,
+      preparedRubricAssessment: { error: Object.assign(new Error('timeout'), { code: 'AI_ATTEMPT_TIMEOUT' }) } });
+    expect(result.status).toBe('failed');
+    expect(mockAssess).toHaveBeenCalledTimes(1);
+    expect(record.value.correctionStatus).toBe('completed');
   });
 
   test('semantic correction failure still produces transcript-grounded rubric scores without false zero-correction success', async () => {
@@ -278,6 +296,9 @@ describe('canonical evaluation write guards', () => {
     };
     const priorFeedback = {
       evaluationSourceHash: 'hash', evaluationPolicyHash: evaluationPolicyHash(null),
+      evaluationRubricSourceHash: 'previous-rubric',
+      analysisInputHash: canonical.analysisInputHash({ sourceHash: 'hash', rubricHash: 'previous-rubric',
+        policyHash: evaluationPolicyHash(null), contextHash: canonical.hashBuiltInContext(assignment) }),
       evaluationBuiltInContextHash: canonical.hashBuiltInContext(assignment),
       assessmentVersion: ASSESSMENT_VERSION, evaluationVersion: EVALUATION_VERSION,
       overriddenByTeacher: false, rubricScores: priorScores

@@ -32,14 +32,14 @@ const assessment = ({ id = 'one', chainId = 'chain', assignmentId = 'assignment-
 });
 
 describe('deterministic draft comparison', () => {
-  test('byte-identical drafts cannot report score or issue improvement caused by reevaluation variance', () => {
+  test('byte-identical drafts with changed assessment settings retain their actual scores', () => {
     const previous = assessment({ draftNumber: 1, score: 73, fileContentIdentity: 'same-bytes',
       correctionList: issues([['G', 'one'], ['V', 'two']]) });
     const current = assessment({ draftNumber: 2, score: 100, fileContentIdentity: 'same-bytes', correctionList: [] });
     const result = comparison.compareDrafts(previous, current);
     expect(result).toMatchObject({ available: true, identicalContent: true,
-      overall: { previousScore: 73, currentScore: 73, delta: 0, status: 'UNCHANGED' },
-      issues: { correctedCount: 0, newIssueCount: 0 } });
+      overall: { previousScore: 73, currentScore: 100, delta: 27, status: 'IMPROVED' },
+      issues: { correctedCount: 2, newIssueCount: 0 } });
   });
   test.each([[72, 84, 12, 'IMPROVED'], [80, 80, 0, 'UNCHANGED'], [84, 72, -12, 'DECLINED']])(
     'calculates authoritative overall delta %s -> %s', (oldScore, currentScore, delta, status) => {

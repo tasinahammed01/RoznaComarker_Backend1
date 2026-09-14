@@ -11,6 +11,8 @@ const { safeErrorCode } = require('./canonicalResultState.service');
 const { getSemanticAIConfig, getSemanticAIConfigStatus } = require('./semanticAIClient.service');
 const semanticMetrics = require('./semanticMetrics.service');
 const { resolveLegend } = require('./correctionLegendResolver.service');
+const inputIdentity = require('../utils/assessmentInputIdentity');
+const correctionPolicy = require('./aiCorrectionPolicy.service');
 
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -38,19 +40,18 @@ function wordsFromSubmission(doc) {
 }
 
 function orderedPageIdentity(pages = []) {
-  return pages.map((page, index) => ({ fileId: String(page?.fileId || ''),
-    uploadOrder: Number.isFinite(Number(page?.fileOrder)) ? Number(page.fileOrder) : index,
-    pageIndex: Number.isFinite(Number(page?.pageIndex)) ? Number(page.pageIndex) : Number(page?.pageNumber || 1) - 1,
-    normalizedPageTextHash: crypto.createHash('sha256').update(String(page?.text || '')).digest('hex') }));
+  return inputIdentity.pageContentIdentity(pages);
 }
 
 function buildCorrectionSourceHash({ transcript, pages = [], assignment = {},
-  transcriptLayoutVersion = CANONICAL_TRANSCRIPT_LAYOUT_VERSION }) {
-  return crypto.createHash('sha256').update(JSON.stringify(canonicalEvaluation.stable({ transcript, assignment,
-    orderedPages: orderedPageIdentity(pages), version: canonical.VERSION,
+  transcriptLayoutVersion = CANONICAL_TRANSCRIPT_LAYOUT_VERSION, fileContentIdentity = null, legend = {} }) {
+  return inputIdentity.correctionInputHash({ transcript, pages, assignment, fileContentIdentity, legend, versions: { version: canonical.VERSION,
     promptVersion: semantic.SEMANTIC_PROMPT_VERSION, schemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
     chunkCoordinatorVersion: semanticCoordinator.VERSION,
-    transcriptLayoutVersion }))).digest('hex');
+    deductionPolicyVersion: canonical.DEDUCTION_POLICY_VERSION,
+    correctionPolicyVersion: correctionPolicy.POLICY_VERSION,
+    confidenceThresholds: correctionPolicy.confidenceThresholds(),
+    categoryReviewPolicyVersion: semantic.CATEGORY_REVIEW_POLICY_VERSION, transcriptLayoutVersion } });
 }
 
 function plannedSemanticAttempts(config = {}) {
@@ -89,10 +90,11 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const transcript = canonicalTranscript.text;
   const spans = canonicalTranscript.wordSpans.map((span) => ({ ...span }));
   if (!transcript) return;
-  const hash = buildCorrectionSourceHash({ transcript, pages: canonicalTranscript.pages, assignment });
-  const semanticConfig = getSemanticAIConfig();
   const legend = await resolveLegend();
-  const assignmentHash = crypto.createHash('sha256').update(JSON.stringify(canonicalEvaluation.stable(assignment))).digest('hex');
+  const hash = buildCorrectionSourceHash({ transcript, pages: canonicalTranscript.pages, assignment,
+    fileContentIdentity: doc.fileContentIdentity || null, legend });
+  const semanticConfig = getSemanticAIConfig();
+  const assignmentHash = inputIdentity.hash(inputIdentity.assessmentContext(assignment));
   const semanticSourceKey = buildSemanticSourceKey(semantic.semanticSourceKey({ correctionSourceHash: hash, config: semanticConfig,
     legendVersion: legend.version, legendContentHash: legend.contentHash, assignmentHash }));
   if (!force && doc.correctionSourceHash === hash && doc.correctionVersion === canonical.VERSION
@@ -155,7 +157,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     timestamp: new Date(semanticStartedAt).toISOString(), correctionSourceHash: hash });
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'aiOnlyStarted' });
   try {
-    semanticRun = await semanticCoordinator.analyze({ transcript, assignment, legend, transcriptHash: hash, spans,
+    semanticRun = await semanticCoordinator.analyze({ transcript, assignment: inputIdentity.assessmentContext(assignment), legend, transcriptHash: hash, spans,
       submissionId: String(doc._id), assessmentRunId: doc.assessmentRunId || jobId,
       pageManifest: canonicalTranscript.pages.map((page) => ({ fileId: page.fileId, fileOrder: page.fileOrder,
         pageNumber: page.pageNumber, pageIndex: page.pageIndex, startChar: page.startChar, endChar: page.endChar })),

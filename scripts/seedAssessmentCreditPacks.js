@@ -13,9 +13,8 @@ const PACKS = [
 async function seedAssessmentCreditPacks() {
   const allowedPlans = await Plan.find({ isActive: true, slug: { $nin: ['institution', 'custom'] } }).distinct('slug');
   if (!allowedPlans.length) throw new Error('No active personal plans are configured for Assessment Credit packs.');
-  for (const pack of PACKS) await CreditPack.updateOne({ code: pack.code }, { $set: { ...pack, allowedPlans, active: true },
-    $setOnInsert: { stripePriceId: null } }, { upsert: true });
-  await CreditPack.updateMany({ code: { $nin: PACKS.map(pack => pack.code) }, active: true }, { $set: { active: false } });
+  for (const pack of PACKS) await CreditPack.updateOne({ code: pack.code },
+    { $setOnInsert: { ...pack, allowedPlans, active: true, stripePriceId: null } }, { upsert: true, runValidators: true });
   return PACKS;
 }
 

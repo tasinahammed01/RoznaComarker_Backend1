@@ -44,7 +44,7 @@ describe('replacement-draft canonical correction lifecycle', () => {
     }
   });
 
-  test('same normalized OCR text remains byte-identical while layout source identity remains draft-specific', () => {
+  test('same normalized OCR text shares analysis identity while annotation IDs remain draft-specific', () => {
     const first = draft('draft-1-file', 'The exact same essay text.', 'ocr-job-1');
     const second = draft('draft-2-file', 'The exact same essay text.', 'ocr-job-2');
     const firstTranscript = buildCanonicalSubmissionTranscript(first);
@@ -52,7 +52,7 @@ describe('replacement-draft canonical correction lifecycle', () => {
 
     expect(Buffer.from(firstTranscript.text)).toEqual(Buffer.from(secondTranscript.text));
     expect(buildCorrectionSourceHash({ transcript: firstTranscript.text, pages: firstTranscript.pages }))
-      .not.toBe(buildCorrectionSourceHash({ transcript: secondTranscript.text, pages: secondTranscript.pages }));
+      .toBe(buildCorrectionSourceHash({ transcript: secondTranscript.text, pages: secondTranscript.pages }));
   });
 
   test('Draft 2 creates new file, word-anchor, and source-hash identities under the same submission id', () => {
