@@ -18,9 +18,27 @@ const PDF_ASSET_DEFAULTS = Object.freeze({ maxWidth: 1900, maxHeight: 2700, jpeg
   maxAssetBytes: 6 * 1024 * 1024, maxTotalEmbeddedBytes: 12 * 1024 * 1024 });
 const abortError = () => new ApiError(499, 'PDF request was cancelled.');
 const throwIfAborted = (signal) => { if (signal?.aborted) throw abortError(); };
+function safeAbortAction(action) {
+  try {
+    const pending = action?.();
+    if (pending && typeof pending.then === 'function') Promise.resolve(pending).catch(() => {});
+  } catch { /* abort listeners must never throw */ }
+}
 const withTimeout = (promise, ms, message, onTimeout) => new Promise((resolve, reject) => {
-  const timer = setTimeout(() => { try { onTimeout?.(); } catch { /* best effort */ } reject(new ApiError(504, message)); }, ms);
-  Promise.resolve(promise).then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+  let settled = false;
+  const finish = (handler, value) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    handler(value);
+  };
+  const timer = setTimeout(() => {
+    safeAbortAction(onTimeout);
+    finish(reject, new ApiError(504, message));
+  }, ms);
+  // Attach both handlers immediately so a rejection after the timeout remains
+  // observed and can never become an unhandledRejection.
+  Promise.resolve(promise).then((value) => finish(resolve, value), (error) => finish(reject, error));
 });
 
 function safeFilePath(file) {
@@ -44,19 +62,29 @@ function assetConfig() {
 async function optimizeImageBuffer(buffer, options = {}) {
   const signal = options.signal; throwIfAborted(signal);
   const config = options.config || assetConfig();
-  const metadata = await sharp(buffer, { failOn: 'error' }).metadata(); throwIfAborted(signal);
+  const sharpFactory = options.sharpFactory || sharp;
+  let metadata;
+  try { metadata = await sharpFactory(buffer, { failOn: 'error' }).metadata(); }
+  catch (error) { if (signal?.aborted) throw abortError(); throw error; }
+  throwIfAborted(signal);
   if ((metadata.width || 0) > limit('PDF_MAX_IMAGE_DIMENSION', 12000)
     || (metadata.height || 0) > limit('PDF_MAX_IMAGE_DIMENSION', 12000)) {
     throw new ApiError(413, 'An uploaded image exceeds the safe dimensions.');
   }
-  const transformer = sharp(buffer, { failOn: 'error' }).rotate()
+  const transformer = sharpFactory(buffer, { failOn: 'error' }).rotate()
     .resize({ width: config.maxWidth, height: config.maxHeight, fit: 'inside', withoutEnlargement: true })
     .flatten({ background: '#ffffff' })
     .jpeg({ quality: config.jpegQuality, progressive: true, mozjpeg: true, chromaSubsampling: '4:4:4' });
-  const cancel = () => transformer.destroy(abortError());
+  // Never pass an Error to destroy(): doing so emits an EventEmitter `error`
+  // that is independent of the awaited toBuffer() promise and can terminate
+  // the process. Promise rejection is normalized in the catch below.
+  const cancel = () => safeAbortAction(() => transformer.destroy());
   signal?.addEventListener('abort', cancel, { once: true });
   try {
-    const { data, info } = await transformer.toBuffer({ resolveWithObject: true });
+    let output;
+    try { output = await transformer.toBuffer({ resolveWithObject: true }); }
+    catch (error) { if (signal?.aborted) throw abortError(); throw error; }
+    const { data, info } = output;
     throwIfAborted(signal);
     if (data.length > config.maxAssetBytes) throw new ApiError(413, 'A normalized report image remains too large.');
     return {
@@ -73,20 +101,35 @@ async function optimizeImageBuffer(buffer, options = {}) {
 async function rasterPdf(buffer, options = {}) {
   const signal = options.signal; const config = options.config || assetConfig();
   const pdfjs = require('pdfjs-dist/legacy/build/pdf.js');
-  const document = await pdfjs.getDocument({ data: new Uint8Array(buffer), disableWorker: true }).promise; const pages = [];
-  if (document.numPages > limit('PDF_MAX_UPLOADED_PAGES', 20)) throw new ApiError(413, 'The uploaded document contains too many pages for a report.');
-  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-    throwIfAborted(signal);
-    const page = await document.getPage(pageNumber); const viewport = page.getViewport({ scale: 1.6 }); const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
-    if (canvas.width > limit('PDF_MAX_IMAGE_DIMENSION', 12000) || canvas.height > limit('PDF_MAX_IMAGE_DIMENSION', 12000)) throw new ApiError(413, 'An uploaded page exceeds the safe image dimensions.');
-    const renderTask = page.render({ canvasContext: canvas.getContext('2d'), viewport });
-    const cancel = () => renderTask.cancel();
-    signal?.addEventListener('abort', cancel, { once: true });
-    try { await renderTask.promise; } finally { signal?.removeEventListener('abort', cancel); }
-    const normalized = await optimizeImageBuffer(canvas.toBuffer('image/png'), { signal, config });
-    pages.push({ pageNumber, ...normalized });
+  throwIfAborted(signal);
+  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer), disableWorker: true });
+  const cancelLoading = () => safeAbortAction(() => loadingTask.destroy());
+  signal?.addEventListener('abort', cancelLoading, { once: true });
+  let document;
+  try { document = await loadingTask.promise; }
+  catch (error) { if (signal?.aborted) throw abortError(); throw error; }
+  finally { signal?.removeEventListener('abort', cancelLoading); }
+  const pages = [];
+  try {
+    if (document.numPages > limit('PDF_MAX_UPLOADED_PAGES', 20)) throw new ApiError(413, 'The uploaded document contains too many pages for a report.');
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+      throwIfAborted(signal);
+      const page = await document.getPage(pageNumber); throwIfAborted(signal); const viewport = page.getViewport({ scale: 1.6 }); const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+      if (canvas.width > limit('PDF_MAX_IMAGE_DIMENSION', 12000) || canvas.height > limit('PDF_MAX_IMAGE_DIMENSION', 12000)) throw new ApiError(413, 'An uploaded page exceeds the safe image dimensions.');
+      const renderTask = page.render({ canvasContext: canvas.getContext('2d'), viewport });
+      const cancel = () => safeAbortAction(() => renderTask.cancel());
+      signal?.addEventListener('abort', cancel, { once: true });
+      try { await renderTask.promise; }
+      catch (error) { if (signal?.aborted) throw abortError(); throw error; }
+      finally { signal?.removeEventListener('abort', cancel); }
+      throwIfAborted(signal);
+      const normalized = await optimizeImageBuffer(canvas.toBuffer('image/png'), { signal, config });
+      pages.push({ pageNumber, ...normalized });
+    }
+    return pages;
+  } finally {
+    safeAbortAction(() => document.destroy());
   }
-  return pages;
 }
 
 async function resolvePersistedPageAssets(files, options = {}) {
@@ -173,4 +216,4 @@ async function buildPersistedSubmissionFeedbackReport({ submission, submissionFe
 }
 
 module.exports = { safeFilePath, rasterPdf, resolvePersistedPageAssets, buildPersistedSubmissionFeedbackReport,
-  _test: { rasterPdf, optimizeImageBuffer, assetConfig, throwIfAborted } };
+  _test: { rasterPdf, optimizeImageBuffer, assetConfig, throwIfAborted, withTimeout, safeAbortAction } };

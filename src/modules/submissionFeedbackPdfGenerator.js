@@ -21,6 +21,8 @@ function assertUniformA4Portrait(pdfDocument, tolerance = 1) {
 }
 
 const positiveEnv = (name, fallback) => { const value = Number(process.env[name]); return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback; };
+const cancellationError = () => new ApiError(499, 'PDF request was cancelled.');
+const throwIfAborted = (signal) => { if (signal?.aborted) throw cancellationError(); };
 const timeout = (promise, ms, message, onTimeout) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => { try { onTimeout?.(); } catch { /* best effort */ } reject(new ApiError(504, message)); }, ms);
   Promise.resolve(promise).then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
@@ -43,16 +45,19 @@ async function generateSubmissionFeedbackPdf(viewModel, outputPath, options = {}
     const abortListener = () => cancelRender();
     options.abortSignal?.addEventListener('abort', abortListener, { once: true });
     const render = async () => {
+      throwIfAborted(options.abortSignal);
       const htmlStartedAt = Date.now(); const htmlRenderer = typeof options.renderHtml === 'function'
         ? options.renderHtml : renderSubmissionFeedbackReportHtml;
       const html = htmlRenderer(viewModel); const htmlBytes = Buffer.byteLength(html);
       stage('html_generation', htmlStartedAt, { htmlCharacters: html.length });
       if (htmlBytes > positiveEnv('PDF_MAX_HTML_BYTES', 12 * 1024 * 1024)) throw new ApiError(413, 'The report is too large to render safely.');
       if (options.debugHtmlPath) await fs.promises.writeFile(options.debugHtmlPath, html, 'utf8');
-      if (options.abortSignal?.aborted) throw new ApiError(499, 'PDF request was cancelled.');
+      throwIfAborted(options.abortSignal);
       const browserStartedAt = Date.now(); const browser = await browserManager.getBrowser(); const browserAcquisitionMs = Date.now() - browserStartedAt;
+      throwIfAborted(options.abortSignal);
       stage('browser_acquisition', browserStartedAt);
       const pageStartedAt = Date.now(); context = await browser.createBrowserContext(); page = await context.newPage();
+      throwIfAborted(options.abortSignal);
       stage('new_page_creation', pageStartedAt);
       await page.setRequestInterception(true); page.on('request', (request) => { const url = request.url(); if (url === 'about:blank' || url.startsWith('data:') || url.startsWith('blob:')) request.continue(); else request.abort(); });
       const contentStartedAt = Date.now(); await timeout(page.setContent(html, { waitUntil: 'load' }), limits.pageReadyTimeoutMs, 'PDF page setup timed out.', cancelRender);
@@ -67,7 +72,7 @@ async function generateSubmissionFeedbackPdf(viewModel, outputPath, options = {}
       const imagesStartedAt = Date.now(); await timeout(page.evaluate(async () => { await Promise.all([...document.images].map((image) => image.decode().catch(() => { image.removeAttribute('src'); image.alt = 'Submitted image unavailable'; }))); }), limits.imageLoadTimeoutMs, 'PDF image loading timed out.', cancelRender);
       const imageDecodingMs = Date.now() - imagesStartedAt;
       stage('image_loading', imagesStartedAt);
-      if (options.abortSignal?.aborted) throw new ApiError(499, 'PDF request was cancelled.');
+      throwIfAborted(options.abortSignal);
       const pdfStartedAt = Date.now(); await timeout(page.pdf({ path: outputPath, format: 'A4', preferCSSPageSize: true, printBackground: true, displayHeaderFooter: true,
         headerTemplate: '<div style="width:100%;margin:0 14mm;font:7pt Arial;color:#738392;border-bottom:1px solid #dfe6ea;padding-bottom:1mm"><b style="color:#087f83">ROZNAHUB</b> &nbsp;/&nbsp; Submission Feedback Report</div>',
         footerTemplate: '<div style="width:100%;margin:0 14mm;font:7pt Arial;color:#738392;border-top:1px solid #dfe6ea;padding-top:1mm;display:flex;justify-content:space-between"><span>Confidential academic feedback</span><span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span></div>' }),
@@ -84,7 +89,14 @@ async function generateSubmissionFeedbackPdf(viewModel, outputPath, options = {}
         memoryRssBytes: process.memoryUsage().rss }); return outputPath;
     };
     try { return await timeout(render(), limits.renderTimeoutMs, 'PDF generation timed out.', cancelRender); }
-    catch (error) { await fs.promises.unlink(outputPath).catch(() => {}); if (error.statusCode === 504) browserManager.recordTimeout(); logger.metric({ event: 'pdf_render_failed', durationMs: Date.now() - startedAt, statusCode: error.statusCode || 500 }); throw error; }
+    catch (error) {
+      await fs.promises.unlink(outputPath).catch(() => {});
+      const controlled = options.abortSignal?.aborted ? cancellationError() : error;
+      if (controlled.statusCode === 504) browserManager.recordTimeout();
+      logger.metric({ event: 'pdf_render_failed', durationMs: Date.now() - startedAt,
+        statusCode: controlled.statusCode || 500 });
+      throw controlled;
+    }
     finally {
       options.abortSignal?.removeEventListener('abort', abortListener);
       const closeStartedAt = Date.now();

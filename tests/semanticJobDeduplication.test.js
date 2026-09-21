@@ -19,6 +19,7 @@ const writing = require('../src/services/writingCorrections.service');
 const metrics = require('../src/services/semanticMetrics.service');
 const pipeline = require('../src/services/canonicalCorrectionsPipeline.service');
 const canonical = require('../src/services/correctionCanonical.service');
+const { resolveLegend } = require('../src/services/correctionLegendResolver.service');
 const { CANONICAL_TRANSCRIPT_LAYOUT_VERSION, buildCanonicalSubmissionTranscript } = require('../src/utils/ocrTranscriptNormalizer');
 const logger = require('../src/utils/logger');
 
@@ -200,7 +201,8 @@ describe('semantic single-flight job lock', () => {
     const transcript = 'A complete essay.';
     const source = { files: ['f1'], ocrPages: [{ fileId: 'f1', pageNumber: 1, text: transcript }] };
     const pages = buildCanonicalSubmissionTranscript(source).pages;
-    const correctionSourceHash = pipeline.buildCorrectionSourceHash({ transcript, pages, assignment });
+    const legend = await resolveLegend();
+    const correctionSourceHash = pipeline.buildCorrectionSourceHash({ transcript, pages, assignment, legend });
     const model = { updateOne: jest.fn() };
     const result = await pipeline.generateAndPersist({ _id: 'submission-2', ocrJobId: 'ocr-job', files: ['f1'],
       ocrPages: source.ocrPages, correctionSourceHash,

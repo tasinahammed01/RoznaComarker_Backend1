@@ -305,7 +305,10 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(processingDoc.correctionStatus).toBe('completed');
     expect(processingDoc.writingCorrections).toHaveLength(5);
     await waitForCondition(() => lifecycleEvents.includes('evaluation-started'));
-    expect(lifecycleEvents.slice(0, 4)).toEqual(['ocr-completed', 'ocr-completed', 'correction-started', 'evaluation-started']);
+    expect(lifecycleEvents.slice(0, 2)).toEqual(['ocr-completed', 'ocr-completed']);
+    // Rubric preparation and semantic corrections intentionally start in
+    // parallel once OCR is ready, so their relative start order is undefined.
+    expect(lifecycleEvents.slice(2, 4).sort()).toEqual(['correction-started', 'evaluation-started']);
     expect(retryAnalysisRequestCount).toBe(0);
     releaseRubric();
     const completedDoc = await waitFor(successId, (doc) => doc.correctionStatus === 'completed' && doc.evaluationStatus === 'completed');

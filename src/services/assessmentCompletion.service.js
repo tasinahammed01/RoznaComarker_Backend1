@@ -1,9 +1,7 @@
 const AssessmentRun = require('../models/AssessmentRun');
 const Submission = require('../models/Submission');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
-const Feedback = require('../models/Feedback');
 require('../models/File');
-const reportService = require('./submissionFeedbackReport.service');
 const AssessmentCreditRouter = require('./assessmentCreditRouter.service');
 const logger = require('../utils/logger');
 const { publishToUser } = require('./notificationRealtime.service');
@@ -85,13 +83,9 @@ async function complete({ runId, submissionId, teacherId, sourceHash }) {
       report: 'pending', adaptiveLearning: 'not_required'
     } } });
 
-    const legacyFeedback = await Feedback.findOne({ submission: submissionId });
-    await reportService.buildPersistedSubmissionFeedbackReport({ submission, submissionFeedback,
-      feedback: legacyFeedback, identity: {}, generatedAt: new Date().toISOString() });
-    logger.info({ message: 'Assessment pipeline timing', submissionId: String(submissionId), stage: 'reportReadyAt',
-      timestamp: new Date().toISOString(), sourceHash });
-    await AssessmentRun.updateOne({ _id: run._id }, { $set: { 'components.report': 'complete' } });
-
+    // Report assets are a read-only, on-demand projection of these persisted
+    // academic results. Image normalization/base64/Puppeteer work must not be
+    // part of score readiness or assessment correctness.
     const completed = await AssessmentRun.findOneAndUpdate({ _id: run._id, status: { $ne: 'complete' } }, { $set: {
       status: 'complete', 'components.adaptiveLearning': 'not_required', adaptiveState: 'not_generated',
       completedAt: new Date(), failedAt: null, errorCode: null

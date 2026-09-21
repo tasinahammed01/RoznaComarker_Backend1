@@ -84,6 +84,21 @@ describe('current roster progress and student quota', () => {
       .set('Authorization', `Bearer ${teacher.token}`);
     expect(history.status).toBe(200);
     expect(history.body.data).toHaveLength(3);
+    const essayActivity = await request(app).get(`/api/submissions/assignment/${essay._id}?view=activity`)
+      .set('Authorization', `Bearer ${teacher.token}`);
+    expect(essayActivity.status).toBe(200);
+    expect(essayActivity.body.data).toHaveLength(3);
+    expect(essayActivity.body.data[0]).toEqual(expect.objectContaining({ student: expect.any(String),
+      submittedAt: expect.any(String) }));
+    expect(essayActivity.body.data[0]).not.toHaveProperty('ocrPages');
+    expect(essayActivity.body.data[0]).not.toHaveProperty('writingCorrections');
+    const flashActivity = await request(app).get(`/api/assignments/${flashcard._id}/submissions?view=activity`)
+      .set('Authorization', `Bearer ${teacher.token}`);
+    expect(flashActivity.status).toBe(200);
+    expect(flashActivity.body.data).toHaveLength(3);
+    expect(flashActivity.body.data[0]).toEqual(expect.objectContaining({ userId: expect.any(String) }));
+    expect(flashActivity.body.data[0]).not.toHaveProperty('results');
+    expect(flashActivity.body.data[0]).not.toHaveProperty('cardResults');
   });
 
   test('zero active students plus historical work reports 0/0', async () => {

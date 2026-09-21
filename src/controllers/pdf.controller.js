@@ -159,6 +159,8 @@ async function downloadSubmissionPdf(req, res, next) {
     res.once("close", abortClosedResponse);
     let savedPath;
     try {
+      logger.info({ message: "Assessment pipeline timing", submissionId: String(submission._id),
+        stage: "reportRequestedAt", timestamp: new Date().toISOString() });
       const memoryBefore = process.memoryUsage().rss;
       const { viewModel, diagnostics, timings } = await buildPersistedSubmissionFeedbackReport({
         submission, submissionFeedback, feedback, identity, abortSignal: abortController.signal
@@ -173,6 +175,8 @@ async function downloadSubmissionPdf(req, res, next) {
         missingAssetCount: diagnostics.missingAssetCount, totalEmbeddedAssetBytes: diagnostics.totalEmbeddedAssetBytes,
         memoryRssDeltaBytes: process.memoryUsage().rss - memoryBefore, ...timings });
       savedPath = await generateSubmissionFeedbackPdf(viewModel, outputPath, { abortSignal: abortController.signal });
+      logger.info({ message: "Assessment pipeline timing", submissionId: String(submission._id),
+        stage: "reportReadyAt", timestamp: new Date().toISOString(), durationMs: Date.now() - requestStartedAt });
     } catch (error) {
       if (requestBudgetExpired) throw new ApiError(504, "PDF generation timed out.");
       throw error;

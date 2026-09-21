@@ -35,12 +35,12 @@ test('all required components transition run to complete before exactly one debi
   await completion.complete({ runId: 'run-complete', submissionId: submission._id, teacherId: teacher._id, sourceHash: 'source-1' });
   const run = await AssessmentRun.findOne({ runId: 'run-complete' }).lean();
   expect(run).toMatchObject({ status: 'complete', components: { transcription: 'complete', issueDetection: 'complete',
-    evaluation: 'complete', detailedFeedback: 'complete', report: 'complete', adaptiveLearning: 'not_required' },
+    evaluation: 'complete', detailedFeedback: 'complete', report: 'pending', adaptiveLearning: 'not_required' },
   adaptiveState: 'not_generated' });
   expect(generate).not.toHaveBeenCalled();
   expect(await AdaptivePracticeSession.countDocuments()).toBe(0);
   expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT', status: 'committed' })).toBe(1);
-  expect(report.buildPersistedSubmissionFeedbackReport).toHaveBeenCalledTimes(1);
+  expect(report.buildPersistedSubmissionFeedbackReport).not.toHaveBeenCalled();
 });
 
 test('completion replay reconciles an interrupted debit without a second wallet mutation', async () => {
@@ -75,11 +75,16 @@ test('a referral reward failure cannot fail an otherwise successful assessment',
   expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT', status: 'committed' })).toBe(1);
 });
 
-test('report preparation failure leaves the assessment failed and consumes no credit', async () => {
+test('report preparation is outside completion and cannot fail persisted score or credit', async () => {
   report.buildPersistedSubmissionFeedbackReport.mockRejectedValueOnce(new Error('report failed'));
   const generate = jest.spyOn(adaptive, 'generateSession');
-  await expect(completion.complete({ runId: 'run-report-failed', submissionId: submission._id,
-    teacherId: teacher._id, sourceHash: 'source-1' })).rejects.toMatchObject({ code: 'ASSESSMENT_COMPLETION_FAILED' });
-  expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT' })).toBe(0);
+  await completion.start({ runId: 'run-report-independent', submission,
+    teacherId: teacher._id, sourceHash: 'source-1' });
+  await expect(completion.complete({ runId: 'run-report-independent', submissionId: submission._id,
+    teacherId: teacher._id, sourceHash: 'source-1' })).resolves.toMatchObject({ run: { status: 'complete' } });
+  expect(report.buildPersistedSubmissionFeedbackReport).not.toHaveBeenCalled();
+  expect(await Submission.findById(submission._id).lean()).toMatchObject({ assessmentStatus: 'complete',
+    evaluationStatus: 'completed', correctionStatus: 'completed' });
+  expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT', status: 'committed' })).toBe(1);
   expect(generate).not.toHaveBeenCalled();
 });

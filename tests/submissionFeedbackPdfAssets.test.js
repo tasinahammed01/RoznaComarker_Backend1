@@ -94,4 +94,57 @@ describe('submission feedback PDF asset normalization', () => {
     await expect(_test.optimizeImageBuffer(await image(100, 100), { signal: controller.signal }))
       .rejects.toMatchObject({ statusCode: 499 });
   });
+
+  test('Sharp abort callback never throws, emits no injected stream error, and removes its listener', async () => {
+    let rejectBuffer;
+    const transformer = {
+      metadata: jest.fn(async () => ({ width: 100, height: 100, orientation: 1 })),
+      rotate: jest.fn(function rotate() { return this; }),
+      resize: jest.fn(function resize() { return this; }),
+      flatten: jest.fn(function flatten() { return this; }),
+      jpeg: jest.fn(function jpeg() { return this; }),
+      toBuffer: jest.fn(() => new Promise((_resolve, reject) => { rejectBuffer = reject; })),
+      destroy: jest.fn(() => {
+        setTimeout(() => rejectBuffer(new Error('late native cancellation')), 0);
+        throw new Error('synthetic synchronous destroy failure');
+      })
+    };
+    const controller = new AbortController();
+    const remove = jest.spyOn(controller.signal, 'removeEventListener');
+    const uncaught = [];
+    const onUncaught = (error) => uncaught.push(error);
+    process.on('uncaughtException', onUncaught);
+    const pending = _test.optimizeImageBuffer(Buffer.from('synthetic'), {
+      signal: controller.signal, sharpFactory: () => transformer
+    });
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(() => controller.abort()).not.toThrow();
+      await expect(pending).rejects.toMatchObject({ statusCode: 499,
+        message: 'PDF request was cancelled.' });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(uncaught).toEqual([]);
+      expect(transformer.destroy).toHaveBeenCalledWith();
+      expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
+    } finally {
+      process.removeListener('uncaughtException', onUncaught);
+    }
+  });
+
+  test('asset timeout is a controlled 504 and observes a late rejection', async () => {
+    let rejectLate;
+    const late = new Promise((_resolve, reject) => { rejectLate = reject; });
+    const unhandled = [];
+    const onUnhandled = (error) => unhandled.push(error);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await expect(_test.withTimeout(late, 5, 'Submission asset preparation timed out.'))
+        .rejects.toMatchObject({ statusCode: 504 });
+      rejectLate(new Error('late Sharp rejection'));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled);
+    }
+  });
 });

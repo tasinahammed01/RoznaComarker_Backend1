@@ -37,6 +37,7 @@ describe('submission feedback PDF generator cancellation', () => {
     output = path.join(root, 'partial.pdf');
     fs.writeFileSync(output, 'partial');
     page.setContent.mockImplementation(() => new Promise(() => {}));
+    manager.getBrowser.mockResolvedValue(browser);
   });
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -57,6 +58,24 @@ describe('submission feedback PDF generator cancellation', () => {
     controller.abort();
     await expect(pending).rejects.toBeDefined();
     expect(close).toHaveBeenCalled();
+    expect(fs.existsSync(output)).toBe(false);
+  });
+
+  test('abort during browser acquisition stops before page creation with a controlled 499', async () => {
+    let releaseBrowser;
+    manager.getBrowser.mockImplementationOnce(() => new Promise((resolve) => { releaseBrowser = () => resolve(browser); }));
+    const controller = new AbortController();
+    const pending = generateSubmissionFeedbackPdf({ submittedPages: [] }, output, {
+      abortSignal: controller.signal
+    });
+    for (let attempt = 0; attempt < 20 && !manager.getBrowser.mock.calls.length; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    expect(() => controller.abort()).not.toThrow();
+    releaseBrowser();
+    await expect(pending).rejects.toMatchObject({ statusCode: 499,
+      message: 'PDF request was cancelled.' });
+    expect(browser.createBrowserContext).not.toHaveBeenCalled();
     expect(fs.existsSync(output)).toBe(false);
   });
 });

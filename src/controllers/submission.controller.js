@@ -467,6 +467,7 @@ async function cleanupUnpersistedRequestFiles(req) {
 }
 
 async function upsertSubmission({ req, res, assignment, qrToken }) {
+  const submissionStartedAt = Date.now();
   const studentId = req.user && req.user._id;
   if (!studentId) {
     return sendError(res, 401, 'Unauthorized');
@@ -705,6 +706,9 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
         }
       });
 
+      logger.info({ message: 'Assessment pipeline timing', submissionId: String(saved._id),
+        stage: 'submissionAcceptedAt', timestamp: new Date().toISOString(),
+        durationMs: Date.now() - submissionStartedAt, draftNumber: Number(saved.draftNumber || 1) });
       return sendSuccess(res, populated);
     }
 
@@ -755,6 +759,10 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
       .populate('class')
       .populate('file')
       .populate('files');
+
+    logger.info({ message: 'Assessment pipeline timing', submissionId: String(created._id),
+      stage: 'submissionAcceptedAt', timestamp: new Date().toISOString(),
+      durationMs: Date.now() - submissionStartedAt, draftNumber: Number(created.draftNumber || 1) });
 
     // Notify teacher (fire-and-forget)
     setImmediate(async () => {
@@ -898,11 +906,21 @@ async function getSubmissionsByAssignment(req, res) {
       return sendError(res, 404, 'Class not found');
     }
 
-    const submissions = await Submission.find({
+    const submissionQuery = Submission.find({
       assignment: assignment._id,
       class: classDoc._id
-    })
-      .sort({ submittedAt: -1 })
+    }).sort({ submittedAt: -1 });
+
+    // Teacher class activity needs only identity and timestamps. Keep the
+    // existing detailed response as the default for review/report screens.
+    if (req.query?.view === 'activity') {
+      const activity = await submissionQuery
+        .select('_id student submittedAt createdAt updatedAt')
+        .lean();
+      return sendSuccess(res, activity);
+    }
+
+    const submissions = await submissionQuery
       .populate('student', '_id email displayName photoURL role')
       .populate({
         path: 'assignment',

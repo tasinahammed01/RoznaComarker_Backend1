@@ -1768,9 +1768,10 @@ async function getFlashcardAssignmentSubmissions(req, res) {
     const assignment = await Assignment.findOne({ _id: assignmentId, teacher: teacherId, isActive: true });
     if (!assignment) return sendError(res, 404, 'Assignment not found');
 
-    const subs = await FlashcardSubmission.find({ assignmentId })
-      .populate('userId', '_id email displayName photoURL')
-      .sort({ submittedAt: -1 });
+    const submissionQuery = FlashcardSubmission.find({ assignmentId }).sort({ submittedAt: -1 });
+    const subs = req.query?.view === 'activity'
+      ? await submissionQuery.select('_id userId submittedAt createdAt updatedAt').lean()
+      : await submissionQuery.populate('userId', '_id email displayName photoURL');
 
     return sendSuccess(res, subs);
   } catch (err) {

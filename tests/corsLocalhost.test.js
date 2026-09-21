@@ -71,12 +71,13 @@ describe('localhost CORS configuration', () => {
     process.env.NODE_ENV = 'production';
     process.env.FRONTEND_URL = 'https://comarkers.roznahub.com';
     const productionApp = app();
-    const canonical = await request(productionApp).options('/health')
+    const canonical = await request(productionApp).options('/api/memberships/mine')
       .set('Origin', 'https://comarkers.roznahub.com')
       .set('Access-Control-Request-Method', 'GET')
-      .set('Access-Control-Request-Headers', 'authorization');
+      .set('Access-Control-Request-Headers', 'authorization,content-type');
     expect(canonical.status).toBe(204);
     expect(canonical.headers['access-control-allow-origin']).toBe('https://comarkers.roznahub.com');
+    expect(canonical.headers['access-control-allow-headers']).toMatch(/Authorization/i);
     const alias = await request(productionApp).get('/health').set('Origin', 'https://markers.roznahub.com');
     expect(alias.status).toBe(403);
     expect(alias.headers['access-control-allow-origin']).toBeUndefined();

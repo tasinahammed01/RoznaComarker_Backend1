@@ -17,6 +17,7 @@ function toAbsoluteStoredPath(storedPath) {
 }
 
 async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
+  const ocrStartedAt = Date.now();
   const ids = Array.isArray(fileIds) ? fileIds.filter(Boolean) : [];
   const first = ids.length ? ids[0] : null;
   if (!first) {
@@ -230,6 +231,9 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
   targetDoc.ocrError = undefined;
   targetDoc.ocrUpdatedAt = new Date();
   if (!(await saveCurrentJob())) return { ocrStatus: 'superseded' };
+  logger.info({ message: 'Assessment pipeline timing', submissionId: String(targetDoc._id),
+    stage: 'ocrReadyAt', timestamp: new Date().toISOString(), durationMs: Date.now() - ocrStartedAt,
+    provider: 'google_vision', model: null, pageCount: ocrPages.length, fileCount: processed });
   try {
     const assignmentDoc = targetDoc.assignment ? await Assignment.findById(targetDoc.assignment).lean().catch(() => null) : null;
     await canonicalCorrectionsPipeline.generateAndPersist(targetDoc, { assignment: assignmentDoc ? {
@@ -278,6 +282,7 @@ function toStoredOcrWords(words) {
 }
 
 async function runOcrAndPersist({ fileId, targetDoc }) {
+  const ocrStartedAt = Date.now();
   if (!fileId) {
     throw new Error('Missing file id');
   }
@@ -317,6 +322,9 @@ async function runOcrAndPersist({ fileId, targetDoc }) {
     };
 
     await targetDoc.save();
+    logger.info({ message: 'Assessment pipeline timing', submissionId: String(targetDoc._id),
+      stage: 'ocrReadyAt', timestamp: new Date().toISOString(), durationMs: Date.now() - ocrStartedAt,
+      provider: 'google_vision', model: null, pageCount: 1, fileCount: 1 });
 
     return {
       ocrText: targetDoc.ocrText,

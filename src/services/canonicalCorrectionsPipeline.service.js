@@ -309,6 +309,13 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     return;
   }
   const totalCorrectionsMs = Date.now() - totalStartedAt;
+  logger.info({ message: 'Assessment pipeline timing', submissionId: String(doc._id), stage: 'correctionsReadyAt',
+    timestamp: new Date().toISOString(), durationMs: totalCorrectionsMs,
+    provider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
+    model: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
+    fallbackCount: (gatewayMetrics.attempts || []).filter((attempt) => Number(attempt.fallbackIndex || 0) > 0).length,
+    truncationCount: Number(semanticRun?.metrics?.truncationCount || 0),
+    chunkCount: Number(semanticRun?.metrics?.chunkCount || semanticRun?.coverage?.totalChunks || 0) });
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id),
     stage: semanticError ? 'aiOnlyFailed' : 'aiOnlyCompleted', durationMs: semanticAiMs,
     ocrJobId: doc.ocrJobId || null, correctionSourceHash: hash,

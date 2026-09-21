@@ -6,7 +6,7 @@ const canonical = require('./correctionCanonical.service');
 const { getSemanticAIConfig } = require('./semanticAIClient.service');
 const { CORRECTION_CATEGORIES } = require('./structuredOutputSchemas.service');
 const logger = require('../utils/logger');
-const VERSION = 'semantic-chunk-coordinator-v2-explicit-coverage';
+const VERSION = 'semantic-chunk-coordinator-v3-output-risk';
 
 const integer = (value, fallback, minimum = 1) => {
   const parsed = Number(value);
@@ -23,7 +23,11 @@ function config(env = process.env) {
     maxConcurrency: integer(env.SEMANTIC_AI_MAX_CONCURRENCY, 2),
     failedChunkRetries: integer(env.SEMANTIC_AI_FAILED_CHUNK_RETRIES, 1, 0),
     maxChunks: integer(env.SEMANTIC_AI_MAX_CHUNKS, 12),
-    totalBudgetMs: integer(env.SEMANTIC_AI_CHUNK_TOTAL_BUDGET_MS, 180000, 1000)
+    totalBudgetMs: integer(env.SEMANTIC_AI_CHUNK_TOTAL_BUDGET_MS, 180000, 1000),
+    outputRiskMinWords: integer(env.SEMANTIC_AI_OUTPUT_RISK_MIN_WORDS, 550),
+    outputRiskMinSentences: integer(env.SEMANTIC_AI_OUTPUT_RISK_MIN_SENTENCES, 24),
+    outputRiskMinCandidates: integer(env.SEMANTIC_AI_OUTPUT_RISK_MIN_CANDIDATES, 6),
+    outputRiskOutputBudgetPercent: integer(env.SEMANTIC_AI_OUTPUT_RISK_BUDGET_PERCENT, 72)
   };
 }
 
@@ -127,6 +131,38 @@ function deterministicLanguageCandidateCount(transcript) {
   return patterns.reduce((count, pattern) => count + (text.match(pattern)?.length || 0), 0);
 }
 
+function assessOutputRisk(input, { requestEstimate, maxOutputTokens, settings }) {
+  const transcript = String(input?.transcript || '');
+  const wordCount = transcript.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu)?.length || 0;
+  const sentenceCount = transcript.match(/(?:[.!?]+(?=\s|$)|\n{2,})/gu)?.length || (transcript.trim() ? 1 : 0);
+  const pageCount = Math.max(1, Array.isArray(input?.pageManifest) ? input.pageManifest.length : 0);
+  const deterministicCandidates = deterministicLanguageCandidateCount(transcript);
+  // A schema-valid correction carries category/symbol/evidence/message and
+  // replacement fields. This conservative estimate is only a routing signal;
+  // it never creates, removes, or scores a correction.
+  const estimatedCorrections = deterministicCandidates
+    + Math.floor(wordCount / 35) + Math.floor(sentenceCount / 4);
+  const estimatedOutputTokens = 250 + estimatedCorrections * 55;
+  const outputBudget = Math.max(256, Number(maxOutputTokens) || 2500);
+  const budgetPercent = Math.min(95, Math.max(25, Number(settings.outputRiskOutputBudgetPercent) || 72));
+  const indicators = {
+    wordVolume: wordCount >= settings.outputRiskMinWords,
+    sentenceVolume: sentenceCount >= settings.outputRiskMinSentences,
+    deterministicCandidateDensity: deterministicCandidates >= settings.outputRiskMinCandidates,
+    multiPageVolume: pageCount >= 2 && wordCount >= Math.floor(settings.outputRiskMinWords * 0.7),
+    promptNearSingleLimit: requestEstimate >= Math.floor(settings.singleRequestThresholdTokens * 0.72),
+    estimatedOutputPressure: estimatedOutputTokens >= Math.floor(outputBudget * budgetPercent / 100)
+  };
+  const volumeSignals = [indicators.wordVolume, indicators.sentenceVolume,
+    indicators.multiPageVolume, indicators.promptNearSingleLimit].filter(Boolean).length;
+  const highRisk = (indicators.estimatedOutputPressure
+      && (indicators.deterministicCandidateDensity || volumeSignals >= 2))
+    || (indicators.deterministicCandidateDensity && volumeSignals >= 1)
+    || wordCount >= settings.outputRiskMinWords * 2;
+  return { highRisk, wordCount, sentenceCount, pageCount, deterministicCandidates,
+    estimatedCorrections, estimatedOutputTokens, outputBudgetTokens: outputBudget, indicators };
+}
+
 async function runBounded(tasks, concurrency) {
   const results = new Array(tasks.length);
   let cursor = 0;
@@ -153,7 +189,8 @@ function aggregateMetrics(results, chunks, startedAt, mode) {
   const fallbackCalls = attempts.filter((attempt) => Number(attempt.fallbackIndex || 0) > 0).length;
   const timeoutCount = attempts.filter((attempt) => attempt.code === 'AI_ATTEMPT_TIMEOUT').length;
   const truncationCount = attempts.filter((attempt) => ['length', 'max_tokens', 'MAX_TOKENS']
-    .includes(attempt.finishReason) || attempt.code === 'AI_OUTPUT_TRUNCATED').length;
+    .includes(attempt.finishReason) || ['AI_OUTPUT_TRUNCATED', 'AI_RESPONSE_TRUNCATED', 'GOOGLE_OUTPUT_TRUNCATED']
+    .includes(attempt.code)).length;
   return { mode, chunkCount: chunks.length, numberOfChunks: chunks.length,
     requestCount: results.length, providerCallCount: attempts.length || results.length,
     semanticInputTokens: inputTokens || null, semanticOutputTokens: outputTokens || null,
@@ -214,7 +251,18 @@ async function analyze(input, dependencies = {}) {
   const requestEstimate = typeof semanticService.buildSemanticRequest === 'function'
     ? semanticService.buildSemanticRequest(input).promptInputTokenEstimate
     : Math.ceil(String(input.transcript || '').length / 4);
-  if (!settings.enabled || requestEstimate <= settings.singleRequestThresholdTokens) {
+  const baseConfig = dependencies.config || getSemanticAIConfig();
+  const outputRisk = assessOutputRisk(input, { requestEstimate,
+    maxOutputTokens: baseConfig.maxOutputTokens || settings.chunkMaxOutputTokens, settings });
+  const inputRequiresChunking = requestEstimate > settings.singleRequestThresholdTokens;
+  const useChunking = settings.enabled && (inputRequiresChunking || outputRisk.highRisk);
+  const routingReason = !settings.enabled ? 'chunking_disabled'
+    : inputRequiresChunking ? 'input_threshold' : outputRisk.highRisk ? 'output_risk' : 'single_efficient';
+  logger.info({ event: 'semantic_routing_decision', submissionId: input.submissionId || null,
+    assessmentRunId: input.assessmentRunId || null, mode: useChunking ? 'chunked' : 'single',
+    routingReason, requestInputTokenEstimate: requestEstimate,
+    outputRisk: { ...outputRisk, indicators: outputRisk.indicators } });
+  if (!useChunking) {
     const result = await semanticService.analyze(input, dependencies);
     const coordinatorMetrics = aggregateMetrics([{ status: 'fulfilled', value: result }],
       [{ text: input.transcript, startChar: 0, endChar: input.transcript.length }], startedAt, 'single');
@@ -223,7 +271,8 @@ async function analyze(input, dependencies = {}) {
       coveredCharacters: input.transcript.length, totalCharacters: input.transcript.length,
       totalChunks: 1, successfulChunks: 1, failedChunks: 0, structuralPassStatus: 'not_required',
       sourceHashMatches: true, expectedTextRangesCovered: true, finalMergeCompleted: true,
-      categoryCoverageComplete }, metrics: { ...(result.metrics || {}), ...coordinatorMetrics } };
+      categoryCoverageComplete }, metrics: { ...(result.metrics || {}), ...coordinatorMetrics,
+        routingReason, requestInputTokenEstimate: requestEstimate, outputRisk } };
   }
 
   const localPromptOverheadTokens = semanticWriting.buildSemanticRequest({ ...input, transcript: '',
@@ -231,7 +280,6 @@ async function analyze(input, dependencies = {}) {
   const chunks = buildChunks(input.transcript, input.pageManifest || [], { ...settings,
     chunkInputTokens: Math.max(400, settings.chunkInputTokens - localPromptOverheadTokens) });
   const deadlineAt = Math.min(Number(input.deadlineAt) || Infinity, startedAt + settings.totalBudgetMs);
-  const baseConfig = dependencies.config || getSemanticAIConfig();
   const chunkConfig = { ...baseConfig, maxOutputTokens: Math.min(Number(baseConfig.maxOutputTokens) || settings.chunkMaxOutputTokens,
     settings.chunkMaxOutputTokens) };
   const executeChunk = async (chunk, stage = 'initial') => {
@@ -326,7 +374,8 @@ async function analyze(input, dependencies = {}) {
     .filter(({ result }) => result.status === 'rejected').map(({ result, index }) => ({ index,
       chunkId: chunkIdentity(input, chunks[index]), code: result.reason?.code || 'SEMANTIC_CHUNK_FAILED' }));
   const metrics = { ...aggregateMetrics(results, chunks, startedAt, 'chunked'),
-    configuredChunkInputTokens: settings.chunkInputTokens, localPromptOverheadTokens };
+    configuredChunkInputTokens: settings.chunkInputTokens, localPromptOverheadTokens,
+    routingReason, requestInputTokenEstimate: requestEstimate, outputRisk };
   const coveredCharacters = coveredCharactersForSuccessfulChunks(results, chunks);
   const chunkOutcomes = results.slice(0, chunks.length).map((result, index) => {
     const value = result.status === 'fulfilled' ? result.value : null;
@@ -358,4 +407,4 @@ async function analyze(input, dependencies = {}) {
 
 module.exports = { VERSION, config, preferredBoundary, buildChunks, localSpans, localPages, remapCorrections,
   chunkIdentity, splitChunk, recoverableFailure, deterministicLanguageCandidateCount, runBounded, aggregateMetrics,
-  aggregateValidationDiagnostics, coveredCharactersForSuccessfulChunks, analyze };
+  aggregateValidationDiagnostics, coveredCharactersForSuccessfulChunks, assessOutputRisk, analyze };

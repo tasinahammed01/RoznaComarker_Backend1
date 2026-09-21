@@ -16,6 +16,44 @@ const semanticResult = (input) => {
 };
 
 describe('semantic correction chunk coordinator', () => {
+  test('keeps a short clean essay on one efficient request', async () => {
+    const transcript = 'A clear short response explains one idea with supporting evidence.';
+    const semanticService = {
+      buildSemanticRequest: jest.fn(() => ({ promptInputTokenEstimate: 1800 })),
+      analyze: jest.fn(async (input) => semanticResult(input))
+    };
+    const result = await coordinator.analyze({ transcript, transcriptHash: 'short-clean',
+      legend: defaultLegend(), spans: [], pageManifest: [], assignment: {} }, {
+      semanticService, config: { maxOutputTokens: 3500 },
+      settings: { enabled: true, singleRequestThresholdTokens: 5000 }
+    });
+    expect(result.metrics).toMatchObject({ mode: 'single', routingReason: 'single_efficient',
+      providerCallCount: 1, truncationCount: 0 });
+    expect(semanticService.analyze).toHaveBeenCalledTimes(1);
+  });
+
+  test('routes medium error-dense input to bounded chunks before a full-response truncation attempt', async () => {
+    const transcript = `badword ${('he are writing badly . this sentence has  two spaces and an problem. ').repeat(90)}`;
+    const semanticService = {
+      buildSemanticRequest: jest.fn(() => ({ promptInputTokenEstimate: 3200 })),
+      analyze: jest.fn(async (input) => semanticResult(input))
+    };
+    const result = await coordinator.analyze({ transcript, transcriptHash: 'medium-dense',
+      legend: defaultLegend(), spans: [], pageManifest: [{ startChar: 0, endChar: transcript.length }],
+      assignment: {} }, { semanticService, config: { maxOutputTokens: 3500 },
+      settings: { enabled: true, singleRequestThresholdTokens: 5000, chunkInputTokens: 2500,
+        overlapTokens: 150, chunkMaxOutputTokens: 2500, maxConcurrency: 2, maxChunks: 12,
+        failedChunkRetries: 1, totalBudgetMs: 5000 } });
+    expect(result.metrics).toMatchObject({ mode: 'chunked', routingReason: 'output_risk',
+      truncationCount: 0, outputRisk: { highRisk: true } });
+    expect(semanticService.analyze.mock.calls.some(([input]) => input.transcript === transcript
+      && !input.analysisMode)).toBe(false);
+    expect(semanticService.analyze.mock.calls.some(([input]) => input.analysisMode === 'local_chunk')).toBe(true);
+    expect(semanticService.analyze.mock.calls.some(([input]) => input.analysisMode === 'document_structure')).toBe(true);
+    expect(result.metrics.providerCallCount).toBe(semanticService.analyze.mock.calls.length);
+    expect(result.metrics.providerCallCount).toBe(7);
+  });
+
   test('chunks cover the complete transcript without gaps and respect maxChunks without truncation', () => {
     const transcript = Array.from({ length: 80 }, (_, index) => `Paragraph ${index}. Sentence content here.`).join('\n\n');
     const chunks = coordinator.buildChunks(transcript, [], { chunkInputTokens: 40, overlapTokens: 5, maxChunks: 6 });
@@ -50,7 +88,8 @@ describe('semantic correction chunk coordinator', () => {
     expect(result.coverage).toMatchObject({ complete: true, coveredCharacters: transcript.length,
       totalCharacters: transcript.length });
     expect(result.metrics).toMatchObject({ numberOfChunks: expect.any(Number), providerCallCount: expect.any(Number),
-      semanticFallbackCalls: 0, timeoutCount: 0, truncationCount: 0 });
+      semanticFallbackCalls: 0, timeoutCount: 0, truncationCount: 0, routingReason: 'input_threshold' });
+    expect(result.metrics.providerCallCount).toBe(4);
   });
 
   test('retries only a failed timeout chunk and restores complete coverage', async () => {
