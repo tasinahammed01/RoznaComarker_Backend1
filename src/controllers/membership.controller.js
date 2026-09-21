@@ -6,7 +6,8 @@ const User = require('../models/user.model');
 const { createNotification } = require('../services/notification.service');
 const { publishToUser } = require('../services/notificationRealtime.service');
 
-const { ensureActivePlan, getLimit, incrementUsage } = require('../middlewares/usage.middleware');
+const { ensureActivePlan, getLimit } = require('../middlewares/usage.middleware');
+const { reserveStudentSeat, releaseStudentSeats } = require('../services/studentQuota.service');
 const logger = require('../utils/logger');
 
 function sendSuccess(res, data) {
@@ -29,6 +30,7 @@ function isNonEmptyString(value) {
 }
 
 async function joinClassByCode(req, res) {
+  let reservedTeacherId = null;
   try {
     const { joinCode } = req.body || {};
 
@@ -48,7 +50,7 @@ async function joinClassByCode(req, res) {
     }).populate('teacher', '_id email displayName photoURL role');
 
     if (!classDoc) {
-      return sendError(res, 404, 'Invalid join code');
+      return sendError(res, 404, 'Invalid join code', 'INVALID_JOIN_CODE');
     }
     if (classDoc.status === 'archived') {
       return sendError(res, 409, 'This class is archived and is no longer accepting new students.', 'CLASS_ARCHIVED');
@@ -57,15 +59,7 @@ async function joinClassByCode(req, res) {
     const teacherId = classDoc.teacher && classDoc.teacher._id ? classDoc.teacher._id : classDoc.teacher;
     const teacher = await User.findById(teacherId);
     if (!teacher) {
-      return sendError(res, 404, 'Teacher not found');
-    }
-
-    const planDoc = await ensureActivePlan(teacher);
-    const studentLimit = getLimit(planDoc, 'students');
-    const currentStudents = teacher.usage && typeof teacher.usage.students === 'number' ? teacher.usage.students : 0;
-
-    if (typeof studentLimit === 'number' && currentStudents + 1 > studentLimit) {
-      return sendError(res, 403, 'Limit exceeded: students');
+      return sendError(res, 404, 'Teacher not found', 'TEACHER_NOT_FOUND');
     }
 
     const existing = await Membership.findOne({
@@ -74,23 +68,47 @@ async function joinClassByCode(req, res) {
     });
 
     if (existing && existing.status === 'active') {
-      return sendError(res, 409, 'Already joined this class');
+      return sendError(res, 409, 'Already joined this class', 'ALREADY_JOINED');
     }
+
+    const planDoc = await ensureActivePlan(teacher);
+    const studentLimit = getLimit(planDoc, 'students');
+    if (!(await reserveStudentSeat(teacher._id, studentLimit))) {
+      return sendError(res, 403, 'Student limit reached for this account.', 'STUDENT_LIMIT_REACHED');
+    }
+    reservedTeacherId = teacher._id;
 
     let membership;
 
     if (existing && existing.status === 'left') {
-      existing.status = 'active';
-      existing.joinedAt = new Date();
-      membership = await existing.save();
-    } else {
+      membership = await Membership.findOneAndUpdate(
+        { _id: existing._id, status: 'left' },
+        { $set: { status: 'active', joinedAt: new Date() } },
+        { new: true }
+      );
+    }
+    if (!membership) {
       membership = await Membership.create({
         student: studentId,
         class: classDoc._id
       });
     }
 
-    await incrementUsage(teacher._id, { students: 1 });
+    const stillJoinable = await Class.exists({
+      _id: classDoc._id,
+      isActive: true,
+      $or: [{ status: 'active' }, { status: { $exists: false } }]
+    });
+    if (!stillJoinable) {
+      const reverted = await Membership.findOneAndUpdate(
+        { _id: membership._id, status: 'active' },
+        { $set: { status: 'left' } }
+      );
+      if (reverted) await releaseStudentSeats(teacher._id, 1);
+      reservedTeacherId = null;
+      return sendError(res, 409, 'This class is no longer accepting students.', 'CLASS_ARCHIVED');
+    }
+    reservedTeacherId = null;
 
     // Send real-time notification to teacher
     try {
@@ -133,8 +151,12 @@ async function joinClassByCode(req, res) {
       class: classDoc
     });
   } catch (err) {
+    if (reservedTeacherId) {
+      await releaseStudentSeats(reservedTeacherId, 1).catch(() => undefined);
+      reservedTeacherId = null;
+    }
     if (err && err.code === 11000) {
-      return sendError(res, 409, 'Already joined this class');
+      return sendError(res, 409, 'Already joined this class', 'ALREADY_JOINED');
     }
 
     return sendError(res, 500, 'Failed to join class');
@@ -175,7 +197,7 @@ async function leaveClass(req, res) {
     const { classId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(classId)) {
-      return sendError(res, 400, 'Invalid class id');
+      return sendError(res, 400, 'Invalid class id', 'INVALID_CLASS_ID');
     }
 
     const studentId = req.user && req.user._id;
@@ -189,15 +211,23 @@ async function leaveClass(req, res) {
     });
 
     if (!membership) {
-      return sendError(res, 404, 'Membership not found');
+      return sendError(res, 404, 'Membership not found', 'MEMBERSHIP_NOT_FOUND');
     }
 
     if (membership.status === 'left') {
-      return sendError(res, 400, 'Already left this class');
+      return sendError(res, 409, 'Already left this class', 'ALREADY_LEFT');
     }
 
-    membership.status = 'left';
-    const saved = await membership.save();
+    const classDoc = await Class.findById(classId).select('teacher');
+    if (!classDoc) return sendError(res, 404, 'Class not found', 'CLASS_NOT_FOUND');
+
+    const saved = await Membership.findOneAndUpdate(
+      { _id: membership._id, status: 'active' },
+      { $set: { status: 'left' } },
+      { new: true }
+    );
+    if (!saved) return sendError(res, 409, 'Already left this class', 'ALREADY_LEFT');
+    await releaseStudentSeats(classDoc.teacher, 1);
 
     return sendSuccess(res, saved);
   } catch (err) {

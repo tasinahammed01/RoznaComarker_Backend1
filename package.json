@@ -23,7 +23,9 @@
     "test:live-worksheet-gemini": "node scripts/liveWorksheetGeminiSmoke.js",
     "verify:credit-packs": "node scripts/verifyCreditPacks.js",
     "pricing:migrate-billing": "node scripts/migrateBillingContracts.js",
-    "pricing:migrate-billing:apply": "node scripts/migrateBillingContracts.js --apply --backup-confirmed"
+    "pricing:migrate-billing:apply": "node scripts/migrateBillingContracts.js --apply --backup-confirmed",
+    "students:diagnose-usage": "node scripts/diagnoseStudentUsage.js",
+    "students:reconcile-usage": "node scripts/reconcileStudentUsage.js"
   },
   "dependencies": {
     "@google-cloud/vision": "^4.3.3",

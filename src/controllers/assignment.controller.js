@@ -32,6 +32,7 @@ const { createNotification } = require('../services/notification.service');
 const { normalizeRubricDesignerPayload } = require('../utils/rubricNormalizer');
 const { repairAiRubric } = require('../utils/aiRubricRepair');
 const { completeRubric } = require('../services/rubricCompletion.service');
+const { currentRosterAssignmentCounts } = require('../services/currentRosterProgress.service');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -1279,21 +1280,17 @@ async function getClassAssignments(req, res) {
       throw new Error('Failed to generate unique qr token');
     }));
 
-    // Add submission counts for each assignment
-    const counts = await Promise.all([
-      ['essay', Submission, 'assignment'],
-      ['flashcard', FlashcardSubmission, 'assignmentId'],
-      ['worksheet', WorksheetSubmission, 'assignmentId']
-    ].map(async ([type, model, field]) => {
-      const ids = filteredAssignments.filter(item => item.resourceType === type).map(item => item._id);
-      return ids.length ? model.aggregate([
-        { $match: { [field]: { $in: ids } } },
-        { $group: { _id: `$${field}`, count: { $sum: 1 } } }
-      ]) : [];
-    }));
-    const countsByAssignment = new Map(counts.flat().map(item => [String(item._id), item.count]));
+    // Current-roster progress is authoritative here. Historical submission
+    // endpoints remain unchanged for report and review workflows.
+    const { activeStudentIds, countsByAssignment } = await currentRosterAssignmentCounts(filteredAssignments, [
+      { type: 'essay', model: Submission, assignmentField: 'assignment', studentField: 'student' },
+      { type: 'flashcard', model: FlashcardSubmission, assignmentField: 'assignmentId', studentField: 'userId' },
+      { type: 'worksheet', model: WorksheetSubmission, assignmentField: 'assignmentId', studentField: 'studentId' }
+    ]);
     const assignmentsWithCounts = filteredAssignments.map(assignment => ({
-      ...assignment.toObject(), submitted: countsByAssignment.get(String(assignment._id)) || 0
+      ...assignment.toObject(),
+      submitted: countsByAssignment.get(String(assignment._id)) || 0,
+      total: activeStudentIds.length
     }));
 
     return sendSuccess(res, assignmentsWithCounts);

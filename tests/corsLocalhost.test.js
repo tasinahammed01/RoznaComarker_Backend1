@@ -67,6 +67,21 @@ describe('localhost CORS configuration', () => {
     expect(rejected.status).toBe(403);
   });
 
+  test('rejects the unconfigured markers alias while allowing the canonical production origin', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.FRONTEND_URL = 'https://comarkers.roznahub.com';
+    const productionApp = app();
+    const canonical = await request(productionApp).options('/health')
+      .set('Origin', 'https://comarkers.roznahub.com')
+      .set('Access-Control-Request-Method', 'GET')
+      .set('Access-Control-Request-Headers', 'authorization');
+    expect(canonical.status).toBe(204);
+    expect(canonical.headers['access-control-allow-origin']).toBe('https://comarkers.roznahub.com');
+    const alias = await request(productionApp).get('/health').set('Origin', 'https://markers.roznahub.com');
+    expect(alias.status).toBe(403);
+    expect(alias.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
   test('rejects a literal null browser origin', async () => {
     const response = await request(app()).get('/health').set('Origin', 'null');
     expect(response.status).toBe(403);
