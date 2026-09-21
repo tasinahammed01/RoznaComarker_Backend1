@@ -26,10 +26,22 @@ test('unauthorized teacher cannot use admin adjustment', async () => {
 test('admin search, adjustment, resulting balance, and paginated history are authoritative', async () => {
   expect((await request(app).get('/api/credits/admin/teachers?q=credit-api').set('Authorization', `Bearer ${adminToken}`)).body.teachers).toHaveLength(1);
   const adjusted = await request(app).post(`/api/credits/admin/${teacher._id}/adjust`).set('Authorization', `Bearer ${adminToken}`)
-    .send({ amount: 3, reason: 'Approved support credit' });
+    .send({ amount: 3, reason: 'Approved support credit', idempotencyKey: '00000000-0000-4000-8000-000000000088' });
   expect(adjusted.status).toBe(200); expect(adjusted.body.wallet.availableCredits).toBe(5);
   const history = await request(app).get(`/api/credits/admin/${teacher._id}?page=1&limit=1`).set('Authorization', `Bearer ${adminToken}`);
   expect(history.status).toBe(200); expect(history.body.transactions).toHaveLength(1);
   expect(history.body.pagination).toMatchObject({ page: 1, limit: 1, total: 1, pages: 1 });
   expect(history.body.transactions[0].metadata.adminActorId).toBeDefined();
+});
+
+test('response-loss retry adjusts once and rejects a changed operation identity', async () => {
+  const route = `/api/credits/admin/${teacher._id}/adjust`;
+  const body = { amount: 3, reason: 'Support credit', idempotencyKey: '00000000-0000-4000-8000-000000000089' };
+  const call = value => request(app).post(route).set('Authorization', `Bearer ${adminToken}`).send(value);
+  expect((await call(body)).status).toBe(200);
+  const replay = await call(body);
+  expect(replay.status).toBe(200);
+  expect(replay.body.wallet.bonusCredits).toBe(3);
+  expect((await call({ ...body, reason: 'Another operation' })).status).toBe(409);
+  expect((await call({ amount: 3, reason: 'Missing key' })).status).toBe(400);
 });

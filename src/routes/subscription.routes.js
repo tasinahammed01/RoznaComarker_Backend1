@@ -42,6 +42,8 @@ router.post(
   createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'paypal_checkout_user' }),
   body('planCode').isString().trim().notEmpty(),
   body('checkoutAttemptId').isUUID(4),
+  body('billingPeriod').optional().isIn(['monthly', 'annual']),
+  body().custom(value => Object.keys(value || {}).every(key => ['planCode', 'checkoutAttemptId', 'billingPeriod'].includes(key))),
   body('price').not().exists(), body('currency').not().exists(), body('planId').not().exists(),
   body('credits').not().exists(), body('entitlements').not().exists(),
   handleValidationResult,
@@ -60,6 +62,7 @@ router.post(
 router.post('/paypal/reconcile', verifyJwtToken, requireRole('teacher'),
   createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 20, event: 'BILLING_RATE_LIMITED', reason: 'paypal_reconcile_user' }),
   body('checkoutAttemptId').isUUID(4),
+  body('billingPeriod').optional().isIn(['monthly', 'annual']),
   body().custom((value) => Object.keys(value || {}).every((key) => key === 'checkoutAttemptId')),
   handleValidationResult, paypalSubscriptionController.reconcile);
 router.post(
@@ -68,6 +71,7 @@ router.post(
   requireRole('teacher'),
   createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'paypal_change_plan_user' }),
   body('targetPlanCode').isString().trim().isLength({ min: 1, max: 80 }),
+  body('billingPeriod').optional().isIn(['monthly', 'annual']),
   body('changeAttemptId').isUUID(4),
   body('targetPayPalPlanId').not().exists(), body('providerSubscriptionId').not().exists(),
   body('subscriptionId').not().exists(), body('price').not().exists(), body('credits').not().exists(),
@@ -100,6 +104,7 @@ router.post(
   requireRole('teacher'),
   createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 20, event: 'BILLING_RATE_LIMITED', reason: 'paypal_change_plan_context_user' }),
   body('targetPlanCode').isString().trim().isLength({ min: 1, max: 80 }),
+  body('billingPeriod').optional().isIn(['monthly', 'annual']),
   body('changeAttemptId').isUUID(4),
   body('providerSubscriptionId').not().exists(), body('targetPayPalPlanId').not().exists(),
   handleValidationResult,
@@ -115,34 +120,6 @@ router.post(
   handleValidationResult,
   paypalSubscriptionController.reconcilePlanChange
 );
-router.post(
-  '/checkout-session',
-  verifyJwtToken,
-  requireRole('teacher'),
-  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'checkout_user' }),
-  body('planSlug').optional().isString().trim().notEmpty(),
-  body('planCode').optional().isString().trim().notEmpty(),
-  body().custom((value) => !!String(value?.planCode || value?.planSlug || '').trim()).withMessage('planCode is required'),
-  body('billingPeriod').optional().isIn(['monthly', 'annual']),
-  body('checkoutAttemptId').isString().isLength({ min: 36, max: 36 }).isUUID(4)
-    .withMessage('checkoutAttemptId must be a valid UUID v4'),
-  body('priceId').not().exists().withMessage('priceId is not accepted'),
-  body('amount').not().exists().withMessage('amount is not accepted'),
-  body('successUrl').not().exists().withMessage('successUrl is not accepted'),
-  body('cancelUrl').not().exists().withMessage('cancelUrl is not accepted'),
-  handleValidationResult,
-  subscriptionController.createCheckoutSession
-);
-router.post(
-  '/customer-portal',
-  verifyJwtToken,
-  requireRole('teacher'),
-  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'portal_user' }),
-  body('returnUrl').not().exists().withMessage('returnUrl is not accepted'),
-  handleValidationResult,
-  subscriptionController.createCustomerPortal
-);
-
 /**
  * @openapi
  * /api/subscription/set:
@@ -200,4 +177,9 @@ router.post(
   subscriptionController.setUserSubscription
 );
 
+router.post('/paypal/change-plan/claim-sdk', verifyJwtToken, requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'paypal_sdk_claim' }),
+  body('changeAttemptId').isUUID(4),
+  body().custom(value => Object.keys(value || {}).every(key => key === 'changeAttemptId')),
+  handleValidationResult, paypalSubscriptionController.claimSdkTransport);
 module.exports = router;

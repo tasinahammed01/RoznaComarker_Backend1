@@ -18,8 +18,8 @@ function assertHttpsUrl(name, value, expectedHost) {
 }
 
 function paymentProvider(environment = process.env) {
-  const provider = String(environment.PAYMENT_PROVIDER || 'stripe').trim().toLowerCase();
-  if (!['stripe', 'paypal'].includes(provider)) throw new Error('PAYMENT_PROVIDER must be stripe or paypal');
+  const provider = String(environment.PAYMENT_PROVIDER || '').trim().toLowerCase();
+  if (provider !== 'paypal') throw new Error('PAYMENT_PROVIDER must explicitly be paypal');
   return provider;
 }
 
@@ -45,22 +45,8 @@ function validateProductionSecurity(environment = process.env) {
     throw new Error('Production CORS must allow exactly https://comarkers.roznahub.com');
   }
 
-  if (paymentProvider(environment) === 'stripe') {
-    const stripeSecret = String(environment.STRIPE_SECRET_KEY || '');
-    const webhookSecret = String(environment.STRIPE_WEBHOOK_SECRET || '');
-    if (!/^sk_(test|live)_/u.test(stripeSecret) || !/^whsec_/u.test(webhookSecret)) {
-      throw new Error('Stripe production configuration is missing or malformed');
-    }
-    const publishable = String(environment.STRIPE_PUBLISHABLE_KEY || '');
-    if (publishable) {
-      const secretMode = stripeSecret.startsWith('sk_live_') ? 'live' : 'test';
-      if (!publishable.startsWith(`pk_${secretMode}_`)) {
-        throw new Error('Stripe publishable and secret key modes do not match');
-      }
-    }
-  } else {
-    validatePaypalRuntimeConfig(environment);
-  }
+  paymentProvider(environment);
+  validatePaypalRuntimeConfig(environment);
 }
 
 const required = [
@@ -76,12 +62,12 @@ const required = [
 
 if (process.env.NODE_ENV === 'production') {
   required.push('FRONTEND_URL', 'PUBLIC_API_URL', 'BASE_URL');
-  if (paymentProvider(process.env) === 'stripe') required.push('STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET');
   if (!String(process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGINS || '').trim()) {
     throw new Error('Missing required env var: CORS_ALLOWED_ORIGINS');
   }
 }
 
+paymentProvider(process.env);
 validatePaypalRuntimeConfig(process.env);
 validateProductionSecurity(process.env);
 

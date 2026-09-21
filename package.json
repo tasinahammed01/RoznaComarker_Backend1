@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
+    "migrate:flashcard-indexes": "node scripts/migrateFlashcardIndexes.js",
     "verify:runtime": "node scripts/verify-runtime-contract.js",
     "verify:production-security": "node scripts/verify-production-security.js --dry-run",
     "test": "jest --runInBand",
@@ -19,7 +20,10 @@
     "benchmark:semantic": "node scripts/benchmarkSemanticAnalysis.js",
     "test:live-gemini-smoke": "node scripts/liveGeminiSemanticSmoke.js",
     "test:live-flashcard-gemini": "node scripts/liveFlashcardGeminiSmoke.js",
-    "test:live-worksheet-gemini": "node scripts/liveWorksheetGeminiSmoke.js"
+    "test:live-worksheet-gemini": "node scripts/liveWorksheetGeminiSmoke.js",
+    "verify:credit-packs": "node scripts/verifyCreditPacks.js",
+    "pricing:migrate-billing": "node scripts/migrateBillingContracts.js",
+    "pricing:migrate-billing:apply": "node scripts/migrateBillingContracts.js --apply --backup-confirmed"
   },
   "dependencies": {
     "@google-cloud/vision": "^4.3.3",

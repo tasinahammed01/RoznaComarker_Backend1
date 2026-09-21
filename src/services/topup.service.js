@@ -151,6 +151,7 @@ async function recoverProviderPurchaseOperation(walletId) {
       balanceAfter: CreditService.available(wallet)
     } }, { returnDocument: 'after' }) || await CreditTransaction.findById(transaction._id);
   }
+  transaction = await CreditTransaction.findById(transaction._id);
   if (!['committed', 'refunded', 'review_required'].includes(transaction.status)) {
     throw new Error('Provider purchase operation could not be finalized');
   }
@@ -172,12 +173,21 @@ async function runProviderPurchaseOperation({ walletId, transaction, idempotency
       }
       continue;
     }
+    const latestTransaction = await CreditTransaction.findOne({ idempotencyKey });
+    if (latestTransaction && latestTransaction.status !== 'pending') return { applied: false, transaction: latestTransaction };
     const claimed = await CreditWallet.findOneAndUpdate({ _id: walletId,
+      $expr: { $eq: [{ $ifNull: ['$creditMutationVersion', 0] }, current.creditMutationVersion || 0] },
       $or: [{ pendingPurchaseOperation: { $exists: false } }, { pendingPurchaseOperation: null }] }, { $set: {
       pendingPurchaseOperation: { idempotencyKey, transactionId: transaction._id, kind, credits,
         state: 'claimed', startedAt: new Date() }
-    } }, { returnDocument: 'after' });
-    if (claimed) return recoverProviderPurchaseOperation(walletId);
+    }, $inc: { creditMutationVersion: 1 } }, { returnDocument: 'after' });
+    if (claimed) {
+      const recovered = await recoverProviderPurchaseOperation(walletId);
+      if (recovered) return recovered;
+      // Another worker may have finalized and cleared this receipt already.
+      const finalized = await CreditTransaction.findOne({ idempotencyKey });
+      if (finalized && finalized.status !== 'pending') return { applied: false, transaction: finalized };
+    }
   }
   throw new Error('Credit wallet has another provider purchase operation in progress');
 }

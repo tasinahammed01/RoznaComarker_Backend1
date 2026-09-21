@@ -255,34 +255,35 @@ async function updateMe(req, res) {
     const nextPolicyHash = evaluationPolicyHash(saved.aiConfig);
     if (nextAiConfig && previousPolicyHash !== nextPolicyHash && saved.role === 'teacher') {
       try {
-        failureStage = 'class_lookup';
-        const classIds = (await Class.find({ teacher: saved._id }).select('_id').lean()).map((item) => item._id);
-        failureStage = 'submission_lookup';
-        const submissions = await Submission.find({ class: { $in: classIds } })
-          .select('_id evaluationStatus evaluationPolicyHash').lean();
-        const submissionIds = submissions.map((item) => item._id);
-        failureStage = 'submission_feedback_lookup';
-        const feedback = await SubmissionFeedback.find({ submissionId: { $in: submissionIds } })
-          .select('submissionId overriddenByTeacher evaluationSourceHash evaluationPolicyHash').lean();
-        const feedbackById = new Map(feedback.map((item) => [String(item.submissionId), item]));
-        const staleIds = submissions.filter((submission) => {
-          const savedFeedback = feedbackById.get(String(submission._id));
-          if (savedFeedback?.overriddenByTeacher) return false;
-          if (!['completed', 'partial', 'stale'].includes(String(submission.evaluationStatus))) return false;
-          const storedHash = submission.evaluationPolicyHash || savedFeedback?.evaluationPolicyHash || null;
-          return Boolean((storedHash || savedFeedback?.evaluationSourceHash) && storedHash
-            && storedHash !== nextPolicyHash);
-        }).map((submission) => submission._id);
-        failureStage = 'submission_stale_update';
-        await Submission.updateMany({ _id: { $in: staleIds } }, {
-          $set: { evaluationStatus: 'stale' }
-        });
-        failureStage = 'submission_feedback_pending_update';
-        await SubmissionFeedback.updateMany({
-          submissionId: { $in: staleIds }, overriddenByTeacher: { $ne: true }
-        }, {
-          $set: { evaluationStatus: 'pending' }
-        });
+        failureStage = 'evaluation_stale_propagation';
+        // Cursor plus fixed-size batches bounds memory independently of teacher history.
+        for await (const classroom of Class.find({ teacher: saved._id }).select('_id').lean().cursor()) {
+          let batch = [];
+          const flush = async () => {
+            if (!batch.length) return;
+            const feedback = await SubmissionFeedback.find({ submissionId: { $in: batch.map(item => item._id) } })
+              .select('submissionId overriddenByTeacher evaluationPolicyHash').lean();
+            const byId = new Map(feedback.map(item => [String(item.submissionId), item]));
+            const staleIds = batch.filter(item => {
+              const detail = byId.get(String(item._id));
+              const hash = detail?.evaluationPolicyHash || item.evaluationPolicyHash;
+              return !detail?.overriddenByTeacher && hash && hash !== nextPolicyHash;
+            }).map(item => item._id);
+            await Submission.updateMany({ _id: { $in: staleIds }, evaluationPolicyHash: { $ne: nextPolicyHash },
+              evaluationStatus: { $in: ['completed', 'partial', 'stale'] } },
+              { $set: { evaluationStatus: 'stale' } });
+            await SubmissionFeedback.updateMany({ submissionId: { $in: staleIds }, overriddenByTeacher: { $ne: true },
+              evaluationPolicyHash: { $ne: nextPolicyHash } }, { $set: { evaluationStatus: 'stale' } });
+            batch = [];
+          };
+          for await (const submission of Submission.find({ class: classroom._id,
+            evaluationStatus: { $in: ['completed', 'partial', 'stale'] } })
+            .select('_id evaluationStatus evaluationPolicyHash').lean().cursor()) {
+            batch.push(submission);
+            if (batch.length === 200) await flush();
+          }
+          await flush();
+        }
         evaluationPropagation = { status: 'completed', policyHash: nextPolicyHash };
       } catch (err) {
         logger.error({
@@ -378,6 +379,7 @@ async function setMyRole(req, res) {
     }
 
     const normalizedRole = role.trim();
+    if (!['teacher', 'student'].includes(normalizedRole)) return sendError(res, 400, 'Invalid role');
 
     const user = req && req.user;
 
@@ -393,8 +395,13 @@ async function setMyRole(req, res) {
       });
     }
 
-    user.role = normalizedRole;
-    await user.save();
+    const persisted = await User.findOneAndUpdate(
+      { _id: user._id, role: null, isActive: true },
+      { $set: { role: normalizedRole } },
+      { returnDocument: 'after', runValidators: true }
+    );
+    if (!persisted) return res.status(409).json({ success: false, code: 'ROLE_ALREADY_FINALIZED',
+      message: 'Your account role has already been selected' });
 
     if (normalizedRole === 'teacher') {
       try {
@@ -406,7 +413,7 @@ async function setMyRole(req, res) {
       }
     }
 
-    const token = signJwt(user);
+    const token = signJwt(persisted);
 
     return res.json({
       success: true,
@@ -414,7 +421,7 @@ async function setMyRole(req, res) {
       user: {
         id: user._id,
         email: user.email,
-        role: user.role
+        role: persisted.role
       }
     });
   } catch (err) {

@@ -350,13 +350,13 @@ describe('PayPal Sandbox provisioner safety', () => {
 });
 
 describe('payment-provider non-regression', () => {
-  test('defaults to Stripe and leaves Stripe client creation behind the existing adapter', () => {
+  test('rejects missing provider and disables the legacy Stripe adapter', () => {
     const existingStripe = { existing: true };
-    expect(configuredProviderName({})).toBe('stripe');
-    expect(new StripePaymentProvider({ clientFactory: () => existingStripe }).getClient()).toBe(existingStripe);
+    expect(() => configuredProviderName({})).toThrow('explicitly be paypal');
+    expect(() => new StripePaymentProvider({ clientFactory: () => existingStripe }).getClient()).toThrow('PayPal-only');
   });
 
-  test('Stripe-active startup does not require any PayPal IDs', () => {
+  test('PayPal-specific validator alone does not validate provider selection', () => {
     expect(() => validatePayPalRuntimeConfig({ PAYMENT_PROVIDER: 'stripe' })).not.toThrow();
   });
 

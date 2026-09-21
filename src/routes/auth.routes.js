@@ -158,7 +158,7 @@ router.get('/me', verifyJwtToken, async (req, res) => {
  *       401:
  *         description: Invalid or missing JWT
  */
-router.get('/jwt-test', verifyJwtToken, async (req, res) => {
+if (process.env.NODE_ENV === 'development') router.get('/jwt-test', verifyJwtToken, async (req, res) => {
   return res.json({
     success: true,
     message: 'JWT protected route access granted'

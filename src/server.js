@@ -11,18 +11,10 @@ const app = require("./app");
 
 let server;
 
-async function shutdown(reason) {
-  logger.warn(`Shutting down (${reason})`);
-  await pdfBrowserManager.closeBrowser();
-  if (server) {
-    server.close(() => {
-      logger.info("HTTP server closed");
-      process.exit(0);
-    });
-  } else {
-    process.exit(1);
-  }
-}
+const { createShutdown } = require('./services/shutdown.service');
+const shutdown = createShutdown({ getServer: () => server,
+  closeBrowser: () => pdfBrowserManager.closeBrowser(),
+  disconnect: () => require('mongoose').disconnect(), logger });
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -30,13 +22,13 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("unhandledRejection", (reason) => {
   logger.error("Unhandled Rejection");
   logger.error(reason);
-  shutdown("unhandledRejection");
+  shutdown("unhandledRejection", 1);
 });
 
 process.on("uncaughtException", (err) => {
   logger.error("Uncaught Exception");
   logger.error(err);
-  process.exit(1);
+  shutdown("fatalError", 1);
 });
 
 async function start() {

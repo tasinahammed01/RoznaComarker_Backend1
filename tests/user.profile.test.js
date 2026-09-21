@@ -101,7 +101,7 @@ describe('User profile updates', () => {
     expect(response.status).toBe(400);
   });
 
-  test('updates teacher AI settings and preserves stale evaluation invalidation', async () => {
+  test.each([false, true])('policy stale propagation preserves teacher override=%s', async (overriddenByTeacher) => {
     const teacher = await User.create({
       firebaseUid: 'teacher-ai-config',
       email: 'teacher-ai-config@example.com',
@@ -152,7 +152,7 @@ describe('User profile updates', () => {
       evaluationStatus: 'completed',
       evaluationPolicyHash: oldPolicyHash,
       evaluationSourceHash: oldPolicyHash,
-      overriddenByTeacher: false
+      overriddenByTeacher
     });
 
     const token = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
@@ -193,8 +193,10 @@ describe('User profile updates', () => {
 
     const updatedSubmission = await Submission.findById(submission._id).lean();
     const updatedFeedback = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
-    expect(updatedSubmission.evaluationStatus).toBe('stale');
-    expect(updatedFeedback.evaluationStatus).toBe('pending');
+    expect(updatedSubmission.evaluationStatus).toBe(overriddenByTeacher ? 'completed' : 'stale');
+    expect(updatedFeedback.evaluationStatus).toBe(overriddenByTeacher ? 'completed' : 'stale');
+    expect(updatedFeedback.overallScore).toBe(78);
+    expect(updatedFeedback.evaluationSourceHash).toBe(oldPolicyHash);
   });
 
   test.each([

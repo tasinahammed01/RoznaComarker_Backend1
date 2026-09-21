@@ -22,6 +22,7 @@ const creditWalletSchema = new mongoose.Schema({
   monthlyCreditsUsed: { type: Number, min: 0, required: true, default: 0 },
   purchasedCredits: { type: Number, min: 0, required: true, default: 0 },
   bonusCredits: { type: Number, min: 0, required: true, default: 0 },
+  allowanceCycleAnchor: { type: Date },
   billingCycleStart: { type: Date, required: true },
   billingCycleEnd: { type: Date, required: true },
   lastCreditReset: { type: Date, required: true },

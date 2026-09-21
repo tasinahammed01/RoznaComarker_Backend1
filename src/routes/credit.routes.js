@@ -44,6 +44,6 @@ router.put('/admin/pricing/packs/:code', verifyJwtToken, requireRole('admin'),
 router.get('/admin/:userId', verifyJwtToken, requireRole('admin'), param('userId').isMongoId(), handleValidationResult, controller.adminWallet);
 router.post('/admin/:userId/adjust', verifyJwtToken, requireRole('admin'), param('userId').isMongoId(),
   body('amount').isInt({ min: -100000, max: 100000 }).custom((value) => Number(value) !== 0),
-  body('reason').isString().trim().isLength({ min: 1, max: 500 }), body('idempotencyKey').optional().isString().trim().isLength({ min: 8, max: 200 }),
+  body('reason').isString().trim().isLength({ min: 1, max: 500 }), body('idempotencyKey').isUUID(4),
   handleValidationResult, controller.adminAdjust);
 module.exports = router;

@@ -12,6 +12,12 @@ const { calculateOwnedStorageUsage, buildStorageContract } = require('../service
 
 const { ensureActivePlan, assignPlanToUser } = require('../middlewares/usage.middleware');
 
+function publicAccountPlan(plan) {
+  const keys = ['name', 'slug', 'price', 'annualPrice', 'currency', 'billingInterval', 'billingType', 'displayOrder',
+    'features', 'display', 'limits', 'popular', 'assessmentCreditNudges'];
+  return Object.fromEntries(keys.map(key => [key, plan[key]]));
+}
+
 function sendSuccess(res, data) {
   return res.json({
     success: true,
@@ -67,41 +73,42 @@ async function getMySubscription(req, res) {
     const planDoc = await ensureActivePlan(user);
     const [pendingPayPalChange, pendingPayPalCancellation] = user.paypalSubscriptionId ? await Promise.all([
       PaymentManagementAttempt.findOne({ provider: 'paypal', userId: user._id, providerSubscriptionId: user.paypalSubscriptionId,
-        operation: 'CHANGE_PLAN', status: { $in: ['processing', 'approval_pending', 'provider_pending'] } }).sort({ createdAt: -1 }).lean(),
+        operation: 'CHANGE_PLAN', status: { $in: ['prepared', 'processing', 'approval_pending', 'provider_pending'] } }).sort({ createdAt: -1 }).lean(),
       PaymentManagementAttempt.findOne({ provider: 'paypal', userId: user._id, providerSubscriptionId: user.paypalSubscriptionId,
         operation: 'CANCEL', status: { $in: ['processing', 'provider_pending'] } }).sort({ createdAt: -1 }).lean()
     ]) : [null, null];
-    const billingProvider = user.paypalSubscriptionId ? 'paypal' : (user.stripeSubscriptionId || user.stripeCustomerId ? 'stripe' : configuredProviderName());
-    const providerStatus = user.paypalSubscriptionStatus || user.stripeSubscriptionStatus || null;
+    const billingProvider = configuredProviderName();
+    const providerStatus = user.paypalSubscriptionStatus || null;
     const referrals = user.role === 'teacher' ? await referralSummary(user) : null;
 
     const ownedStorage = user.role === 'teacher' ? await calculateOwnedStorageUsage(user._id)
       : { usedBytes: Math.round(Number(user.usage?.storageMB || 0) * 1024 * 1024), fileCount: 0 };
     const storage = buildStorageContract(ownedStorage.usedBytes, planDoc);
     return sendSuccess(res, {
-      plan: planDoc,
+      plan: publicAccountPlan(planDoc),
       planStartedAt: user.planStartedAt || null,
       planExpiresAt: user.planExpiresAt || null,
       billing: user.role === 'teacher' ? {
         provider: billingProvider,
-        customerConfigured: !!(user.paypalSubscriptionId || user.stripeCustomerId),
-        subscriptionId: user.paypalSubscriptionId || user.stripeSubscriptionId || null,
+        customerConfigured: !!user.paypalSubscriptionId,
+        subscriptionId: user.paypalSubscriptionId || null,
         status: providerStatus,
-        currentPeriodEnd: user.paypalCurrentPeriodEnd || user.stripeCurrentPeriodEnd || null,
-        cancelAtPeriodEnd: user.paypalSubscriptionId ? false : !!user.stripeCancelAtPeriodEnd,
+        currentPeriodEnd: user.paypalCurrentPeriodEnd || null,
+        cancelAtPeriodEnd: false,
         paymentIssue: user.paypalSubscriptionId
           ? user.paypalSubscriptionStatus === 'SUSPENDED' || !!user.paypalPaymentIssueActive
-          : ['past_due', 'unpaid'].includes(user.stripeSubscriptionStatus),
+          : false,
         canManageSubscription: billingProvider === 'paypal'
           ? ['ACTIVE', 'SUSPENDED'].includes(providerStatus)
-          : !!user.stripeCustomerId,
+          : false,
         canCancel: billingProvider === 'paypal' && ['ACTIVE', 'SUSPENDED'].includes(providerStatus),
         canChangePlan: billingProvider === 'paypal' && ['ACTIVE', 'SUSPENDED'].includes(providerStatus),
         planCode: planDoc.slug,
-        billingPeriod: ['year', 'yearly', 'annual'].includes(String(planDoc.billingInterval || planDoc.billingType || '').toLowerCase()) ? 'annual' : 'monthly',
+        billingPeriod: planDoc.resolvedBillingInterval === 'yearly' || ['year', 'yearly', 'annual'].includes(String(planDoc.billingInterval || planDoc.billingType || '').toLowerCase()) ? 'annual' : 'monthly',
         subscriptionStatus: providerStatus,
         pendingPlanChange: !!pendingPayPalChange,
         pendingTargetPlanCode: pendingPayPalChange?.targetPlanKey || null,
+        pendingBillingPeriod: pendingPayPalChange ? (pendingPayPalChange.billingInterval === 'yearly' ? 'annual' : 'monthly') : null,
         pendingChangeAttemptId: pendingPayPalChange?.attemptId || null,
         pendingChangeApprovalUrl: pendingPayPalChange?.approvalUrl || null,
         pendingCancellation: !!pendingPayPalCancellation

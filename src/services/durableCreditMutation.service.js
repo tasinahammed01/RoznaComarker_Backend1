@@ -3,13 +3,16 @@
 const CreditWallet = require('../models/CreditWallet');
 const CreditTransaction = require('../models/CreditTransaction');
 
+let verifiedDatabase;
 async function verifyIndex() {
-  await CreditTransaction.init();
+  const database = CreditTransaction.db.db;
+  if (database && database === verifiedDatabase) return;
   const indexes = await CreditTransaction.collection.indexes();
   if (!indexes.some(index => index.unique === true && !index.partialFilterExpression && !index.sparse
     && index.key.idempotencyKey === 1 && Object.keys(index.key).length === 1)) {
     throw Object.assign(new Error('Unique credit idempotency index is required'), { code: 'CREDIT_INDEX_REQUIRED', statusCode: 503 });
   }
+  verifiedDatabase = database;
 }
 
 async function reconcile(wallet) {
@@ -55,7 +58,8 @@ async function mutate({ walletId, entry, decide, available }) {
       continue;
     }
     const transaction = await CreditTransaction.findOne({ idempotencyKey: entry.idempotencyKey });
-    if (!transaction || String(transaction.userId) !== String(entry.userId) || transaction.amount !== entry.amount || transaction.type !== entry.type) {
+    if (!transaction || String(transaction.userId) !== String(entry.userId) || transaction.amount !== entry.amount || transaction.type !== entry.type ||
+        (entry.metadata?.source === 'admin_api' && (transaction.reason !== entry.reason || transaction.metadata?.adminActorId !== entry.metadata.adminActorId))) {
       throw Object.assign(new Error('Credit idempotency key conflicts with another operation'), { statusCode: 409 });
     }
     if (transaction.status === 'committed') return { charged: false, transaction, availableCredits: transaction.balanceAfter };

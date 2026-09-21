@@ -20,10 +20,7 @@ async function run() {
       $setOnInsert: { display: { title: plan.name, description: null, priceLabel: null,
         cta: plan.slug === 'free' ? 'Get Started' : 'Upgrade Plan' } } }, { upsert: true });
   }
-  await CreditPack.updateOne({ code: 'TOPUP_SMALL' }, { $set: { name: 'Top-Up Small', credits: 10, price: 4.99,
-    currency: 'USD', allowedPlans: ['essential', 'pro'], active: true, displayOrder: 1 }, $setOnInsert: { stripePriceId: null } }, { upsert: true });
-  await CreditPack.updateOne({ code: 'TOPUP_LARGE' }, { $set: { name: 'Top-Up Large', credits: 50, price: 19.99,
-    currency: 'USD', allowedPlans: ['essential', 'pro'], active: true, displayOrder: 2 }, $setOnInsert: { stripePriceId: null } }, { upsert: true });
+  console.log('Credit packs are managed in Admin Pricing. No pack prices or eligibility were changed.');
   await mongoose.disconnect();
 }
 

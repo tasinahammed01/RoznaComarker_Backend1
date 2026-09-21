@@ -72,7 +72,7 @@ router.post(
  *       409:
  *         description: User already exists
  */
-router.post(
+if (process.env.NODE_ENV === 'development') router.post(
   '/mock-sync',
   body('firebaseUid').isString().trim().notEmpty().withMessage('firebaseUid is required'),
   body('email').isString().trim().notEmpty().withMessage('email is required'),

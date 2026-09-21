@@ -13,7 +13,7 @@ async function run({ environment = process.env, client, PlanModel = Plan, output
   validatePaypalConfig(environment, { purpose: 'resources' });
   let ownsConnection = false;
   if (!client && mongoose.connection.readyState === 0) {
-    await mongoose.connect(environment.MONGO_URI); ownsConnection = true;
+    await mongoose.connect(environment.MONGO_URI, { autoIndex: false, autoCreate: false, serverSelectionTimeoutMS: 10000 }); ownsConnection = true;
   }
   try {
     const plans = await PlanModel.find({ isActive: true }).lean();

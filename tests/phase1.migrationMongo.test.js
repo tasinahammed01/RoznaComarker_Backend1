@@ -1,0 +1,28 @@
+process.env.NODE_ENV = 'test';
+const mongoose = require('mongoose');
+const { connectInMemoryMongo, disconnectInMemoryMongo } = require('./helpers/testServer');
+const { migrateFlashcardIndexes, verifyFlashcardIndexes } = require('../src/services/flashcardIndexContract.service');
+beforeAll(connectInMemoryMongo); afterAll(disconnectInMemoryMongo);
+test('legacy indexes migrate twice without data loss and new uniqueness scopes work', async () => {
+  const db = mongoose.connection;
+  const submissions = db.collection('flashcardsubmissions'), sets = db.collection('flashcardsets');
+  await submissions.createIndex({ flashcardSetId: 1, userId: 1 }, { unique: true });
+  await submissions.createIndex({ assignmentId: 1, userId: 1 });
+  await sets.createIndex({ shareToken: 1 }, { unique: true, sparse: true });
+  const set = new mongoose.Types.ObjectId(), user = new mongoose.Types.ObjectId();
+  await sets.insertOne({ _id: set, title: 'Preserved', shareToken: null });
+  await submissions.insertOne({ flashcardSetId: set, userId: user, answer: 'Preserved' });
+  await expect(verifyFlashcardIndexes(db)).rejects.toThrow('migrate:flashcard-indexes');
+  await migrateFlashcardIndexes(db);
+  const firstIndexes = await submissions.indexes();
+  await migrateFlashcardIndexes(db);
+  expect(await submissions.indexes()).toEqual(firstIndexes);
+  expect(await sets.findOne({ _id: set })).toEqual({ _id: set, title: 'Preserved' });
+  expect((await submissions.findOne({ userId: user })).answer).toBe('Preserved');
+  await expect(submissions.insertOne({ flashcardSetId: set, userId: user })).rejects.toMatchObject({ code: 11000 });
+  const assignment = new mongoose.Types.ObjectId();
+  await submissions.insertOne({ flashcardSetId: set, userId: user, assignmentId: assignment });
+  await expect(submissions.insertOne({ flashcardSetId: set, userId: user, assignmentId: assignment })).rejects.toMatchObject({ code: 11000 });
+  await submissions.insertOne({ flashcardSetId: set, userId: user, assignmentId: new mongoose.Types.ObjectId() });
+  await verifyFlashcardIndexes(db);
+});

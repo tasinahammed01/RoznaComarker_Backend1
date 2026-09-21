@@ -6,12 +6,16 @@ require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 const { REQUIRED_PLAN_MAPPINGS, getPaypalConfig, getPaypalPlanId, validatePaypalConfig } = require('../../src/config/paypal');
 const { PayPalClient, redact } = require('../../src/services/paypal/paypalClient.service');
 
-function yes(value) { return value ? 'yes' : 'no'; }
+function yes(value) { return value ? 'PRESENT' : 'MISSING'; }
 
 async function run({ environment = process.env, authenticate = process.argv.includes('--auth'), output = console,
   clientFactory = (env) => new PayPalClient({ environmentVariables: env, logger: {} }) } = {}) {
   const config = getPaypalConfig(environment);
   output.log('PayPal configuration readiness');
+  output.log(`PAYMENT_PROVIDER: ${environment.PAYMENT_PROVIDER === 'paypal' ? 'PRESENT' : 'MISMATCH'}`);
+  output.log(`PAYPAL_ENV: ${environment.PAYPAL_ENV ? 'PRESENT' : 'MISSING'}`);
+  output.log(`PAYPAL_LIVE_ENABLED: ${String(environment.PAYPAL_LIVE_ENABLED).toLowerCase() === 'true' ? 'PRESENT' : 'MISSING'}`);
+  try { require('../../src/config/paypal').getPaypalRedirectUrls('subscription', environment); output.log('Trusted frontend return URL: PRESENT'); } catch { output.log('Trusted frontend return URL: MISMATCH'); }
   output.log(`Environment: ${config.environment}`);
   output.log(`Live monetary operations enabled: ${yes(config.liveEnabled)}`);
   output.log(`Client ID configured (${config.variables.clientId}): ${yes(config.clientId)}`);

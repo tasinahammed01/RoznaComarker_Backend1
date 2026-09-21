@@ -7,12 +7,13 @@ const creditPackSchema = new mongoose.Schema({
   price: { type: Number, required: true, min: 0 },
   currency: { type: String, required: true, trim: true, uppercase: true, default: 'USD' },
   stripePriceId: { type: String, trim: true, default: null },
-  allowedPlans: [{ type: String, trim: true }],
+  allowedPlans: [{ type: String, trim: true, lowercase: true }],
   active: { type: Boolean, default: true, index: true },
   displayOrder: { type: Number, default: 0, min: 0, validate: Number.isSafeInteger, index: true },
   metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
 }, { timestamps: true, versionKey: false });
 
 creditPackSchema.index({ stripePriceId: 1 }, { unique: true, partialFilterExpression: { stripePriceId: { $type: 'string' } } });
+creditPackSchema.index({ active: 1, allowedPlans: 1, displayOrder: 1 });
 
 module.exports = mongoose.model('CreditPack', creditPackSchema);

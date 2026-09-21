@@ -134,7 +134,7 @@ describe('Phase 4 Firebase to backend identity boundary', () => {
   });
 
   test('sanitizes disabled, invalid, and forged token failures', async () => {
-    mockVerifyIdToken.mockRejectedValue(new Error('sensitive Firebase internals'));
+    mockVerifyIdToken.mockRejectedValue(Object.assign(new Error('sensitive Firebase internals'), { code: 'auth/invalid-id-token' }));
     const res = responseRecorder();
     await verifyFirebaseToken(
       { headers: { authorization: 'Bearer forged-token' }, body: {} },
@@ -142,7 +142,7 @@ describe('Phase 4 Firebase to backend identity boundary', () => {
       jest.fn()
     );
     expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ success: false, message: 'Invalid or expired token' });
+    expect(res.body).toEqual({ success: false, code: 'AUTH_INVALID', message: 'Invalid or expired token' });
     expect(JSON.stringify(res.body)).not.toContain('sensitive');
   });
 
@@ -161,13 +161,39 @@ describe('Phase 4 Firebase to backend identity boundary', () => {
         { headers: { authorization: `Bearer ${rawToken}` }, body: {} }, res, jest.fn()
       );
       expect(res.statusCode).toBe(401);
-      expect(res.body).toEqual({ success: false, message: 'Invalid or expired token' });
+      expect(res.body).toEqual({ success: false, code: 'AUTH_INVALID', message: 'Invalid or expired token' });
       expect(log).toHaveBeenCalledWith(expect.objectContaining({
-        event: 'firebase.idTokenVerification.failed', authStage: 'verifyIdToken', code
+        event: 'firebase.idTokenVerification.failed', code
       }));
       expect(JSON.stringify(log.mock.calls)).not.toContain(rawToken);
     } finally {
       log.mockRestore();
     }
+  });
+});
+
+describe('Phase 1 login failure classification', () => {
+  beforeEach(() => { mockVerifyIdToken.mockReset(); mockFindOne.mockReset(); mockCreate.mockReset(); });
+  test.each(['lookup', 'create'])('Mongo %s failure is 503 after valid verification', async stage => {
+    mockVerifyIdToken.mockResolvedValue({ uid: 'uid', email: 'user@example.test' });
+    if (stage === 'lookup') mockFindOne.mockRejectedValue(new Error('secret database details'));
+    else { mockFindOne.mockResolvedValue(null); mockCreate.mockRejectedValue(new Error('secret database details')); }
+    const res = responseRecorder();
+    await verifyFirebaseToken({ headers: { authorization: 'Bearer valid' } }, res, jest.fn());
+    expect(res.statusCode).toBe(503); expect(res.body.code).toBe('AUTH_UNAVAILABLE');
+    expect(JSON.stringify(res.body)).not.toContain('secret');
+  });
+  test('provider network failure is 503', async () => {
+    mockVerifyIdToken.mockRejectedValue(Object.assign(new Error('secret'), { code: 'app/network-error' }));
+    const res = responseRecorder();
+    await verifyFirebaseToken({ headers: { authorization: 'Bearer valid' } }, res, jest.fn());
+    expect(res.statusCode).toBe(503); expect(res.body.code).toBe('AUTH_PROVIDER_UNAVAILABLE');
+  });
+  test('inactive account is 403', async () => {
+    mockVerifyIdToken.mockResolvedValue({ uid: 'uid', email: 'user@example.test' });
+    mockFindOne.mockResolvedValue({ isActive: false });
+    const res = responseRecorder();
+    await verifyFirebaseToken({ headers: { authorization: 'Bearer valid' } }, res, jest.fn());
+    expect(res.statusCode).toBe(403); expect(res.body.code).toBe('ACCOUNT_INACTIVE');
   });
 });

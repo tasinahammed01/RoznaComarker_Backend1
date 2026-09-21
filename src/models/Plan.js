@@ -12,7 +12,9 @@ const planSchema = new mongoose.Schema(
     slug: {
       type: String,
       trim: true,
-      index: true
+      lowercase: true,
+      required: true,
+      unique: true
     },
     price: {
       type: Number,

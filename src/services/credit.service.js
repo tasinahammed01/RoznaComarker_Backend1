@@ -13,17 +13,23 @@ const insufficient = () => Object.assign(new Error('You have used all your Asses
 const available = (wallet) => Math.max(Number(wallet.monthlyCredits) - Number(wallet.monthlyCreditsUsed), 0) +
   Number(wallet.purchasedCredits || 0) + Number(wallet.bonusCredits);
 
-function cycleFor(user, plan, now = new Date()) {
-  const stripeStart = user.stripeCurrentPeriodStart && new Date(user.stripeCurrentPeriodStart);
-  const stripeEnd = user.stripeCurrentPeriodEnd && new Date(user.stripeCurrentPeriodEnd);
-  if (stripeStart && stripeEnd && stripeEnd > stripeStart) return { start: stripeStart, end: stripeEnd };
-  const anchor = user.planStartedAt ? new Date(user.planStartedAt) : now;
-  const start = new Date(anchor);
-  const interval = String(plan.billingInterval || plan.billingType || 'monthly').toLowerCase();
-  const months = interval === 'yearly' ? 12 : 1;
-  while (new Date(start).setMonth(start.getMonth() + months) <= now.getTime()) start.setMonth(start.getMonth() + months);
-  const end = new Date(start); end.setMonth(end.getMonth() + months);
-  return { start, end };
+function cycleFor(user, plan, now = new Date(), wallet) {
+  // The allowance is monthly even when PayPal bills annually. A persisted wallet
+  // anchor remains stable through plan changes and ignores historical Stripe dates.
+  const raw = wallet?.allowanceCycleAnchor || wallet?.billingCycleStart || user.planStartedAt || user.createdAt || now;
+  let anchor = new Date(raw);
+  if (!Number.isFinite(anchor.getTime()) || anchor > now) anchor = new Date(now);
+  const boundary = offset => {
+    const date = new Date(anchor);
+    date.setUTCDate(1);
+    date.setUTCMonth(anchor.getUTCMonth() + offset);
+    const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+    date.setUTCDate(Math.min(anchor.getUTCDate(), lastDay));
+    return date;
+  };
+  let months = (now.getUTCFullYear() - anchor.getUTCFullYear()) * 12 + now.getUTCMonth() - anchor.getUTCMonth();
+  if (boundary(months) > now) months -= 1;
+  return { start: boundary(months), end: boundary(months + 1), anchor };
 }
 
 function allowance(plan) {
@@ -45,7 +51,7 @@ async function getOrCreateWallet(userOrId) {
   const now = new Date(); const cycle = cycleFor(user, plan, now); const monthlyCredits = allowance(plan);
   let wallet = await CreditWallet.findOneAndUpdate({ userId: user._id }, { $setOnInsert: {
     userId: user._id, monthlyCredits, monthlyCreditsUsed: 0, purchasedCredits: 0, bonusCredits: 0,
-    billingCycleStart: cycle.start, billingCycleEnd: cycle.end, lastCreditReset: cycle.start
+    billingCycleStart: cycle.start, billingCycleEnd: cycle.end, lastCreditReset: cycle.start, allowanceCycleAnchor: cycle.anchor
   } }, { upsert: true, new: true, setDefaultsOnInsert: true });
   if (wallet.createdAt && wallet.createdAt.getTime() === wallet.updatedAt.getTime()) logger.info({ event: 'credit.wallet.created', userId: String(user._id) });
   wallet = await resetMonthlyCreditsIfNeeded(user, plan, wallet, now);
@@ -53,10 +59,23 @@ async function getOrCreateWallet(userOrId) {
 }
 
 async function resetMonthlyCreditsIfNeeded(user, plan, wallet, now = new Date()) {
-  const cycle = cycleFor(user, plan, now); const nextAllowance = allowance(plan);
-  const expired = new Date(wallet.billingCycleEnd) <= now;
+  if (!wallet.allowanceCycleAnchor) {
+    const initialCycle = cycleFor(user, plan, now, wallet);
+    await CreditWallet.updateOne({ _id: wallet._id, allowanceCycleAnchor: { $exists: false } },
+      { $set: { allowanceCycleAnchor: initialCycle.anchor } });
+    wallet = await CreditWallet.findById(wallet._id);
+  }
+  // Recompute after loading the persisted anchor: another reader may have reset.
+  const cycle = cycleFor(user, plan, now, wallet); const nextAllowance = allowance(plan);
+  const expired = new Date(wallet.billingCycleEnd) <= now || new Date(wallet.billingCycleStart) < cycle.start;
   const changed = Number(wallet.monthlyCredits) !== nextAllowance;
-  if (!expired && !changed) return wallet;
+  if (!expired && !changed) {
+    if (new Date(wallet.billingCycleEnd).getTime() !== cycle.end.getTime()) {
+      return await CreditWallet.findOneAndUpdate({ _id: wallet._id, updatedAt: wallet.updatedAt },
+        { $set: { billingCycleEnd: cycle.end } }, { new: true }) || await CreditWallet.findById(wallet._id);
+    }
+    return wallet;
+  }
   const cycleKey = `${cycle.start.toISOString()}_${cycle.end.toISOString()}`;
   const set = expired ? { monthlyCredits: nextAllowance, monthlyCreditsUsed: 0, billingCycleStart: cycle.start,
     billingCycleEnd: cycle.end, lastCreditReset: now, nudgeCycleStart: cycle.start, nudge80AcknowledgedAt: null,
@@ -144,5 +163,5 @@ async function acknowledgeNudge(userOrId, threshold) {
   return state;
 }
 
-module.exports = { available, allowance, getOrCreateWallet, resetMonthlyCreditsIfNeeded, canRunAssessment,
+module.exports = { cycleFor, available, allowance, getOrCreateWallet, resetMonthlyCreditsIfNeeded, canRunAssessment,
   consumeAssessmentCredit, addBonusCredits: adjustBonusCredits, adjustBonusCredits, acknowledgeNudge, toDto, insufficient };

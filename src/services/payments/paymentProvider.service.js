@@ -5,7 +5,7 @@ const { PayPalClient } = require('../paypal/paypalClient.service');
 
 class StripePaymentProvider {
   constructor({ clientFactory = getStripe } = {}) { this.name = 'stripe'; this.clientFactory = clientFactory; }
-  getClient() { return this.clientFactory(); }
+  getClient() { throw Object.assign(new Error('Stripe execution is disabled: CoMarker is PayPal-only'), { code: 'PAYMENT_PROVIDER_DISABLED' }); }
 }
 
 class PayPalPaymentProvider {
@@ -17,9 +17,9 @@ class PayPalPaymentProvider {
 }
 
 function configuredProviderName(environment = process.env) {
-  const name = String(environment.PAYMENT_PROVIDER || 'stripe').trim().toLowerCase();
-  if (!['stripe', 'paypal'].includes(name)) {
-    throw Object.assign(new Error('PAYMENT_PROVIDER must be stripe or paypal'), { code: 'PAYMENT_PROVIDER_INVALID' });
+  const name = String(environment.PAYMENT_PROVIDER || '').trim().toLowerCase();
+  if (name !== 'paypal') {
+    throw Object.assign(new Error('PAYMENT_PROVIDER must explicitly be paypal'), { code: 'PAYMENT_PROVIDER_INVALID' });
   }
   return name;
 }

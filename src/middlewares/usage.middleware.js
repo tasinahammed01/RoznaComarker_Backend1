@@ -4,7 +4,6 @@ const Plan = require('../models/Plan');
 const User = require('../models/user.model');
 const Class = require('../models/class.model');
 const logger = require('../utils/logger');
-const { isSubscriptionEntitled } = require('../services/stripeSubscription.service');
 const { getPlanByPayPalPlanId } = require('../services/paypal/paypalPlanMapping.service');
 
 function sendError(res, statusCode, message) {
@@ -101,41 +100,7 @@ async function ensureActivePlan(user) {
     return freePlan;
   }
 
-  // Synchronized Stripe fields are authoritative for paid entitlements. This
-  // also repairs a missing/stale plan ObjectId without trusting browser input.
-  if (
-    user.role === 'teacher' &&
-    user.stripePriceId &&
-    isSubscriptionEntitled(
-      user.stripeSubscriptionStatus,
-      user.stripeCurrentPeriodEnd
-    )
-  ) {
-    const paidPlan = await Plan.findOne({
-      isActive: true,
-      'stripe.priceId': user.stripePriceId
-    });
-    if (paidPlan) {
-      if (String(user.plan || '') !== String(paidPlan._id)) {
-        user.plan = paidPlan._id;
-        user.planStartedAt = user.stripeCurrentPeriodStart || user.planStartedAt || new Date();
-        user.planExpiresAt = user.stripeCurrentPeriodEnd || null;
-        await user.save({ validateModifiedOnly: true });
-      }
-      return paidPlan;
-    }
-  }
-
   if (!freePlan) throw new Error('Free plan is not configured');
-
-  // A definitive non-entitled Stripe state always resolves to Free, even if a
-  // historical paid plan reference remains on the user.
-  if (user.role === 'teacher' && user.stripeSubscriptionStatus) {
-    if (String(user.plan || '') !== String(freePlan._id) || user.planExpiresAt) {
-      await assignPlanToUser(user, freePlan, new Date());
-    }
-    return freePlan;
-  }
 
   if (!user.plan) {
     await assignPlanToUser(user, freePlan, new Date());

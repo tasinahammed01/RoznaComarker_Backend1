@@ -14,7 +14,7 @@ function purchaseError(code, message, statusCode = 400) {
 }
 
 function paymentProvider(environment = process.env) {
-  return String(environment.PAYMENT_PROVIDER || 'stripe').trim().toLowerCase();
+  return String(environment.PAYMENT_PROVIDER || '').trim().toLowerCase();
 }
 
 function trustedMoney(price, currency) {
@@ -42,7 +42,7 @@ function safeApprovalUrl(order) {
   if (!link?.href) throw purchaseError('PAYPAL_ORDER_APPROVAL_MISSING', 'PayPal did not return an approval URL', 502);
   let url;
   try { url = new URL(link.href); } catch { throw purchaseError('PAYPAL_ORDER_APPROVAL_INVALID', 'PayPal returned an invalid approval URL', 502); }
-  if (url.protocol !== 'https:' || !(url.hostname === 'paypal.com' || url.hostname.endsWith('.paypal.com'))) {
+  if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443') || !(url.hostname === 'paypal.com' || url.hostname.endsWith('.paypal.com'))) {
     throw purchaseError('PAYPAL_ORDER_APPROVAL_INVALID', 'PayPal returned an untrusted approval URL', 502);
   }
   return url.toString();
@@ -161,19 +161,22 @@ function validatedCapture(order, attempt, { allowRefunded = false } = {}) {
 }
 
 async function grantCaptured(attempt, order, options) {
+  const current = await PaymentPurchaseAttempt.findById(attempt._id);
+  if (['refunded', 'review_required'].includes(current?.status)) return publicAttempt(current);
   const capture = validatedCapture(order, attempt, options);
   const conflict = await PaymentPurchaseAttempt.findOne({ provider: 'paypal', providerCaptureId: capture.id, _id: { $ne: attempt._id } });
   if (conflict) throw purchaseError('PAYPAL_CAPTURE_OWNERSHIP_CONFLICT', 'Payment capture is already assigned', 409);
-  await PaymentPurchaseAttempt.updateOne({ _id: attempt._id }, { $set: { providerCaptureId: capture.id,
+  const captured = await PaymentPurchaseAttempt.updateOne({ _id: attempt._id, status: { $nin: ['refunded', 'review_required'] } }, { $set: { providerCaptureId: capture.id,
     status: 'captured', capturedAt: new Date(capture.update_time || capture.create_time || Date.now()), processingLeaseExpiresAt: null } });
+  if (!captured.matchedCount) return publicAttempt(await PaymentPurchaseAttempt.findById(attempt._id));
   const pack = { code: attempt.packCode, name: attempt.packCode, credits: attempt.credits };
   const grant = await TopupService.grantProviderPurchasedCredits({ userId: attempt.userId, pack,
     idempotencyKey: `paypal-topup:capture:${capture.id}`, reason: `PayPal Assessment Credit purchase: ${attempt.packCode}`,
     metadata: { provider: 'paypal', packCode: attempt.packCode, creditsPurchased: attempt.credits,
       paypalOrderId: attempt.providerOrderId, paypalCaptureId: capture.id, pricePaid: attempt.expectedAmount, currency: attempt.currency } });
-  const saved = await PaymentPurchaseAttempt.findOneAndUpdate({ _id: attempt._id }, { $set: { status: 'credited',
+  const saved = await PaymentPurchaseAttempt.findOneAndUpdate({ _id: attempt._id, status: { $nin: ['refunded', 'review_required'] } }, { $set: { status: 'credited',
     creditedAt: new Date(), creditTransactionId: grant.transaction._id, processingLeaseExpiresAt: null } }, { returnDocument: 'after' });
-  return publicAttempt(saved || { ...attempt.toObject(), status: 'credited', providerCaptureId: capture.id });
+  return publicAttempt(saved || await PaymentPurchaseAttempt.findById(attempt._id));
 }
 
 async function captureOrder({ user, attemptId, client = new PayPalClient() }) {

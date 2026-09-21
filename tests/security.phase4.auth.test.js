@@ -52,7 +52,8 @@ describe('Phase 4 backend JWT boundary', () => {
     expect(result.next).toHaveBeenCalledTimes(1);
     expect(result.req.jwt).toMatchObject({ id: userId, sub: userId, role: 'teacher' });
     expect(result.req.jwt.jti).toEqual(expect.any(String));
-    expect(mockEnsureActivePlan).toHaveBeenCalledWith(result.req.user);
+    expect(mockEnsureActivePlan).not.toHaveBeenCalled();
+    expect(mockFindById).toHaveBeenCalledTimes(1);
   });
 
   test.each([
@@ -83,7 +84,7 @@ describe('Phase 4 backend JWT boundary', () => {
     mockFindById.mockResolvedValueOnce({ _id: userId, role: 'student', isActive: true });
     const result = await authenticate(token);
     expect(result.next).toHaveBeenCalledTimes(1);
-    expect(mockEnsureActivePlan).toHaveBeenCalledTimes(1);
+    expect(mockEnsureActivePlan).not.toHaveBeenCalled();
 
     const roleNext = jest.fn();
     requireRole('teacher')(result.req, result.res, roleNext);
@@ -99,9 +100,9 @@ describe('Phase 4 backend JWT boundary', () => {
     expect(result.res.statusCode).toBe(503);
     expect(result.res.body.code).toBe('AUTH_UNAVAILABLE');
 
-    mockEnsureActivePlan.mockRejectedValueOnce(new Error('database unavailable'));
+    mockEnsureActivePlan.mockRejectedValueOnce(new Error('plan unavailable'));
     result = await authenticate(token);
-    expect(result.res.statusCode).toBe(503);
-    expect(result.res.body.code).toBe('AUTH_UNAVAILABLE');
+    expect(result.next).toHaveBeenCalledTimes(1);
+    expect(mockEnsureActivePlan).not.toHaveBeenCalled();
   });
 });

@@ -19,7 +19,7 @@ function sendManagementError(res, error) {
 
 async function create(req, res) {
   try {
-    const attempt = await PayPalSubscription.createSubscription({ user: req.user, planKey: req.body.planCode,
+    const attempt = await PayPalSubscription.createSubscription({ user: req.user, planKey: req.body.planCode, billingPeriod: req.body.billingPeriod,
       attemptId: req.body.checkoutAttemptId, client: client() });
     logger.info(`[PAYPAL] subscription created userId=${req.user._id} planKey=${attempt.planKey} subscriptionId=${attempt.providerSubscriptionId}`);
     return res.json({ success: true, data: { checkoutAttemptId: attempt.attemptId, subscriptionId: attempt.providerSubscriptionId,
@@ -43,7 +43,7 @@ async function cancel(req, res) {
 
 async function changePlan(req, res) {
   try {
-    const result = await PayPalManagement.changePlan({ user: req.user, targetPlanCode: req.body.targetPlanCode,
+    const result = await PayPalManagement.changePlan({ user: req.user, targetPlanCode: req.body.targetPlanCode, billingPeriod: req.body.billingPeriod,
       changeAttemptId: req.body.changeAttemptId, client: client() });
     return res.json({ success: true, data: { attemptId: result.attempt.attemptId,
       status: result.attempt.status, targetPlanCode: result.attempt.targetPlanKey,
@@ -84,12 +84,13 @@ async function getChangePlanContext(req, res) {
     const prepareResult = await PayPalManagement.prepareChangePlan({
       user: req.user,
       targetPlanCode,
+      billingPeriod: req.body.billingPeriod,
       changeAttemptId
     });
 
     const attempt = prepareResult.attempt;
     const canonicalAttemptId = prepareResult.canonicalAttemptId || attempt.attemptId;
-    const targetPayPalPlanId = await getPayPalPlanId({ planKey: targetPlan.slug, billingInterval: targetPlan.billingInterval === 'year' ? 'yearly' : 'monthly' });
+    const targetPayPalPlanId = attempt.targetProviderPlanId;
 
     return res.json({
       success: true,
@@ -98,10 +99,10 @@ async function getChangePlanContext(req, res) {
         providerSubscriptionId: attempt.providerSubscriptionId,
         targetPayPalPlanId,
         targetPlanCode: targetPlan.slug,
-        currency: 'USD',
+        currency: targetPlan.currency,
         targetPlanName: targetPlan.name,
-        targetPlanPrice: targetPlan.price,
-        targetBillingInterval: targetPlan.billingInterval
+        targetPlanPrice: require('../services/paypal/paypalPlanMapping.service').priceForInterval(targetPlan, attempt.billingInterval),
+        targetBillingInterval: attempt.billingInterval
       }
     });
   } catch (error) {
@@ -133,12 +134,22 @@ async function reconcilePlanChange(req, res) {
     if (!subscription || String(subscription.id) !== attempt.providerSubscriptionId) {
       return res.status(502).json({ success: false, code: 'PAYPAL_SUBSCRIPTION_NOT_FOUND', message: 'Unable to confirm PayPal subscription' });
     }
-    const syncResult = await syncSubscription(subscription);
-    await PaymentManagementAttempt.findOneAndUpdate({ _id: attempt._id }, { $set: { status: 'completed', completedAt: new Date() } });
-    return res.json({ success: true, data: { status: 'completed', targetPlanCode: attempt.targetPlanKey, providerStatus: subscription.status } });
+    if (subscription.plan_id !== attempt.targetProviderPlanId || subscription.status !== 'ACTIVE') {
+      return res.json({ success: true, data: { status: 'provider_pending', targetPlanCode: attempt.targetPlanKey, providerStatus: subscription.status } });
+    }
+    await syncSubscription(subscription);
+    const confirmed = await PaymentManagementAttempt.findById(attempt._id);
+    return res.json({ success: true, data: { status: confirmed.status, targetPlanCode: attempt.targetPlanKey, providerStatus: subscription.status } });
   } catch (error) {
     return res.status(error?.statusCode || 502).json({ success: false, code: error?.code || 'RECONCILE_FAILED', message: error?.message || 'Failed to reconcile plan change' });
   }
 }
 
-module.exports = { cancel, changePlan, changePlanCancelled, create, getChangePlanContext, reconcile, reconcileManagement, reconcilePlanChange };
+async function claimSdkTransport(req, res) {
+  try {
+    await PayPalManagement.claimSdkTransport({ user: req.user, changeAttemptId: req.body.changeAttemptId });
+    return res.json({ success: true });
+  } catch (error) { return sendManagementError(res, error); }
+}
+
+module.exports = { claimSdkTransport, cancel, changePlan, changePlanCancelled, create, getChangePlanContext, reconcile, reconcileManagement, reconcilePlanChange };

@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const mongoose = require('mongoose');
 const CreditTransaction = require('../models/CreditTransaction');
 const User = require('../models/user.model');
@@ -80,7 +79,10 @@ async function adminTeachers(req, res) {
 async function adminAdjust(req, res) {
   try {
     const amount = Number(req.body?.amount); const reason = String(req.body?.reason || '').trim();
-    const key = String(req.body?.idempotencyKey || `admin:${req.user._id}:${req.params.userId}:${crypto.randomUUID()}`);
+    const key = String(req.body?.idempotencyKey || '');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(key)) {
+      return res.status(400).json({ success: false, code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'A UUID idempotencyKey is required.' });
+    }
     const transaction = await CreditService.adjustBonusCredits({ userId: req.params.userId, amount, reason,
       idempotencyKey: key, actorId: req.user._id, metadata: { source: 'admin_api' } });
     const state = await CreditService.getOrCreateWallet(req.params.userId);

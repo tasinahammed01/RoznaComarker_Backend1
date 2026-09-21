@@ -3,7 +3,6 @@ const mongoose = require('mongoose');
 const User = require('../models/user.model');
 const { verifyJwt } = require('../utils/jwt');
 
-const { ensureActivePlan } = require('./usage.middleware');
 const logger = require('../utils/logger');
 
 function getBearerToken(req) {
@@ -43,24 +42,6 @@ async function verifyJwtToken(req, res, next) {
 
     if (user.isActive === false) {
       return authError(res, 403, 'ACCOUNT_INACTIVE', 'Account is inactive');
-    }
-
-    try {
-      await ensureActivePlan(user);
-    } catch (err) {
-      logger.error({
-        event: 'auth.ensureActivePlan.failed',
-        userId: String(user._id),
-        role: user.role,
-        error: err instanceof Error ? {
-          name: err.name,
-          message: err.message,
-          code: err.code,
-          errors: err.errors,
-          stack: err.stack
-        } : err
-      });
-      return authError(res, 503, 'AUTH_UNAVAILABLE', 'Authentication is temporarily unavailable');
     }
 
     req.user = user;

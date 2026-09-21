@@ -65,7 +65,7 @@ describe('PayPal Sandbox subscription Phase 2', () => {
   test('authenticated teacher creates a trusted subscription and receives only safe approval data', async () => {
     const res = await createAttempt(); expect(res.status).toBe(200);
     expect(res.body.data).toEqual({ subscriptionId: SUBSCRIPTION,
-      approvalUrl: 'https://www.sandbox.paypal.com/webapps/billing/subscriptions?ba_token=SAFE', status: 'approval_pending' });
+      approvalUrl: 'https://www.sandbox.paypal.com/webapps/billing/subscriptions?ba_token=SAFE', status: 'approval_pending', checkoutAttemptId: ATTEMPT });
     expect(paypalMock.createSubscription).toHaveBeenCalledWith(expect.objectContaining({ plan_id: 'P-ESSENTIAL-MONTHLY', custom_id: ATTEMPT }), ATTEMPT);
     expect(JSON.stringify(res.body)).not.toContain('sandbox-secret');
   });
@@ -173,13 +173,13 @@ describe('PayPal Sandbox subscription Phase 2', () => {
     expect(res.status).toBe(400); expect(res.body.code).toBe('PLAN_NOT_PURCHASABLE');
   });
 
-  test('active Stripe or PayPal state blocks a parallel subscription', async () => {
+  test('historical Stripe is ignored while active PayPal blocks parallel subscription', async () => {
     teacher.stripeSubscriptionStatus = 'active'; await teacher.save();
-    expect((await createAttempt()).status).toBe(409);
+    expect((await createAttempt()).status).toBe(200);
     teacher.stripeSubscriptionStatus = null; teacher.paypalSubscriptionStatus = 'ACTIVE'; await teacher.save();
     const activePayPal = await createAttempt();
     expect(activePayPal.status).toBe(409); expect(activePayPal.body.code).toBe('ALREADY_SUBSCRIBED');
-    expect(paypalMock.createSubscription).not.toHaveBeenCalled();
+    expect(paypalMock.createSubscription).toHaveBeenCalledTimes(1);
   });
 
   test('suspended PayPal state preserves management behavior without claiming it is active', async () => {
@@ -262,7 +262,7 @@ describe('PayPal Sandbox subscription Phase 2', () => {
   });
 
   test.each([['CANCELLED', 'BILLING.SUBSCRIPTION.CANCELLED'], ['SUSPENDED', 'BILLING.SUBSCRIPTION.SUSPENDED'], ['EXPIRED', 'BILLING.SUBSCRIPTION.EXPIRED']])(
-    '%s synchronizes back to Free without deleting wallet history', async (status, type) => {
+    '%s preserves cancellation history or applies terminal downgrade', async (status, type) => {
       await createAttempt(); paypalMock.getSubscription.mockResolvedValue(subscription('ACTIVE'));
       await sendWebhook(event(`WH-${status}-A`, 'BILLING.SUBSCRIPTION.ACTIVATED'));
       const failedAt = new Date('2026-08-30T12:00:00Z');
@@ -270,7 +270,9 @@ describe('PayPal Sandbox subscription Phase 2', () => {
         paypalLastPaymentFailedAt: failedAt, paypalPaymentIssueActive: true
       } });
       paypalMock.getSubscription.mockResolvedValue(subscription(status)); await sendWebhook(event(`WH-${status}-B`, type));
-      const current = await User.findById(teacher._id); expect(String(current.plan)).toBe(String(free._id));
+      const current = await User.findById(teacher._id);
+      // CANCELLED preserves the stored plan; the entitlement resolver applies paid-through expiry.
+      expect(String(current.plan)).toBe(String(status === 'CANCELLED' ? essential._id : free._id));
       expect(current.paypalSubscriptionStatus).toBe(status); expect(await CreditWallet.countDocuments({ userId: teacher._id })).toBe(1);
       expect(current.paypalLastPaymentFailedAt).toEqual(failedAt);
       expect(current.paypalPaymentIssueActive).toBe(status === 'SUSPENDED');

@@ -4,12 +4,12 @@ const { randomUUID } = require('crypto');
 const Plan = require('../../models/Plan');
 const PaymentManagementAttempt = require('../../models/PaymentManagementAttempt');
 const { approvalUrl } = require('./paypalSubscription.service');
-const { getPayPalPlanId, getPlanByPayPalPlanId, isFreeOrNonBillable } = require('./paypalPlanMapping.service');
+const { getPayPalPlanId, getPlanByPayPalPlanId, isFreeOrNonBillable, requestedInterval } = require('./paypalPlanMapping.service');
 const { getPaypalConfig, getPaypalRedirectUrls } = require('../../config/paypal');
 
 const MANAGEABLE = new Set(['ACTIVE', 'SUSPENDED']);
 const TERMINAL = new Set(['CANCELLED', 'EXPIRED']);
-const ACTIVE_STATUSES = ['processing', 'approval_pending', 'provider_pending'];
+const ACTIVE_STATUSES = ['prepared', 'processing', 'approval_pending', 'provider_pending'];
 const PROCESSING_LEASE_MS = 2 * 60 * 1000;
 const CANCEL_REASON = 'Cancelled by subscriber from CoMarker account settings.';
 
@@ -54,14 +54,14 @@ async function authoritativeSubscription(user, client, failureCode) {
 
 async function findActive(providerSubscriptionId) {
   return PaymentManagementAttempt.findOne({
-    activeOperationKey: activeOperationKey(providerSubscriptionId), status: { $in: ACTIVE_STATUSES }
+    activeOperationKey: activeOperationKey(providerSubscriptionId)
   }).sort({ createdAt: -1 });
 }
 
 async function createOwnedAttempt(fields) {
   const now = new Date();
   return PaymentManagementAttempt.create({ ...fields,
-    activeOperationKey: activeOperationKey(fields.providerSubscriptionId), ...lease(now) });
+    activeOperationKey: activeOperationKey(fields.providerSubscriptionId), ...(fields.status === 'prepared' ? {} : lease(now)) });
 }
 
 async function claimRetryable(attempt) {
@@ -101,7 +101,7 @@ async function markActiveOutcome(attempt, status, fields = {}) {
 async function markFailed(attempt, errorCode, classification) {
   return PaymentManagementAttempt.findOneAndUpdate({ _id: attempt._id }, {
     $set: { status: 'failed', errorCode, failureClass: classification, processingLeaseExpiresAt: null },
-    $unset: { activeOperationKey: 1 }
+    ...(classification === 'permanent' ? { $unset: { activeOperationKey: 1 } } : {})
   }, { returnDocument: 'after' });
 }
 
@@ -139,6 +139,10 @@ async function cancelSubscription({ user, client }) {
   let active = await findActive(user.paypalSubscriptionId);
   if (active) {
     if (active.operation !== 'CANCEL') throw domainError('PAYPAL_MANAGEMENT_ATTEMPT_CONFLICT', 'Another PayPal subscription change is pending', 409);
+    if (active.status === 'failed' && active.failureClass === 'retryable') {
+      const reclaimed = await claimRetryable(active);
+      return reclaimed ? { ...(await executeCancel(reclaimed, client)), status } : { pending: true, attempt: active, status };
+    }
     if (active.status !== 'processing') return { pending: true, attempt: active, status };
     const reclaimed = await claimStale(active);
     if (!reclaimed) return { pending: true, attempt: active, status };
@@ -208,7 +212,7 @@ async function executeChange(attempt, client, environment) {
   }
 }
 
-async function changePlan({ user, targetPlanCode, changeAttemptId, client, environment = process.env }) {
+async function changePlan({ user, targetPlanCode, billingPeriod, changeAttemptId, client, environment = process.env }) {
   const subscription = await authoritativeSubscription(user, client, 'PAYPAL_PLAN_CHANGE_FAILED');
   const status = String(subscription.status || '').toUpperCase();
   if (!MANAGEABLE.has(status)) throw domainError('PAYPAL_SUBSCRIPTION_NOT_MANAGEABLE', 'PayPal subscription cannot be changed in its current state', 409);
@@ -216,14 +220,11 @@ async function changePlan({ user, targetPlanCode, changeAttemptId, client, envir
   const target = await Plan.findOne({ slug: targetSlug, isActive: true }).lean();
   if (!target || isFreeOrNonBillable(target)) throw domainError('PAYPAL_PLAN_CHANGE_TARGET_INVALID', 'Target plan is not available', target ? 400 : 404);
   const source = await getPlanByPayPalPlanId(subscription.plan_id, { environment });
-  const targetProviderPlanId = await getPayPalPlanId({ planKey: target.slug, billingInterval: interval(target) }, { environment });
-  if (targetProviderPlanId === subscription.plan_id || target.slug === source.slug) {
-    throw domainError('PAYPAL_PLAN_CHANGE_SAME_PLAN', 'Target plan is already active', 409);
-  }
+  const targetProviderPlanId = await getPayPalPlanId({ planKey: target.slug, billingInterval: requestedInterval(target, billingPeriod) }, { environment });
 
   let existing = await PaymentManagementAttempt.findOne({ provider: 'paypal', attemptId: changeAttemptId });
   if (existing) {
-    if (!existing.userId.equals(user._id) || existing.providerSubscriptionId !== user.paypalSubscriptionId || existing.targetPlanKey !== target.slug) {
+    if (!existing.userId.equals(user._id) || existing.providerSubscriptionId !== user.paypalSubscriptionId || existing.targetPlanKey !== target.slug || existing.targetProviderPlanId !== targetProviderPlanId) {
       throw domainError('PAYPAL_MANAGEMENT_ATTEMPT_CONFLICT', 'Management attempt belongs to another operation', 409);
     }
     if (['approval_pending', 'provider_pending', 'completed'].includes(existing.status)) return existingResult(existing);
@@ -234,6 +235,12 @@ async function changePlan({ user, targetPlanCode, changeAttemptId, client, envir
     if (existing.status === 'failed') {
       const reclaimed = await claimRetryable(existing);
       if (reclaimed) return executeChange(reclaimed, client, environment);
+    }
+    if (existing.status === 'prepared') {
+      const claimed = await PaymentManagementAttempt.findOneAndUpdate({ _id: existing._id, status: 'prepared' },
+        { $set: { status: 'processing', transport: 'backend', ...lease() } }, { new: true });
+      if (claimed) return executeChange(claimed, client, environment);
+      return existingResult(await PaymentManagementAttempt.findById(existing._id));
     }
     if (existing.status === 'processing') {
       // This is a prepared attempt from the context endpoint - proceed with PayPal revise
@@ -246,12 +253,11 @@ async function changePlan({ user, targetPlanCode, changeAttemptId, client, envir
     if (active) throw domainError('PAYPAL_MANAGEMENT_ATTEMPT_CONFLICT', 'Another PayPal subscription change is pending', 409);
   }
 
+  if (targetProviderPlanId === subscription.plan_id) {
+    throw domainError('PAYPAL_PLAN_CHANGE_SAME_PLAN', 'Target plan is already active', 409);
+  }
   let active = await findActive(user.paypalSubscriptionId);
   if (active) {
-    if (active.operation === 'CHANGE_PLAN' && active.targetPlanKey === target.slug && active.status === 'processing') {
-      const reclaimed = await claimStale(active);
-      if (reclaimed) return executeChange(reclaimed, client, environment);
-    }
     throw domainError('PAYPAL_MANAGEMENT_ATTEMPT_CONFLICT', 'Another PayPal subscription change is pending', 409);
   }
 
@@ -274,11 +280,12 @@ async function changePlan({ user, targetPlanCode, changeAttemptId, client, envir
     attempt = await createOwnedAttempt({ provider: 'paypal', attemptId: changeAttemptId, userId: user._id,
       providerSubscriptionId: user.paypalSubscriptionId, operation: 'CHANGE_PLAN', sourcePlanKey: source.slug,
       sourceProviderPlanId: subscription.plan_id, targetPlanKey: target.slug, targetProviderPlanId,
+      billingInterval: requestedInterval(target, billingPeriod), transport: 'backend',
       providerRequestId: `revise-${changeAttemptId}`, status: 'processing' });
   } catch (error) {
     if (!isDuplicate(error)) throw error;
     existing = await PaymentManagementAttempt.findOne({ provider: 'paypal', attemptId: changeAttemptId });
-    if (existing) return existingResult(existing);
+    if (existing && String(existing.userId) === String(user._id) && existing.targetProviderPlanId === targetProviderPlanId && existing.providerSubscriptionId === user.paypalSubscriptionId) return existingResult(existing);
     throw domainError('PAYPAL_MANAGEMENT_ATTEMPT_CONFLICT', 'Another PayPal subscription change is pending', 409);
   }
   return executeChange(attempt, client, environment);
@@ -295,7 +302,11 @@ async function markChangePlanCancelled({ user, changeAttemptId }) {
   }
 
   // Only cancel attempts that are still active (not already terminal)
-  const activeStatuses = ['processing', 'approval_pending', 'provider_pending'];
+  const activeStatuses = ['prepared'];
+  // A browser cancel is not proof that a provider revision was cancelled.
+  if (['processing', 'approval_pending', 'provider_pending'].includes(attempt.status)) {
+    throw domainError('PAYPAL_CHANGE_RECONCILIATION_REQUIRED', 'Confirm the pending change with PayPal before starting another operation', 409);
+  }
   if (!activeStatuses.includes(attempt.status)) {
     // Attempt is already in a terminal state (completed, failed, etc.)
     // Return as-is - no-op for idempotency
@@ -303,22 +314,23 @@ async function markChangePlanCancelled({ user, changeAttemptId }) {
   }
 
   // Set to terminal cancelled status and clear active operation metadata
-  return PaymentManagementAttempt.findOneAndUpdate({ _id: attempt._id }, {
+  return PaymentManagementAttempt.findOneAndUpdate({ _id: attempt._id, status: 'prepared' }, {
     $set: { status: 'cancelled', cancelledAt: new Date(), processingLeaseExpiresAt: null, approvalUrl: null },
     $unset: { activeOperationKey: 1 }
   }, { returnDocument: 'after' });
 }
 
-async function prepareChangePlan({ user, targetPlanCode, changeAttemptId, environment = process.env }) {
+async function prepareChangePlan({ user, targetPlanCode, billingPeriod, changeAttemptId, environment = process.env }) {
   assertPayPalUser(user);
   const targetSlug = String(targetPlanCode || '').trim().toLowerCase();
   const target = await Plan.findOne({ slug: targetSlug, isActive: true }).lean();
   if (!target || isFreeOrNonBillable(target)) throw domainError('PAYPAL_PLAN_CHANGE_TARGET_INVALID', 'Target plan is not available', target ? 400 : 404);
 
+  const expectedTargetId = await getPayPalPlanId({ planKey: target.slug, billingInterval: requestedInterval(target, billingPeriod) }, { environment });
   // Check for existing attempt with same ID (idempotent prepare)
   let existing = await PaymentManagementAttempt.findOne({ provider: 'paypal', attemptId: changeAttemptId });
   if (existing) {
-    if (!existing.userId.equals(user._id) || existing.providerSubscriptionId !== user.paypalSubscriptionId) {
+    if (!existing.userId.equals(user._id) || existing.providerSubscriptionId !== user.paypalSubscriptionId || existing.targetPlanKey !== target.slug || existing.targetProviderPlanId !== expectedTargetId) {
       throw domainError('PAYPAL_MANAGEMENT_ATTEMPT_CONFLICT', 'Management attempt belongs to another operation', 409);
     }
     if (existing.operation !== 'CHANGE_PLAN') {
@@ -349,11 +361,16 @@ async function prepareChangePlan({ user, targetPlanCode, changeAttemptId, enviro
   if (!MANAGEABLE.has(status)) throw domainError('PAYPAL_SUBSCRIPTION_NOT_MANAGEABLE', 'PayPal subscription cannot be changed in its current state', 409);
 
   const source = await getPlanByPayPalPlanId(subscription.plan_id, { environment });
-  const targetProviderPlanId = await getPayPalPlanId({ planKey: target.slug, billingInterval: interval(target) }, { environment });
-  if (targetProviderPlanId === subscription.plan_id || target.slug === source.slug) {
+  const targetProviderPlanId = await getPayPalPlanId({ planKey: target.slug, billingInterval: requestedInterval(target, billingPeriod) }, { environment });
+  if (targetProviderPlanId === subscription.plan_id) {
     throw domainError('PAYPAL_PLAN_CHANGE_SAME_PLAN', 'Target plan is already active', 409);
   }
 
+  const providerPlans = await Promise.all([client.getPlan(subscription.plan_id), client.getPlan(targetProviderPlanId)]);
+  const productId = getPaypalConfig(environment).productId;
+  if (!productId || providerPlans.some(plan => plan?.product_id !== productId)) {
+    throw domainError('PAYPAL_PLAN_CHANGE_UNSUPPORTED', 'PayPal plans are not compatible for revision', 409);
+  }
   // Create new prepared attempt WITHOUT calling PayPal revise
   let attempt;
   try {
@@ -367,14 +384,15 @@ async function prepareChangePlan({ user, targetPlanCode, changeAttemptId, enviro
       sourceProviderPlanId: subscription.plan_id,
       targetPlanKey: target.slug,
       targetProviderPlanId,
+      billingInterval: requestedInterval(target, billingPeriod),
       providerRequestId: `revise-${changeAttemptId}`,
-      status: 'processing'
+      status: 'prepared'
     });
   } catch (error) {
     if (!isDuplicate(error)) throw error;
     // Race condition: another request created the attempt, fetch and return it
     existing = await PaymentManagementAttempt.findOne({ provider: 'paypal', attemptId: changeAttemptId });
-    if (existing) return { attempt: existing, isExisting: true };
+    if (existing && String(existing.userId) === String(user._id) && existing.targetProviderPlanId === targetProviderPlanId && existing.providerSubscriptionId === user.paypalSubscriptionId) return { attempt: existing, isExisting: true };
     throw domainError('PAYPAL_MANAGEMENT_ATTEMPT_CONFLICT', 'Another PayPal subscription change is pending', 409);
   }
 
@@ -394,5 +412,13 @@ async function reconcileManagement({ user, client }) {
   return { status, pendingCancellation: !isTerminal && status === 'SUSPENDED', cancelledOrTerminal: isTerminal };
 }
 
-module.exports = { ACTIVE_STATUSES, CANCEL_REASON, MANAGEABLE, PROCESSING_LEASE_MS, TERMINAL,
+async function claimSdkTransport({ user, changeAttemptId }) {
+  const attempt = await PaymentManagementAttempt.findOneAndUpdate({ provider: 'paypal', attemptId: changeAttemptId,
+    userId: user._id, providerSubscriptionId: user.paypalSubscriptionId, operation: 'CHANGE_PLAN', status: 'prepared' },
+    { $set: { status: 'approval_pending', transport: 'sdk' } }, { new: true });
+  if (!attempt) throw domainError('PAYPAL_CHANGE_RECONCILIATION_REQUIRED', 'This change has already started. Reconcile the existing attempt.', 409);
+  return attempt;
+}
+
+module.exports = { claimSdkTransport, ACTIVE_STATUSES, CANCEL_REASON, MANAGEABLE, PROCESSING_LEASE_MS, TERMINAL,
   activeOperationKey, cancelSubscription, changePlan, findActive, markChangePlanCancelled, prepareChangePlan, reconcileManagement, domainError };

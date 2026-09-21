@@ -1,3 +1,4 @@
+process.env.PAYMENT_PROVIDER = 'paypal';
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
 
 const request = require('supertest');
@@ -63,7 +64,7 @@ describe('Subscription & usage limits', () => {
     expect(classCount).toBe(limit);
   });
 
-  test('Expired paid plan auto-downgrades to Free on next request', async () => {
+  test('Ordinary request does not repair plan; subscription endpoint resolves expiry', async () => {
     const paid = await Plan.findOne({ name: 'Starter Monthly' });
     expect(paid).toBeTruthy();
 
@@ -85,7 +86,11 @@ describe('Subscription & usage limits', () => {
     expect(res.status).toBe(200);
 
     const updated = await User.findById(teacher._id).populate('plan');
-    expect(updated.plan.name).toBe('Free');
+    expect(updated.plan.name).toBe('Starter Monthly');
+    const subscription = await request(app).get('/api/subscription/me').set('Authorization', `Bearer ${token}`);
+    expect(subscription.status).toBe(200);
+    expect(subscription.body.data.plan.slug).toBe('free');
+    expect((await User.findById(teacher._id).populate('plan')).plan.name).toBe('Free');
   });
 
   test('Admin can set user plan via /api/subscription/set', async () => {

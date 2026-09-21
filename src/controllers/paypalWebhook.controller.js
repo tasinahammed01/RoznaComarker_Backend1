@@ -100,6 +100,7 @@ async function paypalWebhook(req, res) {
     const subscriptionId = String(event.resource?.id || '').trim();
     if (!subscriptionId) throw Object.assign(new Error('Subscription ID missing'), { code: 'PAYPAL_WEBHOOK_CORRELATION_FAILED' });
     const subscription = await new PayPalClient().getSubscription(subscriptionId);
+    if (String(subscription?.id || '') !== subscriptionId) throw Object.assign(new Error('Provider subscription mismatch'), { code: 'PAYPAL_WEBHOOK_CORRELATION_FAILED' });
     const synced = await syncSubscription(subscription, { eventType: event.event_type });
     ledger.status = 'processed'; ledger.processedAt = new Date(); ledger.processingLeaseExpiresAt = null; await ledger.save();
     logger.info(`[PAYPAL] webhook verified eventId=${event.id} type=${event.event_type}`);

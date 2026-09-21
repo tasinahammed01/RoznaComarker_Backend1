@@ -1,6 +1,5 @@
 const User = require('../models/user.model');
 
-const { ensureActivePlan } = require('./usage.middleware');
 const logger = require('../utils/logger');
 
 function getBearerToken(req) {
@@ -82,68 +81,45 @@ async function createOrGetUserFromFirebase(decodedToken) {
   }
 }
 
+function loginError(res, status, code, message) {
+  return res.status(status).json({ success: false, code, message });
+}
+
 async function verifyFirebaseToken(req, res, next) {
+  const token = getBearerToken(req);
+  if (!token) return loginError(res, 401, 'AUTH_REQUIRED', 'Authorization token missing');
+  let auth;
   try {
-    const admin = require('../config/firebase');
-    const token = getBearerToken(req);
-
-    if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authorization token missing'
-      });
-    }
-
-    // checkRevoked=true also rejects disabled Firebase users and revoked ID
-    // tokens when creating a new backend session.
-    const decodedToken = await admin.auth().verifyIdToken(token, true);
-
-    if (requiresVerifiedEmail(decodedToken) && decodedToken.email_verified !== true) {
-      return res.status(403).json({
-        success: false,
-        code: 'EMAIL_NOT_VERIFIED',
-        message: 'Please verify your email before continuing.'
-      });
-    }
-
+    auth = require('../config/firebase').auth();
+  } catch (err) {
+    logger.error({ event: 'firebase.initialization.failed', errorName: err?.name });
+    return loginError(res, 503, 'AUTH_PROVIDER_UNAVAILABLE', 'Authentication provider is temporarily unavailable');
+  }
+  let decodedToken;
+  try {
+    decodedToken = await auth.verifyIdToken(token, true);
+  } catch (err) {
+    const invalid = ['auth/argument-error', 'auth/invalid-argument', 'auth/invalid-id-token',
+      'auth/id-token-expired', 'auth/id-token-revoked', 'auth/user-disabled', 'auth/user-not-found',
+      'auth/tenant-id-mismatch'].includes(err?.code);
+    logger.error({ event: 'firebase.idTokenVerification.failed', code: invalid ? err.code : 'AUTH_PROVIDER_UNAVAILABLE' });
+    return loginError(res, invalid ? 401 : 503, invalid ? 'AUTH_INVALID' : 'AUTH_PROVIDER_UNAVAILABLE',
+      invalid ? 'Invalid or expired token' : 'Authentication provider is temporarily unavailable');
+  }
+  if (requiresVerifiedEmail(decodedToken) && decodedToken.email_verified !== true) {
+    return loginError(res, 403, 'EMAIL_NOT_VERIFIED', 'Please verify your email before continuing.');
+  }
+  try {
     const { user, isNew } = await createOrGetUserFromFirebase(decodedToken);
-
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token payload'
-      });
-    }
-
-    if (user.isActive === false) {
-      return res.status(403).json({
-        success: false,
-        message: 'User is inactive'
-      });
-    }
-
-    try {
-      await ensureActivePlan(user);
-    } catch (err) {
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to initialize subscription'
-      });
-    }
-
+    if (!user) return loginError(res, 401, 'AUTH_INVALID', 'Invalid token payload');
+    if (user.isActive === false) return loginError(res, 403, 'ACCOUNT_INACTIVE', 'Account is inactive');
     req.user = user;
     req.isNewUser = isNew;
     req.firebase = decodedToken;
-
     return next();
   } catch (err) {
-    let admin = null;
-    try { admin = require('../config/firebase'); } catch { /* initialization error is already sanitized below */ }
-    logger.error(firebaseVerificationDiagnostic(err, admin));
-    return res.status(401).json({
-      success: false,
-      message: 'Invalid or expired token'
-    });
+    logger.error({ event: 'auth.lookup.failed', errorName: err?.name });
+    return loginError(res, 503, 'AUTH_UNAVAILABLE', 'Authentication is temporarily unavailable');
   }
 }
 

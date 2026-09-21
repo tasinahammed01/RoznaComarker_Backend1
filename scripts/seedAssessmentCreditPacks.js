@@ -1,25 +1,19 @@
 'use strict';
-require('dotenv').config();
-const mongoose = require('mongoose');
-const connectDB = require('../src/config/db');
-const Plan = require('../src/models/Plan');
+// No commercial defaults: Admin Pricing / the existing database owns prices.
 const CreditPack = require('../src/models/CreditPack');
-
-const PACKS = [
-  { code: 'CREDITS_10', name: '10 Assessment Credits', credits: 10, price: 1.99, currency: 'USD', displayOrder: 1 },
-  { code: 'CREDITS_50', name: '50 Assessment Credits', credits: 50, price: 4.99, currency: 'USD', displayOrder: 2 }
-];
-
-async function seedAssessmentCreditPacks() {
-  const allowedPlans = await Plan.find({ isActive: true, slug: { $nin: ['institution', 'custom'] } }).distinct('slug');
-  if (!allowedPlans.length) throw new Error('No active personal plans are configured for Assessment Credit packs.');
-  for (const pack of PACKS) await CreditPack.updateOne({ code: pack.code },
-    { $setOnInsert: { ...pack, allowedPlans, active: true, stripePriceId: null } }, { upsert: true, runValidators: true });
-  return PACKS;
+const Plan = require('../src/models/Plan');
+const { packRejection } = require('../src/services/creditPackPolicy');
+async function seedAssessmentCreditPacks(packs) {
+  if (!Array.isArray(packs) || !packs.length) throw new Error('An explicitly approved catalog is required; use Admin Pricing or the eligibility migration.');
+  const slugs = await Plan.distinct('slug');
+  for (const pack of packs) {
+    if (packRejection(pack) || pack.allowedPlans.some(slug => !slugs.includes(slug))) throw new Error('Invalid approved catalog');
+  }
+  for (const pack of packs) await CreditPack.updateOne({ code: pack.code }, { $setOnInsert: pack }, { upsert: true, runValidators: true });
+  return packs;
 }
-
 if (require.main === module) {
-  connectDB().then(seedAssessmentCreditPacks).then(async packs => { console.log(`Configured ${packs.length} Assessment Credit packs.`);await mongoose.disconnect(); })
-    .catch(async error => { console.error(error);await mongoose.disconnect();process.exitCode=1; });
+  console.error('Pack seed defaults were retired. Use Admin Pricing for commercial values and pricing:migrate-billing for eligibility-only repair.');
+  process.exitCode = 1;
 }
-module.exports={PACKS,seedAssessmentCreditPacks};
+module.exports = { seedAssessmentCreditPacks };

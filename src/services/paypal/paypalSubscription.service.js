@@ -4,10 +4,10 @@ const Plan = require('../../models/Plan');
 const User = require('../../models/user.model');
 const PaymentCheckoutAttempt = require('../../models/PaymentCheckoutAttempt');
 const PaymentManagementAttempt = require('../../models/PaymentManagementAttempt');
-const { getPayPalPlanId, getPlanByPayPalPlanId } = require('./paypalPlanMapping.service');
+const { getPayPalPlanId, getPlanByPayPalPlanId, requestedInterval } = require('./paypalPlanMapping.service');
 const { assignPlanToUser } = require('../../middlewares/usage.middleware');
 const CreditService = require('../credit.service');
-const { CHECKOUT_BLOCKING_STATUSES } = require('../stripeSubscription.service');
+
 const { getPaypalRedirectUrls } = require('../../config/paypal');
 const BonusRewardService = require('../bonusReward.service');
 const logger = require('../../utils/logger');
@@ -27,7 +27,7 @@ function approvalUrl(response, errorCode = 'PAYPAL_SUBSCRIPTION_CREATE_FAILED') 
   if (!href) throw paypalError(errorCode, 'PayPal did not return an approval URL', 502);
   let url;
   try { url = new URL(href); } catch { throw paypalError(errorCode, 'PayPal returned an invalid approval URL', 502); }
-  if (url.protocol !== 'https:' || !(url.hostname === 'paypal.com' || url.hostname.endsWith('.paypal.com'))) {
+  if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443') || !(url.hostname === 'paypal.com' || url.hostname.endsWith('.paypal.com'))) {
     throw paypalError(errorCode, 'PayPal returned an untrusted approval URL', 502);
   }
   return url.toString();
@@ -38,9 +38,6 @@ function billingInterval(plan) {
 }
 
 function assertSubscriptionCanBeCreated(user) {
-  if (CHECKOUT_BLOCKING_STATUSES.has(user.stripeSubscriptionStatus)) {
-    throw paypalError('ALREADY_SUBSCRIBED', 'A paid subscription already exists', 409);
-  }
   if (user.paypalSubscriptionStatus === 'ACTIVE') {
     throw paypalError('ALREADY_SUBSCRIBED', 'An active PayPal subscription already exists', 409);
   }
@@ -65,6 +62,8 @@ async function createProviderSubscription(attempt, { client, environment }) {
   attempt.providerSubscriptionId = response.id;
   attempt.approvalUrl = approvalUrl(response);
   attempt.status = 'approval_pending';
+  attempt.processingLeaseExpiresAt = null;
+  attempt.approvalExpiresAt ||= new Date(Date.now() + 24 * 60 * 60 * 1000);
   attempt.errorCode = undefined;
   await attempt.save();
   return attempt;
@@ -72,6 +71,7 @@ async function createProviderSubscription(attempt, { client, environment }) {
 
 async function markFailedProviderAttempt(attempt, user, providerStatus) {
   attempt.status = 'failed';
+  attempt.activeOperationKey = undefined;
   attempt.errorCode = `PAYPAL_SUBSCRIPTION_${providerStatus}`;
   attempt.cancelledAt ||= new Date();
   await attempt.save();
@@ -83,8 +83,8 @@ async function markFailedProviderAttempt(attempt, user, providerStatus) {
 }
 
 async function recoverPendingAttempt({ user, plan, providerPlanId, client, environment }) {
-  const attempt = await PaymentCheckoutAttempt.findOne({ provider: 'paypal', userId: user._id,
-    planKey: plan.slug, status: { $in: ['creating', 'approval_pending'] } }).sort({ updatedAt: -1 });
+  let attempt = await PaymentCheckoutAttempt.findOne({ provider: 'paypal', userId: user._id,
+    status: { $in: ['creating', 'approval_pending'] } }).sort({ updatedAt: -1 });
   if (!attempt) return null;
   if (attempt.providerPlanId !== providerPlanId) {
     throw paypalError('CHECKOUT_ATTEMPT_CONFLICT', 'Pending checkout belongs to another provider plan', 409);
@@ -94,9 +94,18 @@ async function recoverPendingAttempt({ user, plan, providerPlanId, client, envir
     if (updatedAt && Date.now() - updatedAt < ATTEMPT_PROCESSING_LEASE_MS) {
       throw paypalError('CHECKOUT_ATTEMPT_IN_PROGRESS', 'Checkout attempt is already being processed', 409);
     }
+    const claimed = await PaymentCheckoutAttempt.findOneAndUpdate({ _id: attempt._id, status: 'creating',
+      $or: [{ processingLeaseExpiresAt: { $lte: new Date() } }, { processingLeaseExpiresAt: { $exists: false } }] },
+      { $set: { processingLeaseExpiresAt: new Date(Date.now() + ATTEMPT_PROCESSING_LEASE_MS) } }, { new: true });
+    if (!claimed) throw paypalError('CHECKOUT_ATTEMPT_IN_PROGRESS', 'Checkout is already processing', 409);
+    attempt = claimed;
+    // Beyond our conservative 24-hour retry policy, require operator reconciliation.
+    if (Date.now() - new Date(attempt.createdAt).getTime() > 24 * 60 * 60 * 1000) {
+      throw paypalError('CHECKOUT_REVIEW_REQUIRED', 'Checkout requires reconciliation before retry', 409);
+    }
     try { return await createProviderSubscription(attempt, { client, environment }); }
     catch (error) {
-      attempt.status = 'failed'; attempt.errorCode = error?.code || 'PAYPAL_SUBSCRIPTION_CREATE_FAILED'; await attempt.save();
+      attempt.status = 'creating'; attempt.errorCode = error?.code || 'PAYPAL_SUBSCRIPTION_CREATE_FAILED'; await attempt.save();
       throw error;
     }
   }
@@ -143,8 +152,8 @@ async function recoverPendingAttempt({ user, plan, providerPlanId, client, envir
   throw paypalError('PAYPAL_SUBSCRIPTION_RECOVERY_FAILED', 'Pending PayPal Subscription has an unsupported status', 502);
 }
 
-async function createSubscription({ user, planKey, attemptId, client, environment = process.env }) {
-  if (String(environment.PAYMENT_PROVIDER || 'stripe').toLowerCase() !== 'paypal') {
+async function createSubscription({ user, planKey, billingPeriod, attemptId, client, environment = process.env }) {
+  if (String(environment.PAYMENT_PROVIDER || '').toLowerCase() !== 'paypal') {
     throw paypalError('PAYPAL_PROVIDER_NOT_ENABLED', 'PayPal checkout is not enabled', 409);
   }
   assertSubscriptionCanBeCreated(user);
@@ -152,24 +161,27 @@ async function createSubscription({ user, planKey, attemptId, client, environmen
   if (!plan || ['free', 'institution', 'custom'].includes(plan.slug) || !(Number(plan.price) > 0)) {
     throw paypalError('PLAN_NOT_PURCHASABLE', 'Plan is not available for PayPal checkout', plan ? 400 : 404);
   }
-  const interval = billingInterval(plan);
+  const interval = requestedInterval(plan, billingPeriod);
   const providerPlanId = await getPayPalPlanId({ planKey: plan.slug, billingInterval: interval }, { environment });
-  const existing = await PaymentCheckoutAttempt.findOne({ provider: 'paypal', attemptId, userId: user._id });
+  const existing = await PaymentCheckoutAttempt.findOne({ provider: 'paypal', attemptId });
   if (existing) {
-    if (existing.planKey !== plan.slug) throw paypalError('CHECKOUT_ATTEMPT_CONFLICT', 'Checkout attempt belongs to another plan', 409);
+    if (String(existing.userId) !== String(user._id) || existing.planKey !== plan.slug || existing.billingInterval !== interval || existing.providerPlanId !== providerPlanId) throw paypalError('CHECKOUT_ATTEMPT_CONFLICT', 'Checkout attempt belongs to another plan', 409);
+    if (['cancelled', 'failed'].includes(existing.status)) throw paypalError('CHECKOUT_ATTEMPT_TERMINAL', 'Use a new attempt after confirmed termination', 409);
+    if (existing.status === 'active') return existing;
     if (existing.providerSubscriptionId && existing.approvalUrl) return existing;
-    throw paypalError('CHECKOUT_ATTEMPT_IN_PROGRESS', 'Checkout attempt is already being processed', 409);
   }
   const recovered = await recoverPendingAttempt({ user, plan, providerPlanId, client, environment });
   if (recovered) return recovered;
+  await require('../paymentIndexContract.service').verifyCheckoutIndex();
   let attempt;
   try {
     attempt = await PaymentCheckoutAttempt.create({ attemptId, provider: 'paypal', userId: user._id,
-      planKey: plan.slug, billingInterval: interval, providerPlanId, status: 'creating' });
+      planKey: plan.slug, billingInterval: interval, providerPlanId, status: 'creating',
+      activeOperationKey: `paypal:${user._id}`, processingLeaseExpiresAt: new Date(Date.now() + ATTEMPT_PROCESSING_LEASE_MS) });
   } catch (error) {
     if (error?.code === 11000) {
       const duplicate = await PaymentCheckoutAttempt.findOne({ provider: 'paypal', attemptId });
-      if (duplicate?.userId?.equals(user._id) && duplicate.providerSubscriptionId && duplicate.approvalUrl) return duplicate;
+      if (duplicate?.userId?.equals(user._id) && duplicate.planKey === plan.slug && duplicate.billingInterval === interval && duplicate.providerSubscriptionId && duplicate.approvalUrl) return duplicate;
       throw paypalError('CHECKOUT_ATTEMPT_CONFLICT', 'Checkout attempt is already in use', 409);
     }
     throw error;
@@ -177,7 +189,7 @@ async function createSubscription({ user, planKey, attemptId, client, environmen
   try {
     return await createProviderSubscription(attempt, { client, environment });
   } catch (error) {
-    attempt.status = 'failed'; attempt.errorCode = error?.code || 'PAYPAL_SUBSCRIPTION_CREATE_FAILED'; await attempt.save();
+    attempt.status = 'creating'; attempt.errorCode = error?.code || 'PAYPAL_SUBSCRIPTION_CREATE_FAILED'; await attempt.save();
     if (error?.code?.startsWith?.('PAYPAL_')) throw error;
     throw paypalError('PAYPAL_SUBSCRIPTION_CREATE_FAILED', 'Unable to create PayPal subscription', 502);
   }
@@ -198,7 +210,7 @@ async function syncSubscription(subscription, { eventType } = {}) {
   }
   const managementAttempt = await PaymentManagementAttempt.findOne({
     provider: 'paypal', providerSubscriptionId: subscriptionId,
-    status: { $in: ['processing', 'approval_pending', 'provider_pending', 'cancelled', 'failed'] }
+    status: { $in: ['processing', 'approval_pending', 'provider_pending', 'completed'] }
   }).sort({ createdAt: -1 });
   let user = managementAttempt ? await User.findOne({ _id: managementAttempt.userId, role: 'teacher' }) : null;
   if (!user) user = await User.findOne({ paypalSubscriptionId: subscriptionId, role: 'teacher' });
@@ -207,14 +219,17 @@ async function syncSubscription(subscription, { eventType } = {}) {
     throw paypalError('PAYPAL_WEBHOOK_CORRELATION_FAILED', 'PayPal Subscription cannot be correlated', 422);
   }
   const plan = await getPlanByPayPalPlanId(subscription.plan_id);
+  const authorizedRevision = await PaymentManagementAttempt.findOne({ provider: 'paypal', providerSubscriptionId: subscriptionId,
+    operation: 'CHANGE_PLAN', targetProviderPlanId: subscription.plan_id, targetPlanKey: plan.slug,
+    status: { $in: ['processing', 'approval_pending', 'provider_pending', 'completed'] } }).sort({ createdAt: -1 });
   const isExpectedRevision = managementAttempt?.operation === 'CHANGE_PLAN' &&
     managementAttempt.targetPlanKey === plan.slug && managementAttempt.targetProviderPlanId === subscription.plan_id;
   const isUnchangedRevision = managementAttempt?.operation === 'CHANGE_PLAN' &&
     managementAttempt.sourcePlanKey === plan.slug && managementAttempt.sourceProviderPlanId === subscription.plan_id;
-  if (managementAttempt?.operation === 'CHANGE_PLAN' && !isExpectedRevision && !isUnchangedRevision) {
+  if (managementAttempt?.operation === 'CHANGE_PLAN' && !isExpectedRevision && !isUnchangedRevision && !authorizedRevision) {
     throw paypalError('PAYPAL_SUBSCRIPTION_PLAN_MISMATCH', 'PayPal Subscription Plan does not match the requested revision', 422);
   }
-  if (attempt && (attempt.planKey !== plan.slug || attempt.providerPlanId !== subscription.plan_id) && !isExpectedRevision) {
+  if (attempt && (attempt.planKey !== plan.slug || attempt.providerPlanId !== subscription.plan_id) && !isExpectedRevision && !authorizedRevision) {
     throw paypalError('PAYPAL_SUBSCRIPTION_PLAN_MISMATCH', 'PayPal Subscription Plan does not match checkout attempt', 422);
   }
   if (!user && attempt) user = await User.findOne({ _id: attempt.userId, role: 'teacher' });
@@ -222,6 +237,9 @@ async function syncSubscription(subscription, { eventType } = {}) {
   if (user.paypalSubscriptionId && user.paypalSubscriptionId !== subscriptionId &&
       !PAYPAL_TERMINAL_STATUSES.has(user.paypalSubscriptionStatus)) {
     throw paypalError('PAYPAL_WEBHOOK_CORRELATION_FAILED', 'Teacher is linked to another PayPal Subscription', 409);
+  }
+  if (!attempt && !authorizedRevision && user.paypalPlanId !== subscription.plan_id) {
+    throw paypalError('PAYPAL_SUBSCRIPTION_PLAN_MISMATCH', 'Provider plan change was not authorized', 422);
   }
   const status = String(subscription.status || '').toUpperCase();
   const period = subscriptionPeriod(subscription);
@@ -250,7 +268,7 @@ async function syncSubscription(subscription, { eventType } = {}) {
     user.planExpiresAt = period.end;
     await user.save({ validateModifiedOnly: true });
     await CreditService.getOrCreateWallet(user._id);
-    const interval = String(plan.billingInterval || plan.billingType || '').toLowerCase();
+    const interval = plan.resolvedBillingInterval;
     const previousInterval = String(previousPlan?.billingInterval || previousPlan?.billingType || '').toLowerCase();
     if (isExpectedRevision && ['annual', 'year', 'yearly'].includes(interval) &&
         !['annual', 'year', 'yearly'].includes(previousInterval) && previousPlan?.price > 0) {
@@ -294,16 +312,19 @@ async function syncSubscription(subscription, { eventType } = {}) {
   } else if (status === 'SUSPENDED') {
     const free = await Plan.findOne({ slug: 'free', isActive: true });
     if (free) await assignPlanToUser(user, free, new Date());
-    if (attempt) { attempt.status = 'cancelled'; attempt.cancelledAt ||= new Date(); }
-    if (managementAttempt?.operation === 'CANCEL' && status === 'EXPIRED') {
-      managementAttempt.status = 'completed'; managementAttempt.completedAt ||= new Date();
-      managementAttempt.activeOperationKey = undefined; managementAttempt.processingLeaseExpiresAt = null;
-    }
+    // Suspension is not termination: retain the checkout lock against stale requests.
+    if (attempt) attempt.activeOperationKey = `paypal:${user._id}`;
   } else {
     await user.save({ validateModifiedOnly: true });
   }
-  if (attempt) await attempt.save();
+  if (attempt) {
+    if (['cancelled', 'failed'].includes(attempt.status)) attempt.activeOperationKey = undefined;
+    await attempt.save();
+  }
   if (managementAttempt) await managementAttempt.save();
+  if (['CANCELLED', 'EXPIRED'].includes(status)) await PaymentManagementAttempt.updateMany({ provider: 'paypal',
+    providerSubscriptionId: subscriptionId, userId: user._id, operation: 'CANCEL', status: { $in: ['processing', 'provider_pending'] } },
+    { $set: { status: 'completed', completedAt: new Date(), processingLeaseExpiresAt: null }, $unset: { activeOperationKey: 1 } });
   return { user, plan, attempt, managementAttempt, status };
 }
 

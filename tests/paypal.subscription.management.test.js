@@ -125,20 +125,22 @@ describe('PayPal subscription management Phase 3', () => {
     expect(await CreditTransaction.countDocuments({ userId: teacher._id, type: 'PLAN_ALLOWANCE_CHANGE' })).toBe(1);
   });
 
-  test('verified CANCELLED fetch-back applies Free exactly once and clears payment issue', async () => {
+  test('verified CANCELLED fetch-back preserves plan history, clears payment issue and resolves expired entitlement', async () => {
     await request(app).post('/api/subscription/paypal/cancel').set(auth()).send({});
     paypalMock.getSubscription.mockResolvedValue(providerSubscription('CANCELLED'));
     await User.updateOne({ _id: teacher._id }, { paypalPaymentIssueActive: true });
     expect((await webhook('WH-CANCELLED', 'BILLING.SUBSCRIPTION.CANCELLED')).status).toBe(200);
     const current = await User.findById(teacher._id);
-    expect(String(current.plan)).toBe(String(free._id)); expect(current.paypalPaymentIssueActive).toBe(false);
+    expect(String(current.plan)).toBe(String(essential._id)); expect(current.paypalPaymentIssueActive).toBe(false);
+    const resolved = await request(app).get('/api/subscription/me').set(auth());
+    expect(resolved.body.data.plan.slug).toBe('free');
     expect((await PaymentManagementAttempt.findOne({ operation: 'CANCEL' })).status).toBe('completed');
     expect((await webhook('WH-CANCELLED', 'BILLING.SUBSCRIPTION.CANCELLED')).body.duplicate).toBe(true);
     expect(await PaymentProviderEvent.countDocuments({ providerEventId: 'WH-CANCELLED' })).toBe(1);
   });
 
   test('cancelled approval closes only the matching authenticated attempt and preserves plan', async () => {
-    await request(app).post('/api/subscription/paypal/change-plan').set(auth()).send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
+    await request(app).post('/api/subscription/paypal/change-plan/context').set(auth()).send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
     const res = await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
     expect(res.body.data.status).toBe('cancelled');
     expect(String((await User.findById(teacher._id)).plan)).toBe(String(essential._id));
@@ -199,13 +201,13 @@ describe('PayPal subscription management Phase 3', () => {
   });
 
   test('same cancelled attempt cannot silently restart', async () => {
-    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+    await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
       .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
     await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
     const response = await request(app).post('/api/subscription/paypal/change-plan').set(auth())
       .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
     expect(response.status).toBe(409); expect(response.body.code).toBe('PAYPAL_MANAGEMENT_ATTEMPT_CONFLICT');
-    expect(paypalMock.reviseSubscription).toHaveBeenCalledTimes(1);
+    expect(paypalMock.reviseSubscription).not.toHaveBeenCalled();
   });
 
   test('retryable failed plan change reuses the exact provider request ID', async () => {
@@ -333,12 +335,12 @@ describe('PayPal subscription management Phase 3', () => {
 
   test('cancelled plan change becomes terminal and clears metadata', async () => {
     paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=CANCEL-TEST' }] });
-    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+    await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
       .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
 
     const attempt = await PaymentManagementAttempt.findOne({ attemptId: CHANGE_ATTEMPT });
-    expect(attempt.status).toBe('approval_pending');
-    expect(attempt.approvalUrl).toBe('https://www.sandbox.paypal.com/approve?token=CANCEL-TEST');
+    expect(attempt.status).toBe('prepared');
+    expect(attempt.approvalUrl).toBeUndefined();
     expect(attempt.activeOperationKey).toBe(`paypal:${SUBSCRIPTION}`);
 
     const cancelRes = await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
@@ -355,7 +357,7 @@ describe('PayPal subscription management Phase 3', () => {
 
   test('cancelled attempt excluded from active-operation query', async () => {
     paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=ACTIVE-TEST' }] });
-    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+    await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
       .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
 
     await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
@@ -367,14 +369,14 @@ describe('PayPal subscription management Phase 3', () => {
 
   test('subscription me returns no pending plan change after cancellation', async () => {
     paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=ME-TEST' }] });
-    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+    await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
       .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
 
     let data = (await request(app).get('/api/subscription/me').set(auth())).body.data;
     expect(data.billing.pendingPlanChange).toBe(true);
     expect(data.billing.pendingTargetPlanCode).toBe('pro_monthly');
     expect(data.billing.pendingChangeAttemptId).toBe(CHANGE_ATTEMPT);
-    expect(data.billing.pendingChangeApprovalUrl).toBe('https://www.sandbox.paypal.com/approve?token=ME-TEST');
+    expect(data.billing.pendingChangeApprovalUrl).toBeNull();
 
     await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
 
@@ -387,7 +389,7 @@ describe('PayPal subscription management Phase 3', () => {
 
   test('cancelled attempt does not block subscription cancellation', async () => {
     paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=BLOCK-TEST' }] });
-    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+    await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
       .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
 
     await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
@@ -400,7 +402,7 @@ describe('PayPal subscription management Phase 3', () => {
 
   test('cancelled attempt does not block starting another plan change', async () => {
     paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=CHANGE-TEST' }] });
-    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+    await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
       .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
 
     await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
@@ -414,7 +416,7 @@ describe('PayPal subscription management Phase 3', () => {
 
   test('duplicate cancellation is idempotent', async () => {
     paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=IDEMP-TEST' }] });
-    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+    await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
       .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
 
     const firstCancel = await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
@@ -429,11 +431,11 @@ describe('PayPal subscription management Phase 3', () => {
     expect(attempt.status).toBe('cancelled');
   });
 
-  test('cancelled processing attempt becomes terminal', async () => {
+  test('unsubmitted prepared attempt can be cancelled', async () => {
     await PaymentManagementAttempt.create({ provider: 'paypal', attemptId: CHANGE_ATTEMPT, userId: teacher._id,
       providerSubscriptionId: SUBSCRIPTION, operation: 'CHANGE_PLAN', sourcePlanKey: 'essential_monthly',
       sourceProviderPlanId: 'P-ESSENTIAL-MONTHLY', targetPlanKey: 'pro_monthly', targetProviderPlanId: 'P-PRO-MONTHLY',
-      providerRequestId: `revise-${CHANGE_ATTEMPT}`, status: 'processing', activeOperationKey: `paypal:${SUBSCRIPTION}`,
+      providerRequestId: `revise-${CHANGE_ATTEMPT}`, status: 'prepared', activeOperationKey: `paypal:${SUBSCRIPTION}`,
       processingLeaseExpiresAt: new Date(Date.now() + 10000) });
 
     const cancelRes = await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
@@ -447,7 +449,7 @@ describe('PayPal subscription management Phase 3', () => {
 
   test('historical cancelled plus newer active exposes only active', async () => {
     paypalMock.reviseSubscription.mockResolvedValue({ links: [{ rel: 'approve', method: 'GET', href: 'https://www.sandbox.paypal.com/approve?token=HIST-1' }] });
-    await request(app).post('/api/subscription/paypal/change-plan').set(auth())
+    await request(app).post('/api/subscription/paypal/change-plan/context').set(auth())
       .send({ targetPlanCode: 'pro_monthly', changeAttemptId: CHANGE_ATTEMPT });
 
     await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({ changeAttemptId: CHANGE_ATTEMPT });
@@ -600,7 +602,7 @@ describe('PayPal subscription management Phase 3', () => {
       const attempt = await PaymentManagementAttempt.findOne({ attemptId: newAttemptId });
       expect(attempt).toBeTruthy();
       expect(attempt.operation).toBe('CHANGE_PLAN');
-      expect(attempt.status).toBe('processing');
+      expect(attempt.status).toBe('prepared');
       expect(attempt.targetPlanKey).toBe('pro_monthly');
     });
 
@@ -734,5 +736,18 @@ describe('PayPal subscription management Phase 3', () => {
       expect(response.status).toBe(409);
       expect(response.body.code).toBe('PAYPAL_MANAGEMENT_ATTEMPT_CONFLICT');
     });
+  });
+
+  test('reconcile never completes while provider plan is still the source', async () => {
+    await request(app).post('/api/subscription/paypal/change-plan').set(auth()).send({targetPlanCode:'pro_monthly',changeAttemptId:CHANGE_ATTEMPT});
+    const result = await request(app).post('/api/subscription/paypal/change-plan/reconcile').set(auth()).send({changeAttemptId:CHANGE_ATTEMPT});
+    expect(result.body.data.status).toBe('provider_pending');
+    expect((await PaymentManagementAttempt.findOne({attemptId:CHANGE_ATTEMPT})).status).toBe('approval_pending');
+  });
+  test('browser cancellation cannot release an already submitted provider mutation', async () => {
+    await request(app).post('/api/subscription/paypal/change-plan').set(auth()).send({targetPlanCode:'pro_monthly',changeAttemptId:CHANGE_ATTEMPT});
+    const result=await request(app).post('/api/subscription/paypal/change-plan/cancelled').set(auth()).send({changeAttemptId:CHANGE_ATTEMPT});
+    expect(result.status).toBe(409);
+    expect((await PaymentManagementAttempt.findOne({attemptId:CHANGE_ATTEMPT})).activeOperationKey).toBe('paypal:'+SUBSCRIPTION);
   });
 });

@@ -1,4 +1,6 @@
 'use strict';
+const { packRejection } = require('../services/creditPackPolicy');
+const logger = require('../utils/logger');
 const Plan = require('../models/Plan');
 const CreditPack = require('../models/CreditPack');
 const {configuredProviderName}=require('../services/payments/paymentProvider.service');const {isPaypalEnabled}=require('../config/paypal');const pricingRealtime=require('../services/pricingRealtime.service');
@@ -10,7 +12,7 @@ const fail = (res, status, message, code = 'PRICING_CONFIG_INVALID', field) => r
 const finite = value => typeof value === 'number' && Number.isFinite(value);
 const text = value => typeof value === 'string' ? value.trim() : '';
 const nested = (value, key, fallback) => value && value[key] !== undefined && value[key] !== null ? value[key] : fallback;
-const publishPricingUpdate=value=>{try{return pricingRealtime.publishPricingConfigUpdated(value)}catch{return null}};
+const publishPricingUpdate=value=>{try{return pricingRealtime.publishPricingConfigUpdated(value)}catch{logger.error({event:'pricing_config_publish_failed'});return null}};
 
 function planKind(slug) {
   if (slug === 'institution' || slug === 'custom') return 'institution';
@@ -34,7 +36,7 @@ function packDto(pack) { return { name:text(pack.name),code:text(pack.code).toUp
 
 async function getConfig(req, res) {
   const [plans, packs] = await Promise.all([Plan.find().sort({ displayOrder: 1, slug: 1 }).lean(), CreditPack.find().sort({ displayOrder: 1, code: 1 }).lean()]);
-  const activePaymentProvider=configuredProviderName();return res.json({ success: true, plans: plans.map(planDto), packs: packs.map(packDto), provider:{activePaymentProvider,paypalEnabled:isPaypalEnabled(),stripeEnabled:activePaymentProvider==='stripe'||Boolean(String(process.env.STRIPE_SECRET_KEY||'').trim())} });
+  const activePaymentProvider=configuredProviderName();return res.json({ success: true, plans: plans.map(planDto), packs: packs.map(packDto), provider:{activePaymentProvider,paypalEnabled:isPaypalEnabled(),stripeEnabled:false} });
 }
 function validateExact(body, fields, res) { const unsupported=Object.keys(body).filter(key=>!fields.has(key));if(unsupported.length){fail(res,400,`Unsupported field: ${unsupported[0]}.`,'PRICING_FIELD_UNSUPPORTED',unsupported[0]);return false}return true; }
 function validatePlan(body,res){
@@ -49,18 +51,18 @@ function validatePlan(body,res){
   if(!finite(body.softThresholdPercent)||body.softThresholdPercent<0||body.softThresholdPercent>99){fail(res,400,'Soft threshold must be between 0 and 99.','PLAN_SOFT_THRESHOLD_INVALID','softThresholdPercent');return false}
   if(!finite(body.warningThresholdPercent)||body.warningThresholdPercent<1||body.warningThresholdPercent>100){fail(res,400,'Warning threshold must be between 1 and 100.','PLAN_WARNING_THRESHOLD_INVALID','warningThresholdPercent');return false}
   if(body.softThresholdPercent>=body.warningThresholdPercent){fail(res,400,'Soft threshold must be lower than warning threshold.','PLAN_THRESHOLD_ORDER_INVALID','softThresholdPercent');return false}
-  for(const field of ['stripeProductId','stripeMonthlyPriceId','stripeAnnualPriceId'])if(typeof body[field]!=='string'){fail(res,400,`${field} must be a string.`,'PLAN_STRIPE_FIELD_INVALID',field);return false}
+  for(const field of ['stripeProductId','stripeMonthlyPriceId','stripeAnnualPriceId'])if(body[field]!==undefined&&typeof body[field]!=='string'){fail(res,400,`${field} must be a string.`,'PLAN_STRIPE_FIELD_INVALID',field);return false}
   return true;
 }
 async function updatePlan(req,res){const slug=text(req.params.slug).toLowerCase(),plan=await Plan.findOne({slug});if(!plan)return fail(res,404,'Plan not found.','PLAN_NOT_FOUND');const body=req.body||{};if(!validatePlan(body,res))return;
   plan.name=text(body.name);plan.features=plan.features||{};plan.features.essayAnalysesPerMonth=body.monthlyCredits;plan.price=body.monthlyPrice;plan.annualPrice=body.annualPrice;
   plan.isActive=body.active;plan.displayOrder=body.displayOrder;plan.popular=body.recommended;plan.assessmentCreditNudges={softThresholdPercent:body.softThresholdPercent,warningThresholdPercent:body.warningThresholdPercent};
-  plan.stripe=plan.stripe||{};plan.stripe.productId=text(body.stripeProductId)||undefined;plan.stripe.monthlyPriceId=text(body.stripeMonthlyPriceId)||undefined;plan.stripe.annualPriceId=text(body.stripeAnnualPriceId)||undefined;
+  plan.stripe=plan.stripe||{};if(body.stripeProductId!==undefined)plan.stripe.productId=text(body.stripeProductId)||undefined;if(body.stripeMonthlyPriceId!==undefined)plan.stripe.monthlyPriceId=text(body.stripeMonthlyPriceId)||undefined;if(body.stripeAnnualPriceId!==undefined)plan.stripe.annualPriceId=text(body.stripeAnnualPriceId)||undefined;
   await plan.save();publishPricingUpdate({entity:'plan',key:slug});return res.json({success:true,plan:planDto(plan.toObject())});}
 async function savePack(req,res,create=false){const code=text(create?req.body?.code:req.params.code).toUpperCase();if(!/^[A-Z0-9][A-Z0-9_-]{1,79}$/.test(code))return fail(res,400,'Pack code is invalid.','PACK_CODE_INVALID','code');const body={...(req.body||{})};if(create)delete body.code;const pack=create?new CreditPack({code}):await CreditPack.findOne({code});if(!pack)return fail(res,404,'Credit pack not found.','CREDIT_PACK_NOT_FOUND');if(!validateExact(body,PACK_FIELDS,res))return;
  const allowedPlans=Array.isArray(body.allowedPlans)?[...new Set(body.allowedPlans.map(value=>text(value).toLowerCase()).filter(Boolean))]:[];const validPlanCount=await Plan.countDocuments({slug:{$in:allowedPlans}});
- if(!text(body.name))return fail(res,400,'Credit pack name is required.','PACK_NAME_REQUIRED','name');if(!Number.isInteger(body.credits)||body.credits<1)return fail(res,400,'Assessment Credits must be a positive integer.','PACK_CREDITS_INVALID','credits');if(!finite(body.price)||body.price<0)return fail(res,400,'Price must be zero or greater.','PACK_PRICE_INVALID','price');if(!/^[A-Z]{3}$/.test(text(body.currency).toUpperCase()))return fail(res,400,'Currency must be a three-letter code.','PACK_CURRENCY_INVALID','currency');if(!Number.isInteger(body.displayOrder)||body.displayOrder<0)return fail(res,400,'Display order must be a non-negative integer.','PACK_DISPLAY_ORDER_INVALID','displayOrder');if(typeof body.active!=='boolean')return fail(res,400,'Active must be a boolean.','PACK_ACTIVE_INVALID','active');if(!allowedPlans.length||validPlanCount!==allowedPlans.length)return fail(res,400,'Select only valid allowed plans.','PACK_ALLOWED_PLANS_INVALID','allowedPlans');if(typeof body.stripePriceId!=='string')return fail(res,400,'Stripe one-time Price ID must be a string.','PACK_STRIPE_PRICE_INVALID','stripePriceId');
- pack.name=text(body.name);pack.credits=body.credits;pack.price=body.price;pack.currency=text(body.currency).toUpperCase();pack.active=body.active;pack.allowedPlans=allowedPlans;pack.displayOrder=body.displayOrder;pack.stripePriceId=text(body.stripePriceId)||null;try{await pack.save()}catch(error){if(error?.code===11000)return fail(res,409,'The pack code or payment price reference already exists.','PACK_DUPLICATE');throw error}if(create)res.status(201);publishPricingUpdate({entity:'credit_pack',key:code});return res.json({success:true,pack:packDto(pack.toObject())});}
+ if(!text(body.name))return fail(res,400,'Credit pack name is required.','PACK_NAME_REQUIRED','name');if(!Number.isInteger(body.credits)||body.credits<1)return fail(res,400,'Assessment Credits must be a positive integer.','PACK_CREDITS_INVALID','credits');if(!finite(body.price)||body.price<0)return fail(res,400,'Price must be zero or greater.','PACK_PRICE_INVALID','price');if(!/^[A-Z]{3}$/.test(text(body.currency).toUpperCase()))return fail(res,400,'Currency must be a three-letter code.','PACK_CURRENCY_INVALID','currency');if(!Number.isInteger(body.displayOrder)||body.displayOrder<0)return fail(res,400,'Display order must be a non-negative integer.','PACK_DISPLAY_ORDER_INVALID','displayOrder');if(typeof body.active!=='boolean')return fail(res,400,'Active must be a boolean.','PACK_ACTIVE_INVALID','active');if(!allowedPlans.length||validPlanCount!==allowedPlans.length)return fail(res,400,'Select only valid allowed plans.','PACK_ALLOWED_PLANS_INVALID','allowedPlans');if(body.stripePriceId!==undefined&&typeof body.stripePriceId!=='string')return fail(res,400,'Stripe one-time Price ID must be a string.','PACK_STRIPE_PRICE_INVALID','stripePriceId');
+ pack.name=text(body.name);pack.credits=body.credits;pack.price=body.price;pack.currency=text(body.currency).toUpperCase();pack.active=body.active;pack.allowedPlans=allowedPlans;pack.displayOrder=body.displayOrder;if(body.stripePriceId!==undefined)pack.stripePriceId=text(body.stripePriceId)||null;if(pack.active){const rejection=packRejection(pack);if(rejection)return fail(res,400,`Active credit pack is not purchasable: ${rejection}.`,'PACK_NOT_PURCHASABLE');}try{await pack.save()}catch(error){if(error?.code===11000)return fail(res,409,'The pack code or payment price reference already exists.','PACK_DUPLICATE');throw error}if(create)res.status(201);publishPricingUpdate({entity:'credit_pack',key:code});return res.json({success:true,pack:packDto(pack.toObject())});}
 async function createPack(req,res){return savePack(req,res,true)}
 async function updatePack(req,res){return savePack(req,res,false)}
 

@@ -2,6 +2,7 @@
 
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
 process.env.NODE_ENV = 'test';
+process.env.PAYMENT_PROVIDER = 'paypal';
 
 const request = require('supertest');
 const app = require('../src/app');
@@ -83,7 +84,7 @@ describe('canonical teacher plan entitlement resolution', () => {
     expect(denied.body.message).toBe('Limit exceeded: assignments');
   });
 
-  test('active trusted Stripe mapping repairs Starter and matches /subscription/me and assignment middleware', async () => {
+  test('legacy active Stripe mapping grants only Free and matches /subscription/me and assignment middleware', async () => {
     const teacher = await User.create({
       firebaseUid: 'entitlement-starter',
       email: 'entitlement-starter@example.test',
@@ -99,16 +100,17 @@ describe('canonical teacher plan entitlement resolution', () => {
       .get('/api/subscription/me')
       .set('Authorization', `Bearer ${tokenFor(teacher)}`);
     expect(subscription.status).toBe(200);
-    expect(subscription.body.data.plan.slug).toBe('starter_monthly');
+    expect(subscription.body.data.plan.slug).toBe('free');
     expect(subscription.body.data.usage.assignments).toBe(25);
 
     const assignment = await createAssignmentFor(teacher, 'starter');
     expect(assignment.status).toBe(200);
     const repaired = await User.findById(teacher._id).populate('plan');
-    expect(repaired.plan.slug).toBe('starter_monthly');
+    expect(repaired.plan.slug).toBe('free');
+    expect(repaired.stripePriceId).toBe('price_starter_entitlement');
   });
 
-  test.each(['canceled', 'unpaid', 'incomplete'])('%s Stripe state resolves to Free', async (status) => {
+  test.each(['canceled', 'unpaid', 'incomplete'])('%s historical Stripe state does not downgrade an independently assigned plan', async (status) => {
     const starter = await Plan.findOne({ slug: 'starter_monthly' });
     const teacher = await User.create({
       firebaseUid: `entitlement-${status}`,
@@ -119,10 +121,10 @@ describe('canonical teacher plan entitlement resolution', () => {
       stripeSubscriptionStatus: status,
       stripeCurrentPeriodEnd: new Date(Date.now() + 86400000)
     });
-    expect((await ensureActivePlan(teacher)).slug).toBe('free');
+    expect((await ensureActivePlan(teacher)).slug).toBe('starter_monthly');
   });
 
-  test('past_due keeps paid entitlement only through the synchronized current period', async () => {
+  test('legacy Stripe past_due cannot grant paid entitlement regardless of dates', async () => {
     const current = await User.create({
       firebaseUid: 'entitlement-past-due-current', email: 'past-current@example.test', role: 'teacher',
       stripePriceId: 'price_starter_entitlement', stripeSubscriptionStatus: 'past_due',
@@ -133,7 +135,7 @@ describe('canonical teacher plan entitlement resolution', () => {
       stripePriceId: 'price_starter_entitlement', stripeSubscriptionStatus: 'past_due',
       stripeCurrentPeriodEnd: new Date(Date.now() - 86400000)
     });
-    expect((await ensureActivePlan(current)).slug).toBe('starter_monthly');
+    expect((await ensureActivePlan(current)).slug).toBe('free');
     expect((await ensureActivePlan(expired)).slug).toBe('free');
   });
 
@@ -142,7 +144,7 @@ describe('canonical teacher plan entitlement resolution', () => {
     const teacher = await User.create({ firebaseUid: 'entitlement-no-free', email: 'no-free@example.test', role: 'teacher' });
     const response = await request(app).get('/api/subscription/me').set('Authorization', `Bearer ${tokenFor(teacher)}`);
     expect(response.status).toBe(500);
-    expect(response.body.message).toBe('Failed to initialize subscription');
+    expect(response.body.message).toBe('Failed to fetch subscription');
 
     await clearDatabase();
     await seedTestPlans();

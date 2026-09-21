@@ -5,7 +5,7 @@ require("tsx/cjs");
 
 const express = require("express");
 const helmet = require("helmet");
-const morgan = require("morgan");
+const accessLog = require("./middlewares/accessLog.middleware");
 const fs = require("fs");
 const path = require("path");
 const hpp = require("hpp");
@@ -108,8 +108,8 @@ fs.mkdirSync(path.join(uploadsRoot, "class-banners"), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, "flashcards"), { recursive: true });
 fs.mkdirSync(path.join(uploadsRoot, "templates"), { recursive: true });
 
-// Stripe signature verification must see the exact bytes. Mount this before JSON parsing.
-app.use('/api/stripe', require('./routes/stripeWebhook.routes'));
+// Webhook signature verification must see the exact bytes before JSON parsing.
+// Legacy Stripe routes are intentionally not mounted in this PayPal-only application.
 app.use('/api/webhooks/paypal', require('./routes/paypalWebhook.routes'));
 // Keep ordinary JSON/form requests bounded. Multipart uploads are parsed by
 // Multer on their individual routes and retain their feature-specific limits.
@@ -146,9 +146,9 @@ app.use(
 app.use(sanitizeRequest);
 app.use(hpp());
 
-app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
+app.use(accessLog());
 
-// Generous baseline protection for ordinary API traffic. Stripe's raw-body
+// Generous baseline protection for ordinary API traffic. PayPal's raw-body
 // webhook is mounted above this middleware. Health and long-lived SSE traffic
 // have different semantics and are excluded here; SSE reconnection is limited
 // separately at its token-issuance boundary.
@@ -260,7 +260,7 @@ app.use("/files", secureFileRoutes);
 // /uploads URLs. These are controlled handlers, not static directory mounts.
 app.use("/uploads", secureFileRoutes);
 
-if (process.env.NODE_ENV !== "production") {
+if (process.env.NODE_ENV === "development") {
   const swaggerSpec = createSwaggerSpec();
   app.get("/api/docs.json", (req, res) => res.json(swaggerSpec));
   app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));

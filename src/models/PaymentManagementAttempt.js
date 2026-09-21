@@ -12,9 +12,11 @@ const schema = new mongoose.Schema({
   sourceProviderPlanId: { type: String, trim: true },
   targetPlanKey: { type: String, trim: true },
   targetProviderPlanId: { type: String, trim: true },
+  billingInterval: { type: String, enum: ['monthly', 'yearly'] },
+  transport: { type: String, enum: ['sdk', 'backend'] },
   status: {
     type: String,
-    enum: ['processing', 'approval_pending', 'provider_pending', 'completed', 'cancelled', 'failed'],
+    enum: ['prepared', 'processing', 'approval_pending', 'provider_pending', 'completed', 'cancelled', 'failed'],
     default: 'processing',
     index: true
   },

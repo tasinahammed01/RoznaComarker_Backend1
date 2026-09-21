@@ -15,4 +15,15 @@ describe('admin pricing legacy compatibility',()=>{beforeAll(connectInMemoryMong
  ])('rejects invalid field contracts with a specific message',async(body,message)=>{await Plan.create({name:'Essential Annual',slug:'essential_annual',price:99});const res=await call(controller.updatePlan,{params:{slug:'essential_annual'},body});expect(res.statusCode).toBe(400);expect(res.body.message).toBe(message);});
  test('optional Stripe IDs may stay blank or update without affecting other values',async()=>{await Plan.create({name:'Essential Annual',slug:'essential_annual',price:99,stripe:{productId:'old'}});expect((await call(controller.updatePlan,{params:{slug:'essential_annual'},body:{...valid,stripeProductId:'prod_new'}})).statusCode).toBe(200);const plan=await Plan.findOne({slug:'essential_annual'});expect(plan.stripe.productId).toBe('prod_new');expect(plan.stripe.monthlyPriceId).toBeUndefined();});
  test('emits only after successful plan and pack persistence and tolerates emitter failure',async()=>{const publish=jest.spyOn(pricingRealtime,'publishPricingConfigUpdated');await Plan.create({name:'Essential Annual',slug:'essential_annual',price:99});expect((await call(controller.updatePlan,{params:{slug:'essential_annual'},body:valid})).statusCode).toBe(200);expect(publish).toHaveBeenLastCalledWith({entity:'plan',key:'essential_annual'});publish.mockClear();expect((await call(controller.updatePlan,{params:{slug:'essential_annual'},body:{...valid,displayOrder:-1}})).statusCode).toBe(400);expect(publish).not.toHaveBeenCalled();await Pack.create({name:'Ten',code:'CREDITS_10',credits:10,price:1.99,currency:'USD',active:true,allowedPlans:['essential_annual']});expect((await call(controller.updatePack,{params:{code:'CREDITS_10'},body:{name:'Ten',credits:10,price:1.99,currency:'USD',active:true,allowedPlans:['essential_annual'],displayOrder:1,stripePriceId:''}})).statusCode).toBe(200);expect(publish).toHaveBeenLastCalledWith({entity:'credit_pack',key:'CREDITS_10'});publish.mockImplementation(()=>{throw new Error('stream failure')});expect((await call(controller.updatePlan,{params:{slug:'essential_annual'},body:valid})).statusCode).toBe(200);publish.mockRestore()});
+
+ test.each([{price:0},{price:1.001},{credits:1.5},{currency:'JPY'},{displayOrder:-1},{allowedPlans:['institution']}])('rejects active pack outside customer policy %j',async(invalid)=>{
+  await Plan.create({name:'Free',slug:'free'});await Plan.create({name:'Institution',slug:'institution'});
+  const res=await call(controller.createPack,{body:{name:'Ten',code:'APPROVED_10',credits:10,price:3.25,currency:'USD',active:true,displayOrder:1,allowedPlans:['free'],...invalid}});
+  expect(res.statusCode).toBe(400);expect(await Pack.countDocuments()).toBe(0);
+ });
+ test('PayPal save needs no Stripe fields and normalizes allowed slugs',async()=>{
+  await Plan.create({name:'Free',slug:'free'});
+  const res=await call(controller.createPack,{body:{name:'Ten',code:'APPROVED_10',credits:10,price:3.25,currency:'USD',active:true,displayOrder:1,allowedPlans:[' Free ']}});
+  expect(res.statusCode).toBe(201);expect(res.body.pack.allowedPlans).toEqual(['free']);
+ });
 });
