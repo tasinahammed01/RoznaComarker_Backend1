@@ -21,6 +21,7 @@ const schema = new mongoose.Schema({
   failureClass: { type: String, enum: ['retryable', 'permanent'], default: undefined },
   failureCode: { type: String, trim: true },
   safeFailureMessage: { type: String, trim: true },
+  providerDebugId: { type: String, trim: true, maxlength: 300 },
   retryCount: { type: Number, default: 0, min: 0 },
   lastAttemptAt: { type: Date, default: Date.now },
   processingLeaseExpiresAt: Date,

@@ -264,6 +264,73 @@ describe('PayPal Orders Assessment Credit purchases', () => {
     expect((await CreditWallet.findOne({ userId: teacher._id })).purchasedCredits).toBe(10);
   });
 
+  test('INSTRUMENT_DECLINED is durable and recoverable, retains safe diagnostics, and grants no credits', async () => {
+    await create();
+    paypalMock.captureOrder.mockRejectedValue(Object.assign(new Error('declined'), { providerStatus: 422,
+      providerIssue: 'INSTRUMENT_DECLINED', debugId: 'safe-debug-id' }));
+    paypalMock.getOrder.mockResolvedValue({ id: ORDER, status: 'APPROVED' });
+    const declined = await capture();
+    expect(declined.status).toBe(422); expect(declined.body).toMatchObject({ success: false, code: 'INSTRUMENT_DECLINED' });
+    expect(await PaymentPurchaseAttempt.findOne({ attemptId: ATTEMPT })).toMatchObject({ status: 'approval_pending',
+      failureClass: 'retryable', failureCode: 'INSTRUMENT_DECLINED', providerOrderId: ORDER, providerDebugId: 'safe-debug-id' });
+    const status = await request(app).get(`/api/credits/paypal/purchase/${ATTEMPT}`).set(auth());
+    expect(status.body.data).toMatchObject({ status: 'approval_pending', failureCode: 'INSTRUMENT_DECLINED', credited: false });
+    expect(JSON.stringify(status.body)).not.toContain('safe-debug-id');
+    expect(await CreditTransaction.countDocuments()).toBe(0);
+    expect((await CreditWallet.findOne({ userId: teacher._id }))?.purchasedCredits || 0).toBe(0);
+  });
+
+  test('same Order captures after funding restart and grants exactly once', async () => {
+    await create();
+    paypalMock.captureOrder.mockRejectedValueOnce(Object.assign(new Error('declined'), { providerStatus: 422,
+      providerIssue: 'INSTRUMENT_DECLINED', debugId: 'decline-debug' }));
+    paypalMock.getOrder.mockResolvedValueOnce({ id: ORDER, status: 'APPROVED' });
+    expect((await capture()).body.code).toBe('INSTRUMENT_DECLINED');
+    paypalMock.captureOrder.mockResolvedValue(completedOrder());
+    expect((await capture()).body.data).toMatchObject({ status: 'credited', credited: true });
+    expect((await capture()).body.data).toMatchObject({ status: 'credited', credited: true });
+    expect((await CreditWallet.findOne({ userId: teacher._id })).purchasedCredits).toBe(10);
+    expect(await CreditTransaction.countDocuments({ idempotencyKey: `paypal-topup:capture:${CAPTURE}` })).toBe(1);
+    expect(await PaymentPurchaseAttempt.findOne({ attemptId: ATTEMPT })).toMatchObject({ status: 'credited',
+      providerOrderId: ORDER, providerCaptureId: CAPTURE, providerDebugId: 'decline-debug' });
+    expect((await PaymentPurchaseAttempt.findOne({ attemptId: ATTEMPT })).failureCode).toBeUndefined();
+  });
+
+  test('duplicate capture calls after INSTRUMENT_DECLINED stay recoverable and grant nothing', async () => {
+    await create();
+    paypalMock.captureOrder.mockRejectedValue(Object.assign(new Error('declined'), { providerStatus: 422,
+      providerIssue: 'INSTRUMENT_DECLINED' }));
+    paypalMock.getOrder.mockResolvedValue({ id: ORDER, status: 'APPROVED' });
+    expect((await capture()).body.code).toBe('INSTRUMENT_DECLINED');
+    expect((await capture()).body.code).toBe('INSTRUMENT_DECLINED');
+    expect(await PaymentPurchaseAttempt.findOne({ attemptId: ATTEMPT })).toMatchObject({ status: 'approval_pending',
+      failureClass: 'retryable', failureCode: 'INSTRUMENT_DECLINED', providerOrderId: ORDER });
+    expect(await CreditTransaction.countDocuments()).toBe(0);
+  });
+
+  test('an unrelated provider 422 is terminal and never treated as funding restart', async () => {
+    await create();
+    paypalMock.captureOrder.mockRejectedValue(Object.assign(new Error('invalid request'), { providerStatus: 422,
+      providerIssue: 'UNPROCESSABLE_ENTITY', debugId: 'generic-debug' }));
+    paypalMock.getOrder.mockResolvedValue({ id: ORDER, status: 'APPROVED' });
+    const failed = await capture(); expect(failed.status).toBe(409); expect(failed.body.code).toBe('UNPROCESSABLE_ENTITY');
+    expect(await PaymentPurchaseAttempt.findOne({ attemptId: ATTEMPT })).toMatchObject({ status: 'failed',
+      failureClass: 'permanent', failureCode: 'UNPROCESSABLE_ENTITY' });
+    expect((await capture()).status).toBe(409); expect(paypalMock.captureOrder).toHaveBeenCalledTimes(1);
+    expect(await CreditTransaction.countDocuments()).toBe(0);
+  });
+
+  test('provider 500 remains retryable when authoritative Order is not completed', async () => {
+    await create();
+    paypalMock.captureOrder.mockRejectedValue(Object.assign(new Error('provider unavailable'), { providerStatus: 500,
+      providerIssue: 'INTERNAL_SERVER_ERROR' }));
+    paypalMock.getOrder.mockResolvedValue({ id: ORDER, status: 'APPROVED' });
+    const failed = await capture(); expect(failed.status).toBe(502);
+    expect(await PaymentPurchaseAttempt.findOne({ attemptId: ATTEMPT })).toMatchObject({ status: 'failed',
+      failureClass: 'retryable', failureCode: 'INTERNAL_SERVER_ERROR' });
+    expect(await CreditTransaction.countDocuments()).toBe(0);
+  });
+
   test('cancelled buyer flow marks the attempt and grants nothing', async () => {
     await create(); const res = await request(app).post('/api/credits/paypal/cancel').set(auth()).send({ checkoutAttemptId: ATTEMPT });
     expect(res.body.data.status).toBe('cancelled'); expect((await capture()).status).toBe(409);

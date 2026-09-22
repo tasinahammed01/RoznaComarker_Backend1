@@ -92,6 +92,18 @@ describe('PayPal REST client foundation', () => {
     expect(JSON.stringify(error)).not.toContain('sensitive-access-token');
   });
 
+  test('maps PayPal INSTRUMENT_DECLINED status, issue, and debug ID', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(response(200, { access_token: 'token', expires_in: 3600 }))
+      .mockResolvedValueOnce(response(422, { name: 'UNPROCESSABLE_ENTITY', debug_id: 'provider-debug-id',
+        details: [{ issue: 'INSTRUMENT_DECLINED', description: 'The instrument presented was declined.' }] }));
+    const client = new PayPalClient({ clientId: 'id', clientSecret: 'secret', fetchImpl, logger: {} });
+    const error = await client.captureOrder('ORDER', 'request-id').catch((item) => item);
+    expect(error).toBeInstanceOf(PayPalApiError);
+    expect(error).toMatchObject({ code: 'PAYPAL_API_ERROR', providerStatus: 422,
+      providerIssue: 'INSTRUMENT_DECLINED', debugId: 'provider-debug-id' });
+  });
+
   test('sends the deterministic Catalog Product creation request', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(response(200, { access_token: 'token', expires_in: 3600 }))

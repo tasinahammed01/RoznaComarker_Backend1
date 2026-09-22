@@ -4,7 +4,8 @@ const PaymentPurchaseAttempt = require('../../models/PaymentPurchaseAttempt');
 const CreditTransaction = require('../../models/CreditTransaction');
 const TopupService = require('../topup.service');
 const { PayPalClient } = require('./paypalClient.service');
-const { getPaypalRedirectUrls, isPaypalAdvancedCardEnabled } = require('../../config/paypal');
+const { getPaypalEnvironment, getPaypalRedirectUrls, isPaypalAdvancedCardEnabled } = require('../../config/paypal');
+const applicationLogger = require('../../utils/logger');
 
 const PROCESSING_LEASE_MS = 2 * 60 * 1000;
 const ACTIVE_STATUSES = new Set(['creating', 'capturing']);
@@ -52,25 +53,51 @@ function lease(now = new Date()) {
   return { lastAttemptAt: now, processingLeaseExpiresAt: new Date(now.getTime() + PROCESSING_LEASE_MS) };
 }
 
+function safeFailureCode(code) {
+  const value = String(code || '').trim().toUpperCase();
+  return /^[A-Z][A-Z0-9_]{1,79}$/u.test(value) ? value : undefined;
+}
+
 function publicAttempt(attempt) {
+  const failureCode = safeFailureCode(attempt.failureCode);
   return { attemptId: attempt.attemptId, ...(attempt.providerOrderId ? { orderId: attempt.providerOrderId } : {}),
     ...(attempt.approvalUrl ? { approvalUrl: attempt.approvalUrl } : {}), status: attempt.status,
     packCode: attempt.packCode, credits: attempt.credits, amount: attempt.expectedAmount, currency: attempt.currency,
-    credited: attempt.status === 'credited', ...(attempt.safeFailureMessage ? { message: attempt.safeFailureMessage } : {}) };
+    credited: attempt.status === 'credited', ...(failureCode ? { failureCode } : {}),
+    ...(attempt.safeFailureMessage ? { message: attempt.safeFailureMessage } : {}) };
 }
 
 function classify(error) {
+  const failureCode = error?.providerIssue || error?.code || 'PAYPAL_ORDER_FAILED';
+  if (failureCode === 'INSTRUMENT_DECLINED') {
+    return { failureClass: 'retryable', failureCode, recoveryAction: 'restart',
+      safeFailureMessage: "PayPal couldn't process this payment method. Please choose another card or payment method. No credits were added." };
+  }
   const permanent = [400, 401, 403, 404, 422].includes(error?.providerStatus);
-  return { failureClass: permanent ? 'permanent' : 'retryable', failureCode: error?.providerIssue || error?.code || 'PAYPAL_ORDER_FAILED',
-    safeFailureMessage: permanent ? 'PayPal could not process this purchase.' : 'PayPal is temporarily unavailable. Please try again.' };
+  return { failureClass: permanent ? 'permanent' : 'retryable', failureCode,
+    safeFailureMessage: permanent ? 'PayPal could not complete this payment. No credits were added.'
+      : 'PayPal is temporarily unavailable. Please try again.' };
 }
 
-async function markFailure(attempt, error) {
+function logFailure(attempt, error, failure, { environment = process.env, logger = applicationLogger } = {}) {
+  logger.warn?.({ event: 'paypal.purchase.failure',
+    environment: getPaypalEnvironment(environment), attemptId: attempt.attemptId,
+    providerOrderId: attempt.providerOrderId || null, providerStatus: error?.providerStatus || null,
+    providerIssue: error?.providerIssue || null, debugId: error?.debugId || null,
+    failureClass: failure.failureClass });
+}
+
+async function markFailure(attempt, error, options) {
   const failure = classify(error);
+  logFailure(attempt, error, failure, options);
   await PaymentPurchaseAttempt.updateOne({ _id: attempt._id, status: attempt.status }, { $set: {
-    status: 'failed', ...failure, processingLeaseExpiresAt: null
+    status: failure.recoveryAction === 'restart' ? 'approval_pending' : 'failed',
+    failureClass: failure.failureClass, failureCode: failure.failureCode,
+    safeFailureMessage: failure.safeFailureMessage, providerDebugId: error?.debugId || null,
+    processingLeaseExpiresAt: null
   } });
-  throw purchaseError(failure.failureCode, failure.safeFailureMessage, failure.failureClass === 'permanent' ? 409 : 502);
+  throw purchaseError(failure.failureCode, failure.safeFailureMessage,
+    failure.recoveryAction === 'restart' ? 422 : failure.failureClass === 'permanent' ? 409 : 502);
 }
 
 async function claimExisting(attempt, fromStatuses, nextStatus) {
@@ -167,7 +194,8 @@ async function grantCaptured(attempt, order, options) {
   const conflict = await PaymentPurchaseAttempt.findOne({ provider: 'paypal', providerCaptureId: capture.id, _id: { $ne: attempt._id } });
   if (conflict) throw purchaseError('PAYPAL_CAPTURE_OWNERSHIP_CONFLICT', 'Payment capture is already assigned', 409);
   const captured = await PaymentPurchaseAttempt.updateOne({ _id: attempt._id, status: { $nin: ['refunded', 'review_required'] } }, { $set: { providerCaptureId: capture.id,
-    status: 'captured', capturedAt: new Date(capture.update_time || capture.create_time || Date.now()), processingLeaseExpiresAt: null } });
+    status: 'captured', capturedAt: new Date(capture.update_time || capture.create_time || Date.now()), processingLeaseExpiresAt: null
+  }, $unset: { failureClass: 1, failureCode: 1, safeFailureMessage: 1 } });
   if (!captured.matchedCount) return publicAttempt(await PaymentPurchaseAttempt.findById(attempt._id));
   const pack = { code: attempt.packCode, name: attempt.packCode, credits: attempt.credits };
   const grant = await TopupService.grantProviderPurchasedCredits({ userId: attempt.userId, pack,
@@ -270,7 +298,7 @@ async function reconcileRefundOrReversal({ captureId, orderId, eventId, eventTyp
 async function cancelAttempt({ user, attemptId }) {
   const attempt = await PaymentPurchaseAttempt.findOneAndUpdate({ provider: 'paypal', attemptId, userId: user._id,
     status: { $in: ['creating', 'approval_pending', 'failed'] }, providerCaptureId: { $exists: false } }, { $set: {
-    status: 'cancelled', processingLeaseExpiresAt: null, safeFailureMessage: null
+    status: 'cancelled', processingLeaseExpiresAt: null, failureClass: undefined, failureCode: null, safeFailureMessage: null
   } }, { returnDocument: 'after' });
   if (attempt) return publicAttempt(attempt);
   const existing = await PaymentPurchaseAttempt.findOne({ provider: 'paypal', attemptId, userId: user._id });
@@ -284,5 +312,5 @@ async function getAttempt({ user, attemptId }) {
   return publicAttempt(attempt);
 }
 
-module.exports = { PROCESSING_LEASE_MS, trustedMoney, sameMoney, safeApprovalUrl, publicAttempt, createPayload,
+module.exports = { PROCESSING_LEASE_MS, trustedMoney, sameMoney, safeApprovalUrl, safeFailureCode, publicAttempt, classify, createPayload,
   createOrder, captureOrder, reconcileCaptureWebhook, reconcileRefundOrReversal, cancelAttempt, getAttempt, validatedCapture };
