@@ -15,6 +15,7 @@ function purchaseError(code, message, statusCode = 400) {
 }
 
 function paymentProvider(environment = process.env) {
+ 
   return String(environment.PAYMENT_PROVIDER || '').trim().toLowerCase();
 }
 
@@ -117,16 +118,19 @@ function createPayload(attempt, environment, fundingSource = 'paypal') {
     return: { topup: 'paypal-confirming', attempt: attemptId },
     cancel: { topup: 'paypal-cancelled', attempt: attemptId }
   });
-  const paymentSource = fundingSource === 'card'
-    ? { card: { attributes: { verification: { method: 'SCA_WHEN_REQUIRED' } } } }
-    : undefined;
+  const paymentSource = fundingSource === 'card' ? { card: {
+    attributes: { verification: { method: 'SCA_WHEN_REQUIRED' } },
+    experience_context: { return_url: redirects.returnUrl, cancel_url: redirects.cancelUrl }
+  } } : undefined;
+  const applicationContext = fundingSource === 'card' ? undefined : {
+    return_url: redirects.returnUrl, cancel_url: redirects.cancelUrl,
+    user_action: 'PAY_NOW', shipping_preference: 'NO_SHIPPING'
+  };
   return { intent: 'CAPTURE', purchase_units: [{ reference_id: attempt.attemptId,
     custom_id: `paypal-topup:${attempt.attemptId}`, description: `${attempt.credits} Assessment Credits (${attempt.packCode})`,
     amount: { currency_code: attempt.currency, value: attempt.expectedAmount } }],
-    ...(paymentSource ? { payment_source: paymentSource } : {}), application_context: {
-      return_url: redirects.returnUrl, cancel_url: redirects.cancelUrl,
-      user_action: 'PAY_NOW', shipping_preference: 'NO_SHIPPING'
-    } };
+    ...(paymentSource ? { payment_source: paymentSource } : {}),
+    ...(applicationContext ? { application_context: applicationContext } : {}) };
 }
 
 async function createOrder({ user, packCode, attemptId, fundingSource = 'paypal', client = new PayPalClient(), environment = process.env }) {
@@ -138,8 +142,8 @@ async function createOrder({ user, packCode, attemptId, fundingSource = 'paypal'
   const money = trustedMoney(pack.price, pack.currency);
   let attempt;
   try {
-    attempt = await PaymentPurchaseAttempt.create({ provider: 'paypal', attemptId, userId: user._id,
-      packCode: pack.code, credits: pack.credits, expectedAmount: money.value, currency: money.currency,
+    attempt = await PaymentPurchaseAttempt.create({ provider: 'paypal', providerEnvironment: getPaypalEnvironment(environment), purpose: 'credit_pack', attemptId, userId: user._id,
+      fundingSource, packCode: pack.code, credits: pack.credits, expectedAmount: money.value, currency: money.currency,
       createRequestId: `topup-create:${attemptId}`, captureRequestId: `topup-capture:${attemptId}`,
       status: 'creating', ...lease() });
   } catch (error) {
@@ -147,6 +151,9 @@ async function createOrder({ user, packCode, attemptId, fundingSource = 'paypal'
     attempt = await PaymentPurchaseAttempt.findOne({ provider: 'paypal', attemptId });
     if (!attempt || String(attempt.userId) !== String(user._id)) throw purchaseError('PAYPAL_PURCHASE_ATTEMPT_CONFLICT', 'Purchase attempt is unavailable', 409);
     if (attempt.packCode !== pack.code) throw purchaseError('PAYPAL_PURCHASE_ATTEMPT_CONFLICT', 'Use a new checkout attempt for a different pack', 409);
+    if ((attempt.fundingSource || 'paypal') !== fundingSource) {
+      throw purchaseError('PAYPAL_PURCHASE_ATTEMPT_CONFLICT', 'Use a new checkout attempt for a different payment method', 409);
+    }
     if (['approval_pending', 'capturing', 'captured', 'credited'].includes(attempt.status)) return publicAttempt(attempt);
     if (['cancelled', 'review_required', 'refunded'].includes(attempt.status) ||
       (attempt.status === 'failed' && attempt.failureClass === 'permanent')) {
@@ -249,6 +256,9 @@ async function reconcileCaptureWebhook({ orderId, captureId, client = new PayPal
     ...(orderId ? [{ providerOrderId: orderId }] : []), ...(captureId ? [{ providerCaptureId: captureId }] : [])
   ] });
   if (!attempt) throw purchaseError('PAYPAL_PAYMENT_CORRELATION_FAILED', 'Payment cannot be correlated', 422);
+  if (attempt.purpose === 'plan_purchase') {
+    return require('./paypalPlanPurchase.service').reconcileCaptureWebhook({ orderId, captureId, client });
+  }
   const order = await client.getOrder(attempt.providerOrderId);
   return grantCaptured(attempt, order);
 }
@@ -258,6 +268,9 @@ async function reconcileRefundOrReversal({ captureId, orderId, eventId, eventTyp
     { providerCaptureId: captureId }, ...(orderId ? [{ providerOrderId: orderId }] : [])
   ] });
   if (!attempt) throw purchaseError('PAYPAL_PAYMENT_CORRELATION_FAILED', 'Payment cannot be correlated', 422);
+  if (attempt.purpose === 'plan_purchase') {
+    return require('./paypalPlanPurchase.service').reconcileRefundOrReversal({ captureId, orderId, eventId, eventType, client });
+  }
   const priorRefund = await CreditTransaction.findOne({ userId: attempt.userId, type: 'TOPUP_REFUND', status: 'refunded',
     'metadata.paypalCaptureId': captureId });
   if (priorRefund) {

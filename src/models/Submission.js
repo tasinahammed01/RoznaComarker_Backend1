@@ -116,6 +116,8 @@ const submissionSchema = new Schema(
       type: String,
       trim: true
     },
+    ocrErrorCode: { type: String, trim: true },
+    ocrFailures: { type: [Schema.Types.Mixed], default: undefined },
     ocrData: {
       type: Schema.Types.Mixed,
       default: undefined
@@ -182,6 +184,14 @@ const submissionSchema = new Schema(
     assessmentStatus: { type: String, enum: ['started', 'processing', 'complete', 'failed'], default: undefined, index: true },
     assessmentCompletedAt: { type: Date, default: undefined },
     assessmentErrorCode: { type: String, trim: true, default: undefined },
+    // A MongoDB-backed lease makes the in-process assessment pipeline
+    // restart-safe without introducing a second queueing system. The status
+    // fields remain the source of truth; these fields only coordinate workers.
+    analysisLeaseOwner: { type: String, trim: true, default: undefined },
+    analysisLeaseExpiresAt: { type: Date, default: undefined },
+    analysisAttempt: { type: Number, min: 0, default: 0 },
+    analysisNextRetryAt: { type: Date, default: undefined },
+    analysisErrorCode: { type: String, trim: true, default: undefined },
     evaluationSourceHash: { type: String, trim: true },
     evaluationVersion: { type: String, trim: true },
     evaluationRubricSourceHash: { type: String, trim: true },
@@ -210,5 +220,6 @@ submissionSchema.index({ class: 1, student: 1, submittedAt: 1 });
 submissionSchema.index({ class: 1, assignment: 1, submittedAt: 1, draftNumber: 1 });
 submissionSchema.index({ class: 1, assignment: 1, createdAt: 1 });
 submissionSchema.index({ feedback: 1 });
+submissionSchema.index({ ocrStatus: 1, analysisNextRetryAt: 1, analysisLeaseExpiresAt: 1, updatedAt: 1 });
 
 module.exports = mongoose.model('Submission', submissionSchema);

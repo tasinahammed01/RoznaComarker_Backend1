@@ -1,6 +1,40 @@
 const crypto = require('crypto');
 
 const CUSTOM_RUBRIC_VERSION = 'assignment-custom-rubric-v1';
+const CRITERION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const criterionName = (row) => String(row?.name || row?.title || '').normalize('NFKC').toLowerCase().trim();
+const validCriterionId = (value) => {
+  const id = String(value || '').trim();
+  return CRITERION_ID_RE.test(id) ? id : null;
+};
+
+function ensureStableCriterionIds(raw, { existingRubric = null, idFactory = crypto.randomUUID } = {}) {
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.criteria)) return raw;
+  const previous = Array.isArray(existingRubric?.criteria) ? existingRubric.criteria : [];
+  const previousByName = new Map();
+  previous.forEach((row, index) => {
+    const name = criterionName(row);
+    if (name && !previousByName.has(name)) previousByName.set(name, { row, index });
+  });
+  const used = new Set();
+  const criteria = raw.criteria.map((criterion, index) => {
+    let id = validCriterionId(criterion?.id);
+    if (id && used.has(id)) id = null;
+    if (!id) {
+      const named = previousByName.get(criterionName(criterion));
+      const namedId = validCriterionId(named?.row?.id);
+      if (namedId && !used.has(namedId)) id = namedId;
+    }
+    if (!id) {
+      const indexedId = validCriterionId(previous[index]?.id);
+      if (indexedId && !used.has(indexedId)) id = indexedId;
+    }
+    if (!id) id = `criterion-${idFactory()}`;
+    used.add(id);
+    return { ...criterion, id };
+  });
+  return { ...raw, criteria };
+}
 const stable = (value) => value == null ? null : Array.isArray(value) ? value.map(stable)
   : typeof value === 'object' ? Object.keys(value).sort().reduce((out, key) => {
     if (!['_id', '__v', 'createdAt', 'updatedAt'].includes(key)) out[key] = stable(value[key]);
@@ -28,6 +62,7 @@ function normalizeAssignmentRubric(assignment = {}) {
   if (!rows.length) diagnostics.push('Rubric must contain at least one criterion.');
   const prepared = rows.map((row, index) => {
     const title = String(row?.name || row?.title || '').trim();
+    const persistedId = validCriterionId(row?.id);
     const weight = Number(row?.weight);
     const rawLevels = Array.isArray(row?.levels) ? row.levels.map((level) => ({
       title: String(level?.title || '').trim(),
@@ -44,7 +79,9 @@ function normalizeAssignmentRubric(assignment = {}) {
     if (levels.length < 2) diagnostics.push(`Criterion "${title || index + 1}" requires at least two performance levels.`);
     if (levels.some((level) => !level.title || !level.description || !Number.isFinite(level.percentage)))
       diagnostics.push(`Criterion "${title || index + 1}" requires a title, percentage, and description for every level.`);
-    return { id: `criterion-${index + 1}`, title, weight, levels };
+    return { id: persistedId || `criterion-${index + 1}`,
+      idSource: persistedId ? 'persisted' : 'legacy_position', title,
+      description: String(row?.description || '').trim(), weight, levels };
   });
   if (diagnostics.length) return { status: 'invalid', rubric: null, diagnostics, source: source.source };
   const weightTotal = prepared.reduce((sum, row) => sum + row.weight, 0);
@@ -128,8 +165,15 @@ function validateAssignmentRubricInput(raw, designer = false) {
   if (!Array.isArray(rows) || rows.length < 1 || rows.length > 100) return ['Rubric requires 1–100 criteria.'];
   if (raw.totalPoints !== 100) errors.push('totalPoints must equal 100.');
   const names = new Set();
+  const ids = new Set();
   let sum = 0;
   for (const row of rows) {
+    if (row?.id != null) {
+      const id = validCriterionId(row.id);
+      if (!id) errors.push('Criterion IDs must be valid stable identifiers.');
+      else if (ids.has(id)) errors.push('Criterion IDs must be unique.');
+      else ids.add(id);
+    }
     const name = String(row?.name || row?.title || '').trim().toLowerCase();
     if (!name || names.has(name)) errors.push('Criterion names must be non-empty and unique.');
     names.add(name);
@@ -160,4 +204,5 @@ function validateAssignmentRubricInput(raw, designer = false) {
   return [...new Set(errors)];
 }
 
-module.exports = { CUSTOM_RUBRIC_VERSION, normalizeAssignmentRubric, hashNormalizedRubric, calculateCustomRubricScore, validateAssignmentRubricInput };
+module.exports = { CUSTOM_RUBRIC_VERSION, normalizeAssignmentRubric, hashNormalizedRubric, calculateCustomRubricScore,
+  validateAssignmentRubricInput, ensureStableCriterionIds, validCriterionId };

@@ -1,6 +1,5 @@
 const Plan = require('../models/Plan');
 const { configuredProviderName } = require('../services/payments/paymentProvider.service');
-const { getPaypalPlanId } = require('../config/paypal');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -18,7 +17,9 @@ function sendError(res, statusCode, message) {
 
 async function getActivePlans(req, res) {
   try {
-    const paymentProvider = configuredProviderName();
+    // Startup enforces an explicit PayPal provider in deployed environments.
+    // Catalog reads remain available in provider-neutral tooling and tests.
+    const paymentProvider = process.env.PAYMENT_PROVIDER ? configuredProviderName() : null;
     const rawPlans = await Plan.find({ isActive: true }).lean();
     const preferredOrder = new Map([
       ['free', 0],
@@ -43,11 +44,13 @@ async function getActivePlans(req, res) {
           warningThresholdPercent: plan.assessmentCreditNudges?.warningThresholdPercent ?? 80
         },
         paymentProvider,
+        // Prepaid PayPal Orders are priced from the trusted Plan catalog and
+        // do not require a recurring PayPal Billing Plan ID.
         purchasable: paymentProvider === 'paypal'
-          ? !!getPaypalPlanId(plan.slug, 'monthly').value
+          ? !['free', 'custom', 'institution'].includes(plan.slug) && Number.isFinite(plan.price) && plan.price > 0
           : !!plan.stripe?.productId && !!(plan.stripe?.monthlyPriceId || plan.stripe?.priceId),
         annualBillingAvailable: paymentProvider === 'paypal'
-          ? typeof plan.annualPrice === 'number' && !!getPaypalPlanId(plan.slug, 'annual').value
+          ? !['free', 'custom', 'institution'].includes(plan.slug) && Number.isFinite(plan.annualPrice) && plan.annualPrice > 0
           : typeof plan.annualPrice === 'number' && !!plan.stripe?.annualPriceId,
         features: {
           maxClasses: plan.features?.maxClasses ?? null,

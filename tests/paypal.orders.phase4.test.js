@@ -79,7 +79,7 @@ describe('PayPal Orders Assessment Credit purchases', () => {
     paypalMock.getCapture.mockResolvedValue({ id: CAPTURE, status: 'REFUNDED', amount: { value: '4.99', currency_code: 'USD' },
       seller_receivable_breakdown: { total_refunded_amount: { value: '4.99', currency_code: 'USD' } } });
     paypalMock.verifyWebhookSignature.mockResolvedValue({ verification_status: 'SUCCESS' });
-    paypalMock.generateClientToken.mockResolvedValue({ client_token: 'browser-safe-token' });
+    paypalMock.generateClientToken.mockResolvedValue({ accessToken: 'browser-safe-token', expiresIn: 900 });
   });
 
   test('active backend pack is resolved and exact trusted Order shape is sent', async () => {
@@ -102,9 +102,33 @@ describe('PayPal Orders Assessment Credit purchases', () => {
     expect(res.status).toBe(200);
     expect(paypalMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ intent: 'CAPTURE',
       purchase_units: [expect.objectContaining({ amount: { currency_code: 'USD', value: '4.99' } })],
-      payment_source: { card: { attributes: { verification: { method: 'SCA_WHEN_REQUIRED' } } } }
+      payment_source: { card: { attributes: { verification: { method: 'SCA_WHEN_REQUIRED' } },
+        experience_context: {
+          return_url: `http://localhost:4200/teacher/dashboard?topup=paypal-confirming&attempt=${ATTEMPT}`,
+          cancel_url: `http://localhost:4200/teacher/dashboard?topup=paypal-cancelled&attempt=${ATTEMPT}`
+        } } }
     }), `topup-create:${ATTEMPT}`);
+    expect(paypalMock.createOrder.mock.calls[0][0]).not.toHaveProperty('application_context');
     expect(await PaymentPurchaseAttempt.countDocuments({ attemptId: ATTEMPT })).toBe(1);
+  });
+
+  test('authenticated browser-token endpoint returns only the no-store v6 SDK token', async () => {
+    const res = await request(app).get('/api/credits/paypal/card/client-token').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.body).toEqual({ success: true, data: { browserToken: 'browser-safe-token' } });
+    expect(paypalMock.generateClientToken).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(res.body)).not.toMatch(/sandbox-secret|client.secret|webhook/iu);
+  });
+
+  test('browser-token endpoint requires authentication and sanitizes provider failure', async () => {
+    expect((await request(app).get('/api/credits/paypal/card/client-token')).status).toBe(401);
+    paypalMock.generateClientToken.mockRejectedValue(Object.assign(new Error('raw provider token failure'), { statusCode: 502 }));
+    const failed = await request(app).get('/api/credits/paypal/card/client-token').set(auth());
+    expect(failed.status).toBe(503);expect(failed.headers['cache-control']).toBe('no-store');
+    expect(failed.body).toEqual({ success: false, code: 'PAYPAL_CARD_FIELDS_UNAVAILABLE',
+      message: 'PayPal card checkout is temporarily unavailable. Please use PayPal or try again.' });
+    expect(JSON.stringify(failed.body)).not.toContain('raw provider');
   });
 
   test('card order rejects browser supplied money while standard funding remains available', async () => {
@@ -114,7 +138,10 @@ describe('PayPal Orders Assessment Credit purchases', () => {
     expect(bad.status).toBe(400); expect(paypalMock.createOrder).not.toHaveBeenCalled();
     process.env.PAYPAL_ADVANCED_CARD_PAYMENTS_ENABLED = 'false';
     const capability = await request(app).get('/api/credits/paypal/capabilities').set(auth());
-    expect(capability.body.data).toMatchObject({ advancedCardPayments: false, cardTopups: true, cardSubscriptions: false });
+    expect(capability.body.data).toMatchObject({ advancedCardPayments: false, embeddedCardFields: false,
+      cardTopups: true, cardSubscriptions: false });
+    expect((await request(app).get('/api/credits/paypal/card/client-token').set(auth())).status).toBe(409);
+    expect(paypalMock.generateClientToken).not.toHaveBeenCalled();
     expect(JSON.stringify(capability.body)).not.toMatch(/sandbox-secret|access.token|webhook/iu);
     process.env.PAYPAL_ADVANCED_CARD_PAYMENTS_ENABLED = 'true';
   });
@@ -136,6 +163,16 @@ describe('PayPal Orders Assessment Credit purchases', () => {
     const first = await create(); const second = await create();
     expect(first.body.data.orderId).toBe(ORDER); expect(second.body.data.orderId).toBe(ORDER);
     expect(paypalMock.createOrder).toHaveBeenCalledTimes(1); expect(await PaymentPurchaseAttempt.countDocuments()).toBe(1);
+  });
+
+  test('a durable attempt cannot be replayed across PayPal and Card Fields order types', async () => {
+    expect((await create()).status).toBe(200);
+    const cardReplay = await request(app).post('/api/credits/paypal/card/create-order').set(auth()).send({
+      packCode: 'TOPUP_SMALL', checkoutAttemptId: ATTEMPT
+    });
+    expect(cardReplay.status).toBe(409);expect(cardReplay.body.code).toBe('PAYPAL_PURCHASE_ATTEMPT_CONFLICT');
+    expect(paypalMock.createOrder).toHaveBeenCalledTimes(1);
+    expect(await PaymentPurchaseAttempt.findOne({ attemptId: ATTEMPT })).toMatchObject({ fundingSource: 'paypal' });
   });
 
   test('simultaneous creates atomically produce one provider Order', async () => {

@@ -59,7 +59,7 @@ describe('OCR authoritative upload order', () => {
     expect(pipeline.generateAndPersist).toHaveBeenCalledTimes(before + 1);
   });
 
-  test('quality gate stops analysis when OCR words cannot align to native text', async () => {
+  test('retains readable native text while marking annotation geometry degraded', async () => {
     File.findById.mockResolvedValue({ _id: 'bad', path: 'bad.jpg' });
     const words = Array.from({ length: 10 }, (_, index) => ({ text: `unmapped${index}`, page: 1,
       bbox: { x: index, y: 1, w: 1, h: 1 } }));
@@ -71,8 +71,9 @@ describe('OCR authoritative upload order', () => {
       }) }, toObject() { const { constructor, toObject, ...values } = this; return values; } };
     const before = pipeline.generateAndPersist.mock.calls.length;
     const resultValue = await runOcrAndPersistForFiles({ fileIds: ['bad'], targetDoc, jobId: 'job-bad' });
-    expect(resultValue).toMatchObject({ ocrStatus: 'failed' });
-    expect(targetDoc.ocrError).toContain('OCR_READING_ORDER_UNRELIABLE');
-    expect(pipeline.generateAndPersist).toHaveBeenCalledTimes(before);
+    expect(resultValue).toMatchObject({ ocrStatus: 'completed' });
+    expect(targetDoc).toMatchObject({ ocrErrorCode: 'OCR_LAYOUT_DEGRADED' });
+    expect(targetDoc.ocrError).toContain('annotations may be unavailable');
+    expect(pipeline.generateAndPersist).toHaveBeenCalledTimes(before + 1);
   });
 });

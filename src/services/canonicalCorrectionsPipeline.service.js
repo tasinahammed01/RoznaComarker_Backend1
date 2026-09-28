@@ -20,6 +20,21 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
+function safePersistenceError(error) {
+  const errorName = String(error?.name || 'Error').slice(0, 80);
+  const mongoCode = Number.isFinite(Number(error?.code)) ? Number(error.code) : null;
+  const validationPaths = Object.keys(error?.errors || {})
+    .filter((path) => /^[A-Za-z0-9_.-]{1,160}$/u.test(path)).slice(0, 20);
+  let safeMessage;
+  if (errorName === 'ValidationError') safeMessage = 'Mongoose validation failed.';
+  else if (mongoCode != null) safeMessage = `MongoDB write failed with code ${mongoCode}.`;
+  else safeMessage = String(error?.message || 'Provisional score persistence failed')
+    .replace(/mongodb(?:\+srv)?:\/\/[^\s]+/giu, '[redacted-mongodb-uri]')
+    .replace(/[\r\n\t]+/gu, ' ').slice(0, 240);
+  return { errorCode: String(error?.code || 'PROVISIONAL_SCORE_PERSIST_FAILED').slice(0, 120),
+    errorName, safeMessage, validationPaths, mongoCode };
+}
+
 async function blockEvaluationAfterCorrectionFailure({ submissionId, errorCode, feedbackModel = SubmissionFeedback }) {
   return feedbackModel.updateOne({ submissionId, overriddenByTeacher: { $ne: true },
     evaluationStatus: { $nin: ['completed', 'partial'] } }, { $set: {
@@ -82,10 +97,13 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const canonicalTranscript = buildCanonicalSubmissionTranscript(doc);
   if (!canonicalTranscript.isComplete) {
     await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId }, { $set: {
-      correctionStatus: Array.isArray(doc.writingCorrections) && doc.writingCorrections.length ? 'partial' : 'processing',
-      correctionError: 'OCR is incomplete for one or more uploaded files.'
+      correctionStatus: 'partial', semanticStatus: 'failed', semanticNextRetryAt: null,
+      semanticErrorCode: 'OCR_PARTIAL', evaluationStatus: 'blocked',
+      evaluationErrorCode: 'OCR_PARTIAL',
+      correctionError: 'OCR is incomplete for one or more uploaded files.', correctionUpdatedAt: new Date()
     }});
-    return;
+    return { reused: false, semanticSucceeded: false, correctionsAvailable: false,
+      correctionsCompleteness: 'none', errorCode: 'OCR_PARTIAL' };
   }
   const transcript = canonicalTranscript.text;
   const spans = canonicalTranscript.wordSpans.map((span) => ({ ...span }));
@@ -136,15 +154,26 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
       // rubric evidence or turn it into a synthetic provider failure.
       const value = deepFreeze(rawValue);
       if (typeof canonicalEvaluation.persistProvisionalScore === 'function') {
+        const provisionalStartedAt = Date.now();
         try {
           await canonicalEvaluation.persistProvisionalScore({ submission: evaluationSubmission, assignment,
             sourceHash: hash, jobId, preparedRubricAssessment: value });
         } catch (error) {
-          logger.warn({ message: 'Provisional score persistence failed after rubric preparation',
-            submissionId: String(doc._id), sourceHashMatch: value?.sourceHash === hash,
+          const diagnostic = safePersistenceError(error);
+          let ownsCurrentAnalysis = null;
+          try {
+            if (typeof doc.constructor?.exists === 'function') ownsCurrentAnalysis = Boolean(await doc.constructor.exists({
+              _id: doc._id, correctionSourceHash: hash, correctionJobId: jobId, evaluationJobId: jobId
+            }));
+          } catch { ownsCurrentAnalysis = null; }
+          const event = { message: 'Provisional score persistence failed after rubric preparation',
+            stage: 'provisional_score_persist', submissionId: String(doc._id), sourceHash: hash,
+            sourceHashMatch: value?.sourceHash === hash, correctionJobId: jobId, evaluationJobId: jobId,
             preparedRubricProvider: value?.semantic?.provider || null,
             preparedRubricModel: value?.semantic?.model || null,
-            errorCode: error?.code || 'PROVISIONAL_SCORE_PERSIST_FAILED' });
+            ...diagnostic, ownsCurrentAnalysis, durationMs: Date.now() - provisionalStartedAt };
+          if (diagnostic.errorCode === 'ANALYSIS_JOB_SUPERSEDED') logger.info(event);
+          else logger.warn(event);
         }
       }
       return { status: 'fulfilled', value };
@@ -432,4 +461,4 @@ function buildSemanticSourceKey(baseSourceKey, env = process.env) {
 
 module.exports = { wordsFromSubmission, orderedPageIdentity, buildCorrectionSourceHash, plannedSemanticAttempts,
   buildSemanticSourceKey, hasHolisticCoverageMismatch, holisticCoverageMismatchCategories,
-  blockEvaluationAfterCorrectionFailure, generateAndPersist };
+  blockEvaluationAfterCorrectionFailure, generateAndPersist, safePersistenceError };

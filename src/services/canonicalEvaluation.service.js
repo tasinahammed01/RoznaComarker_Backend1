@@ -401,7 +401,14 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
         const status = Number(error?.httpStatus || error?.status || error?.statusCode || error?.attempts?.at(-1)?.httpStatus || 0);
         const terminal = [401, 402, 403].includes(status)
           || /AUTH|PERMISSION|CONFIG|PAYMENT|HTTP_40[123]|INVALID_ASSIGNMENT_RUBRIC/.test(code);
-        const recoverable = !terminal && (/PREPARED_RUBRIC|TIMEOUT|TRANSIENT|TRUNCAT|SCHEMA|VALIDATION|OUTPUT|PROVIDER|RATE_LIMIT|NETWORK|ECONN/.test(code)
+        // A validation-rejected preparation is not an authoritative final
+        // assessment. Use the existing single corrections-aware fallback;
+        // never re-enter this branch if that final assessment also fails.
+        const validationRejectedChain = code === 'AI_CHAIN_EXHAUSTED' && Array.isArray(error?.attempts)
+          && error.attempts.length > 0
+          && error.attempts.every(attempt => attempt.code === 'AI_OUTPUT_VALIDATION_FAILED');
+        const recoverable = !terminal && (validationRejectedChain
+          || /PREPARED_RUBRIC|TIMEOUT|TRANSIENT|TRUNCAT|SCHEMA|VALIDATION|OUTPUT|PROVIDER|RATE_LIMIT|NETWORK|ECONN/.test(code)
           || [408, 429].includes(status) || status >= 500);
         if (!recoverable) throw error;
         logger.warn({ event: 'evaluation.prepared_rubric_fallback', submissionId: String(submission._id), errorCode: code, attempt: 1 });

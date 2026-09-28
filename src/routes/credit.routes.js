@@ -22,6 +22,7 @@ const paypalPurchaseBody = [
 router.post('/paypal/create-order', verifyJwtToken, requireRole('teacher'), paypalPurchaseBody,
   handleValidationResult, paypalPurchase.createOrder);
 router.get('/paypal/capabilities', verifyJwtToken, requireRole('teacher'), paypalPurchase.capabilities);
+router.get('/paypal/card/client-token', verifyJwtToken, requireRole('teacher'), paypalPurchase.cardClientToken);
 router.post('/paypal/card/create-order', verifyJwtToken, requireRole('teacher'), paypalPurchaseBody,
   handleValidationResult, paypalPurchase.createCardOrder);
 router.post('/paypal/capture', verifyJwtToken, requireRole('teacher'), body('checkoutAttemptId').isUUID(4),

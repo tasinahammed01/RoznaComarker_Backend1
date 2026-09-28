@@ -12,10 +12,9 @@ const OcrUpload = require('../models/OcrUpload');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
 
 const uploadService = require('../services/upload.service');
-const { runOcrAndPersist, runOcrAndPersistForFiles } = require('../services/ocrPipeline.service');
+const { runOcrAndPersist } = require('../services/ocrPipeline.service');
 const { normalizeOcrWordsFromStored } = require('../services/ocrCorrections.service');
 const { buildSubmissionCorrectionStatistics } = require('../services/submissionCorrectionStatistics.service');
-const { autoGenerateRubricDesignerForSubmission } = require('../services/autoRubricDesigner.service');
 const canonicalCorrectionsPipeline = require('../services/canonicalCorrectionsPipeline.service');
 const canonicalEvaluation = require('../services/canonicalEvaluation.service');
 const correctionCanonical = require('../services/correctionCanonical.service');
@@ -42,6 +41,7 @@ const { getAdaptiveCompletionForResubmission } = require('../services/adaptivePr
 const CreditService = require('../services/credit.service');
 const AssessmentCreditRouter = require('../services/assessmentCreditRouter.service');
 const { captureCurrentRevision } = require('../services/submissionRevision.service');
+const { scheduleSubmissionAnalysis } = require('../services/assessmentRecovery.service');
 const draftComparison = require('../services/draftComparison.service');
 const User = require('../models/user.model');
 const { normalizeTeacherEvaluationPolicy, evaluationPolicyHash } = require('../services/teacherEvaluationPolicy.service');
@@ -611,6 +611,13 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
         existing.ocrPages = [];
         existing.writingCorrections = [];
       }
+      if (reusableCorrections) {
+        existing.analysisLeaseOwner = undefined;
+        existing.analysisLeaseExpiresAt = undefined;
+        existing.analysisAttempt = 0;
+        existing.analysisNextRetryAt = undefined;
+        existing.analysisErrorCode = undefined;
+      }
 
       const saved = await existing.save();
       if (reusableCorrections && previousFeedback) {
@@ -629,29 +636,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
 
       await incrementUsage(studentId, { storageMB: uploadedMB });
 
-      if (reusableCorrections && !reusableAssessment) setImmediate(() => {
-        canonicalEvaluation.generate({ submission: saved, assignment }).catch(error => {
-          logger.error({ event: 'submission.reupload.evaluation_failed', submissionId: String(saved._id), code: error?.code });
-        });
-      });
-      if (!reusableCorrections) setImmediate(() => {
-        const ids = Array.isArray(saved.files) && saved.files.length
-          ? saved.files
-          : (firstFile ? [firstFile._id] : []);
-
-        const ocrPromise = ids.length
-          ? runOcrAndPersistForFiles({ fileIds: ids, targetDoc: saved, jobId: saved.ocrJobId })
-          : Promise.resolve();
-
-        ocrPromise
-          .then(() => {
-            // Auto-generate rubric after OCR completes
-            autoGenerateRubricDesignerForSubmission({ submissionId: saved._id,
-              expectedOcrJobId: saved.ocrJobId })
-              .catch(() => {}); // Ignore errors, don't block upload
-          })
-          .catch(() => {});
-      });
+      if (!reusableAssessment) scheduleSubmissionAnalysis(saved._id, saved.ocrJobId);
 
       const populated = await Submission.findById(saved._id)
         .populate('student', '_id email displayName photoURL role')
@@ -731,24 +716,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
 
     await incrementUsage(studentId, { submissions: 1, storageMB: uploadedMB });
 
-    setImmediate(() => {
-      const ids = Array.isArray(created.files) && created.files.length
-        ? created.files
-        : (firstFile ? [firstFile._id] : []);
-
-      const ocrPromise = ids.length
-        ? runOcrAndPersistForFiles({ fileIds: ids, targetDoc: created, jobId: created.ocrJobId })
-        : Promise.resolve();
-
-      ocrPromise
-        .then(() => {
-          // Auto-generate rubric after OCR completes
-          autoGenerateRubricDesignerForSubmission({ submissionId: created._id,
-            expectedOcrJobId: created.ocrJobId })
-            .catch(() => {}); // Ignore errors, don't block upload
-        })
-        .catch(() => {});
-    });
+    scheduleSubmissionAnalysis(created._id, created.ocrJobId);
 
     const populated = await Submission.findById(created._id)
       .populate('student', '_id email displayName photoURL role')
@@ -812,7 +780,9 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
     if (err && err.code === 11000) {
       return sendError(res, 409, 'Already submitted');
     }
-
+    logger.error({ event: 'submission_create_failed', assignmentId: String(assignment?._id || ''),
+      studentId: String(studentId || ''), errorCode: String(err?.code || err?.name || 'SUBMISSION_CREATE_FAILED'),
+      error: String(err?.message || 'Failed to submit assignment') });
     return sendError(res, 500, 'Failed to submit assignment');
   }
 }
@@ -841,6 +811,9 @@ async function submitByAssignmentId(req, res) {
       qrToken: assignment.qrToken
     });
   } catch (err) {
+    logger.error({ event: 'submission_route_failed', assignmentId: String(req.params?.assignmentId || ''),
+      errorCode: String(err?.code || err?.name || 'SUBMISSION_ROUTE_FAILED'),
+      error: String(err?.message || 'Failed to submit assignment') });
     return sendError(res, 500, 'Failed to submit assignment');
   }
 }
@@ -869,6 +842,9 @@ async function submitByQrToken(req, res) {
       qrToken: assignment.qrToken
     });
   } catch (err) {
+    logger.error({ event: 'submission_qr_route_failed', qrTokenPresent: Boolean(req.params?.qrToken),
+      errorCode: String(err?.code || err?.name || 'SUBMISSION_QR_ROUTE_FAILED'),
+      error: String(err?.message || 'Failed to submit assignment') });
     return sendError(res, 500, 'Failed to submit assignment');
   }
 }
@@ -1101,6 +1077,7 @@ async function getOcrCorrections(req, res) {
     if (doc.ocrStatus === 'failed') {
       return res.status(422).json({ success: false, message: 'OCR processing failed', data: {
         processing: false, ocrStatus: 'failed', ocrError: doc.ocrError || 'OCR could not process this upload.',
+        ocrErrorCode: doc.ocrErrorCode || 'OCR_PROVIDER_FAILED',
         fileId: requestedFileId || null
       }});
     }
@@ -1211,6 +1188,12 @@ async function getOcrCorrections(req, res) {
         strengths: evaluationDoc.detailedFeedback?.strengths || [], areasForImprovement: evaluationDoc.detailedFeedback?.areasForImprovement || [],
         actionSteps: evaluationDoc.detailedFeedback?.actionSteps || [], source: evaluationDoc.evaluationSource || null } : null,
       ocrError: doc.ocrError || null,
+      ocrErrorCode: doc.ocrErrorCode || null,
+      ocrFailures: Array.isArray(doc.ocrFailures) ? doc.ocrFailures.map((failure) => ({
+        fileId: failure?.fileId || null, fileOrder: Number(failure?.fileOrder || 0),
+        code: failure?.code || 'OCR_PROVIDER_FAILED', message: failure?.message || 'OCR could not process this file.',
+        retryable: failure?.retryable === true
+      })) : [],
       fileId: hasRequestedFile ? requestedFileId : null,
       marksVisible
     };

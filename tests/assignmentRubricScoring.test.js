@@ -21,6 +21,19 @@ describe('assignment rubric scoring', () => {
     const result = rubricService.normalizeAssignmentRubric(assignment);
     expect(result.status).toBe('valid');
     expect(result.rubric.criteria.reduce((sum, item) => sum + item.weight, 0)).toBe(100);
+    expect(result.rubric.criteria.map((item) => item.idSource)).toEqual(['legacy_position', 'legacy_position']);
+  });
+
+  test('assigns persistent criterion IDs and preserves them across reordering', () => {
+    const created = rubricService.ensureStableCriterionIds(assignment.rubrics, {
+      idFactory: (() => { const values = ['alpha', 'beta']; return () => values.shift(); })()
+    });
+    expect(created.criteria.map((item) => item.id)).toEqual(['criterion-alpha', 'criterion-beta']);
+
+    const reordered = rubricService.ensureStableCriterionIds({ ...created, criteria: [
+      { ...created.criteria[1], id: undefined }, { ...created.criteria[0], id: undefined }
+    ] }, { existingRubric: created, idFactory: () => 'unexpected' });
+    expect(reordered.criteria.map((item) => item.id)).toEqual(['criterion-beta', 'criterion-alpha']);
   });
 
   test('supports legacy assignment.rubric JSON', () => {
@@ -75,6 +88,24 @@ describe('assignment rubric scoring', () => {
     expect(result.criteria.reduce((sum, item) => sum + item.weightedPoints, 0)).toBe(result.overallScore);
   });
 
+  test('improvement within the same discrete Good level leaves the weighted score unchanged', () => {
+    const rubric = rubricService.normalizeAssignmentRubric({ rubrics: { totalPoints: 100, criteria: [{
+      name: 'Quality', weight: 100, levels: [
+        { title: 'Excellent', score: 100, description: 'Fully meets the highest boundary.' },
+        { title: 'Good', score: 80, description: 'Meets the good boundary.' }
+      ]
+    }] } }).rubric;
+    const assess = (comment, evidenceId) => rubricService.calculateCustomRubricScore(rubric, [
+      { criterionId: 'criterion-1', percentage: 80, levelTitle: 'Good', comment,
+        evidence: [{ evidenceId }] }
+    ]);
+    const lowerWithinBand = assess('Meets the configured levels at the lower boundary.', 'draft-1-evidence');
+    const higherWithinBand = assess('Stronger evidence, but still below the next configured level.', 'draft-2-evidence');
+    expect(lowerWithinBand.overallScore).toBe(80);
+    expect(higherWithinBand.overallScore).toBe(80);
+    expect(higherWithinBand.criteria[0].evidenceIds).not.toEqual(lowerWithinBand.criteria[0].evidenceIds);
+  });
+
   test('confirmed five-criterion rubric deterministically calculates 60/100 without double weighting', () => {
     const configuredLevels = [
       { title: 'Excellent', score: 100, description: 'Excellent work.' },
@@ -101,6 +132,27 @@ describe('assignment rubric scoring', () => {
     ]);
     expect(result.criteria.map((item) => item.weightedPoints)).toEqual([18, 12, 6, 12, 12]);
     expect(result.overallScore).toBe(60);
+  });
+
+  test('five-criterion Good/Good/Good/Good/Satisfactory profile is exactly 77 and one level crossing is exact', () => {
+    const configuredLevels = [
+      { title: 'Excellent', score: 100, description: 'Excellent work.' },
+      { title: 'Good', score: 80, description: 'Good work.' },
+      { title: 'Satisfactory', score: 60, description: 'Satisfactory work.' },
+      { title: 'Needs Improvement', score: 40, description: 'Needs improvement.' }
+    ];
+    const rubric = rubricService.normalizeAssignmentRubric({ rubrics: { totalPoints: 100, criteria: [
+      { name: 'Content', weight: 30, levels: configuredLevels },
+      { name: 'Organization', weight: 20, levels: configuredLevels },
+      { name: 'Language', weight: 15, levels: configuredLevels },
+      { name: 'Analysis', weight: 20, levels: configuredLevels },
+      { name: 'Mechanics', weight: 15, levels: configuredLevels }
+    ] } }).rubric;
+    const selected = ['Good', 'Good', 'Good', 'Good', 'Satisfactory'];
+    const score = (levelsByCriterion) => rubricService.calculateCustomRubricScore(rubric,
+      levelsByCriterion.map((levelTitle, index) => ({ criterionId: `criterion-${index + 1}`, levelTitle })));
+    expect(score(selected).overallScore).toBe(77);
+    expect(score(['Excellent', ...selected.slice(1)]).overallScore).toBe(83);
   });
 
   test('rejects an AI percentage inconsistent with the selected configured level', () => {

@@ -1,3 +1,5 @@
+const crypto = require('crypto');
+
 const MAX_NAME_LENGTH = 120;
 const MAX_DESCRIPTION_LENGTH = 1000;
 
@@ -24,6 +26,7 @@ function designerToRubrics(designer) {
   return {
     totalPoints: Number(designer.totalPoints) || 100,
     criteria: criteria.map((criterion) => ({
+      id: String(criterion?.id || `criterion-${crypto.randomUUID()}`).trim(),
       name: String(criterion?.name || criterion?.title || '').trim(),
       weight: Number(criterion?.weight),
       levels: levels.map((level, index) => ({
@@ -50,6 +53,7 @@ function normalizeRubricData(value) {
   return {
     totalPoints: Number(source.totalPoints) || 100,
     criteria: source.criteria.map((criterion) => ({
+      id: String(criterion?.id || `criterion-${crypto.randomUUID()}`).trim(),
       name: String(criterion?.name || criterion?.title || '').trim(),
       weight: Number(criterion?.weight),
       levels: (Array.isArray(criterion?.levels) ? criterion.levels : []).map((level) => ({
@@ -73,11 +77,14 @@ function validateRubricData(rubricData) {
     errors.push('Rubric total points must be a positive number no greater than 10000.');
   }
   const criteria = Array.isArray(rubricData.criteria) ? rubricData.criteria : [];
+  const criterionIds = new Set();
   if (criteria.length < 3 || criteria.length > 100) {
     errors.push('Rubric must contain between 3 and 100 criteria.');
   }
   criteria.forEach((criterion, criterionIndex) => {
     const label = `Criterion ${criterionIndex + 1}`;
+    if (!criterion.id || criterionIds.has(criterion.id)) errors.push(`${label} requires a unique stable ID.`);
+    else criterionIds.add(criterion.id);
     if (!criterion.name || criterion.name.length > 200) errors.push(`${label} requires a title of at most 200 characters.`);
     if (!Number.isFinite(criterion.weight) || criterion.weight <= 0) errors.push(`${label} requires a positive weight.`);
     const levels = Array.isArray(criterion.levels) ? criterion.levels : [];

@@ -23,6 +23,8 @@ const submissionRevisionSchema = new Schema({
   correctionStatistics: { type: Schema.Types.Mixed, default: undefined },
   correctionStatus: { type: String },
   correctionSourceHash: { type: String, trim: true },
+  ocrJobId: { type: String, trim: true },
+  correctionJobId: { type: String, trim: true },
   correctionVersion: { type: String, trim: true },
   semanticStatus: { type: String },
   semanticMetrics: { type: Schema.Types.Mixed, default: undefined },
@@ -30,6 +32,9 @@ const submissionRevisionSchema = new Schema({
   assessmentStatus: { type: String },
   assessmentCompletedAt: { type: Date },
   evaluationSourceHash: { type: String, trim: true },
+  evaluationJobId: { type: String, trim: true },
+  assessmentRunId: { type: String, trim: true },
+  analysisInputHash: { type: String, trim: true },
   evaluationRubricSourceHash: { type: String, trim: true },
   evaluationPolicyHash: { type: String, trim: true },
   feedbackSnapshot: { type: Schema.Types.Mixed, default: undefined }

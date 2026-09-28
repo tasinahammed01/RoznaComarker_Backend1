@@ -10,10 +10,12 @@ const { sanitizedAssessmentChain } = require("./services/aiGateway.service");
 const app = require("./app");
 
 let server;
+let assessmentRecoveryWorker;
 
 const { createShutdown } = require('./services/shutdown.service');
 const shutdown = createShutdown({ getServer: () => server,
   closeBrowser: () => pdfBrowserManager.closeBrowser(),
+  stopBackground: () => assessmentRecoveryWorker?.stop(),
   disconnect: () => require('mongoose').disconnect(), logger });
 
 process.on("SIGINT", () => shutdown("SIGINT"));
@@ -33,6 +35,12 @@ process.on("uncaughtException", (err) => {
 
 async function start() {
   await connectDB();
+  require('./services/planEntitlementWorker.service').startPlanEntitlementWorker();
+  if (String(process.env.ASSESSMENT_RECOVERY_ENABLED || 'true').toLowerCase() !== 'false') {
+    assessmentRecoveryWorker = require('./services/assessmentRecovery.service').startAssessmentRecoveryWorker();
+  } else {
+    logger.warn({ event: 'assessment_recovery_disabled' });
+  }
   const pdfEngine = String(process.env.PDF_REPORT_ENGINE || "puppeteer").toLowerCase();
   if (pdfEngine !== "puppeteer") throw new Error("Unsupported PDF_REPORT_ENGINE configuration.");
   pdfBrowserManager.validateBrowserRuntime();

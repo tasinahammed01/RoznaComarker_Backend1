@@ -189,8 +189,21 @@ class PayPalClient {
       headers: { ...(requestId ? { 'PayPal-Request-Id': requestId } : {}), Prefer: 'return=representation' } });
   }
   getCapture(captureId) { return this.request(`/v2/payments/captures/${encodeURIComponent(captureId)}`); }
-  generateClientToken() {
-    return this.request('/v1/identity/generate-token', { method: 'POST', body: {} });
+  async generateClientToken() {
+    this.assertMutationAllowed();
+    const authorization = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64');
+    const response = await this.fetchWithTimeout(`${this.baseUrl}/v1/oauth2/token`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${authorization}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json'
+      },
+      body: 'grant_type=client_credentials&response_type=client_token&intent=sdk_init'
+    });
+    const payload = await responsePayload(response);
+    if (!response.ok || !payload?.access_token) throw normalizedError(response, payload);
+    return { accessToken: payload.access_token, expiresIn: Number(payload.expires_in || 0) };
   }
   verifyWebhookSignature(payload) {
     return this.request('/v1/notifications/verify-webhook-signature', { method: 'POST', body: payload });

@@ -9,6 +9,7 @@ const levelSchema = new Schema({
 }, { _id: false });
 
 const criterionSchema = new Schema({
+  id: { type: String, trim: true },
   name: { type: String, required: true, trim: true },
   weight: { type: Number, required: true },
   levels: { type: [levelSchema], required: true }

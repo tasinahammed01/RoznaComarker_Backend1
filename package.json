@@ -24,7 +24,11 @@
     "verify:credit-packs": "node scripts/verifyCreditPacks.js",
     "pricing:migrate-billing": "node scripts/migrateBillingContracts.js",
     "pricing:migrate-billing:apply": "node scripts/migrateBillingContracts.js --apply --backup-confirmed",
+    "plans:migrate-entitlements": "node scripts/migratePlanEntitlements.js",
+    "plans:migrate-entitlements:apply": "node scripts/migratePlanEntitlements.js --apply --backup-confirmed",
     "students:diagnose-usage": "node scripts/diagnoseStudentUsage.js",
+    "diagnose:assessment": "node scripts/diagnoseAssessment.js",
+    "migrate:assessment-recovery-index": "node scripts/ensureAssessmentRecoveryIndex.js",
     "students:reconcile-usage": "node scripts/reconcileStudentUsage.js"
   },
   "dependencies": {

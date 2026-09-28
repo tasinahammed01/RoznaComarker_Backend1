@@ -79,6 +79,17 @@ describe('PayPal REST client foundation', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  test('generates a browser-safe v6 SDK token without exposing the app access token', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(response(200, { access_token: 'browser-safe-token', expires_in: 900 }));
+    const client = new PayPalClient({ clientId: 'id', clientSecret: 'secret', fetchImpl, logger: {} });
+    await expect(client.generateClientToken()).resolves.toEqual({ accessToken: 'browser-safe-token', expiresIn: 900 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://api-m.sandbox.paypal.com/v1/oauth2/token');
+    expect(fetchImpl.mock.calls[0][1]).toEqual(expect.objectContaining({ method: 'POST',
+      body: 'grant_type=client_credentials&response_type=client_token&intent=sdk_init' }));
+    expect(client.token).toBeNull();
+  });
+
   test('normalizes PayPal API failures without exposing secrets or tokens', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(response(200, { access_token: 'sensitive-access-token', expires_in: 3600 }))

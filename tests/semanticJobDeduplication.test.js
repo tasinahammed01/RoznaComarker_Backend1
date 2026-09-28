@@ -162,7 +162,11 @@ describe('semantic single-flight job lock', () => {
     const transcript = tokens.join(' ');
     const prepared = { sourceHash: 'retained-rubric', semantic: { provider: 'openrouter', model: 'openai/gpt-4.1-mini' } };
     canonicalEvaluation.prepareRubricAssessment.mockResolvedValueOnce(prepared);
-    canonicalEvaluation.persistProvisionalScore.mockRejectedValueOnce(new Error('temporary feedback write failure'));
+    const persistenceError = Object.assign(new Error('temporary feedback write failure'), {
+      name: 'ValidationError', errors: { 'customRubricScores.criteria.0.levelTitle': {} }
+    });
+    canonicalEvaluation.persistProvisionalScore.mockRejectedValueOnce(persistenceError);
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
     semantic.analyze.mockImplementationOnce(async (input) => {
       let cursor = 0;
       const corrections = categoryPlan.flatMap(([category, symbol, count]) => Array.from({ length: count }, () => {
@@ -194,6 +198,16 @@ describe('semantic single-flight job lock', () => {
       submission: expect.objectContaining({ writingCorrections: expect.any(Array) })
     }));
     expect(canonicalEvaluation.generate.mock.calls[0][0].submission.writingCorrections).toHaveLength(46);
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'Provisional score persistence failed after rubric preparation',
+      stage: 'provisional_score_persist', submissionId: 'submission-rubric-handoff',
+      correctionJobId: expect.any(String), evaluationJobId: expect.any(String),
+      errorCode: 'PROVISIONAL_SCORE_PERSIST_FAILED', errorName: 'ValidationError',
+      safeMessage: 'Mongoose validation failed.',
+      validationPaths: ['customRubricScores.criteria.0.levelTitle'], durationMs: expect.any(Number)
+    }));
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('sensitive stack');
+    warn.mockRestore();
   });
 
   test('completed result with the same semantic source key is reused without a provider call', async () => {

@@ -89,6 +89,7 @@ const aiFeedbackSchema = new Schema(
 
  const rubricDesignerCriteriaSchema = new Schema(
    {
+     id: { type: String, trim: true },
      title: { type: String, default: '', trim: true },
      weight: { type: Number, default: undefined },
      cells: { type: [String], default: [] }

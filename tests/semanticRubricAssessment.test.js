@@ -65,6 +65,23 @@ describe('semantic rubric assessment validation', () => {
     expect(prompt).toContain('Evaluate CONTENT, ORGANIZATION, and VOCABULARY independently from customRubric');
   });
 
+  test('custom-rubric response example is neutral and requires level-boundary justification', () => {
+    const request = buildRequest({
+      transcript, corrections, sourceHash: 'hash', assignment: {},
+      customRubric: { criteria: [{ id: 'stable-quality', title: 'Quality', weight: 100,
+        levels: [{ title: 'FIRST_LEVEL_ANCHOR', percentage: 97, description: 'A distinctive top boundary.' },
+          { title: 'SECOND_LEVEL', percentage: 63, description: 'A lower boundary.' }] }] }
+    });
+    const prompt = request.messages.map((item) => item.content).join('\n');
+    const responseExample = prompt.split('\n').find((line) => line.startsWith('response='));
+    expect(responseExample).toContain('<choose exactly one configured level title>');
+    expect(responseExample).toContain('<copy the selected configured level percentage exactly>');
+    expect(responseExample).not.toContain('FIRST_LEVEL_ANCHOR');
+    expect(responseExample).not.toContain('97');
+    expect(prompt).toContain('immediately higher level is not satisfied');
+    expect(prompt).toContain('Do not reveal private chain-of-thought');
+  });
+
   test('accepts the exact configured percentage for the selected custom-rubric level', () => {
     const result = validateAssessment(withCustomCriterion(), {
       sourceHash: 'hash', transcript, corrections, customRubric
@@ -100,6 +117,40 @@ describe('semantic rubric assessment validation', () => {
       levelTitle: 'Excellent', percentage: 100, evidenceIds: [evidence[0].evidenceId]
     }), { sourceHash: 'hash', transcript, corrections, customRubric }).customCriteria[0])
       .toMatchObject({ levelTitle: 'Excellent', percentage: 100 });
+  });
+
+  test('rejects a limited-error language level when authoritative correction density is high', () => {
+    const languageRubric = { criteria: [{ id: 'language-stable', title: 'Grammar and Language Use', weight: 100,
+      levels: [
+        { title: 'Excellent', percentage: 100, description: 'Error-free language throughout.' },
+        { title: 'Good', percentage: 80, description: 'Mostly clear with only a few minor errors.' },
+        { title: 'Developing', percentage: 60, description: 'Frequent errors affect clarity.' }
+      ] }] };
+    const languageCorrections = [...corrections, ...Array.from({ length: 12 }, (_, index) => ({
+      id: `g${index}`, category: 'GRAMMAR', quotedText: `error ${index}`
+    }))];
+    const payload = { ...valid(), customCriteria: [{ criterionId: 'language-stable', percentage: 80,
+      levelTitle: 'Good', comment: 'The writing is mostly clear but has minor errors.',
+      evidenceIds: [evidence[0].evidenceId] }] };
+    expect(() => validateAssessment(payload, { sourceHash: 'hash', transcript,
+      corrections: languageCorrections, customRubric: languageRubric }))
+      .toThrow(expect.objectContaining({ code: 'CUSTOM_RUBRIC_EVIDENCE_CONTRADICTION' }));
+  });
+
+  test('accepts a legitimate Good language level when correction evidence is sparse', () => {
+    const languageRubric = { criteria: [{ id: 'language-stable', title: 'Grammar and Language Use', weight: 100,
+      levels: [
+        { title: 'Excellent', percentage: 100, description: 'Error-free language throughout.' },
+        { title: 'Good', percentage: 80, description: 'Mostly clear with only a few minor errors.' },
+        { title: 'Developing', percentage: 60, description: 'Frequent errors affect clarity.' }
+      ] }] };
+    const payload = { ...valid(), customCriteria: [{ criterionId: 'language-stable', percentage: 80,
+      levelTitle: 'Good', comment: 'The language is clear apart from a small number of issues.',
+      evidenceIds: [evidence[0].evidenceId] }] };
+    const result = validateAssessment(payload, { sourceHash: 'hash', transcript,
+      corrections: [...corrections, { id: 'g1', category: 'GRAMMAR', quotedText: 'has' }],
+      customRubric: languageRubric });
+    expect(result.customCriteria[0]).toMatchObject({ levelTitle: 'Good', percentage: 80 });
   });
 
   test('rejects a custom percentage inconsistent with the selected configured level', () => {

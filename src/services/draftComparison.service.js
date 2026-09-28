@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const Class = require('../models/class.model');
 const Assignment = require('../models/assignment.model');
 const Submission = require('../models/Submission');
@@ -19,25 +20,66 @@ function isAssessed(submission, feedback) {
 
 function categoryScores(feedback) {
   const custom = Array.isArray(feedback?.customRubricScores?.criteria) ? feedback.customRubricScores.criteria : [];
-  if (custom.length) return custom.map((criterion) => ({
-    id: String(criterion.criterionId || '').trim() || null,
-    name: String(criterion.title || '').trim(), key: normalize(criterion.title),
-    score: number(criterion.weightedPoints), maxScore: number(criterion.normalizedWeight ?? criterion.weight), source: 'custom'
-  })).filter((item) => item.name && item.score != null && item.maxScore != null);
+  if (custom.length) {
+    const definitions = Array.isArray(feedback?.sourceRubric?.criteria) ? feedback.sourceRubric.criteria : [];
+    const definitionsById = new Map(definitions.map((criterion) => [String(criterion?.id || ''), criterion]));
+    const definitionsByTitle = new Map(definitions.map((criterion) => [normalize(criterion?.title), criterion]));
+    return custom.map((criterion) => {
+      const id = String(criterion.criterionId || '').trim() || null;
+      const name = String(criterion.title || '').trim();
+      const definition = definitionsById.get(id) || definitionsByTitle.get(normalize(name)) || null;
+      const stableId = Boolean(id && (definition?.idSource === 'persisted' || !/^criterion-\d+$/u.test(id)));
+      const definitionValue = definition ? {
+        title: normalize(definition.title || name),
+        weight: number(definition.weight ?? criterion.normalizedWeight ?? criterion.weight),
+        description: String(definition.description || '').normalize('NFKC').trim(),
+        levels: (definition.levels || []).map((level) => ({
+          title: normalize(level?.title), percentage: number(level?.percentage),
+          description: String(level?.description || '').normalize('NFKC').trim()
+        }))
+      } : null;
+      const semanticFingerprint = definitionValue
+        ? crypto.createHash('sha256').update(JSON.stringify(definitionValue)).digest('hex') : null;
+      const comparisonFingerprint = semanticFingerprint ? crypto.createHash('sha256').update(JSON.stringify({
+        stableCriterionId: stableId ? id : null, semanticFingerprint
+      })).digest('hex') : null;
+      return { id, name, key: normalize(name), score: number(criterion.weightedPoints),
+        maxScore: number(criterion.normalizedWeight ?? criterion.weight), source: 'custom', stableId,
+        semanticFingerprint, comparisonFingerprint };
+    }).filter((item) => item.name && item.score != null && item.maxScore != null);
+  }
   return Object.entries(feedback?.rubricScores || {}).map(([id, item]) => ({
     id, name: id.toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()), key: normalize(id),
-    score: number(item?.score), maxScore: number(item?.maxScore), source: 'built_in'
+    score: number(item?.score), maxScore: number(item?.maxScore), source: 'built_in', stableId: true
   })).filter((item) => item.score != null && item.maxScore != null);
 }
 
 function matchCategories(previousFeedback, currentFeedback) {
   const previous = categoryScores(previousFeedback); const current = categoryScores(currentFeedback);
   const used = new Set(); const rows = [];
+  const indexes = { stableId: new Map(), legacyIdTitle: new Map(), title: new Map() };
+  const add = (map, key, index) => {
+    if (!key) return;
+    const bucket = map.get(key) || { values: [], cursor: 0 };
+    bucket.values.push(index); map.set(key, bucket);
+  };
+  current.forEach((item, index) => {
+    if (item.stableId && item.id) add(indexes.stableId, item.id, index);
+    if (!item.stableId && item.id) add(indexes.legacyIdTitle, `${item.id}|${item.key}`, index);
+    add(indexes.title, item.key, index);
+  });
+  const take = (map, key) => {
+    const bucket = map.get(key);
+    if (!bucket) return -1;
+    while (bucket.cursor < bucket.values.length && used.has(bucket.values[bucket.cursor])) bucket.cursor += 1;
+    return bucket.cursor < bucket.values.length ? bucket.values[bucket.cursor++] : -1;
+  };
   for (const oldItem of previous) {
-    let index = current.findIndex((item, candidateIndex) => !used.has(candidateIndex) && oldItem.id && item.id === oldItem.id
-      && (oldItem.source === 'built_in' || oldItem.key === item.key));
+    let index = oldItem.stableId && oldItem.id ? take(indexes.stableId, oldItem.id) : -1;
     let strategy = 'criterion_id';
-    if (index < 0) { index = current.findIndex((item, candidateIndex) => !used.has(candidateIndex) && oldItem.key && item.key === oldItem.key); strategy = 'normalized_name'; }
+    if (index < 0 && !oldItem.stableId && oldItem.id)
+      index = take(indexes.legacyIdTitle, `${oldItem.id}|${oldItem.key}`);
+    if (index < 0 && !oldItem.stableId) { index = take(indexes.title, oldItem.key); strategy = 'normalized_name'; }
     if (index < 0) {
       rows.push({ categoryId: oldItem.id, name: oldItem.name, previousScore: oldItem.score, currentScore: null,
         delta: null, maxScore: oldItem.maxScore, available: false, reason: 'Criterion is not present in the current rubric.' });
@@ -45,10 +87,16 @@ function matchCategories(previousFeedback, currentFeedback) {
     }
     used.add(index); const next = current[index];
     const compatibleScale = oldItem.maxScore === next.maxScore;
+    const compatibleDefinition = !(oldItem.semanticFingerprint && next.semanticFingerprint)
+      || (oldItem.stableId && next.stableId
+        ? oldItem.comparisonFingerprint === next.comparisonFingerprint
+        : oldItem.semanticFingerprint === next.semanticFingerprint);
+    const available = compatibleScale && compatibleDefinition;
     rows.push({ categoryId: next.id || oldItem.id, name: next.name, previousScore: oldItem.score,
-      currentScore: next.score, delta: compatibleScale ? round(next.score - oldItem.score) : null,
-      maxScore: compatibleScale ? next.maxScore : null, available: compatibleScale, matchStrategy: strategy,
-      ...(!compatibleScale ? { reason: 'Criterion score scale changed between drafts.' } : {}) });
+      currentScore: next.score, delta: available ? round(next.score - oldItem.score) : null,
+      maxScore: available ? next.maxScore : null, available, matchStrategy: strategy,
+      ...(!compatibleScale ? { reason: 'Criterion score scale changed between drafts.' }
+        : !compatibleDefinition ? { reason: 'Criterion definition or configured levels changed between drafts.' } : {}) });
   }
   current.forEach((item, index) => { if (!used.has(index)) rows.push({ categoryId: item.id, name: item.name,
     previousScore: null, currentScore: item.score, delta: null, maxScore: item.maxScore, available: false,

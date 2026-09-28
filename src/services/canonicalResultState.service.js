@@ -19,6 +19,7 @@ function safeErrorCode(error) {
     'SEMANTIC_BUDGET_EXHAUSTED', 'AI_PROVIDER_RESPONSE_INVALID',
     'SEMANTIC_RESPONSE_INVALID', 'SEMANTIC_SOURCE_MISMATCH', 'SEMANTIC_SCHEMA_INVALID', 'SEMANTIC_EVIDENCE_UNGROUNDED',
     'GOOGLE_RESPONSE_EMPTY', 'GOOGLE_RESPONSE_BLOCKED', 'GOOGLE_OUTPUT_TRUNCATED'].includes(explicitCode)
+    || /^OCR_[A-Z0-9_]+$/u.test(explicitCode)
     || /^HTTP_(400|401|402|403|404|408|429|500|502|503|504)$/u.test(explicitCode)) return explicitCode;
   const message = String(error || '').toLowerCase();
   if (!message) return null;
@@ -31,15 +32,16 @@ function safeErrorCode(error) {
 }
 
 function buildCanonicalResultState({ submission = {}, feedback = null, currentSettings = null } = {}) {
+  const ocrFailed = submission.ocrStatus === 'failed';
   const storedCorrectionStatus = String(submission.correctionStatus || 'pending');
   const layoutCurrent = !submission.correctionSourceHash
     || submission.correctionTranscriptLayoutVersion === CANONICAL_TRANSCRIPT_LAYOUT_VERSION;
-  const correctionStatus = layoutCurrent ? storedCorrectionStatus : 'stale';
+  const correctionStatus = ocrFailed ? 'failed' : (layoutCurrent ? storedCorrectionStatus : 'stale');
   const corrections = layoutCurrent && Array.isArray(submission.writingCorrections) ? submission.writingCorrections : [];
   const sourceCounts = countSources(corrections);
   const semanticComplete = layoutCurrent && (submission.semanticStatus === 'completed' || (!submission.semanticStatus && correctionStatus === 'completed'));
   const semanticPartial = layoutCurrent && submission.semanticStatus === 'partial';
-  const semanticFailed = !layoutCurrent || submission.semanticStatus === 'failed'
+  const semanticFailed = ocrFailed || !layoutCurrent || submission.semanticStatus === 'failed'
     || (!submission.semanticStatus && ['partial', 'failed', 'stale'].includes(correctionStatus));
   const statistics = layoutCurrent ? (submission.correctionStatistics || null) : null;
   const semanticCoverage = submission.semanticMetrics?.coverage || null;
@@ -61,7 +63,7 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
   const correctionProcessing = correctionStatus === 'processing';
   const correctionPending = ['pending', 'processing'].includes(correctionStatus);
   const persistedEvaluationStatus = String(submission.evaluationStatus || 'pending');
-  const semanticStatus = layoutCurrent
+  const semanticStatus = ocrFailed ? 'failed' : layoutCurrent
     ? submission.semanticStatus || (correctionProcessing ? 'processing' : semanticComplete ? 'completed' : semanticFailed ? 'failed' : 'pending')
     : 'failed';
   const semanticProcessing = ['pending', 'processing', 'retry_wait'].includes(semanticStatus);
@@ -118,9 +120,9 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
     : detailedCurrent
     ? String(feedback?.detailedFeedback?.status || 'completed')
     : feedback?.detailedFeedback ? 'stale' : 'blocked';
-  const processingActive = ['pending', 'processing'].includes(String(submission.ocrStatus || 'completed'))
-    || correctionPending || semanticProcessing || evaluationProcessing;
-  const terminal = !processingActive && (teacherOverride || evaluationCurrent || semanticFailed
+  const processingActive = !ocrFailed && (['pending', 'processing'].includes(String(submission.ocrStatus || 'completed'))
+    || correctionPending || semanticProcessing || evaluationProcessing);
+  const terminal = !processingActive && (teacherOverride || evaluationCurrent || ocrFailed || semanticFailed
     || ['failed', 'stale'].includes(evaluationStatus));
   const automaticPollingAllowed = processingActive && !terminal;
   const semanticErrorCode = submission.semanticErrorCode || safeErrorCode(submission.correctionError);
@@ -158,6 +160,8 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
   const requiresCanonicalReevaluation = evaluationFreshness.startsWith('stale_');
 
   return {
+    ocrStatus: submission.ocrStatus || null,
+    ocrErrorCode: submission.ocrErrorCode || null,
     correctionStatus,
     correctionCurrent: layoutCurrent,
     transcriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,

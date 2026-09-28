@@ -3,7 +3,8 @@
 function pendingAnalysisState({ ocrJobId, now = new Date() }) {
   return {
     ocrStatus: 'pending', ocrJobId, ocrText: undefined, rawOcrText: undefined,
-    rawCombinedOcrText: undefined, ocrError: undefined, ocrData: undefined, ocrPages: [],
+    rawCombinedOcrText: undefined, ocrError: undefined, ocrErrorCode: undefined,
+    ocrFailures: undefined, ocrData: undefined, ocrPages: [],
     combinedOcrText: undefined, transcriptText: undefined, rawTranscriptText: undefined,
     ocrUpdatedAt: now,
     writingCorrections: [], correctionStatistics: undefined, correctionStatus: 'pending',
@@ -21,7 +22,9 @@ function pendingAnalysisState({ ocrJobId, now = new Date() }) {
     evaluationErrorCode: undefined, evaluationAttempts: undefined, evaluationDiagnostics: undefined,
     evaluationError: undefined, evaluationUpdatedAt: undefined,
     assessmentRunId: undefined, assessmentStatus: 'started', assessmentCompletedAt: undefined,
-    assessmentErrorCode: undefined
+    assessmentErrorCode: undefined,
+    analysisLeaseOwner: undefined, analysisLeaseExpiresAt: undefined,
+    analysisAttempt: 0, analysisNextRetryAt: undefined, analysisErrorCode: undefined
   };
 }
 

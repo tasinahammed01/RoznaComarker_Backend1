@@ -37,6 +37,7 @@ function repairAiRubric(data) {
     }
 
     return {
+      ...(c?.id ? { id: String(c.id) } : {}),
       title: String((c && (c.title || c.name)) || "Criteria"),
       weight: Number(c && c.weight),
       cells: cells.map((x) => String(x))

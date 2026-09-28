@@ -2,6 +2,7 @@ const express = require('express');
 
 const subscriptionController = require('../controllers/subscription.controller');
 const paypalSubscriptionController = require('../controllers/paypalSubscription.controller');
+const paypalPlanPurchaseController = require('../controllers/paypalPlanPurchase.controller');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { requireRole } = require('../middlewares/role.middleware');
 
@@ -35,6 +36,21 @@ const router = express.Router();
  */
 router.get('/me', verifyJwtToken, subscriptionController.getMySubscription);
 router.get('/checkout-plan', verifyJwtToken, requireRole('teacher'), subscriptionController.getCheckoutPlan);
+const prepaidBody = [body('planCode').isString().trim().isLength({ min: 1, max: 80 }),
+  body('billingPeriod').isIn(['monthly', 'annual']), body('checkoutAttemptId').isUUID(4),
+  body().custom(value => Object.keys(value || {}).every(key => ['planCode', 'billingPeriod', 'checkoutAttemptId'].includes(key))),
+  body('price').not().exists(), body('currency').not().exists(), body('features').not().exists(), body('credits').not().exists()];
+router.post('/paypal/orders/create', verifyJwtToken, requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'paypal_plan_order' }),
+  prepaidBody, handleValidationResult, paypalPlanPurchaseController.create);
+router.post('/paypal/orders/capture', verifyJwtToken, requireRole('teacher'), body('checkoutAttemptId').isUUID(4),
+  body().custom(value => Object.keys(value || {}).every(key => key === 'checkoutAttemptId')),
+  handleValidationResult, paypalPlanPurchaseController.capture);
+router.post('/paypal/orders/cancel', verifyJwtToken, requireRole('teacher'), body('checkoutAttemptId').isUUID(4),
+  body().custom(value => Object.keys(value || {}).every(key => key === 'checkoutAttemptId')),
+  handleValidationResult, paypalPlanPurchaseController.cancel);
+router.get('/paypal/orders/:attemptId', verifyJwtToken, requireRole('teacher'), require('express-validator').param('attemptId').isUUID(4),
+  handleValidationResult, paypalPlanPurchaseController.status);
 router.post(
   '/paypal/create',
   verifyJwtToken,
@@ -173,6 +189,8 @@ router.post(
   body('planId').optional({ nullable: true }).isString(),
   body('planName').optional({ nullable: true }).isString(),
   body('startedAt').optional({ nullable: true }).isString(),
+  body('endsAt').optional({ nullable: true }).isISO8601(),
+  body('reason').optional().isString().trim().isLength({ min: 1, max: 500 }),
   handleValidationResult,
   subscriptionController.setUserSubscription
 );

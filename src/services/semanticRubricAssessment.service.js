@@ -5,8 +5,10 @@ const logger = require('../utils/logger');
 const { getSemanticAIConfig, getSemanticAIConfigStatus, runSemanticCompletion } = require('./semanticAIClient.service');
 const { promptDefinitions } = require('./writingCategoryDefinitions.service');
 const { semanticRubricAssessmentSchema, MAX_RUBRIC_EVIDENCE_IDS } = require('./structuredOutputSchemas.service');
+const { buildCorrectionEvidenceIndex, evidenceRelevantToCriterion, contradictionForSelection,
+  relevantCorrectionCategories } = require('./customRubricEvidence.service');
 
-const PROMPT_VERSION = 'semantic-rubric-assessment-v7-fixed-skill-isolation';
+const PROMPT_VERSION = 'semantic-rubric-assessment-v9-conservative-transcript-relevance';
 const SCHEMA_VERSION = 'semantic-rubric-assessment-json-v5';
 const SEMANTIC_CATEGORIES = ['CONTENT', 'ORGANIZATION', 'VOCABULARY'];
 const DEGRADED_CATEGORIES = [...SEMANTIC_CATEGORIES, 'GRAMMAR', 'MECHANICS'];
@@ -144,9 +146,10 @@ function buildRequest(input) {
   })) };
   if (customCriteria.length) response.customCriteria = customCriteria.map((criterion) => ({
     criterionId: criterion.id,
-    percentage: Number(criterion.levels?.[0]?.percentage ?? 0),
-    levelTitle: String(criterion.levels?.[0]?.title || 'exact rubric level title'),
-    comment: 'Evidence-grounded criterion judgment', evidenceIds: evidenceCatalog.length ? ['exact evidence ID'] : []
+    percentage: '<copy the selected configured level percentage exactly>',
+    levelTitle: '<choose exactly one configured level title>',
+    comment: '<concise evidence-grounded justification, including why the next higher level is not met>',
+    evidenceIds: evidenceCatalog.length ? ['<valid evidence ID copied from evidenceCatalog>'] : []
   }));
   const prompt = [
     `schema=${SCHEMA_VERSION};prompt=${PROMPT_VERSION}`,
@@ -169,6 +172,8 @@ function buildRequest(input) {
     policy.checks.coherenceLogic === false
       ? 'CUSTOM_RUBRIC_POLICY: For every custom criterion, do not deduct specifically for organization, coherence, flow, transitions, or logical sequencing.'
       : 'CUSTOM_RUBRIC_POLICY: Coherence and organization evidence may be considered when relevant to a custom criterion.',
+    'CUSTOM_RUBRIC_LEVEL_SELECTION: For each custom criterion, compare the submission against every configured level description. Select exactly one configured level. The concise comment must state what criterion-relevant evidence supports the selected level and, unless it is the highest configured level, what specific requirement of the immediately higher level is not satisfied. If selecting the lowest level, state what evidence prevents a higher level. Do not reveal private chain-of-thought or provide lengthy reasoning. Evidence must relate directly to that criterion; do not use spelling evidence to justify organization, or unrelated mechanics evidence to justify content.',
+    'CUSTOM_RUBRIC_RESPONSE_NOTE: Angle-bracket values in the response example are neutral placeholders, never literal output. The actual JSON must use an exact configured levelTitle, its exact numeric percentage, a concise comment, and valid evidence IDs.',
     'FIXED_CATEGORY_ISOLATION: Evaluate CONTENT, ORGANIZATION, and VOCABULARY independently from customRubric. The presence, absence, names, weights, levels, and wording of custom criteria must not change any fixed-category score or evidence judgment. Custom criteria are a separate overall-grading view only.',
     input.includeLanguageCategories
       ? 'Assess CONTENT, ORGANIZATION, VOCABULARY, GRAMMAR, and MECHANICS directly from the complete transcript. Canonical corrections are unavailable, which is not evidence of error-free writing. Use transcript evidence for every deduction. Do not calculate Presentation or an overall score. Return strict JSON only, repeat sourceHash exactly, and return scores from 0 to 20 with maxScore exactly 20.'
@@ -239,7 +244,7 @@ function assertQuote(transcript, quote, occurrence, path) {
   return value;
 }
 
-function validateAssessment(parsed, { sourceHash, transcript, corrections = [], contextStatus = 'none', evidenceCatalog = null,
+function validateAssessment(parsed, { submissionId = null, sourceHash, transcript, corrections = [], contextStatus = 'none', evidenceCatalog = null,
   transcriptComplete = true, customRubric = null, assessedCategories = SEMANTIC_CATEGORIES }) {
   if (!parsed || typeof parsed !== 'object' || parsed.sourceHash !== sourceHash)
     throw semanticRubricError('SEMANTIC_RUBRIC_SOURCE_MISMATCH', 'Semantic rubric assessment source hash mismatch',
@@ -252,6 +257,7 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
   const correctionMap = new Map((corrections || []).map((item) => [String(item.id), item]));
   const transcriptCatalog = evidenceCatalog || transcriptEvidenceCatalog(transcript);
   const evidenceMap = new Map(transcriptCatalog.map((item) => [item.evidenceId, item]));
+  const correctionEvidenceIndex = buildCorrectionEvidenceIndex(corrections, transcript);
   const validated = {};
   const commentNormalizations = [];
   const seenEvidence = new Set();
@@ -390,6 +396,7 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
     const returnedCustom = Array.isArray(parsed.customCriteria) ? parsed.customCriteria : [];
     const configuredIds = new Set(customRubric.criteria.map((criterion) => criterion.id));
     const returnedIds = new Set();
+    const returnedById = new Map();
     for (const item of returnedCustom) {
       const criterionId = String(item?.criterionId || '');
       if (!configuredIds.has(criterionId))
@@ -399,9 +406,10 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
         throw semanticRubricError('CUSTOM_RUBRIC_CRITERION_DUPLICATE', 'Custom rubric response contains a duplicate criterion',
           'schema_validation', `customCriteria.${criterionId}.criterionId`);
       returnedIds.add(criterionId);
+      returnedById.set(criterionId, item);
     }
     for (const criterion of customRubric.criteria) {
-      const item = returnedCustom.find((candidate) => candidate?.criterionId === criterion.id);
+      const item = returnedById.get(criterion.id);
       if (!item)
         throw semanticRubricError('CUSTOM_RUBRIC_ASSESSMENT_INCOMPLETE', 'Custom rubric criterion assessment is missing',
           'score_validation', `customCriteria.${criterion.id}`);
@@ -421,24 +429,42 @@ function validateAssessment(parsed, { sourceHash, transcript, corrections = [], 
             expectedPercentage: configuredLevel.percentage,
             actualPercentage: item.percentage
           });
-      const evidence = (Array.isArray(item.evidenceIds) ? item.evidenceIds : []).map((id) => evidenceMap.get(String(id))).filter(Boolean);
+      const customEvidenceIds = Array.isArray(item.evidenceIds) ? item.evidenceIds : [];
+      const evidence = customEvidenceIds.map((id) => {
+        const resolved = evidenceMap.get(String(id));
+        if (!resolved) throw semanticRubricError('CUSTOM_RUBRIC_EVIDENCE_ID_INVALID',
+          'Custom rubric referenced an unknown transcript evidence ID', 'evidence_validation',
+          `customCriteria.${criterion.id}.evidenceIds`);
+        return resolved;
+      });
       if (!evidence.length)
         throw semanticRubricError('CUSTOM_RUBRIC_EVIDENCE_REQUIRED', 'Every custom rubric level requires transcript evidence',
           'evidence_validation', `customCriteria.${criterion.id}.evidenceIds`);
+      const relevance = evidenceRelevantToCriterion(criterion, evidence);
+      logger.debug({ message: 'Custom rubric evidence classification', submissionId, criterionId: criterion.id,
+        criterionDimensions: relevance.dimensions, evidenceIds: customEvidenceIds,
+        evidenceType: 'transcript', relevanceClassification: relevance.classification, reasonCode: relevance.reasonCode });
+      if (relevance.classification === 'IRRELEVANT')
+        throw semanticRubricError('CUSTOM_RUBRIC_EVIDENCE_IRRELEVANT', relevance.reason,
+          'consistency_validation', `customCriteria.${criterion.id}.evidenceIds`, {
+            dimensions: relevance.dimensions, reasonCode: relevance.reasonCode });
       if (configuredLevel.percentage === 100) {
-        const criterionText = `${criterion.title || ''} ${criterion.description || ''}`.toLowerCase();
-        const relevantCategories = [];
-        if (/grammar|accuracy|sentence|clarity|style/.test(criterionText)) relevantCategories.push('GRAMMAR', 'MECHANICS');
-        if (/vocab|word|language|clarity|style/.test(criterionText)) relevantCategories.push('VOCABULARY');
-        if (/organi|coher|flow|structure/.test(criterionText)) relevantCategories.push('ORGANIZATION');
-        if (/content|idea|evidence|argument/.test(criterionText)) relevantCategories.push('CONTENT');
-        const relevantIssueCount = corrections.filter((correction) => relevantCategories.includes(
-          String(correction?.canonicalCategory || correction?.category || '').toUpperCase())).length;
+        const relevantCategories = relevantCorrectionCategories(criterion);
+        const relevantIssueCount = correctionEvidenceIndex.count(relevantCategories);
         if (relevantCategories.length && relevantIssueCount >= 3)
           throw semanticRubricError('CUSTOM_RUBRIC_EVIDENCE_CONTRADICTION',
             'A perfect custom rubric level contradicts authoritative writing evidence',
             'consistency_validation', `customCriteria.${criterion.id}`, { relevantIssueCount, relevantCategories });
       }
+      const contradiction = contradictionForSelection({ criterion, level: configuredLevel,
+        correctionIndex: correctionEvidenceIndex });
+      if (contradiction)
+        throw semanticRubricError('CUSTOM_RUBRIC_EVIDENCE_CONTRADICTION', contradiction.reason,
+          'consistency_validation', `customCriteria.${criterion.id}`, {
+            relevantIssueCount: contradiction.count,
+            relevantIssueDensityPer100Words: Math.round(Number(contradiction.density || 0) * 100) / 100,
+            highImpactIssueCount: contradiction.highImpact || 0
+          });
       customCriteria.push({ criterionId: criterion.id, percentage: configuredLevel.percentage,
         levelTitle: item.levelTitle, comment: clean(item.comment, 500), evidence });
     }
@@ -460,7 +486,7 @@ async function assess(input, dependencies = {}) {
     const validationStartedAt = Date.now();
     try {
       return validateAssessment(normalizeAssessmentContract(parseJson(content)), {
-        sourceHash: input.sourceHash, transcript: input.transcript,
+        submissionId: input.submissionId, sourceHash: input.sourceHash, transcript: input.transcript,
         corrections: input.corrections, contextStatus: request.contextStatus, evidenceCatalog: request.evidenceCatalog,
         transcriptComplete: input.transcriptComplete === true, customRubric: input.customRubric,
         assessedCategories: request.assessedCategories

@@ -15,6 +15,7 @@ const SubmissionFeedback = require('../src/models/SubmissionFeedback');
 const SubmissionRevision = require('../src/models/SubmissionRevision');
 const CreditTransaction = require('../src/models/CreditTransaction');
 const comparison = require('../src/services/draftComparison.service');
+const { captureCurrentRevision } = require('../src/services/submissionRevision.service');
 const { connectInMemoryMongo, disconnectInMemoryMongo, clearDatabase } = require('./helpers/testServer');
 const { signTestJwt } = require('./helpers/auth');
 const { seedTestPlans } = require('./helpers/seedTestPlans');
@@ -63,13 +64,55 @@ describe('deterministic draft comparison', () => {
 
   test('uses normalized-name fallback only when legitimate', () => {
     const rows = comparison.matchCategories({ customRubricScores: { criteria: [
-      { criterionId: 'old', title: 'Evidence & Support', weightedPoints: 12, normalizedWeight: 20 }
+      { criterionId: 'criterion-1', title: 'Evidence & Support', weightedPoints: 12, normalizedWeight: 20 }
     ] } }, { customRubricScores: { criteria: [
-      { criterionId: 'new', title: 'Evidence and Support', weightedPoints: 16, normalizedWeight: 20 },
-      { criterionId: 'same-name', title: 'Evidence & Support', weightedPoints: 15, normalizedWeight: 20 }
+      { criterionId: 'criterion-1', title: 'Different criterion', weightedPoints: 16, normalizedWeight: 20 },
+      { criterionId: 'criterion-2', title: 'Evidence & Support', weightedPoints: 15, normalizedWeight: 20 }
     ] } });
     expect(rows.find((row) => row.available)?.matchStrategy).toBe('normalized_name');
     expect(rows.find((row) => row.available)?.delta).toBe(3);
+  });
+
+  test('does not title-match distinct stable criterion IDs', () => {
+    const rows = comparison.matchCategories({ customRubricScores: { criteria: [
+      { criterionId: 'stable-old', title: 'Evidence', weightedPoints: 12, normalizedWeight: 20 }
+    ] } }, { customRubricScores: { criteria: [
+      { criterionId: 'stable-new', title: 'Evidence', weightedPoints: 15, normalizedWeight: 20 }
+    ] } });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.available === false)).toBe(true);
+  });
+
+  test('invalidates category comparison when a configured level definition changes', () => {
+    const definition = (description) => ({ criteria: [{ id: 'evidence-stable', idSource: 'persisted',
+      title: 'Evidence', description: 'Use relevant support.', weight: 20,
+      levels: [{ title: 'Good', percentage: 80, description }] }] });
+    const scored = { criteria: [{ criterionId: 'evidence-stable', title: 'Evidence', weightedPoints: 16, normalizedWeight: 20 }] };
+    const rows = comparison.matchCategories(
+      { sourceRubric: definition('Uses relevant evidence.'), customRubricScores: scored },
+      { sourceRubric: definition('Uses multiple precise quotations.'), customRubricScores: scored }
+    );
+    expect(rows).toEqual([expect.objectContaining({ categoryId: 'evidence-stable', available: false, delta: null,
+      reason: 'Criterion definition or configured levels changed between drafts.' })]);
+  });
+
+  test('keeps category comparison available when the full definition fingerprint is unchanged after reordering', () => {
+    const criterion = (id, title, weight) => ({ id, idSource: 'persisted', title, description: `${title} description`, weight,
+      levels: [{ title: 'Good', percentage: 80, description: `${title} good boundary` }] });
+    const previous = { sourceRubric: { criteria: [criterion('evidence-stable', 'Evidence', 60), criterion('style-stable', 'Style', 40)] },
+      customRubricScores: { criteria: [
+        { criterionId: 'evidence-stable', title: 'Evidence', weightedPoints: 42, normalizedWeight: 60 },
+        { criterionId: 'style-stable', title: 'Style', weightedPoints: 28, normalizedWeight: 40 }
+      ] } };
+    const current = { sourceRubric: { criteria: [criterion('style-stable', 'Style', 40), criterion('evidence-stable', 'Evidence', 60)] },
+      customRubricScores: { criteria: [
+        { criterionId: 'style-stable', title: 'Style', weightedPoints: 32, normalizedWeight: 40 },
+        { criterionId: 'evidence-stable', title: 'Evidence', weightedPoints: 48, normalizedWeight: 60 }
+      ] } };
+    expect(comparison.matchCategories(previous, current)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ categoryId: 'evidence-stable', available: true, delta: 6 }),
+      expect.objectContaining({ categoryId: 'style-stable', available: true, delta: 4 })
+    ]));
   });
 
   test('marks renamed, added, removed, and changed-scale criteria unavailable', () => {
@@ -214,5 +257,40 @@ describe('draft comparison APIs and authorization', () => {
     expect(result.size).toBe(2); expect(submissionFind).toHaveBeenCalledTimes(1); expect(revisionFind).toHaveBeenCalledTimes(1);
     expect(assignmentFind).toHaveBeenCalledTimes(1);
     submissionFind.mockRestore(); revisionFind.mockRestore(); assignmentFind.mockRestore();
+  });
+
+  test('revision capture is immutable and retains evaluation provenance', async () => {
+    submission.ocrJobId = 'ocr-job-1';
+    submission.correctionJobId = 'correction-job-1';
+    submission.evaluationJobId = 'evaluation-job-1';
+    submission.assessmentRunId = 'assessment-run-1';
+    submission.transcriptText = 'Original source text.';
+    await submission.save();
+    const originalCustomScores = { overallScore: 77, criteria: [{ criterionId: 'stable-evidence',
+      title: 'Evidence', selectedLevel: 'Good', weightedPoints: 77,
+      evidence: [{ evidenceId: 'sentence-1', quotedText: 'Original source text.' }] }] };
+    await SubmissionFeedback.updateOne({ submissionId: submission._id }, {
+      $set: { analysisInputHash: 'analysis-hash-1', overallScore: 77,
+        customRubricScores: originalCustomScores, teacherComments: 'Original teacher comment.',
+        detailedFeedback: { strengths: ['Original evidence-grounded strength.'], areasForImprovement: [], actionSteps: [] } }
+    });
+
+    await captureCurrentRevision(submission);
+    await SubmissionFeedback.updateOne({ submissionId: submission._id }, {
+      $set: { analysisInputHash: 'analysis-hash-2', overallScore: 90,
+        customRubricScores: { overallScore: 90, criteria: [] }, teacherComments: 'Replacement comment.',
+        detailedFeedback: { strengths: ['Replacement strength.'], areasForImprovement: [], actionSteps: [] } }
+    });
+    await Submission.updateOne({ _id: submission._id }, {
+      $set: { transcriptText: 'Replacement source text.', evaluationJobId: 'evaluation-job-2' }
+    });
+
+    const revision = await SubmissionRevision.findOne({ sourceSubmissionId: submission._id, draftNumber: 2 }).lean();
+    expect(revision).toMatchObject({ transcriptText: 'Original source text.', ocrJobId: 'ocr-job-1',
+      correctionJobId: 'correction-job-1', evaluationJobId: 'evaluation-job-1',
+      assessmentRunId: 'assessment-run-1', analysisInputHash: 'analysis-hash-1' });
+    expect(revision.feedbackSnapshot).toMatchObject({ overallScore: 77, customRubricScores: originalCustomScores,
+      teacherComments: 'Original teacher comment.', analysisInputHash: 'analysis-hash-1',
+      detailedFeedback: { strengths: ['Original evidence-grounded strength.'] } });
   });
 });

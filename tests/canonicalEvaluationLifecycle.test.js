@@ -12,7 +12,7 @@ jest.mock('../src/models/SubmissionFeedback', () => ({ findOneAndUpdate: mockFin
 jest.mock('../src/models/class.model', () => ({ findById: jest.fn(() => ({ select: () => ({ lean: mockClassLean }) })) }));
 jest.mock('../src/models/user.model', () => ({ findById: jest.fn(() => ({ select: () => ({ lean: jest.fn().mockResolvedValue(null) }) })) }));
 jest.mock('../src/services/semanticRubricAssessment.service', () => ({
-  PROMPT_VERSION: 'semantic-rubric-assessment-v7-fixed-skill-isolation',
+  PROMPT_VERSION: 'semantic-rubric-assessment-v8-neutral-level-boundary-evidence',
   SCHEMA_VERSION: 'semantic-rubric-assessment-json-v5',
   assess: mockAssess
 }));
@@ -180,7 +180,7 @@ describe('canonical evaluation write guards', () => {
       policyHash: require('../src/services/teacherEvaluationPolicy.service').evaluationPolicyHash(null),
       rubricHash: require('../src/services/canonicalEvaluation.service').hashRubric(assignment),
       customRubricStatus: 'absent',
-      promptVersion: 'semantic-rubric-assessment-v7-fixed-skill-isolation',
+      promptVersion: 'semantic-rubric-assessment-v8-neutral-level-boundary-evidence',
       schemaVersion: 'semantic-rubric-assessment-json-v5'
     };
     const corrections = (grammarCount, mechanicsCount) => [
@@ -325,6 +325,47 @@ describe('canonical evaluation write guards', () => {
     expect(persisted.overallScore).toBe(60);
     expect(persisted.scoringAudit).toMatchObject({ builtInScoresReused: true,
       builtInContextHash: canonical.hashBuiltInContext(assignment) });
+  });
+
+  test('a changed source performs a fresh custom-rubric evaluation with new evidence and identity', async () => {
+    const record = submission(true);
+    record.value.correctionSourceHash = 'source-B';
+    record.value.evaluationSourceHash = 'source-A';
+    record.value.evaluationStatus = 'completed';
+    const assignment = { title: 'Essay', rubrics: { totalPoints: 100, criteria: [{
+      id: 'quality-stable', name: 'Quality', weight: 100, levels: [
+        { title: 'Excellent', score: 100, description: 'Excellent supported response.' },
+        { title: 'Good', score: 80, description: 'Good supported response.' }
+      ]
+    }] } };
+    const previous = {
+      evaluationSourceHash: 'source-A', evaluationJobId: 'old-job', analysisInputHash: 'old-analysis-hash',
+      evaluationStatus: 'completed', overriddenByTeacher: false,
+      customRubricScores: { overallScore: 80, criteria: [{ criterionId: 'quality-stable',
+        selectedLevel: 'Good', evidence: [{ evidenceId: 'old-evidence' }] }] }
+    };
+    mockFindOne.mockReturnValue({ lean: jest.fn().mockResolvedValue(previous) });
+    const freshSemantic = { ...await mockAssess(), sourceHash: 'source-B', customCriteria: [{
+      criterionId: 'quality-stable', percentage: 100, levelTitle: 'Excellent',
+      comment: 'Fresh source evidence crosses the configured boundary.',
+      evidence: [{ evidenceId: 'new-evidence', quotedText: 'Essay text.' }]
+    }] };
+    mockAssess.mockClear();
+    mockAssess.mockResolvedValueOnce(freshSemantic);
+
+    const result = await generate({ submission: record.value, assignment });
+    const persisted = mockFindOneAndUpdate.mock.calls.at(-1)[1].$set;
+
+    expect(mockAssess).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ status: 'completed', sourceHash: 'source-B',
+      assessmentRunId: expect.any(String) });
+    expect(result.assessmentRunId).not.toBe('old-job');
+    expect(persisted).toMatchObject({ evaluationSourceHash: 'source-B',
+      customRubricScores: { overallScore: 100, criteria: [expect.objectContaining({
+        criterionId: 'quality-stable', selectedLevel: 'Excellent',
+        evidence: [{ evidenceId: 'new-evidence', quotedText: 'Essay text.' }]
+      })] }, scoringAudit: { builtInScoresReused: false } });
+    expect(persisted.analysisInputHash).not.toBe(previous.analysisInputHash);
   });
 
   test('old evaluation versions are recomputed even when correction hash is unchanged', async () => {

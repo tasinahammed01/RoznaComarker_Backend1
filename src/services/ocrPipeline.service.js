@@ -13,7 +13,16 @@ const canonicalCorrectionsPipeline = require('./canonicalCorrectionsPipeline.ser
 
 function toAbsoluteStoredPath(storedPath) {
   if (!storedPath || typeof storedPath !== 'string') return null;
-  return path.join(__dirname, '..', '..', storedPath);
+  const root = path.resolve(__dirname, '..', '..');
+  const resolved = path.resolve(root, storedPath);
+  return resolved === root || resolved.startsWith(`${root}${path.sep}`) ? resolved : null;
+}
+
+function safeOcrFailure(error, fallbackCode = 'OCR_PROVIDER_FAILED') {
+  const code = typeof error?.code === 'string' && /^OCR_[A-Z0-9_]+$/u.test(error.code)
+    ? error.code : fallbackCode;
+  return { code, message: String(error?.safeMessage || 'OCR could not process this file.').slice(0, 300),
+    retryable: error?.retryable === true };
 }
 
 async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
@@ -63,7 +72,9 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
         message: 'OCR skipped: file doc not found or missing path',
         fileId: String(fileId)
       });
-      return null;
+      return { ok: false, fileId, fileOrder, failure: {
+        code: 'OCR_FILE_NOT_FOUND', message: 'The uploaded file record is unavailable.', retryable: false
+      } };
     }
 
     const absolute = toAbsoluteStoredPath(fileDoc.path);
@@ -73,31 +84,34 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
         fileId: String(fileId),
         storedPath: fileDoc.path
       });
-      return null;
+      return { ok: false, fileId, fileOrder, failure: {
+        code: 'OCR_FILE_NOT_FOUND', message: 'The uploaded file path is invalid.', retryable: false
+      } };
     }
 
     if (!fs.existsSync(absolute)) {
       logger.error({
         message: 'OCR skipped: uploaded file not found on disk',
         fileId: String(fileId),
-        storedPath: fileDoc.path,
-        absolutePath: absolute,
-        cwd: process.cwd()
+        storedPath: fileDoc.path
       });
-      return null;
+      return { ok: false, fileId, fileOrder, failure: {
+        code: 'OCR_FILE_NOT_FOUND', message: 'The uploaded file is unavailable on the server.', retryable: false
+      } };
     }
 
     let ocr;
     try {
       ocr = await visionOcr.extractOcrFromImageFile(absolute);
     } catch (err) {
+      const failure = safeOcrFailure(err);
       logger.error({
         message: 'OCR provider failed for uploaded file',
         fileId: String(fileId),
-        error: err && err.message ? String(err.message) : 'Unknown OCR provider error',
-        stack: err && err.stack
+        errorCode: failure.code,
+        retryable: failure.retryable
       });
-      return null;
+      return { ok: false, fileId, fileOrder, failure };
     }
     const rawText = ocr && (ocr.fullText || ocr.transcriptText) ? String(ocr.fullText || ocr.transcriptText) : '';
     // Vision's native full text owns semantic reading order. Word geometry is
@@ -152,7 +166,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
       })
       .filter(Boolean);
 
-    return { fileOrder, text, rawText, words, pages: pages.length ? pages : [{
+    return { ok: true, fileId, fileOrder, text, rawText, words, pages: pages.length ? pages : [{
         fileId,
         fileOrder,
         pageNumber: 1,
@@ -162,7 +176,10 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
         words
       }] };
   }));
-  const completedResults = results.filter(Boolean).sort((a, b) => a.fileOrder - b.fileOrder);
+  const completedResults = results.filter(result => result?.ok).sort((a, b) => a.fileOrder - b.fileOrder);
+  const failures = results.filter(result => result && !result.ok).map(result => ({
+    fileId: String(result.fileId), fileOrder: result.fileOrder, ...result.failure
+  })).sort((a, b) => a.fileOrder - b.fileOrder);
   const processed = completedResults.length;
   const ocrPages = completedResults.flatMap((result) => result.pages)
     .sort((a, b) => a.fileOrder - b.fileOrder || a.pageIndex - b.pageIndex);
@@ -174,10 +191,8 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
   const legacyFirstOcrWords = firstResult?.words || [];
 
   if (!processed || !ocrPages.length) {
-    const msg =
-      attempted && !processed
-        ? 'OCR failed: uploaded file(s) not found on disk. Check UPLOAD_BASE_PATH, working directory, and filesystem permissions on the VPS.'
-        : 'OCR failed: no OCR pages were produced. Check OCR credentials/dependencies and file validity.';
+    const primaryFailure = failures[0] || { code: 'OCR_TEXT_EMPTY', message: 'OCR produced no readable text.' };
+    const msg = primaryFailure.message;
 
     logger.error({
       message: 'OCR failed for all uploaded files',
@@ -189,6 +204,8 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
     if (!(await isCurrentJob())) return { ocrStatus: 'superseded' };
     targetDoc.ocrStatus = 'failed';
     targetDoc.ocrError = msg;
+    targetDoc.ocrErrorCode = primaryFailure.code;
+    targetDoc.ocrFailures = failures;
     targetDoc.ocrUpdatedAt = new Date();
     if (!(await saveCurrentJob())) return { ocrStatus: 'superseded' };
 
@@ -212,10 +229,22 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
     .map((t) => (typeof t === 'string' ? t.trim() : ''))
     .filter(Boolean)
     .join('\n\n');
+  targetDoc.ocrFailures = failures;
   const canonicalTranscript = buildCanonicalSubmissionTranscript(targetDoc);
   const transcriptQuality = assessCanonicalTranscriptQuality(canonicalTranscript);
   if (!transcriptQuality.reliable) {
+    if (transcriptQuality.code === 'OCR_READING_ORDER_UNRELIABLE' && canonicalTranscript.text.trim()) {
+      targetDoc.ocrStatus = 'completed';
+      targetDoc.ocrErrorCode = 'OCR_LAYOUT_DEGRADED';
+      targetDoc.ocrError = 'Transcription completed, but some image annotations may be unavailable.';
+      targetDoc.ocrUpdatedAt = new Date();
+      if (!(await saveCurrentJob())) return { ocrStatus: 'superseded' };
+      logger.warn({ message: 'OCR annotation geometry degraded; authoritative text retained',
+        submissionId: String(targetDoc._id), errorCode: 'OCR_LAYOUT_DEGRADED',
+        pages: transcriptQuality.diagnostics });
+    } else {
     targetDoc.ocrStatus = 'failed';
+    targetDoc.ocrErrorCode = transcriptQuality.code || 'OCR_TEXT_EMPTY';
     targetDoc.ocrError = transcriptQuality.code === 'OCR_READING_ORDER_UNRELIABLE'
       ? 'OCR_READING_ORDER_UNRELIABLE: The photographed page reading order could not be verified. Please retry OCR or upload a clearer image.'
       : 'OCR failed to produce readable text. Please retry OCR or upload a clearer image.';
@@ -226,9 +255,15 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
         fileId: item.fileId, pageNumber: item.pageNumber, mappedWords: item.mappedWords,
         totalWords: item.totalWords, alignmentRatio: item.alignmentRatio })) });
     return { ocrText: targetDoc.ocrText || '', ocrStatus: 'failed', ocrError: targetDoc.ocrError };
+    }
   }
   targetDoc.ocrStatus = 'completed';
-  targetDoc.ocrError = undefined;
+  if (!targetDoc.ocrErrorCode && failures.length) {
+    targetDoc.ocrErrorCode = 'OCR_PARTIAL';
+    targetDoc.ocrError = 'Transcription completed for some files; one or more files could not be read.';
+  } else if (!targetDoc.ocrErrorCode) {
+    targetDoc.ocrError = undefined;
+  }
   targetDoc.ocrUpdatedAt = new Date();
   if (!(await saveCurrentJob())) return { ocrStatus: 'superseded' };
   logger.info({ message: 'Assessment pipeline timing', submissionId: String(targetDoc._id),

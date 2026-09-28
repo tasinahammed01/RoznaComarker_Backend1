@@ -9,7 +9,7 @@ const TAXONOMY = Object.freeze({
   adaptive_completed: ['STUDENT_PROGRESS', 'NORMAL'], referral_reward: ['REWARD', 'NORMAL'],
   bonus_reward: ['REWARD', 'NORMAL'], professional_milestone: ['REWARD', 'LOW'],
   payment_action_required: ['ACCOUNT', 'HIGH'], assignment_uploaded: ['WORKFLOW', 'NORMAL'],
-  weekly_summary: ['WORKFLOW', 'NORMAL']
+  weekly_summary: ['WORKFLOW', 'NORMAL'], plan_expiry: ['ACCOUNT', 'HIGH'], plan_expired: ['ACCOUNT', 'NORMAL']
 });
 function safeData(data) {
   if (!data || typeof data !== 'object') return data;

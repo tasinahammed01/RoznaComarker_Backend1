@@ -33,6 +33,7 @@ const { normalizeRubricDesignerPayload } = require('../utils/rubricNormalizer');
 const { repairAiRubric } = require('../utils/aiRubricRepair');
 const { completeRubric } = require('../services/rubricCompletion.service');
 const { currentRosterAssignmentCounts } = require('../services/currentRosterProgress.service');
+const { ensureStableCriterionIds } = require('../services/assignmentRubric.service');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -320,7 +321,7 @@ function normalizeRubric(value) {
   }
 }
 
-function normalizeRubrics(value) {
+function normalizeRubrics(value, { existingRubric = null } = {}) {
   if (value != null && require('../services/assignmentRubric.service').validateAssignmentRubricInput(value).length) return null;
   if (value === null) {
     return undefined;
@@ -343,6 +344,7 @@ function normalizeRubrics(value) {
   const criteria = rawCriteria
     .map((c) => {
       const row = c && typeof c === 'object' ? c : {};
+      const id = typeof row.id === 'string' ? row.id.trim() : '';
       const name = typeof row.name === 'string' ? row.name.trim() : '';
       const rawLevels = Array.isArray(row.levels) ? row.levels : [];
       const levels = rawLevels
@@ -357,7 +359,7 @@ function normalizeRubrics(value) {
         })
         .slice(0, 10);
 
-      return { name, levels };
+      return { ...(id ? { id } : {}), name, levels };
     })
     .filter((c) => c && typeof c.name === 'string')
     .slice(0, 100);
@@ -367,7 +369,7 @@ function normalizeRubrics(value) {
     const weight = Number(rawCriteria[i] && rawCriteria[i].weight);
     if (Number.isFinite(weight)) criteria[i].weight = weight;
   }
-  return { ...(Number.isFinite(totalPoints) ? { totalPoints } : {}), criteria };
+  return ensureStableCriterionIds({ ...(Number.isFinite(totalPoints) ? { totalPoints } : {}), criteria }, { existingRubric });
 }
 
 function rubricsToRubricDesigner({ rubrics, assignmentTitle }) {
@@ -387,6 +389,7 @@ function rubricsToRubricDesigner({ rubrics, assignmentTitle }) {
   const criteria = criteriaRaw.map((c) => {
     const rowLevels = Array.isArray(c && c.levels) ? c.levels : [];
     return {
+      ...(c?.id ? { id: String(c.id) } : {}),
       title: safeString(c && c.name).trim(),
       ...(Number.isFinite(Number(c && c.weight)) ? { weight: Number(c.weight) } : {}),
       cells: levels.map((_, i) => safeString(rowLevels[i] && rowLevels[i].description).trim())
@@ -455,6 +458,7 @@ function cloneAssignmentRubrics(value) {
   if (!value) return undefined;
   const raw = typeof value.toObject === 'function' ? value.toObject() : value;
   const criteria = Array.isArray(raw.criteria) ? raw.criteria.map((criterion) => ({
+    ...(criterion?.id ? { id: String(criterion.id) } : {}),
     name: criterion && criterion.name,
     ...(Number.isFinite(Number(criterion && criterion.weight)) ? { weight: Number(criterion.weight) } : {}),
     levels: Array.isArray(criterion && criterion.levels) ? criterion.levels.map((level) => ({
@@ -562,7 +566,7 @@ async function uploadRubricFileForAssignment(req, res) {
       return sendError(res, 422, 'Invalid rubric format extracted from file');
     }
 
-    const normalizedRubrics = normalizeRubrics(converted);
+    const normalizedRubrics = normalizeRubrics(converted, { existingRubric: assignment.rubrics });
     if (normalizedRubrics === null) {
       return sendError(res, 422, 'Invalid rubric format extracted from file');
     }
@@ -650,7 +654,8 @@ function rubricDesignerToRubrics(value) {
         score: lvl.score,
         description: safeString(normalizedCells[i]).trim()
       }));
-      return { name, ...(Number.isFinite(Number(row.weight)) ? { weight: Number(row.weight) } : {}), levels: mappedLevels };
+      return { ...(row.id ? { id: String(row.id) } : {}), name,
+        ...(Number.isFinite(Number(row.weight)) ? { weight: Number(row.weight) } : {}), levels: mappedLevels };
     })
     .filter((c) => c && typeof c.name === 'string')
     .slice(0, 100);
@@ -897,7 +902,7 @@ async function updateAssignment(req, res) {
     }
 
     if (typeof rubrics !== 'undefined') {
-      const normalizedRubrics = normalizeRubrics(rubrics);
+      const normalizedRubrics = normalizeRubrics(rubrics, { existingRubric: assignment.rubrics });
       if (normalizedRubrics === null) {
         return sendError(res, 400, 'rubrics must be valid JSON');
       }
@@ -1055,6 +1060,7 @@ async function updateAssignmentRubrics(req, res) {
             const normalizedCells = cells.slice(0, safeLevels.length);
             while (normalizedCells.length < safeLevels.length) normalizedCells.push('');
             return {
+              ...(row.id ? { id: String(row.id) } : {}),
               title: safeString(row.title || row.name).trim() || 'Criteria',
               weight: Number(row.weight),
               cells: normalizedCells
@@ -1067,12 +1073,12 @@ async function updateAssignmentRubrics(req, res) {
           return sendError(res, 400, 'rubricDesigner must be valid JSON');
         }
 
-        normalizedRubrics = normalizeRubrics(converted);
+        normalizedRubrics = normalizeRubrics(converted, { existingRubric: assignment.rubrics });
       }
     } else {
       // Legacy rubrics payload.
       const rawRubrics = coerceObjectPayload(body.rubrics);
-      normalizedRubrics = normalizeRubrics(rawRubrics);
+      normalizedRubrics = normalizeRubrics(rawRubrics, { existingRubric: assignment.rubrics });
     }
 
     if (normalizedRubrics === null) {

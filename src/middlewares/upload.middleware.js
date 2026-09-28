@@ -127,6 +127,23 @@ function detectSignatureKind(buf) {
   return null;
 }
 
+function canonicalizeValidatedFile(file, detectedMime) {
+  const canonicalExtension = getExtensionForMime(detectedMime);
+  if (!file || !canonicalExtension) return file;
+  file.detectedMime = detectedMime;
+  file.mimetype = detectedMime;
+  if (!file.filename || !file.path) return file;
+
+  const currentExtension = normalizeExtension(path.extname(file.filename));
+  if (currentExtension === canonicalExtension) return file;
+  const canonicalFilename = `${path.basename(file.filename, path.extname(file.filename))}${canonicalExtension}`;
+  const canonicalPath = path.join(path.dirname(file.path), canonicalFilename);
+  fs.renameSync(file.path, canonicalPath);
+  file.filename = canonicalFilename;
+  file.path = canonicalPath;
+  return file;
+}
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     try {
@@ -232,11 +249,7 @@ function validateUploadedFileSignature(req, res, next) {
 
         const detectedMime = detectSignatureKind(snippet);
         if (!detectedMime || !ALLOWED_MIME_TYPES.has(detectedMime)) {
-          try {
-            fs.unlinkSync(file.path);
-          } catch (unlinkErr) {
-            logger.warn(unlinkErr);
-          }
+          for (const uploaded of candidates) tryDeleteLocalUpload(uploaded);
 
           logger.warn({
             message: 'Rejected upload: invalid file signature',
@@ -252,6 +265,7 @@ function validateUploadedFileSignature(req, res, next) {
             message: 'Invalid file type. Only PDF, JPG, JPEG, PNG, and WEBP are allowed.'
           });
         }
+        canonicalizeValidatedFile(file, detectedMime);
       } finally {
         if (fd !== null) fs.closeSync(fd);
       }
@@ -337,5 +351,7 @@ module.exports = {
   upload,
   setUploadType,
   validateUploadedFileSignature,
-  handleUploadError
+  handleUploadError,
+  detectSignatureKind,
+  canonicalizeValidatedFile
 };

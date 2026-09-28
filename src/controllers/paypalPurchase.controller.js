@@ -1,6 +1,7 @@
 'use strict';
 
 const service = require('../services/paypal/paypalPurchase.service');
+const { PayPalClient } = require('../services/paypal/paypalClient.service');
 const { getPaypalConfig, isPaypalAdvancedCardEnabled, isPaypalEnabled } = require('../config/paypal');
 
 function fail(res, error) {
@@ -18,15 +19,30 @@ async function createCardOrder(req, res) {
     packCode: req.body.packCode, attemptId: req.body.checkoutAttemptId, fundingSource: 'card' }) }); }
   catch (error) { return fail(res, error); }
 }
-async function capabilities(_req, res) {
+function capabilities(_req, res) {
   const config = getPaypalConfig();
   const paypalCheckout = isPaypalEnabled();
   const cardTopups = paypalCheckout;
   return res.json({ success: true, data: { provider: 'paypal', environment: config.environment,
     clientId: config.clientId, paypalCheckout,
-    advancedCardPayments: isPaypalAdvancedCardEnabled(), cardTopups, cardSubscriptions: false,
+    advancedCardPayments: isPaypalAdvancedCardEnabled(), embeddedCardFields: isPaypalAdvancedCardEnabled(),
+    cardTopups, cardSubscriptions: false,
     subscriptionCheckout: paypalCheckout, subscriptionHostedCardFunding: 'unknown', embeddedCardSubscriptions: false,
   } });
+}
+async function cardClientToken(_req, res) {
+  res.set('Cache-Control', 'no-store');
+  if (!isPaypalAdvancedCardEnabled()) {
+    return res.status(409).json({ success: false, code: 'CARD_NOT_ELIGIBLE',
+      message: 'Embedded card checkout is not available for this PayPal account.' });
+  }
+  try {
+    const token = await new PayPalClient().generateClientToken();
+    return res.json({ success: true, data: { browserToken: token.accessToken } });
+  } catch {
+    return res.status(503).json({ success: false, code: 'PAYPAL_CARD_FIELDS_UNAVAILABLE',
+      message: 'PayPal card checkout is temporarily unavailable. Please use PayPal or try again.' });
+  }
 }
 async function capture(req, res) {
   try { return res.json({ success: true, data: await service.captureOrder({ user: req.user,
@@ -44,4 +60,4 @@ async function status(req, res) {
   catch (error) { return fail(res, error); }
 }
 
-module.exports = { capabilities, createOrder, createCardOrder, capture, cancel, status };
+module.exports = { capabilities, cardClientToken, createOrder, createCardOrder, capture, cancel, status };

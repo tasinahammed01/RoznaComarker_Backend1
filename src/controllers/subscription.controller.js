@@ -11,6 +11,8 @@ const { referralSummary } = require('../services/referral.service');
 const { calculateOwnedStorageUsage, buildStorageContract } = require('../services/ownedStorage.service');
 
 const { ensureActivePlan, assignPlanToUser } = require('../middlewares/usage.middleware');
+const PlanEntitlement = require('../models/PlanEntitlement');
+const EntitlementService = require('../services/planEntitlement.service');
 
 function publicAccountPlan(plan) {
   const keys = ['name', 'slug', 'price', 'annualPrice', 'currency', 'billingInterval', 'billingType', 'displayOrder',
@@ -77,6 +79,10 @@ async function getMySubscription(req, res) {
       PaymentManagementAttempt.findOne({ provider: 'paypal', userId: user._id, providerSubscriptionId: user.paypalSubscriptionId,
         operation: 'CANCEL', status: { $in: ['processing', 'provider_pending'] } }).sort({ createdAt: -1 }).lean()
     ]) : [null, null];
+    const [currentEntitlement, nextEntitlement] = await Promise.all([
+      PlanEntitlement.findOne({ userId: user._id, status: 'active' }).sort({ startsAt: -1 }).lean(),
+      PlanEntitlement.findOne({ userId: user._id, status: 'scheduled' }).sort({ startsAt: 1 }).lean()
+    ]);
     const billingProvider = configuredProviderName();
     const providerStatus = user.paypalSubscriptionStatus || null;
     const referrals = user.role === 'teacher' ? await referralSummary(user) : null;
@@ -88,6 +94,11 @@ async function getMySubscription(req, res) {
       plan: publicAccountPlan(planDoc),
       planStartedAt: user.planStartedAt || null,
       planExpiresAt: user.planExpiresAt || null,
+      entitlement: currentEntitlement ? { id: String(currentEntitlement._id), source: currentEntitlement.source,
+        billingPeriod: currentEntitlement.billingPeriod, startsAt: currentEntitlement.startsAt,
+        endsAt: currentEntitlement.endsAt, autoRenew: currentEntitlement.autoRenew } : null,
+      nextEntitlement: nextEntitlement ? { id: String(nextEntitlement._id), planSlug: nextEntitlement.planSlug,
+        billingPeriod: nextEntitlement.billingPeriod, startsAt: nextEntitlement.startsAt, endsAt: nextEntitlement.endsAt } : null,
       billing: user.role === 'teacher' ? {
         provider: billingProvider,
         customerConfigured: !!user.paypalSubscriptionId,
@@ -130,7 +141,7 @@ async function getMySubscription(req, res) {
 
 async function setUserSubscription(req, res) {
   try {
-    const { userId, planId, planName, startedAt } = req.body || {};
+    const { userId, planId, planName, startedAt, endsAt, reason } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(userId)) {
       return sendError(res, 400, 'Invalid userId');
@@ -160,16 +171,21 @@ async function setUserSubscription(req, res) {
       return sendError(res, 400, 'Invalid startedAt');
     }
 
-    await assignPlanToUser(user, planDoc, parsedStartedAt);
+    const parsedEndsAt = endsAt ? new Date(endsAt) : null;
+    if (parsedEndsAt && Number.isNaN(parsedEndsAt.getTime())) return sendError(res, 400, 'Invalid endsAt');
+    await EntitlementService.assignAdmin({ user, plan: planDoc, startsAt: parsedStartedAt,
+      endsAt: parsedEndsAt, assignedBy: req.user._id, reason: String(reason || 'Admin plan assignment') });
+    await ensureActivePlan(user);
 
-    const nextPlan = await Plan.findById(user.plan);
+    const refreshedUser = await User.findById(user._id);
+    const nextPlan = await Plan.findById(refreshedUser.plan);
 
     return sendSuccess(res, {
       userId: user._id,
       plan: nextPlan,
-      planStartedAt: user.planStartedAt || null,
-      planExpiresAt: user.planExpiresAt || null,
-      usage: user.usage
+      planStartedAt: refreshedUser.planStartedAt || null,
+      planExpiresAt: refreshedUser.planExpiresAt || null,
+      usage: refreshedUser.usage
     });
   } catch (err) {
     return sendError(res, 500, 'Failed to set subscription');

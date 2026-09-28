@@ -5,6 +5,8 @@ const User = require('../models/user.model');
 const Class = require('../models/class.model');
 const logger = require('../utils/logger');
 const { getPlanByPayPalPlanId } = require('../services/paypal/paypalPlanMapping.service');
+const PlanEntitlement = require('../models/PlanEntitlement');
+const { resolveEffectivePlan } = require('../services/planEntitlement.service');
 
 function sendError(res, statusCode, message) {
   return res.status(statusCode).json({
@@ -98,6 +100,21 @@ async function ensureActivePlan(user) {
     if (!freePlan) throw new Error('Free plan is not configured');
     if (String(user.plan || '') !== String(freePlan._id) || user.planExpiresAt) await assignPlanToUser(user, freePlan, new Date());
     return freePlan;
+  }
+
+  // Once a user has durable prepaid/admin entitlement history it becomes the
+  // source of truth. Users not yet migrated retain the legacy behavior below.
+  // Authentication supplies a hydrated User document. Keeping the durable
+  // lookup scoped to that shape avoids database work for internal/unit callers
+  // that intentionally pass a lightweight user-like object.
+  if (user.role === 'teacher' && user?.$__ && await PlanEntitlement.exists({ userId: user._id })) {
+    const resolved = await resolveEffectivePlan(user);
+    if (resolved?.plan) {
+      user.plan = resolved.plan._id;
+      user.planStartedAt = resolved.entitlement?.startsAt || user.planStartedAt;
+      user.planExpiresAt = resolved.entitlement?.endsAt || null;
+      return resolved.plan;
+    }
   }
 
   if (!freePlan) throw new Error('Free plan is not configured');
