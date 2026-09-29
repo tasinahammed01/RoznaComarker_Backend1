@@ -16,6 +16,13 @@ const ORDER_MS = 30 * 60 * 1000;
 const rank = slug => ({ free: 0, essential: 1, pro: 2 })[String(slug).replace(/_(monthly|annual|yearly)$/, '')];
 const recurring = user => Boolean(user.paypalSubscriptionId && ['ACTIVE', 'SUSPENDED', 'APPROVAL_PENDING', 'APPROVED'].includes(String(user.paypalSubscriptionStatus).toUpperCase()));
 const recurringMessage = 'This user has an active legacy recurring PayPal subscription. Review or resolve the recurring billing before manually changing the plan.';
+const adminTier = slug => /^(free|essential|pro)(?:_(monthly|annual))?$/.exec(String(slug || ''))?.[1] || null;
+const adminPeriods = plan => {
+  if (plan.slug === 'free') return [];
+  if (plan.slug.endsWith('_monthly')) return ['monthly'];
+  if (plan.slug.endsWith('_annual')) return ['annual'];
+  return [Number(plan.price) > 0 ? 'monthly' : null, Number(plan.annualPrice) > 0 ? 'annual' : null].filter(Boolean);
+};
 
 async function transaction(work) {
   const session = await mongoose.startSession();
@@ -47,7 +54,9 @@ async function selectedPlan(planSlug, billingPeriod, session = null, allowFree =
   if (typeof planSlug !== 'string' || !/^[a-z0-9_-]{1,80}$/.test(planSlug) || !['monthly', 'annual'].includes(billingPeriod))
     throw fail('PLAN_INPUT_INVALID', 'Invalid plan or billing period.');
   const plan = await Plan.findOne({ slug: planSlug, isActive: true }).session(session).lean();
-  if (allowFree && !['free', 'essential', 'pro'].includes(planSlug)) throw fail('PLAN_UNAVAILABLE', 'Select Free, Essential, or Pro.');
+  if (allowFree && (!plan || !adminTier(plan.slug) || (adminTier(plan.slug) === 'free' && plan.slug !== 'free') ||
+    (plan.slug !== 'free' && !adminPeriods(plan).includes(billingPeriod))))
+    throw fail('PLAN_UNAVAILABLE', 'Select an available plan and term.');
   if (!plan || ['custom', 'institution'].includes(plan.slug) || (!allowFree && plan.slug === 'free')) throw fail('PLAN_UNAVAILABLE', 'This plan is not available for this operation.');
   if (!Promo.CURRENCIES.has(String(plan.currency).toUpperCase())) throw fail('BILLING_CURRENCY_UNSUPPORTED', 'This currency requires billing review.', 409);
   return plan;
@@ -244,4 +253,4 @@ async function assignAdmin({ actor, quoteId, operationId }) {
   });
 }
 module.exports = { transaction, createQuote, quoteDto, prepareAttempt, assertCaptureAllowed, fulfill, cancel,
-  expireReservations, lookup, previewAdmin, assignAdmin, context, rank, recurring, QUOTE_MS, ORDER_MS };
+  expireReservations, lookup, previewAdmin, assignAdmin, context, rank, recurring, adminTier, adminPeriods, QUOTE_MS, ORDER_MS };

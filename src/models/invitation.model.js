@@ -27,6 +27,8 @@ const invitationSchema = new mongoose.Schema(
       default: 'pending',
       index: true
     },
+    deliveryStatus: { type: String, enum: ['pending', 'sending', 'sent', 'failed'] },
+    deliveryAttemptedAt: { type: Date, default: null },
     invitedAt: {
       type: Date,
       default: Date.now,
@@ -56,12 +58,11 @@ invitationSchema.index({ class: 1, email: 1 }, { unique: true });
 invitationSchema.index({ teacher: 1, status: 1 });
 
 // Pre-save middleware to generate token
-invitationSchema.pre('save', function(next) {
+invitationSchema.pre('save', function() {
   if (this.isNew && !this.token) {
     const crypto = require('crypto');
     this.token = crypto.randomBytes(32).toString('hex');
   }
-  next();
 });
 
 // Static method to find valid invitation

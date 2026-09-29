@@ -23,7 +23,14 @@ router.post('/quote', requireRole('teacher'), limit,
   body('promoCode').optional().isString().isLength({ max: 40 }), only(['planSlug', 'billingPeriod', 'promoCode']), handleValidationResult,
   handle(req => Billing.createQuote({ userId: req.user._id, ...req.body })));
 router.use('/admin', requireRole('admin'), limit);
-router.get('/admin/plans', handle(() => Plan.find({ isActive: true, slug: { $in: ['free', 'essential', 'pro'] } }).select('name slug price annualPrice currency').lean()));
+router.get('/admin/plans', handle(async () => {
+  const plans = await Plan.find({ isActive: true, slug: { $regex: /^(?:free|(?:essential|pro)(?:_(?:monthly|annual))?)$/ } })
+    .select('name slug display.title price annualPrice currency billingInterval displayOrder').sort({ displayOrder: 1, slug: 1 }).lean();
+  return plans.filter(plan => Billing.adminTier(plan.slug) && (plan.slug === 'free' || Billing.adminPeriods(plan).length))
+    .map(plan => ({ slug: plan.slug, name: plan.display?.title || plan.name, tier: Billing.adminTier(plan.slug),
+      periods: Billing.adminPeriods(plan), promoEligible: plan.slug !== 'free', price: plan.price,
+      annualPrice: plan.annualPrice, currency: plan.currency }));
+}));
 router.get('/admin/promos', query('page').optional().isInt({ min: 1, max: 10000 }), handleValidationResult,
   handle(async req => ({ items: (await PromoModel.find().sort({ _id: -1 }).skip((Number(req.query.page || 1) - 1) * 25).limit(25).lean()).map(Promo.dto) })));
 router.post('/admin/promos', handle(req => Billing.transaction(session => Promo.save(req.body, req.user._id, null, session))));

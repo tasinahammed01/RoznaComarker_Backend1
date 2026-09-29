@@ -141,6 +141,30 @@ describe('confirmed upgrade and manual override rules', () => {
 });
 
 describe('backend authorization and request authority',()=>{
+  test('admin catalog includes active paid variants with safe labels and supports manual preview',async()=>{
+    await Plan.updateOne({_id:free._id},{$set:{name:'Free Free','display.title':'Free'}});
+    const monthly=await Plan.create({name:'Essential Monthly',slug:'essential_monthly',price:9.99,currency:'USD',billingInterval:'month',display:{title:'Essential'}});
+    await Plan.create({name:'Essential Annual',slug:'essential_annual',price:99,currency:'USD',billingInterval:'year'});
+    await Plan.create({name:'Pro Monthly',slug:'pro_monthly',price:19.99,currency:'USD',billingInterval:'month',display:{title:'Pro'}});
+    await Plan.create({name:'Pro Annual',slug:'pro_annual',price:199,currency:'USD',billingInterval:'year'});
+    await Plan.create({name:'Inactive Plan',slug:'pro_yearly',price:200,currency:'USD',isActive:false});
+    const response=await request(app).get('/api/billing/admin/plans').set('Authorization',`Bearer ${token(admin)}`);
+    expect(response.status).toBe(200);
+    const rows=response.body.data;
+    expect(rows.map(row=>row.slug)).toEqual(expect.arrayContaining(['free','essential_monthly','essential_annual','pro_monthly','pro_annual']));
+    expect(rows.find(row=>row.slug==='free').name).toBe('Free');
+    expect(rows.filter(row=>row.slug==='free')).toHaveLength(1);
+    expect(rows.find(row=>row.slug==='essential_monthly').periods).toEqual(['monthly']);
+    expect(rows.find(row=>row.slug==='free').promoEligible).toBe(false);
+    expect(rows.some(row=>row.slug==='pro_yearly')).toBe(false);
+    expect(rows[0]._id).toBeUndefined();
+    const preview=await Billing.previewAdmin({actor:admin._id,email:user.email,planSlug:monthly.slug,billingPeriod:'monthly',reason:'Catalog test'});
+    expect(preview.planSlug).toBe(monthly.slug);
+    const assigned=await Billing.assignAdmin({actor:admin._id,quoteId:preview.quoteId,operationId:crypto.randomUUID()});
+    expect(assigned.planSlug).toBe('essential_monthly');
+    expect(assigned.source).toBe('admin');
+    await expect(Billing.previewAdmin({actor:admin._id,email:user.email,planSlug:monthly.slug,billingPeriod:'annual',reason:'Catalog test'})).rejects.toMatchObject({code:'PLAN_UNAVAILABLE'});
+  });
   test('ambiguous normalized email is blocked without guessing',async()=>{await User.create({firebaseUid:'duplicate',email:user.email,role:'teacher'});await expect(Billing.lookup(user.email)).rejects.toMatchObject({statusCode:409});});
   test('quote cannot be used by a different buyer',async()=>{const q=await quote();const other=await User.create({firebaseUid:'second',email:'second@example.test',role:'teacher',plan:free._id});await expect(prepare(q,other)).rejects.toMatchObject({code:'BILLING_QUOTE_EXPIRED'});expect(await Attempt.countDocuments()).toBe(0);});
   test('API preview/confirm audits once and old set endpoint cannot bypass confirmation',async()=>{

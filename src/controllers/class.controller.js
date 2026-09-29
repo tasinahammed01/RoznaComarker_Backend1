@@ -68,8 +68,11 @@ function getRequestBaseUrl(req) {
 }
 
 function buildJoinUrl(req, joinCode) {
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
-  return `${process.env.FRONTEND_URL}/student/join-class?joinCode=${joinCode}`;
+  const baseUrl = new URL(String(process.env.FRONTEND_URL || ''));
+  if (!['http:', 'https:'].includes(baseUrl.protocol) ||
+    (process.env.NODE_ENV === 'production' && ['localhost', '127.0.0.1'].includes(baseUrl.hostname)))
+    throw new Error('FRONTEND_URL_INVALID');
+  return `${baseUrl.origin}/student/join-class?joinCode=${encodeURIComponent(joinCode)}`;
 }
 
 function normalizeClassroomDefaultsFromUser(user) {
@@ -733,13 +736,13 @@ async function inviteStudents(req, res) {
       return sendError(res, 400, "Invalid class id");
     }
 
-    if (!Array.isArray(emails) || emails.length === 0) {
+    if (!Array.isArray(emails) || emails.length === 0 || emails.length > 25) {
       return sendError(res, 400, "emails array is required");
     }
 
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    const invalidEmails = emails.filter((email) => !emailRegex.test(email));
+    const invalidEmails = emails.filter((email) => typeof email !== 'string' || email.length > 254 || !emailRegex.test(email.trim()));
     if (invalidEmails.length > 0) {
       return sendError(
         res,
@@ -763,11 +766,11 @@ async function inviteStudents(req, res) {
       return sendError(res, 404, "Class not found");
     }
 
+    const normalizedEmails = [...new Set(emails.map(email => email.trim().toLowerCase()))];
     const results = [];
     const joinUrl = buildJoinUrl(req, classDoc.joinCode);
 
-    for (const email of emails) {
-      const trimmedEmail = email.toLowerCase().trim();
+    for (const trimmedEmail of normalizedEmails) {
 
       try {
         // Check if user already exists
@@ -796,7 +799,11 @@ async function inviteStudents(req, res) {
           classDoc._id,
           trimmedEmail,
         );
-        if (existingInvitation) {
+        if (existingInvitation && !existingInvitation.deliveryStatus) {
+          results.push({ email: trimmedEmail, status: 'error', message: 'Earlier invitation delivery cannot be verified. Contact support before resending.' });
+          continue;
+        }
+        if (existingInvitation && ['sent', 'sending'].includes(existingInvitation.deliveryStatus)) {
           results.push({
             email: trimmedEmail,
             status: "already_invited",
@@ -807,11 +814,22 @@ async function inviteStudents(req, res) {
         }
 
         // Create new invitation
-        const invitation = await Invitation.create({
-          class: classDoc._id,
-          teacher: teacherId,
-          email: trimmedEmail,
-        });
+        let invitation = existingInvitation;
+        if (!invitation) {
+          try {
+            invitation = await Invitation.create({ class: classDoc._id, teacher: teacherId, email: trimmedEmail, deliveryStatus: 'pending' });
+          } catch (error) {
+            if (error.code !== 11000) throw error;
+            results.push({ email: trimmedEmail, status: 'error', message: 'An earlier invitation exists and requires review before resending.' });
+            continue;
+          }
+        }
+        const claimed = await Invitation.findOneAndUpdate({ _id: invitation._id, deliveryStatus: { $in: ['pending', 'failed'] } },
+          { $set: { deliveryStatus: 'sending', deliveryAttemptedAt: new Date() } }, { returnDocument: 'after' });
+        if (!claimed) {
+          results.push({ email: trimmedEmail, status: 'already_invited', message: 'Invitation delivery is already in progress or completed' });
+          continue;
+        }
 
         // Send email invitation
         const emailResult = await sendInvitationEmail({
@@ -823,28 +841,29 @@ async function inviteStudents(req, res) {
         });
 
         if (emailResult.success) {
+          await Invitation.updateOne({ _id: invitation._id, deliveryStatus: 'sending' }, { $set: { deliveryStatus: 'sent' } });
           results.push({
             email: trimmedEmail,
             status: "invited",
             message: "Invitation sent successfully",
             invitationId: invitation._id,
-            token: invitation.token,
             joinUrl,
             joinCode: classDoc.joinCode,
             expiresAt: invitation.expiresAt,
           });
         } else {
+          await Invitation.updateOne({ _id: invitation._id, deliveryStatus: 'sending' }, { $set: { deliveryStatus: 'failed' } });
           results.push({
             email: trimmedEmail,
             status: "error",
-            message: `Failed to send email: ${emailResult.error}`,
+            message: 'Invitation created, but email delivery failed. Retry safely later.',
           });
         }
       } catch (err) {
         results.push({
           email: trimmedEmail,
           status: "error",
-          message: err.message || "Failed to send invitation",
+          message: "Invitation could not be completed. Please try again or contact support.",
         });
       }
     }
@@ -854,7 +873,7 @@ async function inviteStudents(req, res) {
       className: classDoc.name,
       results,
       summary: {
-        total: emails.length,
+        total: normalizedEmails.length,
         invited: results.filter((r) => r.status === "invited").length,
         already_joined: results.filter((r) => r.status === "already_joined")
           .length,

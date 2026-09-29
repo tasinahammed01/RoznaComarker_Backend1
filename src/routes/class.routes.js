@@ -6,6 +6,7 @@ const { requireRole } = require('../middlewares/role.middleware');
 
 const { body, param } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
+const { createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
 
 const { enforceUsageLimit, enforceStorageLimitFromUploadedFile } = require('../middlewares/usage.middleware');
 
@@ -289,9 +290,11 @@ router.post(
   '/:classId/invite',
   verifyJwtToken,
   requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 15 * 60 * 1000, limit: 10, event: 'CLASS_INVITE_RATE_LIMITED', reason: 'class_invitation' }),
   param('classId').isMongoId().withMessage('Invalid class id'),
-  body('emails').isArray({ min: 1 }).withMessage('emails must be a non-empty array'),
-  body('emails.*').isEmail().withMessage('All emails must be valid'),
+  body('emails').isArray({ min: 1, max: 25 }).withMessage('Enter 1 to 25 email addresses'),
+  body('emails.*').isString().trim().isLength({ min: 3, max: 254 }).isEmail().withMessage('All emails must be valid')
+    .customSanitizer(value => typeof value === 'string' ? value.toLowerCase() : value),
   handleValidationResult,
   classController.inviteStudents
 );

@@ -1,5 +1,7 @@
 const nodemailer = require('nodemailer');
 const logger = require('../utils/logger');
+const escapeHtml = value => String(value == null ? '' : value).replace(/[&<>"']/g, char =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 
 // Create transporter using environment variables
 let transporter = null;
@@ -22,17 +24,20 @@ function getTransporter() {
 async function sendInvitationEmail({ to, className, classCode, joinUrl, teacherName }) {
   try {
     const transporter = getTransporter();
+    const safeName = escapeHtml(className);
+    const safeCode = escapeHtml(classCode);
+    const safeUrl = escapeHtml(joinUrl);
     
     const mailOptions = {
       from: `"${process.env.MAIL_FROM_NAME || 'CoMarker'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
       to: Array.isArray(to) ? to.join(', ') : to,
-      subject: `You're invited to join ${className}`,
+      subject: `You're invited to join ${String(className).replace(/[\r\n]/g, ' ')}`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
           <div style="background-color: #f8f9fa; padding: 30px; border-radius: 10px; text-align: center;">
             <h1 style="color: #2c3e50; margin-bottom: 20px;">🎓 Class Invitation</h1>
             <p style="font-size: 18px; color: #34495e; margin-bottom: 25px;">
-              You've been invited to join <strong>${className}</strong>
+              You've been invited to join <strong>${safeName}</strong>
             </p>
             
             <div style="background-color: white; padding: 25px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
@@ -43,14 +48,14 @@ async function sendInvitationEmail({ to, className, classCode, joinUrl, teacherN
                 <ol style="color: #666; line-height: 1.6;">
                   <li>Go to your classroom dashboard</li>
                   <li>Click "Join Class" or "Add Class"</li>
-                  <li>Enter this code: <span style="background-color: #e3f2fd; padding: 8px 12px; border-radius: 4px; font-family: monospace; font-size: 16px; font-weight: bold;">${classCode}</span></li>
+                  <li>Enter this code: <span style="background-color: #e3f2fd; padding: 8px 12px; border-radius: 4px; font-family: monospace; font-size: 16px; font-weight: bold;">${safeCode}</span></li>
                 </ol>
               </div>
               
               <div style="text-align: left;">
                 <p style="margin-bottom: 10px;"><strong>Option 2: Direct Link</strong></p>
                 <p style="margin-bottom: 15px;">Click the button below to join directly:</p>
-                <a href="${joinUrl}" 
+                <a href="${safeUrl}"
                    style="background-color: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">
                   Join Class Now
                 </a>
