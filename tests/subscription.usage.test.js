@@ -93,7 +93,7 @@ describe('Subscription & usage limits', () => {
     expect((await User.findById(teacher._id).populate('plan')).plan.name).toBe('Free');
   });
 
-  test('Admin can set user plan via /api/subscription/set', async () => {
+  test('Old admin set endpoint requires the preview and confirmation workflow', async () => {
     const admin = await User.create({
       firebaseUid: 'admin-1',
       email: 'admin1@example.com',
@@ -113,10 +113,10 @@ describe('Subscription & usage limits', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ userId: String(teacher._id), planName: 'Starter Monthly' });
 
-    expect(res.status).toBe(200);
-    expect(res.body && res.body.data && res.body.data.plan && res.body.data.plan.name).toBe('Starter Monthly');
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('ADMIN_PLAN_CONFIRMATION_REQUIRED');
 
     const updated = await User.findById(teacher._id).populate('plan');
-    expect(updated.plan.name).toBe('Starter Monthly');
+    expect(updated.plan).toBeFalsy();
   });
 });

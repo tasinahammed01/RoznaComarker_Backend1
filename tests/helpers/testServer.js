@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { MongoMemoryServer } = require('mongodb-memory-server');
+const { MongoMemoryServer, MongoMemoryReplSet } = require('mongodb-memory-server');
 
 let mongo;
 
@@ -12,8 +12,9 @@ function assertIsolatedTestDatabase(uri) {
   return databaseName;
 }
 
-async function connectInMemoryMongo() {
-  mongo = await MongoMemoryServer.create({ instance: { dbName: 'projectrozna_http_test' } });
+async function connectInMemoryMongo({ replicaSet = false } = {}) {
+  mongo = replicaSet ? await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
+    : await MongoMemoryServer.create({ instance: { dbName: 'projectrozna_http_test' } });
   const uri = mongo.getUri('projectrozna_http_test');
   assertIsolatedTestDatabase(uri);
 

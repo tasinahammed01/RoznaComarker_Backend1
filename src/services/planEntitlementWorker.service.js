@@ -7,7 +7,8 @@ function startPlanEntitlementWorker({ intervalMs = Number(process.env.PLAN_ENTIT
   const run = async () => {
     if (running) return;
     running = true;
-    try { logger.info({ event: 'plan_entitlement_worker', ...(await processExpiriesAndReminders()) }); }
+    try { await require('./planBilling.service').expireReservations();
+      logger.info({ event: 'plan_entitlement_worker', ...(await processExpiriesAndReminders()) }); }
     catch (error) { logger.error({ event: 'plan_entitlement_worker_failed', error: error?.message }); }
     finally { running = false; }
   };

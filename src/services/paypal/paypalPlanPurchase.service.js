@@ -10,6 +10,7 @@ const { trustedMoney, sameMoney, safeApprovalUrl, safeFailureCode,
   classify: classifyPayPalFailure } = require('./paypalPurchase.service');
 const logger = require('../../utils/logger');
 const Entitlements = require('../planEntitlement.service');
+const Billing = require('../planBilling.service');
 
 const LEASE_MS = 120000;
 const error = (code, message, statusCode = 400) => Object.assign(new Error(message), { code, statusCode });
@@ -20,6 +21,7 @@ function publicAttempt(attempt, entitlement) {
   return { attemptId: attempt.attemptId, orderId: attempt.providerOrderId || undefined, approvalUrl: attempt.approvalUrl || undefined,
     status: attempt.status, purpose: 'plan_purchase', planSlug: attempt.planSlug, billingPeriod: attempt.billingPeriod,
     amount: attempt.expectedAmount, currency: attempt.currency, fulfilled: attempt.status === 'fulfilled',
+    pricing: attempt.pricingSnapshot || undefined,
     ...(failureCode ? { failureCode, retryable: attempt.failureClass === 'retryable' } : {}),
     entitlement: entitlement ? { id: String(entitlement._id), status: entitlement.status,
       startsAt: entitlement.startsAt, endsAt: entitlement.endsAt } : undefined,
@@ -42,7 +44,7 @@ async function markCaptureFailure(attempt, cause) {
     status: restart ? 'approval_pending' : 'failed', failureClass: failure.failureClass,
     failureCode: failure.failureCode, safeFailureMessage, providerDebugId: cause?.debugId || null,
     processingLeaseExpiresAt: null,
-    ...(restart ? { captureRequestId: `plan-capture:${attempt.attemptId}:${crypto.randomUUID()}` } : {})
+    ...(restart ? { captureRequestId: `plan-capture:${attempt.attemptId}:${crypto.randomUUID()}`, captureAttemptedAt: null } : {})
   } });
   throw error(failure.failureCode, safeFailureMessage,
     restart ? 422 : failure.failureClass === 'permanent' ? 409 : 502);
@@ -72,26 +74,30 @@ function payload(attempt, environment) {
     user_action: 'PAY_NOW', shipping_preference: 'NO_SHIPPING' } };
 }
 
-async function createOrder({ user, planSlug, billingPeriod = 'monthly', attemptId, client = new PayPalClient(), environment = process.env }) {
+async function createOrder({ user, planSlug, billingPeriod = 'monthly', quoteId, attemptId, client = new PayPalClient(), environment = process.env }) {
   configuredProviderName(environment);
   if (Entitlements.recurringPaidThrough(user)) throw error('LEGACY_SUBSCRIPTION_ACTIVE',
     'Your recurring PayPal subscription is still active. Manage it before buying a prepaid term.', 409);
   const { plan, money } = await trustedPlan(planSlug, billingPeriod);
   let attempt;
   try {
-    attempt = await PaymentPurchaseAttempt.create({ provider: 'paypal', providerEnvironment: getPaypalEnvironment(environment), purpose: 'plan_purchase', purchaseType: undefined,
-      attemptId, userId: user._id, fundingSource: 'paypal', planSlug: plan.slug, billingPeriod,
-      expectedAmount: money.value, currency: money.currency, createRequestId: `plan-create:${attemptId}`,
-      captureRequestId: `plan-capture:${attemptId}`, status: 'creating', ...lease() });
+    const existing = await PaymentPurchaseAttempt.exists({ provider: 'paypal', attemptId });
+    if (existing) throw Object.assign(new Error('Existing attempt'), { code: 11000 });
+    attempt = await Billing.prepareAttempt({ user, planSlug: plan.slug, billingPeriod, quoteId, attemptId,
+      providerEnvironment: getPaypalEnvironment(environment), lease: lease() });
   } catch (cause) {
-    if (cause?.code !== 11000) throw cause;
+    if (cause?.code !== 11000 && cause?.code !== 'BILLING_CONFLICT') throw cause;
     attempt = await PaymentPurchaseAttempt.findOne({ provider: 'paypal', attemptId });
     if (!attempt || String(attempt.userId) !== String(user._id) || attempt.purpose !== 'plan_purchase' ||
-      attempt.planSlug !== plan.slug || attempt.billingPeriod !== billingPeriod) {
+      attempt.planSlug !== plan.slug || attempt.billingPeriod !== billingPeriod ||
+      (quoteId && attempt.pricingSnapshot?.quoteId !== quoteId)) {
       throw error('PAYPAL_PURCHASE_ATTEMPT_CONFLICT', 'Purchase attempt is unavailable', 409);
     }
     if (['approval_pending', 'capturing', 'captured', 'fulfilled'].includes(attempt.status)) return publicAttempt(attempt);
     if (['cancelled', 'refunded', 'review_required'].includes(attempt.status)) throw error('PAYPAL_PURCHASE_ATTEMPT_TERMINAL', 'Use a new checkout attempt', 409);
+    // A capture failure must never send createOrder again, even if its response
+    // was lost. Resume the original provider order and capture idempotency key.
+    if (attempt.providerOrderId) return publicAttempt(attempt);
     const claimed = await PaymentPurchaseAttempt.findOneAndUpdate({ _id: attempt._id, $or: [
       { status: 'failed', failureClass: 'retryable' }, { status: 'creating', processingLeaseExpiresAt: { $lte: new Date() } }
     ] }, { $set: { status: 'creating', ...lease() }, $inc: { retryCount: 1 } }, { returnDocument: 'after' });
@@ -130,7 +136,15 @@ function validate(order, attempt, allowRefunded = false) {
 
 async function fulfill(attempt, order, allowRefunded = false) {
   if (attempt.status === 'refunded') return publicAttempt(attempt, await require('../../models/PlanEntitlement').findOne({ paymentAttemptId: attempt._id }));
-  const capture = validate(order, attempt, allowRefunded);
+  let capture;
+  try { capture = validate(order, attempt, allowRefunded); }
+  catch (cause) {
+    if (attempt.pricingSnapshot) await PaymentPurchaseAttempt.updateOne({ _id: attempt._id,
+      status: { $in: ['capturing', 'captured', 'approval_pending', 'failed'] } }, { $set: {
+      status: 'review_required', processingLeaseExpiresAt: null, failureCode: 'BILLING_REVIEW_REQUIRED',
+      safeFailureMessage: 'Payment details require billing review. Do not pay again.' } });
+    throw cause;
+  }
   const conflict = await PaymentPurchaseAttempt.findOne({ provider: 'paypal', providerCaptureId: capture.id, _id: { $ne: attempt._id } });
   if (conflict) throw error('PAYPAL_CAPTURE_OWNERSHIP_CONFLICT', 'Payment capture is already assigned', 409);
   await PaymentPurchaseAttempt.updateOne({ _id: attempt._id, status: { $nin: ['refunded', 'review_required'] } }, { $set: {
@@ -138,7 +152,17 @@ async function fulfill(attempt, order, allowRefunded = false) {
   } });
   const plan = await Plan.findOne({ slug: attempt.planSlug, isActive: true });
   if (!plan) throw error('PLAN_NOT_FOUND', 'Purchased plan is no longer configured', 503);
-  const entitlement = await Entitlements.fulfillPlanPurchase({ attempt, plan, capture });
+  let entitlement;
+  try {
+    entitlement = attempt.pricingSnapshot
+      ? await Billing.fulfill(attempt, plan, capture)
+      : await Entitlements.fulfillPlanPurchase({ attempt, plan, capture });
+  } catch (cause) {
+    if (attempt.pricingSnapshot && cause.statusCode === 409) await PaymentPurchaseAttempt.updateOne(
+      { _id: attempt._id, status: 'captured' }, { $set: { status: 'review_required',
+        failureCode: 'BILLING_REVIEW_REQUIRED', safeFailureMessage: 'Payment was received but requires billing review. Do not pay again.' } });
+    throw cause;
+  }
   const saved = await PaymentPurchaseAttempt.findOneAndUpdate({ _id: attempt._id, status: { $nin: ['refunded', 'review_required'] } },
     { $set: { status: 'fulfilled', entitlementId: entitlement._id, processingLeaseExpiresAt: null } }, { returnDocument: 'after' });
   return publicAttempt(saved || await PaymentPurchaseAttempt.findById(attempt._id), entitlement);
@@ -153,21 +177,29 @@ async function captureOrder({ user, attemptId, client = new PayPalClient() }) {
     (attempt.status === 'failed' && attempt.failureClass === 'permanent')) {
     throw error('PAYPAL_PURCHASE_ATTEMPT_TERMINAL', 'This plan purchase cannot be captured', 409);
   }
+  const reconcileOnly = Boolean(attempt.pricingSnapshot && attempt.captureAttemptedAt && attempt.checkoutExpiresAt <= new Date());
+  if (!reconcileOnly) await Billing.assertCaptureAllowed(attempt);
   const claimed = await PaymentPurchaseAttempt.findOneAndUpdate({ _id: attempt._id, $or: [
     { status: { $in: ['approval_pending', 'captured'] } },
     { status: 'failed', failureClass: 'retryable' },
     { status: 'capturing', processingLeaseExpiresAt: { $lte: new Date() } }
-  ] }, { $set: { status: 'capturing', ...lease() },
+  ] }, { $set: { status: 'capturing', captureAttemptedAt: new Date(), ...lease() },
     $unset: { failureClass: 1, failureCode: 1, safeFailureMessage: 1, providerDebugId: 1 },
     $inc: { retryCount: 1 } }, { returnDocument: 'after' });
   if (!claimed) throw error('PAYPAL_CAPTURE_PROCESSING', 'Payment confirmation is already processing', 409);
   attempt = claimed;
   let order;
-  try { order = attempt.providerCaptureId ? await client.getOrder(attempt.providerOrderId)
+  try { order = attempt.providerCaptureId || reconcileOnly ? await client.getOrder(attempt.providerOrderId)
     : await client.captureOrder(attempt.providerOrderId, attempt.captureRequestId); }
   catch (cause) {
     try { order = await client.getOrder(attempt.providerOrderId); } catch { order = null; }
     if (String(order?.status).toUpperCase() !== 'COMPLETED') return markCaptureFailure(attempt, cause);
+  }
+  if (reconcileOnly && String(order?.status).toUpperCase() !== 'COMPLETED') {
+    await PaymentPurchaseAttempt.updateOne({ _id: attempt._id, status: 'capturing' }, { $set: {
+      status: 'review_required', processingLeaseExpiresAt: null, failureCode: 'BILLING_RECONCILIATION_REQUIRED',
+      safeFailureMessage: 'This expired checkout requires billing review. Do not pay again.' } });
+    throw error('BILLING_RECONCILIATION_REQUIRED', 'This expired checkout requires billing review. Do not pay again.', 409);
   }
   return fulfill(attempt, order);
 }
@@ -184,6 +216,11 @@ async function reconcileRefundOrReversal({ captureId, orderId, eventId, client =
     { providerCaptureId: captureId }, ...(orderId ? [{ providerOrderId: orderId }] : []) ] });
   if (!attempt) throw error('PAYPAL_PAYMENT_CORRELATION_FAILED', 'Payment cannot be correlated', 422);
   const capture = await client.getCapture(captureId);
+  if (await PaymentPurchaseAttempt.exists({ 'pricingSnapshot.historicalPaymentId': String(attempt._id),
+    status: { $in: ['creating', 'approval_pending', 'capturing', 'captured', 'fulfilled', 'review_required'] } })) {
+    await PaymentPurchaseAttempt.updateOne({ _id: attempt._id }, { $set: { status: 'review_required', failureCode: 'PRORATION_REFUND_REVIEW' } });
+    throw error('PRORATION_REFUND_REVIEW', 'Refund of a term used as upgrade credit requires billing review.', 422);
+  }
   const refunded = capture?.seller_receivable_breakdown?.total_refunded_amount;
   if (!sameMoney(refunded || capture?.amount, attempt.expectedAmount, attempt.currency)) {
     await PaymentPurchaseAttempt.updateOne({ _id: attempt._id }, { $set: { status: 'review_required', failureCode: 'PAYPAL_PARTIAL_REFUND' } });
@@ -195,6 +232,8 @@ async function reconcileRefundOrReversal({ captureId, orderId, eventId, client =
 }
 
 async function cancel({ user, attemptId }) {
+  const current = await PaymentPurchaseAttempt.findOne({ provider: 'paypal', purpose: 'plan_purchase', attemptId, userId: user._id });
+  if (current?.pricingSnapshot) return publicAttempt(await Billing.cancel(user._id, attemptId));
   const attempt = await PaymentPurchaseAttempt.findOneAndUpdate({ provider: 'paypal', purpose: 'plan_purchase', attemptId,
     userId: user._id, status: { $in: ['creating', 'approval_pending', 'failed'] } }, { $set: { status: 'cancelled', processingLeaseExpiresAt: null } }, { returnDocument: 'after' });
   if (!attempt) throw error('PAYPAL_PURCHASE_NOT_CANCELLABLE', 'Purchase cannot be cancelled', 409);

@@ -7,7 +7,7 @@ const schema = new mongoose.Schema({
   planId: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan', required: true },
   planSlug: { type: String, required: true, trim: true, lowercase: true },
   billingPeriod: { type: String, required: true, enum: ['monthly', 'annual', 'custom'] },
-  status: { type: String, required: true, enum: ['active', 'scheduled', 'expired', 'revoked', 'refunded'], index: true },
+  status: { type: String, required: true, enum: ['active', 'scheduled', 'expired', 'revoked', 'refunded', 'superseded'], index: true },
   source: { type: String, required: true, enum: ['paypal', 'admin'], index: true },
   startsAt: { type: Date, required: true },
   endsAt: { type: Date, default: null },
@@ -19,6 +19,13 @@ const schema = new mongoose.Schema({
   activatedAt: Date,
   expiredAt: Date,
   revokedAt: Date,
+  supersededAt: Date,
+  supersededBy: { type: mongoose.Schema.Types.ObjectId, ref: 'PlanEntitlement' },
+  supersededReason: String,
+  adminOperationId: String,
+  adminQuoteId: String,
+  paidAmount: String,
+  paidCurrency: String,
   refundEventId: { type: String, trim: true },
   adminReason: { type: String, trim: true, maxlength: 500 },
   assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
@@ -30,5 +37,6 @@ schema.index({ userId: 1, status: 1 }, { unique: true,
   partialFilterExpression: { status: 'active' } });
 schema.index({ userId: 1, status: 1, startsAt: 1, endsAt: 1 });
 schema.index({ status: 1, endsAt: 1 });
+schema.index({ adminOperationId: 1 }, { unique: true, partialFilterExpression: { adminOperationId: { $type: 'string' } } });
 
 module.exports = mongoose.model('PlanEntitlement', schema);

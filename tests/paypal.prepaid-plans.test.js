@@ -17,7 +17,7 @@ const purchaseService = require('../src/services/paypal/paypalPlanPurchase.servi
 const { connectInMemoryMongo, disconnectInMemoryMongo, clearDatabase } = require('./helpers/testServer');
 
 describe('fixed-term prepaid plan entitlements', () => {
-  beforeAll(async () => { await connectInMemoryMongo(); await Promise.all([
+  beforeAll(async () => { await connectInMemoryMongo({ replicaSet: true }); await Promise.all([
     PaymentPurchaseAttempt.init(), PlanEntitlement.init(), PlanEntitlementLock.init(), Notification.init()]); });
   afterAll(disconnectInMemoryMongo);
   let free; let essential; let pro; let user;

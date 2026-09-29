@@ -38,7 +38,8 @@ router.get('/me', verifyJwtToken, subscriptionController.getMySubscription);
 router.get('/checkout-plan', verifyJwtToken, requireRole('teacher'), subscriptionController.getCheckoutPlan);
 const prepaidBody = [body('planCode').isString().trim().isLength({ min: 1, max: 80 }),
   body('billingPeriod').isIn(['monthly', 'annual']), body('checkoutAttemptId').isUUID(4),
-  body().custom(value => Object.keys(value || {}).every(key => ['planCode', 'billingPeriod', 'checkoutAttemptId'].includes(key))),
+  body('quoteId').optional().isMongoId(),
+  body().custom(value => Object.keys(value || {}).every(key => ['planCode', 'billingPeriod', 'checkoutAttemptId', 'quoteId'].includes(key))),
   body('price').not().exists(), body('currency').not().exists(), body('features').not().exists(), body('credits').not().exists()];
 router.post('/paypal/orders/create', verifyJwtToken, requireRole('teacher'),
   createUserRateLimiter({ windowMs: 5 * 60 * 1000, limit: 10, event: 'BILLING_RATE_LIMITED', reason: 'paypal_plan_order' }),
@@ -192,7 +193,8 @@ router.post(
   body('endsAt').optional({ nullable: true }).isISO8601(),
   body('reason').optional().isString().trim().isLength({ min: 1, max: 500 }),
   handleValidationResult,
-  subscriptionController.setUserSubscription
+  (_req, res) => res.status(409).json({ success: false, code: 'ADMIN_PLAN_CONFIRMATION_REQUIRED',
+    message: 'Use the admin billing preview and confirmation workflow to change a plan.' })
 );
 
 router.post('/paypal/change-plan/claim-sdk', verifyJwtToken, requireRole('teacher'),

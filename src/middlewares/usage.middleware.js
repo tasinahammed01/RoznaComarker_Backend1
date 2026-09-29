@@ -57,6 +57,18 @@ async function assignPlanToUser(user, planDoc, startedAt) {
 async function ensureActivePlan(user) {
   const freePlan = await getFreePlan();
 
+  // Cancelled/ended legacy billing may coexist with an explicitly confirmed
+  // manual entitlement. Active recurring billing still has its original precedence.
+  if (user.role === 'teacher' && user.$__ && user.paypalSubscriptionStatus
+    && !['ACTIVE', 'SUSPENDED', 'APPROVAL_PENDING', 'APPROVED'].includes(String(user.paypalSubscriptionStatus).toUpperCase())
+    && await PlanEntitlement.exists({ userId: user._id, source: 'admin', adminOperationId: { $type: 'string' } })) {
+    const manual = await resolveEffectivePlan(user);
+    if (manual?.plan) {
+      user.plan = manual.plan._id; user.planStartedAt = manual.entitlement?.startsAt || user.planStartedAt;
+      user.planExpiresAt = manual.entitlement?.endsAt || null; return manual.plan;
+    }
+  }
+
   if (user.role === 'teacher' && user.paypalSubscriptionStatus) {
     const paypalStatus = String(user.paypalSubscriptionStatus || '').toUpperCase();
     const paypalPeriodEnd = user.paypalCurrentPeriodEnd ? new Date(user.paypalCurrentPeriodEnd) : null;

@@ -195,6 +195,7 @@ app.use("/api/feedback", feedbackRoutes);
 app.use("/api/pdf", pdfRoutes);
 app.use("/api/plans", plansRoutes);
 app.use("/api/subscription", subscriptionRoutes);
+app.use('/api/billing', require('./routes/billing.routes'));
 app.use("/api/writing-corrections", writingCorrectionsRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/rubrics", rubricRoutes);

@@ -43,8 +43,9 @@ async function release(userId, owner) {
   await PlanEntitlementLock.deleteOne({ userId, owner });
 }
 
-async function syncCompatibility(userId, entitlement, plan) {
-  await User.updateOne({ _id: userId }, { $set: { plan: plan._id, planStartedAt: entitlement?.startsAt || new Date(),
+async function syncCompatibility(userId, entitlement, plan, observedUser = null) {
+  await User.updateOne({ _id: userId, ...(observedUser ? { plan: observedUser.plan || null,
+    planStartedAt: observedUser.planStartedAt || null } : {}) }, { $set: { plan: plan._id, planStartedAt: entitlement?.startsAt || new Date(),
     planExpiresAt: entitlement?.endsAt || null } });
 }
 
@@ -56,7 +57,11 @@ async function freePlan() {
 
 async function expireAndPromote(user, now = new Date()) {
   // Provider-recurring accounts are deliberately outside prepaid expiry.
-  if (recurringPaidThrough(user, now)) return null;
+  if (recurringPaidThrough(user, now)) {
+    const manualOverride = String(user.paypalSubscriptionStatus).toUpperCase() !== 'ACTIVE'
+      && await PlanEntitlement.exists({ userId: user._id, source: 'admin', adminOperationId: { $type: 'string' } });
+    if (!manualOverride) return null;
+  }
   await PlanEntitlement.updateMany({ userId: user._id, status: { $in: ['active', 'scheduled'] },
     endsAt: { $ne: null, $lte: now } }, { $set: { status: 'expired', expiredAt: now } });
   const due = await PlanEntitlement.findOneAndUpdate({ userId: user._id, status: 'scheduled', startsAt: { $lte: now },
@@ -66,10 +71,10 @@ async function expireAndPromote(user, now = new Date()) {
     $or: [{ endsAt: null }, { endsAt: { $gt: now } }] }).sort({ startsAt: -1 });
   if (current) {
     const plan = await Plan.findById(current.planId);
-    if (plan?.isActive) { await syncCompatibility(user._id, current, plan); return { entitlement: current, plan }; }
+    if (plan?.isActive) { await syncCompatibility(user._id, current, plan, user); return { entitlement: current, plan }; }
   }
   const fallback = await freePlan();
-  await syncCompatibility(user._id, null, fallback);
+  await syncCompatibility(user._id, null, fallback, user);
   return { entitlement: null, plan: fallback };
 }
 
@@ -110,22 +115,9 @@ async function reconcileRefund({ attempt, eventId, now = new Date() }) {
   return entitlement || PlanEntitlement.findOne({ paymentAttemptId: attempt._id });
 }
 
-async function assignAdmin({ user, plan, startsAt = new Date(), endsAt = null, assignedBy, reason }) {
-  const start = new Date(startsAt); const end = endsAt ? new Date(endsAt) : null;
-  if (!Number.isFinite(start.getTime()) || (end && (!Number.isFinite(end.getTime()) || end <= start))) {
-    throw Object.assign(new Error('Invalid entitlement dates'), { code: 'PLAN_DATES_INVALID', statusCode: 400 });
-  }
-  const owner = await acquire(user._id, `admin:${crypto.randomUUID()}`);
-  try {
-    await PlanEntitlement.updateMany({ userId: user._id, source: 'admin', status: { $in: ['active', 'scheduled'] } },
-      { $set: { status: 'revoked', revokedAt: new Date() } });
-    const now = new Date(); const status = start > now ? 'scheduled' : 'active';
-    const entitlement = await PlanEntitlement.create({ userId: user._id, planId: plan._id, planSlug: plan.slug,
-      billingPeriod: 'custom', status, source: 'admin', startsAt: start, endsAt: end, autoRenew: false,
-      assignedBy, adminReason: reason, ...(status === 'active' ? { activatedAt: now } : {}) });
-    if (status === 'active') await syncCompatibility(user._id, entitlement, plan);
-    return entitlement;
-  } finally { await release(user._id, owner); }
+async function assignAdmin() {
+  throw Object.assign(new Error('Use the audited billing preview and confirmation workflow.'),
+    { code: 'ADMIN_PLAN_CONFIRMATION_REQUIRED', statusCode: 409 });
 }
 
 async function processExpiriesAndReminders(now = new Date()) {
@@ -145,8 +137,8 @@ async function processExpiriesAndReminders(now = new Date()) {
   for (const item of expired) {
     const user = await User.findById(item.userId);
     if (!user) continue;
-    if (recurringPaidThrough(user, now)) continue;
     const effective = await expireAndPromote(user, now);
+    if (!effective) continue;
     await createNotification({ recipientId: item.userId, type: 'plan_expired', category: 'ACCOUNT', priority: 'NORMAL',
       title: `Your ${item.planSlug} plan has expired`,
       description: effective?.plan?.slug === 'free'

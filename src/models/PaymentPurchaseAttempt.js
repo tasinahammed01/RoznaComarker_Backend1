@@ -17,6 +17,9 @@ const schema = new mongoose.Schema({
   planSlug: { type: String, trim: true, lowercase: true },
   billingPeriod: { type: String, enum: ['monthly', 'annual'] },
   expectedAmount: { type: String, required: true, trim: true },
+  pricingSnapshot: { type: mongoose.Schema.Types.Mixed, immutable: true },
+  promoState: { type: String, enum: ['reserved', 'consumed', 'released'] },
+  checkoutExpiresAt: Date,
   currency: { type: String, required: true, trim: true, uppercase: true },
   providerOrderId: { type: String, trim: true },
   providerCaptureId: { type: String, trim: true },
@@ -33,6 +36,8 @@ const schema = new mongoose.Schema({
   lastAttemptAt: { type: Date, default: Date.now },
   processingLeaseExpiresAt: Date,
   capturedAt: Date,
+  captureAttemptedAt: Date,
+  prorationAppliedAt: Date,
   creditedAt: Date,
   refundedAt: Date,
   creditTransactionId: { type: mongoose.Schema.Types.ObjectId, ref: 'CreditTransaction' }
@@ -40,6 +45,8 @@ const schema = new mongoose.Schema({
 }, { timestamps: true });
 
 schema.index({ provider: 1, attemptId: 1 }, { unique: true });
+schema.index({ purpose: 1, status: 1, checkoutExpiresAt: 1 });
+schema.index({ 'pricingSnapshot.historicalPaymentId': 1, status: 1 });
 schema.index({ provider: 1, providerOrderId: 1 }, { unique: true,
   partialFilterExpression: { providerOrderId: { $type: 'string' } } });
 schema.index({ provider: 1, providerCaptureId: 1 }, { unique: true,
