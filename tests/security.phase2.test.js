@@ -29,7 +29,7 @@ describe('Security Hardening Phase 2', () => {
     expect(blocked.body).toEqual({
       success: false,
       code: 'RATE_LIMITED',
-      message: 'Too many requests. Please try again later.'
+      message: 'Too many requests. Please wait and try again.'
     });
     expect(blocked.headers).toHaveProperty('ratelimit');
   });

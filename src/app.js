@@ -71,7 +71,8 @@ const { createSwaggerSpec } = require("./config/swagger");
 const { createCorsMiddleware } = require("./middlewares/cors.middleware");
 const {
   createGlobalRateLimiter,
-  createSensitiveRateLimiter,
+  createCoarseIpRateLimiter,
+  createAuthenticatedTrafficLimiter,
   createUserRateLimiter,
   isBaselineExcludedRequest,
 } = require("./middlewares/rateLimit.middleware");
@@ -148,13 +149,14 @@ app.use(hpp());
 
 app.use(accessLog());
 
-// Generous baseline protection for ordinary API traffic. PayPal's raw-body
-// webhook is mounted above this middleware. Health and long-lived SSE traffic
-// have different semantics and are excluded here; SSE reconnection is limited
-// separately at its token-issuance boundary.
+// Coarse IP protection plus separate anonymous and verified-JWT read/write
+// buckets. PayPal's raw-body webhook is mounted above these guards. Health,
+// login, and long-lived SSE have dedicated semantics/limits.
+app.use("/api", createCoarseIpRateLimiter({ skip: isBaselineExcludedRequest }));
 app.use("/api", createGlobalRateLimiter({
   skip: isBaselineExcludedRequest,
 }));
+app.use("/api", createAuthenticatedTrafficLimiter({ skip: isBaselineExcludedRequest }));
 
 // Public presentation assets only. Student/teacher artifacts are served by
 // authenticated /files routes below after an ownership/relationship check.
@@ -214,7 +216,6 @@ app.use('/api/admin', retentionAdminRoutes);
 
 app.post(
   "/upload",
-  createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole("student"),
   createUserRateLimiter({

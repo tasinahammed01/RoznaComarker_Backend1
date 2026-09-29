@@ -87,7 +87,6 @@ const noStore = (_req, res, next) => {
  */
 router.post(
   '/qr/:qrToken',
-  createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('student'),
   uploadUserLimiter,
@@ -117,7 +116,6 @@ router.post(
 
 router.post(
   '/upload',
-  createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('student'),
   uploadUserLimiter,
@@ -186,7 +184,6 @@ router.post(
  */
 router.post(
   '/:assignmentId',
-  createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('student'),
   uploadUserLimiter,

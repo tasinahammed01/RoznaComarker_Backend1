@@ -17,6 +17,19 @@ const app = require('../src/app');
 const { connectInMemoryMongo, disconnectInMemoryMongo, clearDatabase } = require('./helpers/testServer');
 const { signTestJwt } = require('./helpers/auth');
 
+// Feedback read tests need a stable in-progress submission. Posting an invalid
+// miniature PDF starts the real asynchronous OCR worker, which can fail and
+// change the canonical state to blocked before the GET assertion runs.
+const createProcessingSubmission = ({ student, assignment, classDoc }) => Submission.create({
+  student: student._id,
+  assignment: assignment._id,
+  class: classDoc._id,
+  status: 'submitted',
+  submittedAt: new Date(),
+  ocrStatus: 'completed',
+  correctionStatus: 'processing'
+});
+
 describe('Submissions & Feedback APIs', () => {
   beforeAll(async () => {
     await connectInMemoryMongo();
@@ -169,12 +182,8 @@ describe('Submissions & Feedback APIs', () => {
     const teacherToken = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
     const studentToken = signTestJwt({ id: student._id, firebaseUid: student.firebaseUid, role: student.role });
 
-    const submit = await request(app)
-      .post(`/api/submissions/${assignment._id}`)
-      .set('Authorization', `Bearer ${studentToken}`)
-      .attach('file', Buffer.from('%PDF-1.4\n%test\n'), { filename: 'test.pdf', contentType: 'application/pdf' });
-
-    const submissionId = submit.body.data._id;
+    const submission = await createProcessingSubmission({ student, assignment, classDoc });
+    const submissionId = submission._id;
 
     // Create legacy feedback with old maxScore values (all 5)
     const legacyFeedback = await SubmissionFeedback.create({
@@ -199,8 +208,6 @@ describe('Submissions & Feedback APIs', () => {
       aiFeedback: { perCategory: [], overallComments: '' },
       overriddenByTeacher: false
     });
-
-    await Submission.updateOne({ _id: submissionId }, { $set: { ocrStatus: 'completed', correctionStatus: 'processing' } });
 
     // Pending canonical evaluation must suppress the legacy record.
     const res = await request(app)
@@ -275,12 +282,8 @@ describe('Submissions & Feedback APIs', () => {
     const teacherToken = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
     const studentToken = signTestJwt({ id: student._id, firebaseUid: student.firebaseUid, role: student.role });
 
-    const submit = await request(app)
-      .post(`/api/submissions/${assignment._id}`)
-      .set('Authorization', `Bearer ${studentToken}`)
-      .attach('file', Buffer.from('%PDF-1.4\n%test\n'), { filename: 'test.pdf', contentType: 'application/pdf' });
-
-    const submissionId = submit.body.data._id;
+    const submission = await createProcessingSubmission({ student, assignment, classDoc });
+    const submissionId = submission._id;
 
     // Create feedback missing PRESENTATION category
     const feedbackWithoutPresentation = await SubmissionFeedback.create({
@@ -304,8 +307,6 @@ describe('Submissions & Feedback APIs', () => {
       aiFeedback: { perCategory: [], overallComments: '' },
       overriddenByTeacher: false
     });
-
-    await Submission.updateOne({ _id: submissionId }, { $set: { ocrStatus: 'completed', correctionStatus: 'processing' } });
 
     // GET feedback must not synthesize a default rubric while evaluation is pending.
     const res = await request(app)
@@ -347,14 +348,8 @@ describe('Submissions & Feedback APIs', () => {
     const teacherToken = signTestJwt({ id: teacher._id, firebaseUid: teacher.firebaseUid, role: teacher.role });
     const studentToken = signTestJwt({ id: student._id, firebaseUid: student.firebaseUid, role: student.role });
 
-    const submit = await request(app)
-      .post(`/api/submissions/${assignment._id}`)
-      .set('Authorization', `Bearer ${studentToken}`)
-      .attach('file', Buffer.from('%PDF-1.4\n%test\n'), { filename: 'test.pdf', contentType: 'application/pdf' });
-
-    const submissionId = submit.body.data._id;
-
-    await Submission.updateOne({ _id: submissionId }, { $set: { ocrStatus: 'completed', correctionStatus: 'processing' } });
+    const submission = await createProcessingSubmission({ student, assignment, classDoc });
+    const submissionId = submission._id;
 
     // GET feedback should return the canonical pending structure.
     const res = await request(app)

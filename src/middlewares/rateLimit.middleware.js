@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const logger = require('../utils/logger');
+const { verifyJwt } = require('../utils/jwt');
 
 function toPositiveInt(value, fallback) {
   const parsed = Number(value);
@@ -15,6 +16,20 @@ function safeHash(value) {
 
 function normalizedIp(req) {
   return ipKeyGenerator(String(req.ip || req.socket?.remoteAddress || 'unknown'));
+}
+
+// The global guard runs before route authentication. Only a server-verified JWT
+// may select a user bucket; an arbitrary header/body/query value never can.
+function verifiedUserId(req) {
+  if (req.rateLimitUserId !== undefined) return req.rateLimitUserId;
+  const match = /^Bearer (\S+)$/.exec(String(req.headers.authorization || ''));
+  try {
+    const id = match && String(verifyJwt(match[1]).id || '');
+    req.rateLimitUserId = id && /^[a-f\d]{24}$/i.test(id) ? id : null;
+  } catch {
+    req.rateLimitUserId = null;
+  }
+  return req.rateLimitUserId;
 }
 
 function normalizedEmail(req) {
@@ -50,7 +65,7 @@ function buildRateLimitConfig({ windowMs, limit, keyGenerator, event = 'RATE_LIM
       return res.status(429).json({
         success: false,
         code: responseCode,
-        message: responseMessage || 'Too many requests. Please try again later.'
+        message: responseMessage || 'Too many requests. Please wait and try again.'
       });
     }
   };
@@ -70,7 +85,29 @@ function createGlobalRateLimiter(options = {}) {
     keyGenerator: normalizedIp,
     event: 'API_RATE_LIMITED',
     reason: 'baseline_ip',
+    skip: req => Boolean(options.skip?.(req) || verifiedUserId(req))
+  });
+}
+
+function createCoarseIpRateLimiter(options = {}) {
+  return createLimiter({
+    windowMs: toPositiveInt(process.env.RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
+    limit: toPositiveInt(process.env.COARSE_IP_RATE_LIMIT_MAX, 6000),
+    keyGenerator: normalizedIp,
+    event: 'API_RATE_LIMITED', reason: 'coarse_ip',
     skip: options.skip
+  });
+}
+
+function createAuthenticatedTrafficLimiter(options = {}) {
+  return createLimiter({
+    windowMs: toPositiveInt(process.env.RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
+    limit: req => ['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+      ? toPositiveInt(process.env.AUTH_READ_RATE_LIMIT_MAX, 600)
+      : toPositiveInt(process.env.AUTH_WRITE_RATE_LIMIT_MAX, 180),
+    keyGenerator: req => `user:${verifiedUserId(req)}:${['GET', 'HEAD', 'OPTIONS'].includes(req.method) ? 'read' : 'write'}`,
+    event: 'API_RATE_LIMITED', reason: 'authenticated_user',
+    skip: req => Boolean(options.skip?.(req) || !verifiedUserId(req))
   });
 }
 
@@ -135,6 +172,8 @@ module.exports = {
   auditRateLimit,
   createAuthIpRateLimiter,
   createEmailRateLimiter,
+  createCoarseIpRateLimiter,
+  createAuthenticatedTrafficLimiter,
   createGlobalRateLimiter,
   createSensitiveRateLimiter,
   createUserRateLimiter,

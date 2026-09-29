@@ -18,7 +18,7 @@ const { body } = require('express-validator');
 const { validationResult } = require('express-validator');
 const { tryDeleteUploadedFile } = require('../middlewares/usage.middleware');
 
-const { createSensitiveRateLimiter, createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
 
 const router = express.Router();
 const uploadUserLimiter = createUserRateLimiter({
@@ -48,7 +48,6 @@ function handleUploadValidationResult(req, res, next) {
 
 router.post(
   '/original',
-  createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('student'),
   uploadUserLimiter,
@@ -65,7 +64,6 @@ router.post(
 
 router.post(
   '/processed',
-  createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('teacher'),
   uploadUserLimiter,
@@ -81,7 +79,6 @@ router.post(
 
 router.post(
   '/transcript',
-  createSensitiveRateLimiter(),
   verifyJwtToken,
   requireRole('teacher'),
   uploadUserLimiter,
@@ -93,7 +90,6 @@ router.post(
 
 router.post(
   '/flashcard-image',
-  createSensitiveRateLimiter({ event: 'UPLOAD_RATE_LIMITED', reason: 'upload_ip' }),
   verifyJwtToken,
   uploadUserLimiter,
   setUploadType('flashcard'),

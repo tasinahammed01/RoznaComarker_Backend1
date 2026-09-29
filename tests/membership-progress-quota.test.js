@@ -84,6 +84,16 @@ describe('current roster progress and student quota', () => {
       .set('Authorization', `Bearer ${teacher.token}`);
     expect(history.status).toBe(200);
     expect(history.body.data).toHaveLength(3);
+    const cards = await request(app).get(`/api/submissions/assignment/${essay._id}?view=cards`)
+      .set('Authorization', `Bearer ${teacher.token}`);
+    expect(cards.status).toBe(200);
+    expect(cards.body.data).toHaveLength(3);
+    expect(cards.body.data[0]).toEqual(expect.objectContaining({ _id: expect.any(String),
+      student: expect.objectContaining({ _id: expect.any(String) }) }));
+    expect(cards.body.data[0]).not.toHaveProperty('ocrPages');
+    expect(cards.body.data[0]).not.toHaveProperty('writingCorrections');
+    expect(cards.body.data[0]).not.toHaveProperty('files');
+    expect(JSON.stringify(cards.body).length).toBeLessThan(JSON.stringify(history.body).length);
     const essayActivity = await request(app).get(`/api/submissions/assignment/${essay._id}?view=activity`)
       .set('Authorization', `Bearer ${teacher.token}`);
     expect(essayActivity.status).toBe(200);

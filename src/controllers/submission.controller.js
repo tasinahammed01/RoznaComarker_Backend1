@@ -896,6 +896,16 @@ async function getSubmissionsByAssignment(req, res) {
       return sendSuccess(res, activity);
     }
 
+    // Submission cards need identity, status, and timestamps only. Detailed
+    // assessment/OCR fields remain available through the existing detail view.
+    if (req.query?.view === 'cards') {
+      const cards = await submissionQuery
+        .select('_id student class submittedAt createdAt updatedAt evaluationStatus')
+        .populate('student', '_id email displayName photoURL role')
+        .lean();
+      return sendSuccess(res, cards);
+    }
+
     const submissions = await submissionQuery
       .populate('student', '_id email displayName photoURL role')
       .populate({
