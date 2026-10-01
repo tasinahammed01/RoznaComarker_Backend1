@@ -25,7 +25,7 @@ router.post('/quote', requireRole('teacher'), limit,
 router.use('/admin', requireRole('admin'), limit);
 router.get('/admin/plans', handle(async () => {
   const plans = await Plan.find({ isActive: true, slug: { $regex: /^(?:free|(?:essential|pro)(?:_(?:monthly|annual))?)$/ } })
-    .select('name slug display.title price annualPrice currency billingInterval displayOrder').sort({ displayOrder: 1, slug: 1 }).lean();
+    .select('name slug display.title price annualPrice currency billingInterval billingType displayOrder').sort({ displayOrder: 1, slug: 1 }).lean();
   return plans.filter(plan => Billing.adminTier(plan.slug) && (plan.slug === 'free' || Billing.adminPeriods(plan).length))
     .map(plan => ({ slug: plan.slug, name: plan.display?.title || plan.name, tier: Billing.adminTier(plan.slug),
       periods: Billing.adminPeriods(plan), promoEligible: plan.slug !== 'free', price: plan.price,

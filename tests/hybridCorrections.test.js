@@ -178,6 +178,39 @@ describe('safe hybrid correction policy', () => {
       .toThrow(expect.objectContaining({ validationStage: 'canonical_validation' }));
   });
 
+  test('rejects a fees to feels spelling claim on the canonical feels word', () => {
+    const transcript = 'It feels right.';
+    const spans = [{ wordId: 'word_1', fileId: 'file-a', page: 1, start: 3, end: 8,
+      bbox: { x: 10, y: 20, w: 8, h: 3 } }];
+    const candidate = finding({ category: 'MECHANICS', symbol: 'SP', quotedText: 'fees',
+      suggestedText: 'feels' });
+    expect(() => semantic.validateCorrections([candidate], { transcript, legend, spans }))
+      .toThrow(expect.objectContaining({ validationStage: 'canonical_validation' }));
+    const forged = canonical.normalizeCorrection({ ...candidate, startChar: 3, endChar: 8 },
+      transcript, spans, writing.defaultLegend(), 'AI');
+    expect(forged).toBeNull();
+  });
+
+  test('rejects no-op spelling and accepts exact spelling, grammar, and punctuation changes', () => {
+    const transcript = 'recieve students is ready.';
+    const spans = [
+      { wordId: 'word_1', fileId: 'file-a', page: 1, start: 0, end: 7 },
+      { wordId: 'word_2', fileId: 'file-a', page: 1, start: 8, end: 16 },
+      { wordId: 'word_3', fileId: 'file-a', page: 1, start: 17, end: 19 },
+      { wordId: 'word_4', fileId: 'file-a', page: 1, start: 20, end: 26 }
+    ];
+    const candidates = [
+      finding({ category: 'MECHANICS', symbol: 'SP', quotedText: 'recieve', suggestedText: 'receive' }),
+      finding({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'students is', suggestedText: 'students are' }),
+      finding({ category: 'MECHANICS', symbol: 'P', quotedText: 'ready.', suggestedText: 'ready!' }),
+      finding({ category: 'MECHANICS', symbol: 'SP', quotedText: 'recieve', suggestedText: 'recieve' })
+    ];
+    const result = semantic.validateCorrections(candidates, { transcript, legend, spans });
+    expect(result.corrections.map((item) => item.symbol)).toEqual(['SP', 'AGR', 'P']);
+    expect(result.diagnostics.rejectionReasons.NO_OP_CORRECTION).toBe(1);
+    expect(result.corrections[0].wordIds).toEqual(['word_1']);
+  });
+
   test('reports safe Content rejection diagnostics for confidence and grounding', () => {
     const result = semantic.validateCorrections([
       finding({ quotedText: 'claim', confidence: 0.70 }),
@@ -588,7 +621,7 @@ describe('deterministic canonical hybrid merge', () => {
       startChar: 0, endChar: 11, message: 'Agreement.', suggestedText: 'students are', confidence: 0.99 },
     'students is here.', [], legend, 'AI');
     const art = canonical.normalizeCorrection({ category: 'GRAMMAR', symbol: 'ART', quotedText: 'here',
-      startChar: 12, endChar: 16, message: 'Article issue.', suggestedText: 'here', confidence: 0.95 },
+      startChar: 12, endChar: 16, message: 'Article issue.', suggestedText: 'the here', confidence: 0.95 },
     'students is here.', [], legend, 'AI');
     const merged = canonical.mergeCanonicalCorrections({ languageToolCorrections: [], aiCorrections: [agr, art] });
     expect(merged.corrections).toHaveLength(2);

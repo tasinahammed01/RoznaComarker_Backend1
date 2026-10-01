@@ -16,4 +16,12 @@ function prorate(paid, startsAt, endsAt, now) {
   // Round unused credit down, never giving more value than was paid.
   return Number(BigInt(paid) * BigInt(remaining) / BigInt(duration));
 }
-module.exports = { fail, minor, money, prorate };
+function planMinor(plan, billingPeriod) {
+  if (!['monthly', 'annual'].includes(billingPeriod)) throw fail('PLAN_PERIOD_INVALID', 'Billing period is invalid.');
+  const variant = /_(monthly|annual)$/.exec(String(plan.slug));
+  if (variant && variant[1] !== billingPeriod) throw fail('PLAN_UNAVAILABLE', 'Select an available plan and term.');
+  // Separate catalog variants price their own term in price. Combined plans
+  // retain distinct price/annualPrice fields; never guess a missing annual price.
+  return minor(variant ? plan.price : billingPeriod === 'annual' ? plan.annualPrice : plan.price);
+}
+module.exports = { fail, minor, money, prorate, planMinor };

@@ -11,6 +11,7 @@ const { trustedMoney, sameMoney, safeApprovalUrl, safeFailureCode,
 const logger = require('../../utils/logger');
 const Entitlements = require('../planEntitlement.service');
 const Billing = require('../planBilling.service');
+const Money = require('../billingMoney.service');
 
 const LEASE_MS = 120000;
 const error = (code, message, statusCode = 400) => Object.assign(new Error(message), { code, statusCode });
@@ -56,7 +57,7 @@ async function trustedPlan(planSlug, billingPeriod) {
   if (!slug || ['free', 'custom', 'institution'].includes(slug)) throw error('PLAN_NOT_PURCHASABLE', 'Plan is not available for checkout');
   const plan = await Plan.findOne({ slug, isActive: true });
   if (!plan) throw error('PLAN_NOT_FOUND', 'Plan not found', 404);
-  const amount = billingPeriod === 'annual' ? plan.annualPrice : plan.price;
+  const amount = Money.money(Money.planMinor(plan, billingPeriod));
   const money = trustedMoney(amount, plan.currency);
   return { plan, money };
 }

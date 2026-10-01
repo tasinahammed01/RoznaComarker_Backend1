@@ -9,7 +9,7 @@ const Account = require('../models/BillingAccount');
 const Quote = require('../models/BillingQuote');
 const Audit = require('../models/AdminAuditLog');
 const Promo = require('./promoCode.service');
-const { fail, minor, money, prorate } = require('./billingMoney.service');
+const { fail, minor, money, prorate, planMinor } = require('./billingMoney.service');
 const terms = () => require('./planEntitlement.service');
 const QUOTE_MS = 10 * 60 * 1000;
 const ORDER_MS = 30 * 60 * 1000;
@@ -17,12 +17,7 @@ const rank = slug => ({ free: 0, essential: 1, pro: 2 })[String(slug).replace(/_
 const recurring = user => Boolean(user.paypalSubscriptionId && ['ACTIVE', 'SUSPENDED', 'APPROVAL_PENDING', 'APPROVED'].includes(String(user.paypalSubscriptionStatus).toUpperCase()));
 const recurringMessage = 'This user has an active legacy recurring PayPal subscription. Review or resolve the recurring billing before manually changing the plan.';
 const adminTier = slug => /^(free|essential|pro)(?:_(monthly|annual))?$/.exec(String(slug || ''))?.[1] || null;
-const adminPeriods = plan => {
-  if (plan.slug === 'free') return [];
-  if (plan.slug.endsWith('_monthly')) return ['monthly'];
-  if (plan.slug.endsWith('_annual')) return ['annual'];
-  return [Number(plan.price) > 0 ? 'monthly' : null, Number(plan.annualPrice) > 0 ? 'annual' : null].filter(Boolean);
-};
+const { planPeriods: adminPeriods } = require('./planCatalogPeriods.service');
 
 async function transaction(work) {
   const session = await mongoose.startSession();
@@ -68,7 +63,7 @@ async function createQuote({ userId, planSlug, billingPeriod, promoCode, now = n
   if ((ctx.future.length && (!ctx.current || ctx.current.planSlug === 'free'))
     || ctx.entitlements.filter(item => new Date(item.startsAt) <= now).length > 1)
     throw fail('SCHEDULED_PLAN_REVIEW_REQUIRED', 'Review overlapping or future paid terms before starting a new plan.', 409);
-  const base = minor(billingPeriod === 'annual' ? plan.annualPrice : plan.price);
+  const base = planMinor(plan, billingPeriod);
   if (base < 1) throw fail('PLAN_PRICE_INVALID', 'Plan checkout requires a positive price.');
   let transition = 'purchase'; let credit = 0; let historicalPayment = null;
   if (ctx.current && ctx.current.planSlug !== 'free') {

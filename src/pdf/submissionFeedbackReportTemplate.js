@@ -24,15 +24,15 @@ function transcript(page) { return page.transcript.highlightedSegments.map((segm
 function correctionBody(correction) {
   const type = correction.symbolLabel || correction.category || correction.symbol;
   const explanation = correction.message && correction.message !== type ? `${type} - ${correction.message}` : type;
-  return `<div class="correction-line"><b class="symbol" style="--symbol-color:${correction.color}">#${pad(correction.displayNumber)} &middot; ${esc(correction.symbol)}</b><span class="correction-change">${correction.quotedText ? `&quot;${esc(correction.quotedText)}&quot;` : 'Marked passage'} &rarr; &quot;${esc(correction.suggestedText || 'Review the marked passage.')}&quot;</span></div><div class="correction-explanation">${esc(explanation)}</div>`;
+  return `<div class="correction-line"><b class="symbol" style="--symbol-color:${correction.color}">#${pad(correction.displayNumber)} &middot; ${esc(correction.symbol)} &middot; ${esc(correction.category)}</b><span class="correction-change">${correction.quotedText ? `&quot;${esc(correction.quotedText)}&quot;` : 'Marked passage'} &rarr; &quot;${esc(correction.suggestedText || 'Review the marked passage.')}&quot;</span></div><div class="correction-explanation">${esc(explanation)}</div>`;
 }
 function correctionRows(page) { return page.corrections.map((correction) => `<tr data-correction-id="${esc(correction.reportId || correction.id || '')}"><td>${correctionBody(correction)}</td></tr>`).join(''); }
 function scoreRows(vm) { return vm.categoryScores.map((item) => `<div class="score-row"><div><b>${esc(item.category)}</b><small>${item.issueCount == null ? 'Provisional' : `${item.issueCount} issues`}</small></div><div class="bar"><i style="width:${item.percentage}%"></i></div><strong>${item.score}/${item.maxScore}</strong></div>`).join(''); }
 function feedbackCard(item, type, correctionRefs) {
   const examples = list(item.examples).slice(0, 2).map((example) => {
-    const exact = correctionRefs.get(`${item.category || ''}\u0000${example.quotedText || ''}`) || correctionRefs.get(`\u0000${example.quotedText || ''}`);
+    const exact = correctionRefs.get(`${String(item.category || '').toUpperCase()}\u0000${example.quotedText || ''}\u0000${example.suggestedText || ''}`);
     return exact ? `<p class="muted">See <b>#${pad(exact.displayNumber)} &middot; ${esc(exact.symbol)}</b> in the canonical correction notes.</p>`
-      : `<p><strong>&quot;${esc(example.quotedText || '')}&quot;</strong><br>${esc(example.message || '')}${example.suggestedText ? `<br><em>Try: ${esc(example.suggestedText)}</em>` : ''}</p>`;
+      : `<p>${esc(example.message || '')}</p>`;
   }).join(''); const evidence = list(item.evidence).slice(0, 2).map((text) => `<p class="muted">${esc(text)}</p>`).join(''); return `<article class="feedback-card"><b>${esc(item.title || item.category || type)}${Number.isFinite(Number(item.score)) ? ` - ${item.score}/${item.maxScore}` : ''}${item.provisional ? ' - Provisional' : ''}</b>${item.issueCount != null ? `<p>${item.issueCount} issues</p>` : ''}<p>${esc(item.explanation || '')}</p>${examples}${evidence}</article>`;
 }
 
@@ -51,8 +51,8 @@ function renderSubmissionFeedbackReportHtml(vm) {
   const feedback = vm.detailedFeedback || {}; const improvements = list(feedback.areasForImprovement); const strengths = list(feedback.strengths);
   const overall = overallFeedback(vm);
   const correctionRefs = new Map(); for (const page of vm.submittedPages) for (const correction of page.corrections) {
-    const quote = correction.quotedText || ''; correctionRefs.set(`${correction.category || ''}\u0000${quote}`, correction);
-    if (!correctionRefs.has(`\u0000${quote}`)) correctionRefs.set(`\u0000${quote}`, correction);
+    const key = `${correction.category || ''}\u0000${correction.quotedText || ''}\u0000${correction.suggestedText || ''}`;
+    correctionRefs.set(key, correctionRefs.has(key) ? null : correction);
   }
   const totalCorrections = vm.submittedPages.reduce((sum, page) => sum + page.corrections.length, 0);
   const feedbackPageClass = totalCorrections <= 20 ? ' evidence-feedback' : '';

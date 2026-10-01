@@ -4,6 +4,7 @@ const Usage = require('../models/PromoUsage');
 const Plan = require('../models/Plan');
 const Audit = require('../models/AdminAuditLog');
 const { fail, minor, money } = require('./billingMoney.service');
+const { planPeriods } = require('./planCatalogPeriods.service');
 const CURRENCIES = new Set(['USD', 'EUR', 'GBP', 'CAD', 'AUD']);
 function normalizeCode(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{2,40}$/.test(value.trim()))
@@ -82,10 +83,26 @@ async function save(input, actor, id, session) {
   if (!Array.isArray(input.plans) || input.plans.length > 30 || input.plans.some(p => typeof p !== 'string' || !/^[a-z0-9_-]{1,80}$/.test(p)))
     throw fail('PROMO_INPUT', 'Invalid plan restrictions.');
   const plans = [...new Set(input.plans)];
-  if (plans.length && await Plan.countDocuments({ slug: { $in: plans }, isActive: true }).session(session) !== plans.length)
-    throw fail('PROMO_INPUT', 'One or more plans are unavailable.');
-  if (!Array.isArray(input.billingPeriods) || input.billingPeriods.some(p => !['monthly', 'annual'].includes(p))) throw fail('PROMO_INPUT', 'Invalid billing periods.');
-  values.plans = plans; values.billingPeriods = [...new Set(input.billingPeriods)];
+  const catalog = plans.length ? await Plan.find({ slug: { $in: plans }, isActive: true })
+    .select('slug price annualPrice billingInterval billingType').session(session).lean() : [];
+  if (catalog.length !== plans.length || catalog.some(plan => !planPeriods(plan).length))
+    throw fail('PROMO_INPUT', 'One or more paid plans are unavailable.');
+  const derived = plans.length ? [...new Set(catalog.flatMap(planPeriods))] : [];
+  const supplied = Object.prototype.hasOwnProperty.call(input, 'billingPeriods');
+  if (supplied && (!Array.isArray(input.billingPeriods) || input.billingPeriods.some(p => !['monthly', 'annual'].includes(p))))
+    throw fail('PROMO_INPUT', 'Invalid billing periods.');
+  // Old clients may still narrow periods. Empty means unrestricted, so normalize
+  // it to selected variants. New clients omit the field entirely.
+  let periods = supplied && input.billingPeriods.length ? [...new Set(input.billingPeriods)] : derived;
+  const unchangedPlans = before && plans.length === before.plans.length && plans.every(slug => before.plans.includes(slug));
+  if (!supplied && unchangedPlans && before.billingPeriods.length) {
+    periods = plans.length ? before.billingPeriods.filter(period => derived.includes(period)) : [...before.billingPeriods];
+    if (!periods.length) throw fail('PROMO_RESTRICTIONS_REVIEW', 'Existing plan and period restrictions conflict. Change the selected plans or review this promo before saving.');
+  }
+  if (plans.length && periods.some(period => !derived.includes(period)))
+    throw fail('PROMO_INPUT', 'Billing periods must match the selected paid plans.');
+  values.plans = plans;
+  values.billingPeriods = ['monthly', 'annual'].filter(period => periods.includes(period));
   const saved = before ? await Promo.findOneAndUpdate({ _id: before._id }, { $set: values, $inc: { revision: 1 } }, { session, returnDocument: 'after' })
     : (await Promo.create([{ ...values, createdBy: actor }], { session }))[0];
   await Audit.create([{ adminUserId: actor, action: before ? 'PROMO_UPDATE' : 'PROMO_CREATE', targetType: 'PromoCode',

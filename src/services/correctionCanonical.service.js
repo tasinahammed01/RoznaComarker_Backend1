@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { defaultLegend } = require('./writingCorrections.service');
 
-const VERSION = 'canonical-7-code-authoritative';
+const VERSION = 'canonical-8-source-grounded';
 const DEDUCTION_POLICY_VERSION = 'legend-diminishing-v1';
 const REPETITION_FACTORS = Object.freeze([1, 0.75, 0.55]);
 
@@ -40,6 +40,31 @@ function mapOffsetsToWords(correction, spans) {
     ocrLayoutSuspicious: matches.some((span) => span.ocrLayoutSuspicious === true) };
 }
 
+function correctionGroundingReason(raw, text, spans, range, mapped) {
+  const symbol = String(raw?.symbol || '').trim().toUpperCase();
+  const quotedText = String(raw?.quotedText || '');
+  const mappedSpans = (spans || []).filter((span) => (mapped?.wordIds || []).includes(span.wordId));
+  if (mappedSpans.length) {
+    const first = Math.min(...mappedSpans.map((span) => span.start));
+    const last = Math.max(...mappedSpans.map((span) => span.end));
+    if (range.start < first || range.end > last || text.slice(range.start, range.end) !== quotedText)
+      return 'CORRECTION_SOURCE_MISMATCH';
+    // A spelling claim must identify the whole OCR word. Partial and nearby matches
+    // can otherwise turn an already correct word into a false positive.
+    if (symbol === 'SP' && (mappedSpans.length !== 1
+      || text.slice(mappedSpans[0].start, mappedSpans[0].end) !== quotedText))
+      return 'CORRECTION_SOURCE_MISMATCH';
+  }
+  if (String(raw?.suggestedText || '').trim()) {
+    const normalize = (value) => String(value || '').normalize('NFKC').replace(/\s+/gu, ' ').trim();
+    const source = normalize(quotedText);
+    const suggestion = normalize(raw.suggestedText);
+    if (symbol === 'SP' ? source.toLocaleLowerCase() === suggestion.toLocaleLowerCase()
+      : source === suggestion) return 'NO_OP_CORRECTION';
+  }
+  return null;
+}
+
 function normalizeCorrection(raw, text, spans, legend, source) {
   const symbol = String(raw?.symbol || '').trim().toUpperCase();
   const meta = legendIndex(legend).get(symbol);
@@ -52,6 +77,7 @@ function normalizeCorrection(raw, text, spans, legend, source) {
   if (!range || range.end <= range.start || text.slice(range.start, range.end) !== quote) return null;
   const mapped = mapOffsetsToWords({ startChar: range.start, endChar: range.end }, spans) ||
     { fileId: null, page: null, wordIds: [], bboxList: [] };
+  if (correctionGroundingReason(raw, text, spans, range, mapped)) return null;
   const seed = [VERSION, source, canonicalCategory, symbol, range.start, range.end, quote].join('|');
   const mechanicsOcrSuspect = canonicalCategory === 'MECHANICS'
     && ['SP', 'CAP', 'P'].includes(symbol)
@@ -209,5 +235,6 @@ function canonicalFingerprint(items, sourceHash = '') {
 }
 
 module.exports = { VERSION, DEDUCTION_POLICY_VERSION, REPETITION_FACTORS, legendIndex,
-  getCanonicalCategoryForCorrectionCode, locateQuote, mapOffsetsToWords, normalizeCorrection, canonicalSort,
+  getCanonicalCategoryForCorrectionCode, locateQuote, mapOffsetsToWords, correctionGroundingReason,
+  normalizeCorrection, canonicalSort,
   mergeCanonicalCorrections, mergeCorrections, statistics, computeCanonicalCorrectionStatistics, canonicalFingerprint };

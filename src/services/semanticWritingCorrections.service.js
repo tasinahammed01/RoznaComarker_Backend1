@@ -381,7 +381,12 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
     }
     const normalized = canonical.normalizeCorrection({ ...canonicalItem, startChar: range.start, endChar: range.end },
       transcript, spans, legendObject, 'AI');
-    if (!normalized || (spans.length && !normalized.wordIds.length)) { reject('INVALID_LOCATION', canonicalCategory, item, candidateIndex, 'location_validation'); continue; }
+    if (!normalized || (spans.length && !normalized.wordIds.length)) {
+      const mapped = canonical.mapOffsetsToWords(range, spans);
+      const reason = canonical.correctionGroundingReason(canonicalItem, transcript, spans, range, mapped)
+        || 'INVALID_LOCATION';
+      reject(reason, canonicalCategory, item, candidateIndex, 'location_validation'); continue;
+    }
     accepted.push(normalized);
     perCategory[canonicalCategory] = (perCategory[canonicalCategory] || 0) + 1;
   }

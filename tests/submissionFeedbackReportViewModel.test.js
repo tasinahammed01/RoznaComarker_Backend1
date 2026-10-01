@@ -63,4 +63,26 @@ describe('sample submission report view model',()=>{
   test('new annotated image section starts on new page after page review details',()=>{const html=renderSubmissionFeedbackReportHtml(buildSubmissionFeedbackReportViewModel(fixture())); expect(html).toContain('.page-review-details+.annotated-image-page{break-before:page;page-break-before:always}');});
   test('feedback section has reduced margin to save vertical space',()=>{const html=renderSubmissionFeedbackReportHtml(buildSubmissionFeedbackReportViewModel(fixture())); expect(html).toContain('.feedback-section{break-before:auto;margin-top:3mm}'); expect(html).toContain('.feedback-section{page:auto;break-before:auto;page-break-before:auto;margin-top:3mm}');});
   test('correction table has reduced padding to save vertical space',()=>{const html=renderSubmissionFeedbackReportHtml(buildSubmissionFeedbackReportViewModel(fixture())); expect(html).toContain('.correction-table td{padding:.7mm 1.4mm}'); expect(html).toContain('.correction-explanation{margin-top:.3mm;line-height:1.14');});
+  test('PDF notes preserve canonical correction identity, code, category, source, and suggestion',()=>{
+    const data=fixture();
+    const vm=buildSubmissionFeedbackReportViewModel(data);
+    const html=renderSubmissionFeedbackReportHtml(vm);
+    for(const canonical of data.submission.writingCorrections){
+      const rendered=vm.submittedPages.flatMap(page=>page.corrections).find(item=>item.reportId===canonical.id);
+      expect(rendered).toMatchObject({symbol:canonical.symbol,category:canonical.category,
+        quotedText:canonical.quotedText,suggestedText:canonical.suggestedText});
+      expect(html).toContain(`data-correction-id="${canonical.id}"`);
+      expect(html).toContain(`${canonical.symbol} &middot; ${canonical.category}`);
+    }
+    expect(vm.statistics.total).toBe(data.submission.writingCorrections.length);
+  });
+  test('unmatched detailed feedback cannot introduce a PDF-only replacement',()=>{
+    const data=fixture();
+    data.feedback.detailedFeedback.areasForImprovement=[{title:'Writing',explanation:'Review the idea.',
+      examples:[{quotedText:'fees',suggestedText:'feels',message:'Check spelling.'}]}];
+    const html=renderSubmissionFeedbackReportHtml(buildSubmissionFeedbackReportViewModel(data));
+    expect(html).not.toContain('&quot;fees&quot;');
+    expect(html).not.toContain('Try: feels');
+    expect(html).toContain('Check spelling.');
+  });
 });

@@ -64,7 +64,86 @@ beforeEach(async () => {
   admin = await User.create({ firebaseUid: 'admin', email: 'admin@example.test', role: 'admin' });
 });
 
+describe('server-derived promo variant restrictions', () => {
+  const variantInput = (plans, overrides = {}) => {
+    const input = promoInput({ plans, ...overrides });
+    delete input.billingPeriods;
+    return input;
+  };
+  const saveVariants = (plans, overrides = {}, id) => Billing.transaction(session => Promos.save(variantInput(plans, overrides), admin._id, id, session));
+  beforeEach(async () => {
+    await Plan.updateMany({ slug: { $in: ['essential', 'pro'] } }, { $set: { annualPrice: null, billingInterval: 'month' } });
+    await Plan.create({ name: 'Essential Annual', slug: 'essential_annual', price: 99, billingInterval: 'year', currency: 'USD' });
+    await Plan.create({ name: 'Pro Annual', slug: 'pro_annual', price: 199, billingInterval: 'year', currency: 'USD' });
+  });
+  test.each([
+    [['essential'], ['monthly']], [['essential_annual'], ['annual']],
+    [['pro'], ['monthly']], [['pro_annual'], ['annual']],
+    [['essential', 'essential_annual'], ['monthly', 'annual']],
+    [['essential_annual', 'pro_annual'], ['annual']], [['essential', 'pro'], ['monthly']], [[], []]
+  ])('plans %j derive %j through admin API', async (plans, billingPeriods) => {
+    const response = await request(app).post('/api/billing/admin/promos').set('Authorization', `Bearer ${token(admin)}`).send(variantInput(plans));
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({ plans, billingPeriods });
+    expect((await Promo.findOne()).billingPeriods).toEqual(billingPeriods);
+  });
+  test('edit unchanged annual promo preserves eligibility; changing plans updates derived period', async () => {
+    const saved = await saveVariants(['essential_annual']);
+    expect(await saveVariants(['essential_annual'], {}, saved._id)).toMatchObject({ plans: ['essential_annual'], billingPeriods: ['annual'] });
+    const response = await request(app).put(`/api/billing/admin/promos/${saved._id}`).set('Authorization', `Bearer ${token(admin)}`).send(variantInput(['essential', 'pro']));
+    expect(response.status).toBe(200);
+    expect(response.body.data.billingPeriods).toEqual(['monthly']);
+  });
+  test('annual-only promo accepts Essential Annual and rejects other variants', async () => {
+    await saveVariants(['essential_annual']);
+    expect(await quote({ planSlug: 'essential_annual', billingPeriod: 'annual', promoCode: 'SAVE20' })).toMatchObject({ finalAmount: '79.20' });
+    for (const [planSlug, billingPeriod] of [['essential', 'monthly'], ['pro', 'monthly'], ['pro_annual', 'annual']])
+      await expect(quote({ planSlug, billingPeriod, promoCode: 'SAVE20' })).rejects.toMatchObject({ code: 'PROMO_PLAN' });
+  });
+  test('mixed Essential variants accept both and never Pro', async () => {
+    await saveVariants(['essential', 'essential_annual']);
+    expect(await quote({ planSlug: 'essential', promoCode: 'SAVE20' })).toMatchObject({ finalAmount: '8.00' });
+    expect(await quote({ planSlug: 'essential_annual', billingPeriod: 'annual', promoCode: 'SAVE20' })).toMatchObject({ finalAmount: '79.20' });
+    await expect(quote({ promoCode: 'SAVE20' })).rejects.toMatchObject({ code: 'PROMO_PLAN' });
+  });
+  test.each(['missing', 'free', 'institution'])('rejects unavailable/non-paid plan %s', async slug => {
+    await expect(saveVariants([slug])).rejects.toMatchObject({ code: 'PROMO_INPUT' });
+    expect(await Promo.countDocuments()).toBe(0);
+  });
+  test('old client cannot submit annual plan with monthly period', async () => {
+    await expect(createPromo({ plans: ['essential_annual'], billingPeriods: ['monthly'] })).rejects.toMatchObject({ code: 'PROMO_INPUT' });
+  });
+  test('inconsistent historical record is read unchanged and blocked on unchanged save', async () => {
+    const saved = await Promo.create({ normalizedCode: 'SAVE20', active: true, discountType: 'PERCENT', discountValue: 2000, currency: 'USD', plans: ['essential_annual'], billingPeriods: ['monthly'], createdBy: admin._id });
+    await expect(saveVariants(['essential_annual'], {}, saved._id)).rejects.toMatchObject({ code: 'PROMO_RESTRICTIONS_REVIEW' });
+    expect((await Promo.findById(saved._id)).billingPeriods).toEqual(['monthly']);
+    expect(await Audit.countDocuments()).toBe(0);
+  });
+  test('unchanged unrestricted legacy annual-only promo is not broadened', async () => {
+    const saved = await createPromo({ plans: [], billingPeriods: ['annual'] });
+    expect(await saveVariants([], {}, saved._id)).toMatchObject({ plans: [], billingPeriods: ['annual'] });
+  });
+  test('combined catalog plan retains narrower old period on unchanged edit', async () => {
+    await Plan.updateOne({ _id: essential._id }, { $set: { annualPrice: 100 } });
+    const saved = await createPromo({ plans: ['essential'], billingPeriods: ['annual'] });
+    expect(await saveVariants(['essential'], {}, saved._id)).toMatchObject({ billingPeriods: ['annual'] });
+  });
+});
+
 describe('money and promo domain', () => {
+  test('Essential Annual variant $99 + TAT 20% quotes and pays $79.20', async () => {
+    await Plan.create({ name: 'Essential Annual', slug: 'essential_annual', price: 99, currency: 'USD', billingInterval: 'year' });
+    await createPromo({ code: 'TAT', plans: ['essential_annual'], billingPeriods: ['annual'] });
+    const q = await quote({ planSlug: 'essential_annual', billingPeriod: 'annual', promoCode: 'TAT' });
+    expect(q).toMatchObject({ baseAmount: '99.00', prorationCredit: '0.00', subtotalBeforeDiscount: '99.00', discountAmount: '19.80', finalAmount: '79.20' });
+    expect((await Promo.findOne()).allocated).toBe(0);
+    const { attemptId, client } = await prepare(q);
+    expect(client.createOrder.mock.calls[0][0].purchase_units[0].amount).toEqual({ value: '79.20', currency_code: 'USD' });
+    await Purchase.captureOrder({ user, attemptId, client });
+    await Purchase.captureOrder({ user, attemptId, client });
+    expect(await Entitlement.countDocuments()).toBe(1);
+    expect((await Promo.findOne()).consumed).toBe(1);
+  });
   test.each([['0.10',10],['12.34',1234],['200',20000]])('minor unit conversion %s', (amount, cents) => { expect(Money.minor(amount)).toBe(cents); expect(Money.minor(Money.money(cents))).toBe(cents); });
   test.each(['-1','1.001','NaN','Infinity','1e3'])('rejects unsafe money %s', amount => expect(() => Money.minor(amount)).toThrow());
   test.each(['PERCENT','FIXED'])('creates %s promo and audits it', async discountType => {
@@ -81,6 +160,44 @@ describe('money and promo domain', () => {
     expect((await Promo.findOne()).allocated).toBe(0); expect(await Usage.countDocuments()).toBe(0);
   });
   test('annual quote uses annual catalog amount',async()=>{await createPromo();expect(await quote({billingPeriod:'annual',promoCode:'SAVE20'})).toMatchObject({baseAmount:'200.00',finalAmount:'160.00'});});
+  test.each([[2000, '2.00', '7.99'], [1500, '1.50', '8.49']])('$9.99 percent %s retains cents', async (discountValue, discountAmount, finalAmount) => {
+    await Plan.updateOne({ _id: pro._id }, { $set: { price: 9.99 } });
+    await createPromo({ discountValue: Money.money(discountValue) });
+    expect(await quote({ promoCode: 'SAVE20' })).toMatchObject({ discountAmount, finalAmount });
+  });
+  test.each(['monthly', 'annual'])('fractional unused credit is floored before %s promo', async billingPeriod => {
+    await paidCurrent(essential, new Date('2024-02-01'), new Date('2024-03-01'), '9.99');
+    await createPromo();
+    const q = await quote({ billingPeriod, now: new Date('2024-02-11'), promoCode: 'SAVE20' });
+    const credit = 654; // floor(999 * 19 / 29)
+    const base = billingPeriod === 'annual' ? 20000 : 2000;
+    const discount = Promos.calculate(base - credit, { discountType: 'PERCENT', discountValue: 2000 });
+    expect(q.prorationCredit).toBe('6.54');
+    expect(q.finalAmount).toBe(Money.money(base - credit - discount));
+    expect(q.finalAmount).toMatch(/^\d+\.\d{2}$/);
+  });
+  test.each(['monthly', 'annual'])('near-expiry upgrade credit %s never has fractional cents', async billingPeriod => {
+    const end = new Date('2026-10-01');
+    await paidCurrent(essential, new Date('2026-09-01'), end, '9.99');
+    const q = await quote({ billingPeriod, now: new Date(end.getTime() - 1) });
+    expect(q.prorationCredit).toBe('0.00');
+  });
+  test('same-day upgrade uses full verified paid value before promo', async () => {
+    const start = new Date('2026-09-01');
+    await paidCurrent(essential, start, new Date('2026-10-01'), '9.99');
+    await createPromo();
+    expect(await quote({ now: start, promoCode: 'SAVE20' })).toMatchObject({ prorationCredit: '9.99', subtotalBeforeDiscount: '10.01', discountAmount: '2.00', finalAmount: '8.01' });
+  });
+  test.each([['essential_annual', 99, 'annual', '99.00'], ['essential_monthly', 9.99, 'monthly', '9.99'], ['pro_monthly', 19.99, 'monthly', '19.99']])('variant %s selects its own price without promo', async (planSlug, price, billingPeriod, finalAmount) => {
+    await Plan.create({ name: planSlug, slug: planSlug, price, currency: 'USD' });
+    expect(await quote({ planSlug, billingPeriod })).toMatchObject({ finalAmount });
+    await expect(quote({ planSlug, billingPeriod: billingPeriod === 'annual' ? 'monthly' : 'annual' })).rejects.toMatchObject({ code: 'PLAN_UNAVAILABLE' });
+  });
+  test.each([['annual', 'monthly'], ['monthly', 'annual']])('same-tier %s to %s remains scheduled renewal without credit', async (source, billingPeriod) => {
+    const current = await paidCurrent(pro, new Date('2026-09-01'), new Date('2027-09-01'), '200.00');
+    await Entitlement.updateOne({ _id: current._id }, { $set: { billingPeriod: source } });
+    expect(await quote({ billingPeriod, now: new Date('2026-09-15') })).toMatchObject({ transition: 'renewal', prorationCredit: '0.00' });
+  });
   test('percent half-cent rounds to nearest cent without floating-point calculation',()=>expect(Promos.calculate(105,{discountType:'PERCENT',discountValue:1000})).toBe(11));
   test.each([['PERCENT','100'],['FIXED','25']])('rejects zero or negative totals %s',async(discountType,discountValue)=>{await createPromo({discountType,discountValue});await expect(quote({promoCode:'SAVE20'})).rejects.toMatchObject({code:'PROMO_MINIMUM_PAYMENT'});});
   test.each(['$bad','x','a'.repeat(41),{$ne:null}])('rejects malformed code %j',async promoCode=>{await expect(quote({promoCode})).rejects.toMatchObject({code:'PROMO_INVALID'});expect(await Usage.countDocuments()).toBe(0);});
