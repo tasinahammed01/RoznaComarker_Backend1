@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { defaultLegend } = require('./writingCorrections.service');
+const { deriveVisualTarget } = require('./correctionVisualTarget.service');
 
 const VERSION = 'canonical-8-source-grounded';
 const DEDUCTION_POLICY_VERSION = 'legend-diminishing-v1';
@@ -33,11 +34,12 @@ function mapOffsetsToWords(correction, spans) {
   if (!matches.length) return null;
   const fileIds = new Set(matches.map((span) => String(span.fileId || '')));
   if (fileIds.size !== 1) return null;
-  const confidences = matches.map((span) => Number(span.ocrConfidence)).filter(Number.isFinite);
+  const confidences = matches.map((span) => span.word?.confidence)
+    .filter((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1);
   return { fileId: matches[0].fileId || null, page: matches[0].page,
     wordIds: matches.map((span) => span.wordId), bboxList: matches.map((span) => span.bbox).filter(Boolean),
     ocrConfidence: confidences.length ? Math.min(...confidences) : null,
-    ocrLayoutSuspicious: matches.some((span) => span.ocrLayoutSuspicious === true) };
+    ocrLayoutSuspicious: matches.some((span) => span.word?.ocrLayoutSuspicious === true) };
 }
 
 function correctionGroundingReason(raw, text, spans, range, mapped) {
@@ -82,6 +84,8 @@ function normalizeCorrection(raw, text, spans, legend, source) {
   const mechanicsOcrSuspect = canonicalCategory === 'MECHANICS'
     && ['SP', 'CAP', 'P'].includes(symbol)
     && (mapped.ocrLayoutSuspicious === true || (mapped.ocrConfidence != null && mapped.ocrConfidence < 0.7));
+  const visualTarget = deriveVisualTarget({ ...raw, category: canonicalCategory,
+    startChar: range.start, endChar: range.end }, spans);
   return { id: `${source.toLowerCase()}_${crypto.createHash('sha1').update(seed).digest('hex').slice(0, 16)}`,
     source, category: canonicalCategory, groupKey: canonicalCategory, groupLabel: meta.groupLabel,
     symbol, symbolLabel: meta.symbolLabel, legendDescription: meta.legendDescription,
@@ -89,8 +93,12 @@ function normalizeCorrection(raw, text, spans, legend, source) {
     color: meta.color, quotedText: quote,
     message: String(raw.message || '').trim(), suggestedText: String(raw.suggestedText || '').trim(),
     startChar: range.start, endChar: range.end, ...mapped,
+    evidenceWordIds: [...mapped.wordIds], ...(visualTarget ? { visualTarget } : {}),
     ...(canonicalCategory === 'MECHANICS' && ['SP', 'CAP', 'P'].includes(symbol) ? {
       ocrSuspect: mechanicsOcrSuspect,
+      // The active canonical pipeline previously supplied no confidence to grading.
+      // Correct display provenance without changing that established eligibility.
+      ocrSuspectForScoring: false,
       ocrSuspectReasons: [mapped.ocrLayoutSuspicious ? 'STRUCTURALLY_SUSPICIOUS_LAYOUT' : null,
         mapped.ocrConfidence != null && mapped.ocrConfidence < 0.7 ? 'LOW_OCR_CONFIDENCE' : null].filter(Boolean)
     } : {}),

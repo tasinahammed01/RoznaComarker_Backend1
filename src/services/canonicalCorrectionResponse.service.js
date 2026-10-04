@@ -1,6 +1,7 @@
 'use strict';
 
 const { canonicalOcrWordId } = require('../utils/ocrWordIdentity');
+const { validateVisualTarget } = require('./correctionVisualTarget.service');
 
 function normalizedId(value) {
   return String(value?._id || value?.id || value || '').trim();
@@ -35,7 +36,7 @@ function normalizeCorrectionWordIds(corrections, canonicalTranscript, storedPage
   return (Array.isArray(corrections) ? corrections : []).map((correction) => {
     const fileId = normalizedId(correction?.fileId); const pageNumber = Number(correction?.pageNumber ?? correction?.page ?? 1);
     const page = pages.find((item) => normalizedId(item?.fileId) === fileId && Number(item?.pageNumber || 1) === pageNumber);
-    if (!page) return { ...correction, wordIds: [] };
+    if (!page) return { ...correction, wordIds: [], visualTarget: undefined };
     const validIds = new Set((page.words || []).map((word) => String(word.id)));
     let wordIds = (Array.isArray(correction?.wordIds) ? correction.wordIds : []).map((value) => {
       const raw = String(value || '').trim();
@@ -58,7 +59,10 @@ function normalizeCorrectionWordIds(corrections, canonicalTranscript, storedPage
         }
       }
     }
-    return { ...correction, fileId, page: pageNumber, wordIds: [...new Set(wordIds)] };
+    const evidenceIds = spans.filter((s) => normalizedId(s.fileId) === fileId && Number(s.page || 1) === pageNumber
+      && correction.startChar < s.end && correction.endChar > s.start).map((s) => s.wordId);
+    return { ...correction, fileId, page: pageNumber, wordIds: [...new Set(wordIds)],
+      ...(correction.visualTarget ? { visualTarget: validateVisualTarget(correction.visualTarget, evidenceIds) } : {}) };
   });
 }
 

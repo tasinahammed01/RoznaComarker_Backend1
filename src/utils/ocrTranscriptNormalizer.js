@@ -94,34 +94,35 @@ function clusterVisualLines(words) {
     return candidates.map((item, index) => ({ words: [item], inputIndex: index, geometry: false }));
   }
 
-  const byVerticalPosition = [...candidates].sort((a, b) => a.box.centerY - b.box.centerY
+  // Estimate small page slope from forward neighbors in OCR order; wraps do not vote.
+  // Geometry is unchanged. Deskew is used only to compare line membership.
+  const slopes = [];
+  for (let i = 1; i < candidates.length; i++) {
+    const a = candidates[i - 1].box, b = candidates[i].box;
+    const dx = (b.x0 + b.x1 - a.x0 - a.x1) / 2, dy = b.centerY - a.centerY;
+    if (dx > Math.max(a.width, b.width) * 0.5 && Math.abs(dy) < Math.min(a.height, b.height) * 0.65
+      && Math.abs(dy / dx) < 0.25) slopes.push(dy / dx);
+  }
+  const slope = slopes.length >= 3 ? median(slopes) : 0;
+  const typicalHeight = median(candidates.map((item) => item.box.height));
+  const center = (item) => item.box.centerY - slope * (item.box.x0 + item.box.x1) / 2;
+  const byVerticalPosition = [...candidates].sort((a, b) => center(a) - center(b)
     || a.box.x0 - b.box.x0 || a.inputIndex - b.inputIndex);
   const lines = [];
   for (const candidate of byVerticalPosition) {
-    let bestLine = null;
-    let bestDistance = Number.POSITIVE_INFINITY;
-    for (const line of lines) {
-      const representativeHeight = median(line.words.map((item) => item.box.height));
-      const representativeCenterY = median(line.words.map((item) => item.box.centerY));
-      const memberOverlapRatio = Math.max(...line.words.map((item) => {
-        const overlap = Math.max(0, Math.min(item.box.y1, candidate.box.y1) - Math.max(item.box.y0, candidate.box.y0));
-        return overlap / Math.min(item.box.height, candidate.box.height);
-      }));
-      const centerDistance = Math.abs(representativeCenterY - candidate.box.centerY);
-      if (memberOverlapRatio >= 0.45 || centerDistance <= Math.max(representativeHeight, candidate.box.height) * 0.45) {
-        if (centerDistance < bestDistance) { bestLine = line; bestDistance = centerDistance; }
-      }
-    }
+    const last = lines[lines.length - 1];
+    // A fixed seed bounds the group: neither a tall word nor a chain can move it.
+    const bestLine = last && Math.abs(center(candidate) - last.seedCenter) <= typicalHeight * 0.45 ? last : null;
     if (!bestLine) {
       lines.push({ words: [candidate], y0: candidate.box.y0, y1: candidate.box.y1,
-        height: candidate.box.height, centerY: candidate.box.centerY, inputIndex: candidate.inputIndex, geometry: true });
+        height: candidate.box.height, centerY: candidate.box.centerY, seedCenter: center(candidate), inputIndex: candidate.inputIndex, geometry: true });
       continue;
     }
     bestLine.words.push(candidate);
     bestLine.y0 = Math.min(bestLine.y0, candidate.box.y0);
     bestLine.y1 = Math.max(bestLine.y1, candidate.box.y1);
-    bestLine.height = median(bestLine.words.map((item) => item.box.height));
-    bestLine.centerY = median(bestLine.words.map((item) => item.box.centerY));
+    bestLine.height = median(bestLine.words.slice(-32).map((item) => item.box.height));
+    bestLine.centerY = median(bestLine.words.slice(-32).map((item) => item.box.centerY));
     bestLine.inputIndex = Math.min(bestLine.inputIndex, candidate.inputIndex);
   }
 

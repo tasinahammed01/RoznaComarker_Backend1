@@ -73,12 +73,16 @@ async function createQuote({ userId, planSlug, billingPeriod, promoCode, now = n
       : rank(plan.slug) > rank(ctx.current.planSlug) ? 'upgrade' : rank(plan.slug) < rank(ctx.current.planSlug) ? 'downgrade' : 'renewal';
     if (transition === 'upgrade') {
       if (ctx.future.length) throw fail('SCHEDULED_PLAN_REVIEW_REQUIRED', 'Review scheduled paid terms before upgrading.', 409);
-      historicalPayment = await Attempt.findOne({ _id: ctx.current.paymentAttemptId, userId,
-        purpose: 'plan_purchase', planSlug: ctx.current.planSlug, providerCaptureId: ctx.current.providerCaptureId,
-        status: { $in: ['fulfilled', 'captured'] }, currency: String(plan.currency).toUpperCase() }).lean();
-      if (!historicalPayment?.providerCaptureId || ctx.current.source !== 'paypal')
-        throw fail('PRORATION_REVIEW_REQUIRED', 'The amount paid for the current term could not be verified. Contact billing support.', 409);
-      credit = Math.min(base, prorate(minor(historicalPayment.expectedAmount), ctx.current.startsAt, ctx.current.endsAt, now));
+      // Admin grants provide access without paid value. Only this explicit
+      // server-side provenance permits zero credit without payment evidence.
+      if (ctx.current.source !== 'admin') {
+        historicalPayment = await Attempt.findOne({ _id: ctx.current.paymentAttemptId, userId,
+          purpose: 'plan_purchase', planSlug: ctx.current.planSlug, providerCaptureId: ctx.current.providerCaptureId,
+          status: { $in: ['fulfilled', 'captured'] }, currency: String(plan.currency).toUpperCase() }).lean();
+        if (!historicalPayment?.providerCaptureId || ctx.current.source !== 'paypal')
+          throw fail('PRORATION_REVIEW_REQUIRED', 'The amount paid for the current term could not be verified. Contact billing support.', 409);
+        credit = Math.min(base, prorate(minor(historicalPayment.expectedAmount), ctx.current.startsAt, ctx.current.endsAt, now));
+      }
     }
   } else if (!ctx.entitlements.length && ctx.user.plan) {
     const cached = await Plan.findById(ctx.user.plan).select('slug').lean();

@@ -303,6 +303,93 @@ describe('backend authorization and request authority',()=>{
   test('admin lookup and missing email use safe responses',async()=>{expect((await request(app).get('/api/billing/admin/user').query({email:'teacher@example.test'}).set('Authorization',`Bearer ${token(admin)}`)).body.data.currentPlan).toBe('Free');await expect(Billing.lookup('absent@example.test')).rejects.toMatchObject({statusCode:404});});
 });
 
+describe('trusted admin grant upgrade policy', () => {
+  beforeEach(async () => {
+    await Plan.updateOne({ _id: essential._id }, { $set: { price: 9.99 } });
+    await Plan.updateOne({ _id: pro._id }, { $set: { price: 19.99 } });
+  });
+  async function grant(planSlug = 'essential') {
+    const preview = await Billing.previewAdmin({ actor: admin._id, email: user.email, planSlug, billingPeriod: 'monthly', reason: 'Manual access without payment' });
+    return Billing.assignAdmin({ actor: admin._id, quoteId: preview.quoteId, operationId: crypto.randomUUID() });
+  }
+  test('manual Essential upgrades at full target price without payment history or quote-time supersession', async () => {
+    const manual = await grant();
+    expect(manual.source).toBe('admin');
+    expect(await Attempt.countDocuments()).toBe(0);
+    const q = await quote();
+    expect(q).toMatchObject({ transition: 'upgrade', baseAmount: '19.99', prorationCredit: '0.00', subtotalBeforeDiscount: '19.99', finalAmount: '19.99', historicalPaymentId: null, historicalPaidAmount: null });
+    expect((await Entitlement.findById(manual._id)).status).toBe('active');
+    const { attemptId, client } = await prepare(q);
+    expect((await Attempt.findOne({ attemptId })).expectedAmount).toBe('19.99');
+    expect(client.createOrder.mock.calls[0][0].purchase_units[0].amount).toEqual({ value: '19.99', currency_code: 'USD' });
+    expect((await Entitlement.findById(manual._id)).status).toBe('active');
+  });
+  test.each([['FIXED', '5', '5.00', '14.99'], ['PERCENT', '20', '4.00', '15.99']])('manual zero credit precedes %s promo', async (discountType, discountValue, discountAmount, finalAmount) => {
+    await grant(); await createPromo({ discountType, discountValue });
+    expect(await quote({ promoCode: 'SAVE20' })).toMatchObject({ prorationCredit: '0.00', subtotalBeforeDiscount: '19.99', discountAmount, finalAmount });
+  });
+  test('cancelled upgrade retains the manual term and releases promo reservation', async () => {
+    const manual = await grant(); await createPromo();
+    const { attemptId } = await prepare(await quote({ promoCode: 'SAVE20' }));
+    await Purchase.cancel({ user, attemptId });
+    expect((await Entitlement.findById(manual._id)).status).toBe('active');
+    expect((await Promo.findOne()).allocated).toBe(0);
+    expect(await Entitlement.countDocuments()).toBe(1);
+  });
+  test.each(['decline', 'ambiguous network'])('%s leaves manual access active', async failure => {
+    const manual = await grant();
+    const { attemptId, client } = await prepare(await quote());
+    const error = failure === 'decline' ? Object.assign(new Error('declined'), { providerStatus: 422, providerIssue: 'INSTRUMENT_DECLINED' }) : Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' });
+    client.captureOrder.mockRejectedValue(error);
+    client.getOrder.mockRejectedValue(error);
+    await expect(Purchase.captureOrder({ user, attemptId, client })).rejects.toBeTruthy();
+    expect((await Entitlement.findById(manual._id)).status).toBe('active');
+    expect(await Entitlement.countDocuments()).toBe(1);
+  });
+  test('verified capture and duplicate callbacks supersede once and preserve manual history', async () => {
+    const manual = await grant();
+    const { attemptId, client } = await prepare(await quote());
+    await Purchase.captureOrder({ user, attemptId, client });
+    await Purchase.captureOrder({ user, attemptId, client });
+    await Purchase.reconcileCaptureWebhook({ orderId: client.order.id, client });
+    expect(client.captureOrder).toHaveBeenCalledTimes(1);
+    expect(await Entitlement.countDocuments()).toBe(2);
+    const previous = await Entitlement.findById(manual._id);
+    expect(previous.status).toBe('superseded');
+    expect(previous.adminReason).toBe('Manual access without payment');
+    const paid = await Entitlement.findOne({ source: 'paypal' });
+    expect(paid.status).toBe('active'); expect(paid.paidAmount).toBe('19.99');
+    expect(paid.endsAt.toISOString()).toBe(Terms.addCalendarPeriod(paid.startsAt, 'monthly').toISOString());
+  });
+  test.each(['paypal', 'migration', 'unknown', null])('source %s missing payment fails safe rather than receiving manual exception', async source => {
+    const current = await grant();
+    await Entitlement.collection.updateOne({ _id: current._id }, { $set: { source } });
+    await expect(quote()).rejects.toMatchObject({ code: 'PRORATION_REVIEW_REQUIRED' });
+    expect(await Attempt.countDocuments()).toBe(0);
+  });
+  test.each([['essential', 'essential', 'renewal'], ['pro', 'essential', 'downgrade']])('manual %s to %s follows existing %s scheduling', async (current, planSlug, transition) => {
+    const manual = await grant(current);
+    const q = await quote({ planSlug });
+    expect(q).toMatchObject({ transition, prorationCredit: '0.00' });
+    const { attemptId, client } = await prepare(q);
+    const result = await Purchase.captureOrder({ user, attemptId, client });
+    expect(result.entitlement.status).toBe('scheduled');
+    expect(new Date(result.entitlement.startsAt).toISOString()).toBe(manual.endsAt.toISOString());
+    expect((await Entitlement.findById(manual._id)).status).toBe('active');
+  });
+  test('verified paid Essential still receives only its unused paid credit', async () => {
+    await paidCurrent();
+    expect(await quote({ now: new Date('2026-09-16T00:00:00Z') })).toMatchObject({ transition: 'upgrade', prorationCredit: '5.00', subtotalBeforeDiscount: '14.99', finalAmount: '14.99' });
+  });
+  test('manual exact expiry agrees between request resolver and worker', async () => {
+    const manual = await grant();
+    expect((await Terms.resolveEffectivePlan(await User.findById(user._id), new Date(manual.endsAt.getTime()-1000))).plan.slug).toBe('essential');
+    await Terms.processExpiriesAndReminders(manual.endsAt);
+    expect((await Entitlement.findById(manual._id)).status).toBe('expired');
+    expect((await Terms.resolveEffectivePlan(await User.findById(user._id), manual.endsAt)).plan.slug).toBe('free');
+  });
+});
+
 describe('post-implementation race and recovery audit',()=>{
   test('a future paid term without current coverage cannot be overlapped by a new purchase',async()=>{
     const startsAt=new Date(Date.now()+86400000);

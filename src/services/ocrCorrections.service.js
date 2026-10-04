@@ -42,7 +42,7 @@ function normalizeOcrWordsFromStored(ocrDataWords, options = {}) {
       return {
         id,
         page, fileId,
-        confidence: Number.isFinite(Number(w?.confidence)) ? Number(w.confidence) : undefined,
+        confidence: typeof w?.confidence === 'number' && Number.isFinite(w.confidence) ? w.confidence : undefined,
         ocrLayoutSuspicious: w?.ocrLayoutSuspicious === true,
         paragraphIndex: Number.isFinite(Number(w?.paragraphIndex)) ? Number(w.paragraphIndex) : undefined,
         text,
@@ -78,8 +78,7 @@ function buildTranscriptAndSpans(ocrWords) {
       start: span.start + offset,
       end: span.end + offset,
       bbox: span.bbox,
-      ocrConfidence: Number.isFinite(Number(span.word?.confidence)) ? Number(span.word.confidence) : undefined,
-      ocrLayoutSuspicious: span.word?.ocrLayoutSuspicious === true,
+      word: span.word,
       separatorBefore: index === 0 ? boundary : span.separatorBefore
     })));
     previousText = built.spans[built.spans.length - 1]?.word?.text || built.text;

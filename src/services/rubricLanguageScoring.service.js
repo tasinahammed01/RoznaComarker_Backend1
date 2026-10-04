@@ -46,7 +46,9 @@ function categoryCorrections(corrections, category) {
 }
 
 function ignoredScoringReason(correction, category) {
-  if (['GRAMMAR', 'MECHANICS'].includes(category) && correction?.ocrSuspect === true) return 'OCR_SUSPECT';
+  const scoringSuspect = typeof correction?.ocrSuspectForScoring === 'boolean'
+    ? correction.ocrSuspectForScoring : correction?.ocrSuspect;
+  if (['GRAMMAR', 'MECHANICS'].includes(category) && scoringSuspect === true) return 'OCR_SUSPECT';
   return null;
 }
 
