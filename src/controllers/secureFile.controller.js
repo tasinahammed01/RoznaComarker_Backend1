@@ -44,6 +44,14 @@ async function teacherOwnsClass(teacherId, classId) {
 }
 
 async function canAccessPrivateFile(user, file) {
+  if (file.sourceFileId) {
+    const submission = await Submission.findOne({ 'ocrPages.derivedImageFileId': file._id }).select('student class').lean();
+    if (submission && ((user.role === 'student' && String(submission.student) === String(user._id))
+      || (user.role === 'teacher' && await teacherOwnsClass(user._id, submission.class)))) return true;
+    const source = await File.findById(file.sourceFileId);
+    if (!source || source.sourceFileId) return false;
+    return canAccessPrivateFile(user, source);
+  }
   if (user.role === 'admin' || String(file.uploadedBy) === String(user._id)) {
     return true;
   }

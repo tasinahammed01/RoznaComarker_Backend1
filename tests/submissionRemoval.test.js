@@ -38,6 +38,7 @@ describe('teacher submission removal', () => {
   afterAll(disconnectInMemoryMongo);
   beforeEach(async () => {
     await clearDatabase();
+    await require('./helpers/seedTestPlans').seedTestPlans();
     await fs.promises.mkdir(path.dirname(diskPath), { recursive: true });
     await fs.promises.unlink(diskPath).catch(() => {});
     teacher = await User.create({ firebaseUid: 'remove-teacher', email: 'remove-teacher@example.com', role: 'teacher' });
@@ -85,9 +86,16 @@ describe('teacher submission removal', () => {
 
   test('owning teacher removes the canonical submission and all current dependencies', async () => {
     const submission = await seedSubmission();
+    const derivedPath = diskPath + '.derived.jpg';
+    await fs.promises.writeFile(derivedPath, 'derived test image');
+    const derived = await File.create({ originalName: 'page.jpg', filename: path.basename(derivedPath),
+      path: derivedPath, url: '/files/submissions/page.jpg', type: 'submissions', role: 'student', uploadedBy: student._id,
+      sourceFileId: submission.file, pageNumber: 1 });
     const response = await request(app).delete(`/api/submissions/${submission._id}`)
       .set('Authorization', `Bearer ${teacherToken}`);
     expect(response.status).toBe(200);
+    expect(await File.exists({ _id: derived._id })).toBeNull();
+    expect(fs.existsSync(derivedPath)).toBe(false);
     expect(response.body).toMatchObject({ success: true, message: 'Submission removed successfully.',
       data: { submissionId: String(submission._id), assignmentId: String(assignment._id), classId: String(classDoc._id) } });
     expect(await Submission.countDocuments({ _id: submission._id })).toBe(0);

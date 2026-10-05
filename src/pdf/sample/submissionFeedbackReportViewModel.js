@@ -1,5 +1,8 @@
 'use strict';
 
+const { buildCanonicalCorrectionRenderModels } = require('../../services/canonicalCorrectionRender.service');
+const { redactStudentMarks } = require('../../services/assignmentAccessPolicy.service');
+
 const {
   ASSESSMENT_VERSION: CURRENT_ASSESSMENT_VERSION,
   EVALUATION_VERSION: CURRENT_EVALUATION_VERSION
@@ -86,16 +89,53 @@ function correctionReadingPoint(correction) {
 
 function highlightedSegments(text, pageStart, corrections, numberById) {
   const safeText = String(text || ''); const pageEnd = pageStart + safeText.length;
-  const relevant = corrections.filter((c) => finite(c.startChar) && finite(c.endChar) && Number(c.startChar) < pageEnd && Number(c.endChar) > pageStart);
+  const relevant = corrections.flatMap((c) => (c.renderTarget ? c.renderTarget.textRanges
+    : [{ start: c.startChar, end: c.endChar }]).map((range) => ({ ...c, startChar: range.start, endChar: range.end })))
+    .filter((c) => finite(c.startChar) && finite(c.endChar) && Number(c.startChar) < pageEnd && Number(c.endChar) > pageStart);
+  const anchors = corrections.flatMap((c) => (c.renderTarget?.textAnchors || []).map((a) => ({ ...a, correction: c })))
+    .filter((a) => a.at >= pageStart && a.at <= pageEnd);
   const boundaries = new Set([0, safeText.length]);
   relevant.forEach((c) => { boundaries.add(clamp(Number(c.startChar) - pageStart, 0, safeText.length)); boundaries.add(clamp(Number(c.endChar) - pageStart, 0, safeText.length)); });
+  anchors.forEach((a) => boundaries.add(a.at - pageStart));
   const points = [...boundaries].sort((a, b) => a - b);
-  return points.slice(0, -1).map((start, index) => {
+  const anchorSegment = (at) => {
+    const members = [...new Map(anchors.filter((a) => a.at === at + pageStart).map((a) => [a.correction.reportId, a.correction])).values()];
+    return members.length ? [{ text: '', anchor: true, correctionNumbers: members.map((c) => numberById.get(c.reportId)),
+      symbols: [...new Set(members.map((c) => c.symbol))], color: members[0].color }] : [];
+  };
+  return points.slice(0, -1).flatMap((start, index) => {
     const end = points[index + 1];
     const active = relevant.filter((c) => Number(c.startChar) < pageStart + end && Number(c.endChar) > pageStart + start)
       .sort((a, b) => numberById.get(a.reportId) - numberById.get(b.reportId));
-    return { text: safeText.slice(start, end), correctionNumbers: active.map((c) => numberById.get(c.reportId)), symbols: active.map((c) => c.symbol), color: active[0]?.color || null };
-  });
+    return [...anchorSegment(start), { text: safeText.slice(start, end), correctionNumbers: [...new Set(active.map((c) => numberById.get(c.reportId)))], symbols: [...new Set(active.map((c) => c.symbol))], color: active[0]?.color || null }];
+  }).concat(anchorSegment(safeText.length));
+}
+
+function targetBoxes(correction, page) {
+  const target = correction.renderTarget;
+  const words = page?.words || [];
+  const index = new Map(words.map((w, i) => [String(w.id), { word: w, order: i }]));
+  const runs = [];
+  for (const id of target.wordIds) {
+    const item = index.get(id); if (!item) continue;
+    const box = item.word.bbox, previous = runs.at(-1);
+    const overlap = previous && Math.min(previous.y + previous.h, box.y + box.h) - Math.max(previous.y, box.y);
+    const gap = previous ? box.x - previous.x - previous.w : Infinity;
+    const aspect = (Number(page?.height || page?.imageHeight) || 1200) / (Number(page?.width || page?.imageWidth) || 900);
+    if (previous && previous.order + 1 === item.order && !item.word.separatorBefore?.includes('\n')
+      && overlap > Math.min(previous.h, box.h) * 0.35 && gap >= 0 && gap <= Math.min(previous.h, box.h) * aspect * 0.85) {
+      const right = Math.max(previous.x + previous.w, box.x + box.w);
+      const bottom = Math.max(previous.y + previous.h, box.y + box.h);
+      previous.y = Math.min(previous.y, box.y); previous.h = bottom - previous.y;
+      previous.w = right - previous.x; previous.order = item.order;
+    } else runs.push({ ...box, order: item.order });
+  }
+  const boxes = target.source === 'bboxList' ? target.boxes : runs.map(({ order, ...box }) => box);
+  return [...boxes, ...target.anchors.flatMap((a) => {
+    const box = index.get(a.wordId)?.word.bbox;
+    return box ? [{ x: Math.min(99.8, a.side === 'before' ? box.x : box.x + box.w),
+      y: Math.min(99.2, box.y + box.h), w: 0.2, h: 0.8, boundary: true }] : [];
+  })];
 }
 
 function flattenLegend(input) {
@@ -103,19 +143,22 @@ function flattenLegend(input) {
   return raw.map((item) => ({ symbol: String(item.symbol || ''), label: String(item.label || item.symbol || ''), description: String(item.description || ''), category: String(item.category || '').toUpperCase(), color: COLORS[String(item.category || '').toUpperCase()] || item.color || '#64748b' }));
 }
 
-function buildSubmissionFeedbackReportViewModel(input = {}) {
+function buildReportViewModel(input = {}) {
   const submission = input.submission || {}; const evaluation = input.evaluation || {}; const feedback = input.feedback || {};
   const legend = flattenLegend(input.legend); const legendBySymbol = new Map(legend.map((item) => [item.symbol, item]));
   const rawCorrections = Array.isArray(submission.writingCorrections) ? submission.writingCorrections : [];
   const fileIds = (submission.files || []).map(id).filter(Boolean); const fileOrder = new Map(fileIds.map((fileId, index) => [fileId, index]));
   const pageSource = Array.isArray(submission.transcriptPages) ? submission.transcriptPages : [];
-  const corrections = rawCorrections.map((item, index) => {
+  const canonical = input.canonicalTranscript || { pages: pageSource, wordSpans: [] };
+  const renderCorrections = buildCanonicalCorrectionRenderModels(rawCorrections, canonical, submission.ocrPages);
+  const corrections = renderCorrections.map((item, index) => {
     const category = String(item?.category || '').toUpperCase(); const symbol = String(item?.symbol || ''); const legendItem = legendBySymbol.get(symbol);
     const fileId = id(item?.fileId); const page = Number(item?.page || item?.pageNumber || 1);
     const sourcePage = pageSource.find((candidate) => id(candidate?.fileId) === fileId
       && Number(candidate?.pageNumber || candidate?.page || 1) === page);
     const imageWidth = Number(sourcePage?.imageWidth || sourcePage?.width || 0);
     const imageHeight = Number(sourcePage?.imageHeight || sourcePage?.height || 0);
+    item.targetBoxes = targetBoxes(item, sourcePage);
     return { ...item, reportId: String(item?.id || item?._id || `correction-${index}`), fileId, page, category: CATEGORIES.includes(category) ? category : 'MECHANICS', symbol, symbolLabel: item?.symbolLabel || legendItem?.label || symbol, color: item?.color || legendItem?.color || COLORS[CATEGORIES.includes(category) ? category : 'MECHANICS'], quotedText: String(item?.quotedText || item?.originalText || item?.word || ''), message: String(item?.message || ''), suggestedText: String(item?.suggestedText || ''), startChar: Number(item?.startChar), endChar: Number(item?.endChar), bboxList: normalizeBoxes(item?.bboxList, imageWidth, imageHeight) };
   }).sort((a, b) => {
     const pageOrder = (fileOrder.get(a.fileId) ?? 99999) - (fileOrder.get(b.fileId) ?? 99999) || a.page - b.page;
@@ -152,6 +195,16 @@ function buildSubmissionFeedbackReportViewModel(input = {}) {
   const persistedOverall = finite(evaluation.overallScore) ? Number(evaluation.overallScore) : null;
   const completeLegend = legend; const activeLegendItems = completeLegend.filter((item) => corrections.some((c) => c.symbol === item.symbol)).map((item) => ({ ...item, count: corrections.filter((c) => c.symbol === item.symbol).length }));
   return { report: { generatedAt: input.generatedAt || new Date().toISOString(), reportVersion: 'submission-feedback-2.0' }, submission: { ...(input.identity || {}), submissionId: id(submission._id) || 'submission', wordCount: String(submission.canonicalText || '').trim().split(/\s+/).filter(Boolean).length, uploadedPageCount: submittedPages.length }, result: { overallScore: evaluationCurrent && categoryScores.length && persistedOverall !== null ? persistedOverall : null, maximumScore, grade: evaluationCurrent ? evaluation.grade || null : null, evaluationStatus: evaluationCurrent ? evaluation.status || 'completed' : 'stale', correctionStatus: submission.correctionStatus, correctionSourceHash: submission.correctionSourceHash || null, evaluationSourceHash: evaluationCurrent ? evaluation.evaluationSourceHash || submission.correctionSourceHash : null, teacherAdjusted: teacherOverride }, statistics, categoryScores, submittedPages, detailedFeedback: detailedCurrent ? feedback.detailedFeedback || { areasForImprovement: [], strengths: [], actionSteps: [] } : { status: 'stale', areasForImprovement: [], strengths: [], actionSteps: [] }, teacherComments: feedbackText(feedback.teacherComments || input.teacherComments || ''), aiEvaluationFeedback: evaluationFeedbackItems(evaluation, evaluationCurrent), activeLegendItems, completeLegend, diagnostics: { persistedStatisticsMismatch: CATEGORIES.some((category) => Number(submission.correctionStatistics?.[category.toLowerCase()] || 0) !== statistics[category.toLowerCase()]), persistedScoreMismatch: persistedOverall !== null && Math.abs(persistedOverall - rubricTotal) > 0.001, rejectedCorrections: rawCorrections.length - corrections.length }, esc };
+}
+
+function buildSubmissionFeedbackReportViewModel(input = {}) {
+  const vm = buildReportViewModel(input);
+  if (input.marksVisible !== false) return { ...vm, marksVisible: true };
+  const redacted = redactStudentMarks(vm);
+  redacted.categoryScores = [];
+  delete redacted.result.maximumScore;
+  delete redacted.diagnostics.persistedScoreMismatch;
+  return redacted;
 }
 
 module.exports = { CATEGORIES, COLORS, esc, normalizeBoxes, highlightedSegments, buildSubmissionFeedbackReportViewModel };

@@ -68,6 +68,12 @@ const submissionSchema = new Schema(
         fileOrder: { type: Number, min: 0, required: false },
         pageNumber: { type: Number, required: false },
         pageIndex: { type: Number, min: 0, required: false },
+        width: Number,
+        height: Number,
+        derivedImageFileId: { type: Schema.Types.ObjectId, ref: 'File' },
+        pageImageUrl: String,
+        rasterHash: String,
+        rasterizationVersion: String,
         text: { type: String, trim: true },
         rawText: { type: String },
         words: { type: Schema.Types.Mixed, default: undefined }

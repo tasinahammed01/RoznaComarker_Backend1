@@ -8,6 +8,13 @@ const {
 } = require('../src/services/assignmentAccessPolicy.service');
 
 describe('Phase 2 access policy units', () => {
+  test('hides marks embedded in legacy generated reasons without removing correction evidence', () => {
+    const reason = '4 canonical grammar issues currently affect the 16.5/20 category result.';
+    const payload = { actionSteps: [{ reason }], teacherComments: 'Read pages 1/2 before revising.' };
+    expect(redactStudentMarks(payload).actionSteps[0].reason).toBe('4 canonical grammar issues currently affect this category.');
+    expect(redactStudentMarks(payload).teacherComments).toBe(payload.teacherComments);
+    expect(payload.actionSteps[0].reason).toBe(reason);
+  });
   test('assignment defaults preserve historical behavior', () => {
     const assignment = new Assignment();
     expect(assignment.showMarksToStudent).toBe(true);
@@ -44,12 +51,13 @@ describe('Phase 2 access policy units', () => {
       marksVisible: false,
       teacherComments: 'Keep revising.',
       correctionStatistics: { grammar: 2 },
-      rubricScores: { CONTENT: { maxScore: 20, comment: 'Clear ideas.' } },
+      rubricScores: { CONTENT: { comment: 'Clear ideas.' } },
       aiFeedback: { perCategory: [{ message: 'Use stronger evidence.' }] },
       previousEvaluation: null
     });
     expect(redacted.overallScore).toBeUndefined();
     expect(redacted.rubricScores.CONTENT.score).toBeUndefined();
+    expect(redacted.rubricScores.CONTENT.maxScore).toBeUndefined();
   });
 
   test('removes adaptive source marks while retaining generated activities', () => {

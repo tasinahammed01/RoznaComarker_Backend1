@@ -103,11 +103,19 @@ async function collectCleanupContext(submission) {
     fileIds.length ? File.find({ _id: { $in: fileIds } }).select('_id path').lean() : [],
     Upload.find({ submissionId: submission._id }).select('_id originalFilePath processedFilePath').lean()
   ]);
+  const derivedIds = uniqueIds((submission.ocrPages || []).map(page => page.derivedImageFileId));
+  const derived = fileIds.length || derivedIds.length ? await File.find({ $or: [
+    { sourceFileId: { $in: fileIds } }, { _id: { $in: derivedIds } }
+  ] }).select('_id path').lean() : [];
+  const originalPaths = uniqueIds([...fileDocs.map(doc => doc.path),
+    ...uploadDocs.flatMap(doc => [doc.originalFilePath, doc.processedFilePath])]);
   const physicalPaths = uniqueIds([
     ...fileDocs.map((doc) => doc.path),
+    ...derived.map(doc => doc.path),
     ...uploadDocs.flatMap((doc) => [doc.originalFilePath, doc.processedFilePath])
   ]);
-  return { fileIds, physicalPaths, storageBytes: await physicalFileSize(physicalPaths) };
+  return { fileIds: uniqueIds([...fileIds, ...derived.map(doc => doc._id)]), physicalPaths,
+    storageBytes: await physicalFileSize(originalPaths) };
 }
 
 async function deleteDatabaseState(context, mongoSession = null) {

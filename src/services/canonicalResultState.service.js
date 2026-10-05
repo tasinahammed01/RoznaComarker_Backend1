@@ -5,6 +5,17 @@ const { isStructuredDetailedFeedback } = require('./canonicalDetailedFeedback.se
 const { ASSESSMENT_VERSION, EVALUATION_VERSION } = require('./rubricLanguageScoring.service');
 
 const SEMANTIC_CATEGORIES = ['content', 'organization', 'vocabulary', 'grammar', 'mechanics'];
+const OCR_MESSAGES = {
+  OCR_PDF_INVALID: 'Unable to read this PDF. Please upload a valid PDF.',
+  OCR_PDF_PASSWORD: 'This PDF is password protected. Please upload an unlocked copy.',
+  OCR_PDF_LIMIT: 'This PDF exceeds the supported page or image-size limit (maximum 20 pages).',
+  OCR_PDF_TOO_LARGE: 'The PDF exceeds the upload size limit.',
+  OCR_PDF_TIMEOUT: 'PDF processing timed out. Please retry.',
+  OCR_PDF_BUSY: 'PDF processing is busy. Please retry.',
+  OCR_PDF_RASTER_FAILED: 'PDF pages could not be prepared. Please retry.',
+  OCR_PROVIDER_TIMEOUT: 'One or more pages could not be processed before the OCR timeout. Please retry.',
+  OCR_TEXT_EMPTY: 'No readable text was detected. Please upload a clearer document.'
+};
 
 const countSources = (corrections) => (corrections || []).reduce((out, item) => {
   const source = String(item?.source || '').toUpperCase();
@@ -162,6 +173,7 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
   return {
     ocrStatus: submission.ocrStatus || null,
     ocrErrorCode: submission.ocrErrorCode || null,
+    ocrFailureMessage: ocrFailed ? OCR_MESSAGES[submission.ocrErrorCode] || null : null,
     correctionStatus,
     correctionCurrent: layoutCurrent,
     transcriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,

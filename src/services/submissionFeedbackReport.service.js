@@ -102,7 +102,11 @@ async function rasterPdf(buffer, options = {}) {
   const signal = options.signal; const config = options.config || assetConfig();
   const pdfjs = require('pdfjs-dist/legacy/build/pdf.js');
   throwIfAborted(signal);
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer), disableWorker: true });
+  const pdfjsRoot = path.dirname(require.resolve('pdfjs-dist/package.json'));
+  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer), disableWorker: true,
+    standardFontDataUrl: path.join(pdfjsRoot, 'standard_fonts') + path.sep,
+    cMapUrl: path.join(pdfjsRoot, 'cmaps') + path.sep, cMapPacked: true,
+    isEvalSupported: false });
   const cancelLoading = () => safeAbortAction(() => loadingTask.destroy());
   signal?.addEventListener('abort', cancelLoading, { once: true });
   let document;
@@ -111,11 +115,15 @@ async function rasterPdf(buffer, options = {}) {
   finally { signal?.removeEventListener('abort', cancelLoading); }
   const pages = [];
   try {
-    if (document.numPages > limit('PDF_MAX_UPLOADED_PAGES', 20)) throw new ApiError(413, 'The uploaded document contains too many pages for a report.');
+    if (!document.numPages) throw new ApiError(422, 'This PDF contains no pages.');
+    if (document.numPages > Math.min(20, limit('PDF_MAX_UPLOADED_PAGES', 20))) throw new ApiError(413, 'The uploaded PDF exceeds the allowed page count (maximum 20).');
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       throwIfAborted(signal);
-      const page = await document.getPage(pageNumber); throwIfAborted(signal); const viewport = page.getViewport({ scale: 1.6 }); const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
-      if (canvas.width > limit('PDF_MAX_IMAGE_DIMENSION', 12000) || canvas.height > limit('PDF_MAX_IMAGE_DIMENSION', 12000)) throw new ApiError(413, 'An uploaded page exceeds the safe image dimensions.');
+      const page = await document.getPage(pageNumber); throwIfAborted(signal);
+      const viewport = page.getViewport({ scale: options.dpi ? options.dpi / 72 : 1.6 });
+      if (viewport.width > limit('PDF_MAX_IMAGE_DIMENSION', 12000) || viewport.height > limit('PDF_MAX_IMAGE_DIMENSION', 12000)
+        || viewport.width * viewport.height > 20000000) throw new ApiError(413, 'An uploaded page exceeds the safe image dimensions.');
+      const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
       const renderTask = page.render({ canvasContext: canvas.getContext('2d'), viewport });
       const cancel = () => safeAbortAction(() => renderTask.cancel());
       signal?.addEventListener('abort', cancel, { once: true });
@@ -125,6 +133,7 @@ async function rasterPdf(buffer, options = {}) {
       throwIfAborted(signal);
       const normalized = await optimizeImageBuffer(canvas.toBuffer('image/png'), { signal, config });
       pages.push({ pageNumber, ...normalized });
+      canvas.width = 0; canvas.height = 0; page.cleanup();
     }
     return pages;
   } finally {
@@ -160,6 +169,24 @@ async function resolvePersistedPageAssets(files, options = {}) {
     const extension = path.extname(String(file.originalName || file.filename || safePath)).toLowerCase(); const mime = MIME[extension]; if (!mime) continue;
     candidateCount += 1;
     if (mime === 'application/pdf') {
+      const persistedPages = (options.ocrPages || []).filter(page => objectId(page.fileId) === fileId && page.derivedImageFileId);
+      if (persistedPages.length) {
+        const File = require('../models/File');
+        const pageAssets = await File.find({ _id: { $in: persistedPages.map(page => page.derivedImageFileId) } }).lean();
+        const assetsById = new Map(pageAssets.map(asset => [objectId(asset), asset]));
+        for (const page of persistedPages) {
+          const asset = assetsById.get(objectId(page.derivedImageFileId));
+          if (!asset || objectId(asset.uploadedBy) !== objectId(file.uploadedBy)) throw new ApiError(422, 'A submitted PDF page image is unavailable.');
+          const assetPath = safeFilePath(asset);
+          if (!assetPath) throw new ApiError(422, 'A submitted PDF page image is unavailable.');
+          const bytes = await fs.promises.readFile(assetPath);
+          if (require('crypto').createHash('sha256').update(bytes).digest('hex') !== page.rasterHash) throw new ApiError(422, 'A submitted PDF page image could not be verified.');
+          addAsset({ fileId, pageNumber: page.pageNumber, file, sourceBytes: buffer.length, sourceMime: mime, durationMs: 0,
+            normalized: { buffer: bytes, mime: 'image/jpeg', width: asset.width, height: asset.height,
+              sourceWidth: asset.width, sourceHeight: asset.height, exifRotationApplied: false } });
+        }
+        continue;
+      }
       try {
         const startedAt = Date.now(); const pages = await rasterPdf(buffer, { signal, config });
         pages.forEach((page) => addAsset({ fileId, pageNumber: page.pageNumber, normalized: page,
@@ -183,7 +210,7 @@ function safeDiagnostics(submission, transcriptPages, corrections, submittedPage
   return { uploadedFileIds: (submission.files || []).map(objectId), transcriptPages: transcriptPages.map((page) => ({ fileId: objectId(page.fileId), pageNumber: Number(page.pageNumber) })), correctionGroups: groups, withWordIds: corrections.filter((c) => Array.isArray(c.wordIds) && c.wordIds.length).length, withBboxList: corrections.filter((c) => Array.isArray(c.bboxList) && c.bboxList.length).length, withGlobalOffsets: corrections.filter((c) => Number.isFinite(Number(c.startChar)) && Number.isFinite(Number(c.endChar))).length, assignedPerPage: submittedPages.map((page) => ({ fileId: page.fileId, pageNumber: page.pageNumber, count: page.corrections.length })) };
 }
 
-async function buildPersistedSubmissionFeedbackReport({ submission, submissionFeedback, feedback, identity, generatedAt, abortSignal }) {
+async function buildPersistedSubmissionFeedbackReport({ submission, submissionFeedback, feedback, identity, generatedAt, abortSignal, marksVisible = true }) {
   const startedAt = Date.now(); const canonical = buildCanonicalSubmissionTranscript(submission); const normalizedAt = Date.now(); const files = Array.isArray(submission.files) && submission.files.length ? submission.files : submission.file ? [submission.file] : [];
   if (canonical.pages.length > limit('PDF_MAX_UPLOADED_PAGES', 20)) throw new ApiError(413, 'This submission contains too many pages for a single report.');
   if (canonical.text.length > limit('PDF_MAX_TRANSCRIPT_CHARACTERS', 1000000)) throw new ApiError(413, 'The submission transcript is too large for report rendering.');
@@ -198,7 +225,7 @@ async function buildPersistedSubmissionFeedbackReport({ submission, submissionFe
   let assets;
   try {
     assets = await withTimeout(resolvePersistedPageAssets(files, {
-      signal: assetAbortController.signal, submissionId: objectId(submission)
+      signal: assetAbortController.signal, submissionId: objectId(submission), ocrPages: submission.ocrPages
     }), limit('PDF_ASSET_TIMEOUT_MS', 30000), 'Submission asset preparation timed out.',
     () => assetAbortController.abort());
   } finally {
@@ -209,7 +236,9 @@ async function buildPersistedSubmissionFeedbackReport({ submission, submissionFe
   const feedbackObject = submissionFeedback?.toObject ? submissionFeedback.toObject() : { ...(submissionFeedback || {}) }; const teacherObject = feedback?.toObject ? feedback.toObject() : { ...(feedback || {}) };
   const teacherComments = resolveTeacherComments({ submissionFeedback: feedbackObject, legacyFeedback: teacherObject });
   const legend = await resolveLegend();
-  const vm = buildSubmissionFeedbackReportViewModel({ generatedAt, identity, legend, submission: { ...(submission.toObject ? submission.toObject() : submission), files: files.map(objectId), canonicalText: canonical.text, transcriptPages, imageDataByPageKey: assets.byPageKey }, evaluation: { ...feedbackObject, status: submission.evaluationStatus }, feedback: { ...feedbackObject, teacherComments, overrideReason: teacherObject.overrideReason } });
+  const vm = buildSubmissionFeedbackReportViewModel({ generatedAt, identity, legend, marksVisible,
+    canonicalTranscript: { ...canonical, pages: transcriptPages },
+    submission: { ...(submission.toObject ? submission.toObject() : submission), files: files.map(objectId), canonicalText: canonical.text, transcriptPages, imageDataByPageKey: assets.byPageKey }, evaluation: { ...feedbackObject, status: submission.evaluationStatus }, feedback: { ...feedbackObject, teacherComments, overrideReason: teacherObject.overrideReason } });
   return { viewModel: vm, diagnostics: { ...safeDiagnostics(submission, transcriptPages, Array.isArray(submission.writingCorrections) ? submission.writingCorrections : [], vm.submittedPages), missingAssetCount: vm.submittedPages.filter((page) => !page.imageDataUrl).length,
     assetMetrics: assets.metrics, totalEmbeddedAssetBytes: assets.totalEmbeddedBytes },
     timings: { normalizationMs: normalizedAt - startedAt, assetResolutionMs: assetsAt - normalizedAt, viewModelMs: Date.now() - assetsAt, totalMs: Date.now() - startedAt } };

@@ -25,3 +25,11 @@ test('plan and billing-period changes preserve authoritative owned storage bytes
 test('legacy counters cannot override unique File accounting',async()=>{
   const plan={features:{storageMB:500}};expect(buildStorageContract(2359296,plan)).toMatchObject({usedBytes:2359296,limitBytes:500*1024*1024,percent:0.45});
 });
+
+test('derived PDF rasters do not double charge original upload storage', async () => {
+  const student = await User.create({ firebaseUid: 'raster-storage', email: 'raster@example.test', role: 'student' });
+  const base = { uploadedBy: student._id, role: 'student', type: 'submissions', path: 'not-needed', url: '/test' };
+  const source = await File.create({ ...base, originalName: 'source.pdf', filename: 'source.pdf', sizeBytes: 1000 });
+  await File.create({ ...base, originalName: 'page.jpg', filename: 'page.jpg', sourceFileId: source._id, sizeBytes: 9000 });
+  expect(await calculateOwnedStorageUsage(student._id)).toEqual({ usedBytes: 1000, fileCount: 1 });
+});

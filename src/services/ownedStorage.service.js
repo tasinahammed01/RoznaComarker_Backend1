@@ -18,7 +18,8 @@ async function calculateOwnedStorageUsage(userId) {
   const submissions = classIds.length ? await Submission.find({ class: { $in: classIds } }).select('file files').lean() : [];
   const referenced = new Set(submissions.flatMap((submission) => [submission.file, ...(submission.files || [])]).map(id).filter(Boolean));
   const query = referenced.size ? { $or: [{ uploadedBy: userId }, { _id: { $in: [...referenced] } }] } : { uploadedBy: userId };
-  const files = await File.find(query).select('_id path sizeBytes').lean();
+  // Raster pages are processing artifacts; the original upload is charged once.
+  const files = await File.find({ ...query, sourceFileId: { $exists: false } }).select('_id path sizeBytes').lean();
   const unique = [...new Map(files.map((file) => [id(file._id), file])).values()];
   const sizes = await Promise.all(unique.map(bytesFor));
   return { usedBytes: sizes.reduce((sum, value) => sum + value, 0), fileCount: unique.length };

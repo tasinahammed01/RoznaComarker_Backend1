@@ -82,15 +82,7 @@ async function downloadSubmissionPdf(req, res, next) {
       submissionId,
     });
 
-    if (req.user?.role === "student") {
-      const assignmentId = submission.assignment?._id || submission.assignment;
-      const assignmentPolicy = assignmentId
-        ? await Assignment.findById(assignmentId).select("showMarksToStudent").lean()
-        : null;
-      if (!showMarksToStudent(assignmentPolicy)) {
-        throw new ApiError(403, "Marks have not been released for this assignment.");
-      }
-    }
+    const marksVisible = req.user?.role !== "student" || showMarksToStudent(submission.assignment);
 
     if (process.env.NODE_ENV === "test" && process.env.ENABLE_TEST_PDF_HTTP !== "true") {
       throw new ApiError(
@@ -163,7 +155,7 @@ async function downloadSubmissionPdf(req, res, next) {
         stage: "reportRequestedAt", timestamp: new Date().toISOString() });
       const memoryBefore = process.memoryUsage().rss;
       const { viewModel, diagnostics, timings } = await buildPersistedSubmissionFeedbackReport({
-        submission, submissionFeedback, feedback, identity, abortSignal: abortController.signal
+        submission, submissionFeedback, feedback, identity, marksVisible, abortSignal: abortController.signal
       });
       logger.info(`[PDF MAP] submissionId=${String(submission._id)} diagnostics=${JSON.stringify({
         ...diagnostics, assetMetrics: undefined

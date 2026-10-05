@@ -39,6 +39,14 @@ const fileSchema = new mongoose.Schema(
     },
     uploadOrder: { type: Number, min: 0, required: false },
     sizeBytes: { type: Number, min: 0, required: false },
+    sourceFileId: { type: mongoose.Schema.Types.ObjectId, ref: 'File' },
+    sourceHash: String,
+    sourcePageCount: Number,
+    pageNumber: Number,
+    width: Number,
+    height: Number,
+    rasterHash: String,
+    rasterizationVersion: String,
     createdAt: {
       type: Date,
       default: Date.now
@@ -50,6 +58,7 @@ const fileSchema = new mongoose.Schema(
 );
 
 fileSchema.index({ uploadedBy: 1, type: 1, createdAt: -1 });
+fileSchema.index({ sourceFileId: 1, rasterizationVersion: 1 });
 
 const File = mongoose.model('File', fileSchema);
 

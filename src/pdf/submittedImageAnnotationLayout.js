@@ -163,6 +163,10 @@ function markerDimensions(diameter = 3.8) {
 }
 
 function markerLabel(correction) {
+  if (correction.markerMembers?.length > 1) {
+    const full = correction.markerMembers.map((c) => `${c.displayNumber} ${c.symbol}`).join('/');
+    return full.length <= 24 ? full : `${correction.displayNumber} ${correction.symbol} +${correction.markerMembers.length - 1}`;
+  }
   const displayNumber = finite(correction?.displayNumber)
     ? String(Number(correction.displayNumber))
     : "";
@@ -883,16 +887,28 @@ function createSubmittedImageLayout(page, options = {}) {
   );
   const omitted = [];
   const entries = [];
+  const grouped = new Map();
   for (const correction of allCorrections) {
+    const raw = correction.targetBoxes ?? correction.bboxList ?? [];
+    const key = raw.map((b) => [b.x, b.y, b.w, b.h, Boolean(b.boundary)].join(':')).sort().join('|');
+    const existing = key && grouped.get(key);
+    if (existing) existing.markerMembers.push(correction);
+    else grouped.set(key || `missing:${grouped.size}`, { ...correction, markerMembers: [correction] });
+  }
+  for (const correction of grouped.values()) {
+    const members = correction.markerMembers.sort((a, b) => Number(a.displayNumber || 0) - Number(b.displayNumber || 0)
+      || String(a.reportId || a.id).localeCompare(String(b.reportId || b.id)));
+    Object.assign(correction, members[0], { markerMembers: members });
     const boxes = (
-      Array.isArray(correction?.bboxList) ? correction.bboxList : []
+      correction.targetBoxes ?? (Array.isArray(correction?.bboxList) ? correction.bboxList : [])
     )
       .map((box) =>
         normalizePercentBox(box, geometry.sourceWidth, geometry.sourceHeight),
       )
       .filter(Boolean);
     const mappedBoxes = boxes
-      .map((box) => mapPercentBoxToStage(box, geometry))
+      .map((box, index) => ({ ...mapPercentBoxToStage(box, geometry),
+        boundary: Boolean((correction.targetBoxes || [])[index]?.boundary) }))
       .filter(Boolean);
     const target = unionBoxes(mappedBoxes);
     if (!target) {
@@ -1129,13 +1145,7 @@ for (const entry of entries) {
       { target: unionBoxes(b.boxes), correction: b.correction },
     ),
   );
-  const markerIds = new Set(markers.map((marker) => marker.annotationId));
   const underlines = entries
-    .filter((entry) =>
-      markerIds.has(
-        String(entry.correction.reportId || entry.correction.id || ""),
-      ),
-    )
     .flatMap((entry) =>
       entry.mappedBoxes.map((box) => ({
         correction: entry.correction,
@@ -1146,13 +1156,22 @@ for (const entry of entries) {
         box,
       })),
     );
+  const uniqueUnderlines = new Map();
+  for (const line of underlines) {
+    const key = [line.box.x, line.box.y, line.box.w, line.box.h, line.box.boundary].join(':');
+    const members = line.correction.markerMembers || [line.correction];
+    const previous = uniqueUnderlines.get(key);
+    if (previous) previous.corrections.push(...members);
+    else uniqueUnderlines.set(key, { ...line, corrections: [...members] });
+  }
   const overflowMarkers = overflowEntries.map((entry) => ({
     correction: entry.correction,
   }));
   return {
     ...geometry,
     markers,
-    underlines,
+    underlines: [...uniqueUnderlines.values()],
+    groupedMarkers: [...grouped.values()].filter((c) => c.markerMembers.length > 1),
     overflowMarkers,
     omitted,
     textObstacles,

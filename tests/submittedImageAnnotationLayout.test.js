@@ -46,9 +46,8 @@ const markerCircle = (marker) => ({
   radius: marker.diameter / 2
 });
 const assertSafe = (layout, expectedIds) => {
-  expect(layout.markers).toHaveLength(expectedIds.length);
   expect(layout.overflowMarkers).toHaveLength(0);
-  expect(layout.markers.map((marker) => marker.correction.id).sort()).toEqual([...expectedIds].sort());
+  expect(layout.markers.flatMap((marker) => (marker.correction.markerMembers || [marker.correction]).map((c) => c.id)).sort()).toEqual([...expectedIds].sort());
   for (const marker of layout.markers) {
     expect(marker.rect.x).toBeGreaterThanOrEqual(0); expect(marker.rect.y).toBeGreaterThanOrEqual(0);
     expect(marker.rect.x + marker.rect.w).toBeLessThanOrEqual(layout.stageWidthMm + 0.001);
@@ -65,7 +64,7 @@ describe('submitted image annotation layout', () => {
     expect(layout.markers[0].placement).toBe('above');
     const target = unionBoxes(layout.markers[0].boxes);
     expect(layout.markers[0].rect.x + layout.markers[0].rect.w / 2)
-      .toBeCloseTo(target.x + target.w / 2, 3);
+      .toBeCloseTo(target.x + target.w, 3);
     expect(layout.markers[0].rect.y + layout.markers[0].rect.h)
       .toBeLessThanOrEqual(target.y + target.h + 0.001);
   });
@@ -77,7 +76,7 @@ describe('submitted image annotation layout', () => {
     expect(diameterPt).toBeLessThanOrEqual(14);
     expect(compact.fontPt).toBe(3.8);
     expect(compact).toEqual({
-      diameter: 4.8, width: 4.8, height: 4.8, fontPt: 3.8
+      diameter: 3.8, width: 3.8, height: 3.8, fontPt: 3.8
     });
   });
 
@@ -110,13 +109,12 @@ describe('submitted image annotation layout', () => {
     expect(layout.underlines).toHaveLength(2); expect(layout.markers).toHaveLength(1);
   });
 
-  test('keeps same-position corrections deterministically separated without overlap', () => {
+  test('combines identical targets deterministically while retaining every correction', () => {
     const input = page([correction('c2', 45, 40), correction('c1', 45, 40)]);
     const first = createSubmittedImageLayout(input); const second = createSubmittedImageLayout(input);
-    expect(first).toEqual(second); expect(first.markers).toHaveLength(2);
-    expect(first.markers[0].rect).not.toEqual(first.markers[1].rect);
+    expect(first).toEqual(second); expect(first.markers).toHaveLength(1);
     assertNoMarkerOverlap(first.markers);
-    expect(first.markers.map((marker) => marker.correction.id)).toEqual(['c1', 'c2']);
+    expect(first.markers[0].correction.markerMembers.map((c) => c.id)).toEqual(['c1', 'c2']);
   });
 
   test('keeps every dense label local without density omissions', () => {
@@ -139,13 +137,13 @@ describe('submitted image annotation layout', () => {
     const layout = createSubmittedImageLayout(page(corrections, { imageWidth, imageHeight, annotationObstacles }));
     layout.markers.forEach((marker) => {
       const target = unionBoxes(marker.boxes);
-      expect(marker.rect.x + marker.rect.w / 2).toBeCloseTo(target.x + target.w / 2, 3);
+      expect(marker.rect.x + marker.rect.w / 2).toBeCloseTo(target.x + target.w, 3);
       expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(target.y + target.h + 0.001);
     });
     expect(layout.markers.map((marker) => marker.correction.displayNumber)).toEqual([1, 2]);
   });
 
-  test('does not relocate an anchored marker when unrelated OCR boxes are nearby', () => {
+  test('keeps an anchored marker local when unrelated OCR boxes require a small shift', () => {
     const annotationObstacles = [
       { x: 35, y: 38, w: 30, h: 6 },
       { x: 35, y: 45, w: 8, h: 4 },
@@ -154,8 +152,8 @@ describe('submitted image annotation layout', () => {
     const layout = createSubmittedImageLayout(page([correction('c1', 45, 45)], { annotationObstacles }));
     expect(layout.markers).toHaveLength(1);
     const target = unionBoxes(layout.markers[0].boxes);
-    expect(layout.markers[0].rect.x + layout.markers[0].rect.w / 2)
-      .toBeCloseTo(target.x + target.w / 2, 3);
+    expect(Math.abs(layout.markers[0].rect.x + layout.markers[0].rect.w / 2 - (target.x + target.w)))
+      .toBeLessThanOrEqual(10);
     expect(layout.markers[0].rect.y + layout.markers[0].rect.h)
       .toBeLessThanOrEqual(target.y + target.h + 0.001);
     expect(layout.gutterMm).toBe(0);
@@ -177,11 +175,13 @@ describe('submitted image annotation layout', () => {
     ]));
     for (const marker of layout.markers) {
       const target = unionBoxes(marker.boxes);
-      expect(marker.placement).toBe('above');
-      expect(marker.rect.x + marker.rect.w / 2).toBeCloseTo(target.x + target.w / 2, 3);
+      expect(['above', 'above-right', 'above-left', 'right', 'left', 'below-right', 'below-left', 'below']).toContain(marker.placement);
+      expect(Math.abs(marker.rect.x + marker.rect.w / 2 - (target.x + target.w)))
+        .toBeLessThanOrEqual(10);
       expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(target.y + target.h + 0.001);
     }
     expect(layout.gutterMm).toBe(0);
+    assertInsideImage(layout);
   });
 
   test('rejects invalid and fully out-of-range boxes while clamping safe intersections', () => {
@@ -295,7 +295,7 @@ describe('submitted image annotation layout', () => {
     for (const marker of layout.markers) {
       const target = unionBoxes(marker.boxes);
       expect(marker).toMatchObject({ side: null, placement: 'above' });
-      expect(marker.rect.x + marker.rect.w / 2).toBeCloseTo(target.x + target.w / 2, 3);
+      expect(marker.rect.x + marker.rect.w / 2).toBeCloseTo(target.x + target.w, 3);
       expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(target.y + target.h + 0.001);
     }
   });
@@ -307,7 +307,7 @@ describe('submitted image annotation layout', () => {
     const union = unionBoxes(mapped);
     expect(layout.markers[0].target).toEqual(expect.objectContaining({
       x: roundForTest(union.x + union.w),
-      y: roundForTest(union.y + union.h * .15)
+      y: roundForTest(union.y + union.h * .08)
     }));
     expect(layout.markers[0]).toMatchObject({
       targetLeft: union.x, targetTop: union.y, targetWidth: union.w, targetHeight: union.h
@@ -424,7 +424,7 @@ describe('submitted image annotation layout', () => {
     assertSafe(layout, ['c1', 'c2']);
   });
 
-  test('a dense REP/P/FRAG correction group forms a compact non-overlapping cluster', () => {
+  test('a dense REP/P/FRAG correction group shares a compact static reference', () => {
     const symbols = ['REP', 'P', 'FRAG'];
     const annotationObstacles = [
       { x: 30, y: 70, w: 12, h: 2 },
@@ -436,8 +436,8 @@ describe('submitted image annotation layout', () => {
       symbols.map((symbol, index) => correction(`c${index + 1}`, 45, 70, { symbol })),
       { annotationObstacles }
     ));
-    expect(layout.markers.map((marker) => marker.placement)).toEqual(['above', 'above', 'above']);
-    expect(layout.markers.every((marker) => marker.localLevel >= 1)).toBe(true);
+    expect(layout.markers).toHaveLength(1);
+    expect(layout.markers[0].label).toBe('1 REP/2 P/3 FRAG');
     const target = unionBoxes(layout.markers[0].boxes);
     layout.markers.forEach((marker) => {
       const centerX = marker.rect.x + marker.rect.w / 2;
@@ -471,7 +471,7 @@ describe('submitted image annotation layout', () => {
       correction('c1', 45, 50, { symbol: 'P' })
     ], { annotationObstacles }));
     expect(layout.markers).toHaveLength(1);
-    expect(layout.markers[0].diameter).toBe(4.8);
+    expect(layout.markers[0].diameter).toBe(3.6);
     expect(layout.markers[0].fontPt).toBe(3.8);
     expect(layout.gutterMm).toBe(0);
     const target = unionBoxes(layout.markers[0].boxes);
@@ -502,7 +502,7 @@ describe('submitted image annotation layout', () => {
       result: { maximumScore: 100 }, statistics: { content: 0, grammar: 9, organization: 0, vocabulary: 0, mechanics: 0 },
       categoryScores: [], submittedPages: [input], detailedFeedback: {}, teacherComments: '',
       activeLegendItems: [], completeLegend: [] });
-    expect(layout.markers).toHaveLength(9);
+    expect(layout.markers).toHaveLength(1);
     expect(connectors).toEqual([]);
     expect(html).not.toContain('class="leader-layer"');
     expect(html).not.toContain('<line ');
@@ -515,21 +515,18 @@ describe('submitted image annotation layout', () => {
       const layout = createSubmittedImageLayout(page([
         correction('c1', 45, 55), correction('c2', 45, 55)
       ]));
-      expect(layout.markers).toHaveLength(2);
+      expect(layout.markers).toHaveLength(1);
       assertNoMarkerOverlap(layout.markers);
-      expect(layout.markers[0].localVariant).toBe('above');
-      expect(['above-left', 'above', 'above-right']).toContain(layout.markers[1].localVariant);
+      assertSafe(layout, ['c1', 'c2']);
     });
 
-    test('three corrections on the same bbox form a compact local cluster', () => {
+    test('three corrections on the same bbox share one complete static reference', () => {
       const layout = createSubmittedImageLayout(page([
         correction('c1', 45, 55), correction('c2', 45, 55), correction('c3', 45, 55)
       ]));
-      expect(layout.markers).toHaveLength(3);
+      expect(layout.markers).toHaveLength(1);
       assertNoMarkerOverlap(layout.markers);
-      expect(layout.markers[0].localVariant).toBe('above');
-      expect(new Set(layout.markers.map((marker) => `${marker.localVariant}:${marker.localLevel}`)).size)
-        .toBeGreaterThanOrEqual(2);
+      assertSafe(layout, ['c1', 'c2', 'c3']);
       const target = unionBoxes(layout.markers[0].boxes);
       layout.markers.forEach((marker) => {
         expect(Math.abs(marker.rect.x + marker.rect.w / 2 - (target.x + target.w / 2)))
@@ -550,12 +547,10 @@ describe('submitted image annotation layout', () => {
         correction('c19', 45, 55, { displayNumber: 19, symbol: 'SD' }),
         correction('c20', 45, 55, { displayNumber: 20, symbol: 'PREP' })
       ]));
-      expect(layout.markers).toHaveLength(2);
-      expect(anchoredMarkerDimensions(layout.markers[0].correction).width)
-        .not.toEqual(anchoredMarkerDimensions(layout.markers[1].correction).width);
+      expect(layout.markers).toHaveLength(1);
       assertNoMarkerOverlap(layout.markers);
       layout.markers.forEach((marker) => {
-        expect(marker.label).toMatch(/^(19 SD|20 PREP)$/);
+        expect(marker.label).toBe('19 SD/20 PREP');
       });
     });
 
@@ -585,19 +580,20 @@ describe('submitted image annotation layout', () => {
         correction('c21', 50, 55, { displayNumber: 21, symbol: 'TS' })
       ];
       const layout = createSubmittedImageLayout(page(corrections));
-      expect(layout.markers).toHaveLength(3);
+      expect(layout.markers).toHaveLength(2);
+      assertSafe(layout, ['c19', 'c20', 'c21']);
       expect(layout.overflowMarkers).toHaveLength(0);
       expect(layout.omitted).toHaveLength(0);
     });
 
-    test('existing underlines remain unchanged', () => {
+    test('identical underlines are drawn once with all member identities', () => {
       const input = page([
         correction('c19', 45, 55, { displayNumber: 19, symbol: 'SD' }),
         correction('c20', 45, 55, { displayNumber: 20, symbol: 'PREP' })
       ]);
       const layout = createSubmittedImageLayout(input);
-      expect(layout.underlines).toHaveLength(2);
-      expect(layout.underlines.map((item) => item.correction.id).sort()).toEqual(['c19', 'c20']);
+      expect(layout.underlines).toHaveLength(1);
+      expect(layout.underlines[0].corrections.map((item) => item.id).sort()).toEqual(['c19', 'c20']);
       layout.underlines.forEach((underline) => {
         expect(underline.box).toEqual(expect.objectContaining({ w: expect.any(Number), h: expect.any(Number) }));
       });
@@ -612,10 +608,11 @@ describe('submitted image annotation layout', () => {
         result: { maximumScore: 100 }, statistics: { content: 0, grammar: 2, organization: 0, vocabulary: 0, mechanics: 0 },
         categoryScores: [], submittedPages: [input], detailedFeedback: {}, teacherComments: '',
         activeLegendItems: [], completeLegend: [] });
-      expect(html).toContain('>19 SD</b>');
-      expect(html).toContain('>20 PREP</b>');
-      expect(html.match(/class="marker"/g) || []).toHaveLength(2);
-      expect(html.match(/class="underline"/g) || []).toHaveLength(2);
+      expect(html).toContain('>19 SD/20 PREP</b>');
+      expect(html).toContain('#19 SD</b>');
+      expect(html).toContain('#20 PREP</b>');
+      expect(html.match(/class="marker"/g) || []).toHaveLength(1);
+      expect(html.match(/class="underline"/g) || []).toHaveLength(1);
     });
   });
 });

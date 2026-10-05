@@ -40,7 +40,9 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
     throw new Error('Missing target doc');
   }
 
-  const isCurrentJob = async () => !jobId || Boolean(await targetDoc.constructor.exists({ _id: targetDoc._id, ocrJobId: jobId }));
+  const ownership = { _id: targetDoc._id, ocrJobId: jobId,
+    ...(targetDoc.analysisLeaseOwner ? { analysisLeaseOwner: targetDoc.analysisLeaseOwner } : {}) };
+  const isCurrentJob = async () => !jobId || Boolean(await targetDoc.constructor.exists(ownership));
   const saveCurrentJob = async () => {
     if (!jobId) {
       await targetDoc.save();
@@ -50,7 +52,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
     delete values._id;
     delete values.__v;
     const persisted = await targetDoc.constructor.updateOne(
-      { _id: targetDoc._id, ocrJobId: jobId },
+      ownership,
       { $set: values }
     );
     return persisted.modifiedCount === 1 || persisted.matchedCount === 1;
@@ -64,7 +66,14 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
   }
 
   const attempted = ids.length;
-  const results = await Promise.all(ids.map(async (fileId, fileOrder) => {
+  let reservedPages = 0;
+  const reservePages = count => {
+    reservedPages += count;
+    if (reservedPages > 20) throw Object.assign(new Error('A submission supports at most 20 pages.'), {
+      code: 'OCR_PDF_LIMIT', safeMessage: 'The submission exceeds the supported page limit (maximum 20 pages).'
+    });
+  };
+  const processFile = async (fileId, fileOrder) => {
 
     const fileDoc = await File.findById(fileId);
     if (!fileDoc || !fileDoc.path) {
@@ -102,7 +111,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
 
     let ocr;
     try {
-      ocr = await visionOcr.extractOcrFromImageFile(absolute);
+      ocr = await visionOcr.extractOcrFromImageFile(absolute, { sourceFile: fileDoc, isCurrentJob, reservePages });
     } catch (err) {
       const failure = safeOcrFailure(err);
       logger.error({
@@ -111,7 +120,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
         errorCode: failure.code,
         retryable: failure.retryable
       });
-      return { ok: false, fileId, fileOrder, failure };
+      return { ok: false, fileId, fileOrder, failure: { ...failure, isPdf: path.extname(absolute).toLowerCase() === '.pdf' } };
     }
     const rawText = ocr && (ocr.fullText || ocr.transcriptText) ? String(ocr.fullText || ocr.transcriptText) : '';
     // Vision's native full text owns semantic reading order. Word geometry is
@@ -159,8 +168,11 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
           fileOrder,
           pageNumber: n,
           pageIndex,
-          text: text,
-          rawText,
+          text: typeof p?.text === 'string' ? normalizeOcrTranscript(p.text) : text,
+          rawText: typeof p?.rawText === 'string' ? p.rawText : rawText,
+          width: p.width, height: p.height,
+          derivedImageFileId: p.derivedImageFileId, pageImageUrl: p.pageImageUrl,
+          rasterHash: p.rasterHash, rasterizationVersion: p.rasterizationVersion,
           words: pageWords
         };
       })
@@ -175,6 +187,14 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
         rawText,
         words
       }] };
+  };
+  const results = new Array(ids.length);
+  let nextFile = 0;
+  await Promise.all(Array.from({ length: Math.min(2, ids.length) }, async () => {
+    while (nextFile < ids.length) {
+      const index = nextFile++;
+      results[index] = await processFile(ids[index], index);
+    }
   }));
   const completedResults = results.filter(result => result?.ok).sort((a, b) => a.fileOrder - b.fileOrder);
   const failures = results.filter(result => result && !result.ok).map(result => ({
@@ -190,7 +210,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
   const legacyFirstRawOcrText = firstResult?.rawText || '';
   const legacyFirstOcrWords = firstResult?.words || [];
 
-  if (!processed || !ocrPages.length) {
+  if (!processed || !ocrPages.length || failures.some(failure => failure.isPdf || failure.code === 'OCR_PDF_LIMIT')) {
     const primaryFailure = failures[0] || { code: 'OCR_TEXT_EMPTY', message: 'OCR produced no readable text.' };
     const msg = primaryFailure.message;
 
@@ -218,6 +238,8 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
 
   if (!(await isCurrentJob())) return { ocrStatus: 'superseded' };
   targetDoc.ocrText = legacyFirstOcrText;
+  targetDoc.ocrErrorCode = undefined;
+  targetDoc.ocrError = undefined;
   targetDoc.rawOcrText = legacyFirstRawOcrText;
   targetDoc.ocrData = { words: legacyFirstOcrWords };
   targetDoc.ocrPages = ocrPages;

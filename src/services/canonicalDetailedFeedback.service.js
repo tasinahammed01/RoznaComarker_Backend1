@@ -67,7 +67,7 @@ function buildDeterministicDetailedFeedback({ corrections, statistics, categoryS
 
   const actionSteps = areas.slice(0, 5).map((area, index) => ({ id: `action_${area.category.toLowerCase()}`, priority: index + 1,
     category: area.category, action: `Revise the ${area.dominantSymbols.join('/')} correction${area.issueCount === 1 ? '' : 's'} in the highlighted passages.`,
-    reason: `${area.issueCount} canonical ${area.title.toLowerCase()} issue${area.issueCount === 1 ? '' : 's'} currently affect the ${area.score}/${area.maxScore} category result.`,
+    reason: `${area.issueCount} canonical ${area.title.toLowerCase()} issue${area.issueCount === 1 ? '' : 's'} currently affect this category.`,
     relatedSymbols: area.dominantSymbols, relatedCorrectionIds: area.examples.map((item) => item.correctionId) }));
   return { status: 'completed', sourceHash, evaluationVersion: VERSION,
     areasForImprovement: areas.slice(0, 5), strengths: strengths.slice(0, 3), actionSteps };

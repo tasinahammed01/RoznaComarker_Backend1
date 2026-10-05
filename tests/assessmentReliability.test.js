@@ -8,8 +8,8 @@ const mockDocumentTextDetection = jest.fn();
 jest.mock('@google-cloud/vision', () => ({
   ImageAnnotatorClient: jest.fn(() => ({ documentTextDetection: mockDocumentTextDetection }))
 }));
-jest.mock('../src/services/submissionFeedbackReport.service', () => ({
-  rasterPdf: jest.fn(async () => [{ buffer: Buffer.from('page'), width: 100, height: 200 }])
+jest.mock('../src/services/pdfSubmissionPages.service', () => ({
+  preparePdfPages: jest.fn(async () => [{ buffer: Buffer.from('page'), pageNumber: 1, width: 100, height: 200 }])
 }));
 
 describe('assessment upload and OCR reliability contracts', () => {

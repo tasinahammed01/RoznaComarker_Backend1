@@ -11,7 +11,14 @@ const MARK_KEYS = new Set([
   'earnedPoints',
   'weightedPoints',
   'configuredLevelPercentage',
-  'selectedLevel'
+  'selectedLevel',
+  'levelTitle',
+  'maxScore',
+  'maxOverallScore',
+  'maximumScore',
+  'totalScore',
+  'appliedDeduction',
+  'defaultDeduction'
 ]);
 
 function showMarksToStudent(assignment) {
@@ -35,6 +42,15 @@ function redactMarkFields(value) {
   const redacted = {};
   for (const [key, nested] of Object.entries(value)) {
     if (MARK_KEYS.has(key) || key === 'overriddenScores') continue;
+    // Older deterministic action steps embedded marks in their written reason.
+    if (key === 'reason' && typeof nested === 'string') {
+      redacted[key] = nested.replace(/currently affect the \d+(?:\.\d+)?\/\d+(?:\.\d+)? category result\./g, 'currently affect this category.');
+      continue;
+    }
+    if (key === 'scoringAudit') {
+      redacted[key] = { overallMethod: nested?.overallMethod };
+      continue;
+    }
     redacted[key] = redactMarkFields(nested);
   }
   return redacted;

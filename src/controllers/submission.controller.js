@@ -33,8 +33,8 @@ const logger = require('../utils/logger');
 const { bytesToMB, ensureActivePlan, getLimit, incrementUsage } = require('../middlewares/usage.middleware');
 const { getPublicApiUrl, buildPublicUploadUrl } = require('../utils/publicApiUrl');
 const { showMarksToStudent, redactStudentMarks } = require('../services/assignmentAccessPolicy.service');
-const { scopeCanonicalPages, scopeCanonicalCorrections,
-  normalizeCorrectionWordIds } = require('../services/canonicalCorrectionResponse.service');
+const { scopeCanonicalPages, scopeCanonicalCorrections } = require('../services/canonicalCorrectionResponse.service');
+const { buildCanonicalCorrectionRenderModels } = require('../services/canonicalCorrectionRender.service');
 const { pendingAnalysisState, resetSubmissionAnalysisState } = require('../services/submissionAnalysisLifecycle.service');
 const submissionRemoval = require('../services/submissionRemoval.service');
 const { getAdaptiveCompletionForResubmission } = require('../services/adaptivePractice.service');
@@ -1118,14 +1118,17 @@ async function getOcrCorrections(req, res) {
       const fileId = String(p.fileId || 'legacy');
       const words = normalizeOcrWordsFromStored(p.words || [], { fileId });
       const separators = new Map((p.words || []).map((word) => [word.id, word.separatorBefore || '']));
-      return { pageNumber: Number(p.pageNumber || 1), fileId, width: null, height: null,
+      const stored = pages.find(page => String(page.fileId) === fileId && Number(page.pageNumber || 1) === Number(p.pageNumber || 1));
+      return { pageNumber: Number(p.pageNumber || 1), fileId, width: stored?.width || null, height: stored?.height || null,
+        pageImageUrl: stored?.pageImageUrl || null, derivedImageFileId: stored?.derivedImageFileId || null,
+        rasterHash: stored?.rasterHash || null, rasterizationVersion: stored?.rasterizationVersion || null,
         words: words.map((w) => ({ id: w.id, fileId, text: w.text, bbox: w.bbox, separatorBefore: separators.get(w.id) || '' })), lines: [] };
     });
     const evaluationDoc = kind === 'submission' ? await SubmissionFeedback.findOne({ submissionId: doc._id }).lean() : null;
     const resultState = buildCanonicalResultState({ submission: doc, feedback: evaluationDoc });
     const hasCanonicalCorrections = resultState.correctionCurrent && Array.isArray(doc.writingCorrections);
     const allCorrections = hasCanonicalCorrections ? doc.writingCorrections : [];
-    const corrections = normalizeCorrectionWordIds(
+    const corrections = buildCanonicalCorrectionRenderModels(
       scopeCanonicalCorrections(allCorrections, requestedFileId), canonicalTranscript, doc.ocrPages);
     const currentWordIds = new Set(ocr.flatMap((page) => page.words || []).map((word) => String(word.id)));
     const correctionsWithWordIds = corrections.filter((correction) => correction.wordIds?.length).length;

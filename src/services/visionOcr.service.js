@@ -235,10 +235,34 @@ function requestTimeoutMs() {
   return Number.isFinite(configured) && configured >= 1000 ? Math.min(configured, 120000) : 30000;
 }
 
-async function detectDocument(image, dimensions, pageOffset = 0) {
+let activeRequests = 0;
+const waitingRequests = [];
+async function withOcrSlot(run) {
+  if (activeRequests >= 2) await new Promise((resolve, reject) => {
+    const ready = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => {
+      const index = waitingRequests.indexOf(ready);
+      if (index >= 0) waitingRequests.splice(index, 1);
+      reject(new OcrProviderError('OCR_PROVIDER_TIMEOUT', 'OCR queue timed out.', {
+        retryable: true, safeMessage: 'OCR processing is busy. Please retry.'
+      }));
+    }, 30000);
+    waitingRequests.push(ready);
+  });
+  else activeRequests += 1;
+  try { return await run(); }
+  finally {
+    const next = waitingRequests.shift();
+    if (next) next(); else activeRequests -= 1;
+  }
+}
+async function detectDocument(image, dimensions, pageOffset = 0, pdfPage = false) {
   let result;
   try {
-    [result] = await getVisionClient().documentTextDetection({ image }, { timeout: requestTimeoutMs() });
+    [result] = await withOcrSlot(() => getVisionClient().documentTextDetection({ image }, {
+      timeout: pdfPage ? Math.min(requestTimeoutMs(), 30000) : requestTimeoutMs(),
+      ...(pdfPage ? { retry: null } : {})
+    }));
   } catch (error) {
     throw classifyVisionError(error);
   }
@@ -283,7 +307,7 @@ async function detectDocument(image, dimensions, pageOffset = 0) {
 
 
 
-async function extractOcrFromImageFile(absoluteFilePath) {
+async function extractOcrFromImageFile(absoluteFilePath, options = {}) {
 
   if (!absoluteFilePath || typeof absoluteFilePath !== 'string') {
 
@@ -307,20 +331,31 @@ async function extractOcrFromImageFile(absoluteFilePath) {
 
     let rasterized;
     try {
-      rasterized = await require('./submissionFeedbackReport.service').rasterPdf(
-        await fs.promises.readFile(absoluteFilePath)
-      );
+      rasterized = await require('./pdfSubmissionPages.service').preparePdfPages(absoluteFilePath, options.sourceFile, options);
     } catch (error) {
+      if (error?.code?.startsWith('OCR_')) throw error;
       throw new OcrProviderError('OCR_UNSUPPORTED_FORMAT', 'PDF could not be rasterized for OCR.', {
         safeMessage: 'This PDF could not be read. It may be corrupt, protected, or too large.', cause: error
       });
     }
+    options.reservePages?.(rasterized.length);
     const detectedPages = [];
     for (let index = 0; index < rasterized.length; index += 1) {
+      if (options.isCurrentJob && !(await options.isCurrentJob())) {
+        throw new OcrProviderError('OCR_JOB_SUPERSEDED', 'This assessment has been replaced.');
+      }
       const page = rasterized[index];
-      detectedPages.push(await detectDocument({ content: page.buffer }, {
+      const detected = await detectDocument({ content: page.buffer }, {
         width: page.width, height: page.height
-      }, index));
+      }, index, true);
+      // Each raster produces one canonical page, including blank pages. Never
+      // copy the combined document text into every page's semantic transcript.
+      const resultPage = detected.pages[0];
+      Object.assign(resultPage, { text: detected.fullText, rawText: detected.fullText,
+        width: page.width, height: page.height, derivedImageFileId: page.derivedImageFileId,
+        pageImageUrl: page.pageImageUrl, rasterHash: page.rasterHash,
+        rasterizationVersion: page.rasterizationVersion });
+      detectedPages.push({ ...detected, pages: [resultPage] });
     }
     const pages = detectedPages.flatMap(result => result.pages);
     const words = detectedPages.flatMap(result => result.words);
@@ -354,6 +389,7 @@ async function extractOcrFromImageFile(absoluteFilePath) {
     });
 
   }
+  options.reservePages?.(1);
   return detectDocument({ source: { filename: absoluteFilePath } }, { width, height });
 
 }
