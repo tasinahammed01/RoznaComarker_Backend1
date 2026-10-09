@@ -243,6 +243,18 @@ router.patch(
   feedbackController.updateTeacherComments
 );
 
+router.post(
+  '/:submissionId/teacher-comments/ai-draft',
+  noStore,
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('submissionId').isMongoId().withMessage('Invalid submission id'),
+  handleValidationResult,
+  createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'teacher_comment_draft' }),
+  createUserConcurrencyGuard({ operation: 'teacher_comment_draft', maxConcurrent: 1 }),
+  feedbackController.generateTeacherCommentDraft
+);
+
 /**
  * @openapi
  * /api/feedback/{feedbackId}:

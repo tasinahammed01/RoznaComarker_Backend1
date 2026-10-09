@@ -2640,6 +2640,34 @@ function isAllowedRubricUploadMime(mime) {
   ].includes(m);
 }
 
+async function generateTeacherCommentDraft(req, res) {
+  try {
+    const teacherId = req.user?._id;
+    if (!teacherId) return sendError(res, 401, "Unauthorized");
+    if (Object.keys(req.body || {}).length) return sendError(res, 400, "No feedback payload is allowed");
+    const submission = await Submission.findById(req.params.submissionId)
+      .select("class evaluationStatus assessmentStatus correctionSourceHash").lean();
+    if (!submission) return sendError(res, 404, "Submission not found");
+    const owner = await Class.findOne({ _id: submission.class, teacher: teacherId, isActive: true }).select("_id").lean();
+    if (!owner) return sendError(res, 403, "No permission");
+    if (submission.evaluationStatus !== "completed" || ["started", "processing", "failed"].includes(submission.assessmentStatus))
+      return sendError(res, 409, "AI feedback is not available for this submission yet.");
+    const feedback = await SubmissionFeedback.findOne({ submissionId: submission._id })
+      .select("aiFeedback detailedFeedback rubricScores evaluationStatus evaluationSourceHash").lean();
+    if (!feedback) return sendError(res, 404, "AI feedback is not available for this submission yet.");
+    if (feedback.evaluationStatus !== "completed" || submission.correctionSourceHash && feedback.evaluationSourceHash !== submission.correctionSourceHash)
+      return sendError(res, 409, "AI feedback is not available for this submission yet.");
+    const draft = await require("../services/teacherComments.service").generateTeacherCommentDraft(feedback, submission._id);
+    return sendSuccess(res, draft);
+  } catch (error) {
+    logger.warn({ event: "teacher_comment_draft_failed", feature: "teacher_comment_draft",
+      submissionId: req.params.submissionId, code: error.code || "TEACHER_COMMENT_DRAFT_FAILED" });
+    return sendError(res, error.code === "TEACHER_COMMENT_SOURCE_INSUFFICIENT" ? 409 : 503,
+      error.code === "TEACHER_COMMENT_SOURCE_INSUFFICIENT" ? "AI feedback is not available for this submission yet."
+        : "Unable to generate a comment right now. Please try again.");
+  }
+}
+
 async function updateTeacherComments(req, res) {
   try {
     const { submissionId } = req.params;
@@ -4241,6 +4269,7 @@ async function listFeedbackByClassForTeacher(req, res) {
 }
 
 module.exports = {
+  generateTeacherCommentDraft,
   createFeedback,
   generateAiFeedbackFromOcr,
   generateAiSubmissionFeedback,

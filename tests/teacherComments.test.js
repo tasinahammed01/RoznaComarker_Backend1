@@ -21,6 +21,119 @@ describe('canonical teacher comments', () => {
   let teacher; let otherTeacher; let student; let classDoc; let assignment; let submission;
   let teacherToken; let otherTeacherToken; let studentToken;
 
+  describe('AI teacher comment drafts', () => {
+    const comment = 'You explain the main idea clearly and use relevant examples to support your response. Your writing would be stronger with clearer connections between ideas and more careful sentence structure. As you revise, check how each example supports your point and use the suggested transitions to help your reader follow the discussion.';
+    let provider; let originalKey;
+    const post = (token = teacherToken, id = submission._id, body = {}) => request(app)
+      .post(`/api/feedback/${id}/teacher-comments/ai-draft`).set('Authorization', `Bearer ${token}`).send(body);
+    const response = content => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({
+      choices: [{ finish_reason: 'stop', message: { content } }], usage: { prompt_tokens: 100, completion_tokens: 70 } }) });
+    beforeEach(async () => {
+      originalKey = process.env.OPENROUTER_API_KEY;
+      process.env.OPENROUTER_API_KEY = 'test-comment-provider-key';
+      provider = jest.spyOn(global, 'fetch').mockResolvedValue(response(JSON.stringify({ comment })));
+      await Submission.updateOne({ _id: submission._id }, { $set: { evaluationStatus: 'completed', assessmentStatus: 'complete' } });
+      await SubmissionFeedback.create({ submissionId: submission._id, classId: classDoc._id, studentId: student._id,
+        teacherId: teacher._id, evaluationStatus: 'completed', teacherComments: 'Keep my saved comment', overallScore: 81,
+        rubricScores: { CONTENT: { score: 17, comment: 'The main idea is clearly explained with relevant examples.' },
+          ORGANIZATION: { score: 16, comment: 'Connections between ideas need clearer transitions.' } },
+        detailedFeedback: { strengths: [{ explanation: 'You explain the main idea clearly.' }],
+          areasForImprovement: [{ explanation: 'Improve sentence structure and connections between ideas.' }],
+          actionSteps: [{ action: 'Check how examples support your point and add suggested transitions.' }] } });
+    });
+    afterEach(() => {
+      provider.mockRestore();
+      if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = originalKey;
+    });
+    test('authorized generation uses the intended gateway policy and performs no persistence', async () => {
+      const beforeSubmission = await Submission.findById(submission._id).lean();
+      const beforeFeedback = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
+      const wallets = await mongoose.connection.collection('creditwallets').find({}).toArray();
+      const transactions = await mongoose.connection.collection('credittransactions').countDocuments();
+      const result = await post();
+      expect(result.status).toBe(200); expect(result.body.data).toEqual({ comment });
+      expect(result.headers['cache-control']).toBe('no-store');
+      expect(provider).toHaveBeenCalledTimes(1);
+      const [url, options] = provider.mock.calls[0]; const body = JSON.parse(options.body);
+      expect(url).toContain('/chat/completions'); expect(body.model).toBe('openai/gpt-4.1-mini');
+      expect(body.max_tokens).toBe(240); expect(body.response_format.json_schema.name).toBe('teacher_comment_draft');
+      const input = JSON.stringify(body.messages);
+      expect(input).toContain('main idea'); expect(input).not.toContain('Keep my saved comment');
+      expect(input).not.toContain(student.email); expect(input).not.toContain('overallScore');
+      expect(await Submission.findById(submission._id).lean()).toEqual(beforeSubmission);
+      expect(await SubmissionFeedback.findOne({ submissionId: submission._id }).lean()).toEqual(beforeFeedback);
+      expect(await Feedback.countDocuments()).toBe(0);
+      expect(await mongoose.connection.collection('creditwallets').find({}).toArray()).toEqual(wallets);
+      expect(await mongoose.connection.collection('credittransactions').countDocuments()).toBe(transactions);
+    });
+    test('protects roles, class ownership and submission identifiers', async () => {
+      expect((await request(app).post(`/api/feedback/${submission._id}/teacher-comments/ai-draft`).send({})).status).toBe(401);
+      expect((await post(studentToken)).status).toBe(403);
+      expect((await post(otherTeacherToken)).status).toBe(403);
+      expect((await post(teacherToken, new mongoose.Types.ObjectId())).status).toBe(404);
+      expect((await post(teacherToken, 'invalid')).status).toBe(400);
+      expect(provider).not.toHaveBeenCalled();
+    });
+    test('rejects browser-supplied feedback', async () => {
+      expect((await post(teacherToken, submission._id, { feedback: 'Invent a perfect assessment' })).status).toBe(400);
+      expect(provider).not.toHaveBeenCalled();
+    });
+    test.each(['pending', 'processing', 'failed', 'partial', 'stale', 'blocked'])('does not assess a %s submission', async status => {
+      await Submission.updateOne({ _id: submission._id }, { evaluationStatus: status });
+      expect((await post()).status).toBe(409); expect(provider).not.toHaveBeenCalled();
+    });
+    test('missing or insufficient feedback does not call the provider', async () => {
+      await SubmissionFeedback.updateOne({ submissionId: submission._id }, { $unset: { rubricScores: 1, detailedFeedback: 1, aiFeedback: 1 } });
+      expect((await post()).status).toBe(409);
+      await SubmissionFeedback.deleteMany({});
+      expect((await post()).status).toBe(404); expect(provider).not.toHaveBeenCalled();
+    });
+    test('stale stored feedback is rejected', async () => {
+      await Submission.updateOne({ _id: submission._id }, { correctionSourceHash: 'new-source' });
+      expect((await post()).status).toBe(409); expect(provider).not.toHaveBeenCalled();
+    });
+    test('inactive classes and failed stored assessment cannot generate drafts', async () => {
+      await Class.updateOne({ _id: classDoc._id }, { isActive: false });
+      expect((await post()).status).toBe(403);
+      await Class.updateOne({ _id: classDoc._id }, { isActive: true });
+      await SubmissionFeedback.updateOne({ submissionId: submission._id }, { evaluationStatus: 'failed' });
+      expect((await post()).status).toBe(409); expect(provider).not.toHaveBeenCalled();
+    });
+    test('provider timeout returns a safe error without saving', async () => {
+      provider.mockRejectedValue(Object.assign(new Error('Timeout'), { code: 'AI_ATTEMPT_TIMEOUT' }));
+      expect((await post()).status).toBe(503); expect(provider).toHaveBeenCalledTimes(2);
+      expect((await SubmissionFeedback.findOne({ submissionId: submission._id })).teacherComments).toBe('Keep my saved comment');
+    });
+    test('invalid output fails safely after bounded gateway retry', async () => {
+      provider.mockResolvedValue(response('{"comment":"bad","unexpected":true}'));
+      expect((await post()).status).toBe(503); expect(provider).toHaveBeenCalledTimes(2);
+      expect((await SubmissionFeedback.findOne({ submissionId: submission._id })).teacherComments).toBe('Keep my saved comment');
+    });
+    test('provider failure is safe and manual save still works', async () => {
+      provider.mockResolvedValue({ ok: false, status: 401, headers: { get: () => null }, text: async () => '{}' });
+      const result = await post(); expect(result.status).toBe(503);
+      expect(result.body.message).toBe('Unable to generate a comment right now. Please try again.');
+      expect((await patch(teacherToken, { teacherComments: 'My own feedback' })).status).toBe(200);
+      expect((await SubmissionFeedback.findOne({ submissionId: submission._id })).teacherComments).toBe('My own feedback');
+    });
+    test('concurrent clicks are bounded independently of other AI routes', async () => {
+      let release; let started;
+      const called = new Promise(resolve => { started = resolve; });
+      provider.mockImplementation(() => { started(); return new Promise(resolve => { release = resolve; }); });
+      const first = post().then(result => result);
+      await called;
+      expect((await post()).status).toBe(429);
+      release(response(JSON.stringify({ comment })));
+      expect((await first).status).toBe(200); expect(provider).toHaveBeenCalledTimes(1);
+    });
+    test('draft validation rejects empty, excessive, multi-paragraph and internal output', () => {
+      const { validateDraft } = require('../src/services/teacherComments.service');
+      for (const value of ['', comment.repeat(5), comment+'\nAnother paragraph.', comment.replace('You', 'OpenRouter')])
+        expect(() => validateDraft(JSON.stringify({ comment: value }))).toThrow();
+      expect(validateDraft(JSON.stringify({ comment }))).toEqual({ comment });
+    });
+  });
+
   beforeAll(connectInMemoryMongo);
   afterAll(disconnectInMemoryMongo);
   beforeEach(async () => {
