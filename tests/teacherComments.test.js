@@ -32,9 +32,9 @@ describe('canonical teacher comments', () => {
       originalKey = process.env.OPENROUTER_API_KEY;
       process.env.OPENROUTER_API_KEY = 'test-comment-provider-key';
       provider = jest.spyOn(global, 'fetch').mockResolvedValue(response(JSON.stringify({ comment })));
-      await Submission.updateOne({ _id: submission._id }, { $set: { evaluationStatus: 'completed', assessmentStatus: 'complete' } });
+      await Submission.updateOne({ _id: submission._id }, { $set: { evaluationStatus: 'completed', assessmentStatus: 'complete', correctionSourceHash: 'draft-current-source' } });
       await SubmissionFeedback.create({ submissionId: submission._id, classId: classDoc._id, studentId: student._id,
-        teacherId: teacher._id, evaluationStatus: 'completed', teacherComments: 'Keep my saved comment', overallScore: 81,
+        teacherId: teacher._id, evaluationStatus: 'completed', evaluationSourceHash: 'draft-current-source', detailedFeedbackSourceHash: 'draft-current-source', teacherComments: 'Keep my saved comment', overallScore: 81,
         rubricScores: { CONTENT: { score: 17, comment: 'The main idea is clearly explained with relevant examples.' },
           ORGANIZATION: { score: 16, comment: 'Connections between ideas need clearer transitions.' } },
         detailedFeedback: { strengths: [{ explanation: 'You explain the main idea clearly.' }],
@@ -46,6 +46,8 @@ describe('canonical teacher comments', () => {
       if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = originalKey;
     });
     test('authorized generation uses the intended gateway policy and performs no persistence', async () => {
+      const assessment = jest.spyOn(require('../src/services/canonicalEvaluation.service'), 'generate');
+      const corrections = jest.spyOn(require('../src/services/canonicalCorrectionsPipeline.service'), 'generateAndPersist');
       const beforeSubmission = await Submission.findById(submission._id).lean();
       const beforeFeedback = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
       const wallets = await mongoose.connection.collection('creditwallets').find({}).toArray();
@@ -65,6 +67,8 @@ describe('canonical teacher comments', () => {
       expect(await Feedback.countDocuments()).toBe(0);
       expect(await mongoose.connection.collection('creditwallets').find({}).toArray()).toEqual(wallets);
       expect(await mongoose.connection.collection('credittransactions').countDocuments()).toBe(transactions);
+      expect(assessment).not.toHaveBeenCalled(); expect(corrections).not.toHaveBeenCalled();
+      assessment.mockRestore(); corrections.mockRestore();
     });
     test('protects roles, class ownership and submission identifiers', async () => {
       expect((await request(app).post(`/api/feedback/${submission._id}/teacher-comments/ai-draft`).send({})).status).toBe(401);
@@ -131,6 +135,34 @@ describe('canonical teacher comments', () => {
       for (const value of ['', comment.repeat(5), comment+'\nAnother paragraph.', comment.replace('You', 'OpenRouter')])
         expect(() => validateDraft(JSON.stringify({ comment: value }))).toThrow();
       expect(validateDraft(JSON.stringify({ comment }))).toEqual({ comment });
+    });
+    test('missing source identity cannot certify current assessment feedback', async () => {
+      await Submission.updateOne({ _id: submission._id }, { $unset: { correctionSourceHash: 1 } });
+      expect((await post()).status).toBe(409); expect(provider).not.toHaveBeenCalled();
+    });
+    test('stale detailed prose and legacy overall prose are excluded from the prompt', async () => {
+      await SubmissionFeedback.updateOne({ submissionId: submission._id }, { $set: {
+        detailedFeedbackSourceHash: 'old-source', 'detailedFeedback.strengths': [{ explanation: 'STALE_DETAIL' }],
+        'aiFeedback.overallComments': 'LEGACY_OVERALL' } });
+      expect((await post()).status).toBe(200);
+      const prompt = provider.mock.calls[0][1].body;
+      expect(prompt).not.toContain('STALE_DETAIL'); expect(prompt).not.toContain('LEGACY_OVERALL');
+    });
+    test('short conservative drafts are allowed and marks, internal language and markup are rejected', () => {
+      const { validateDraft, draftSource } = require('../src/services/teacherComments.service');
+      const short = 'Please review the feedback provided and focus on the highlighted areas before your next submission.';
+      expect(validateDraft(JSON.stringify({ comment: short })).comment).toBe(short);
+      for (const bad of [short + ' You earned 90 marks.', short + ' The provider reviewed it.', short + ' ```code```', short + ' **Bold text**.'])
+        expect(() => validateDraft(JSON.stringify({ comment: bad }))).toThrow();
+      expect(draftSource({ rubricScores: { GRAMMAR: { comment: 'UNSUPPORTED' } }, scoreAuthority: { version: 1, categories: { GRAMMAR: { authoritative: false } } } }).categories).toEqual([]);
+    });
+    test('sparse current feedback can produce a conservative short draft without saving', async () => {
+      await SubmissionFeedback.updateOne({ submissionId: submission._id }, { $unset: { detailedFeedback: 1, rubricScores: 1 } });
+      await SubmissionFeedback.updateOne({ submissionId: submission._id }, { $set: { 'rubricScores.ORGANIZATION.comment': 'Use clearer transitions between ideas.' } });
+      const short = 'Try using clearer transitions between ideas so your reader can follow each point.';
+      provider.mockResolvedValue(response(JSON.stringify({ comment: short })));
+      expect((await post()).body.data).toEqual({ comment: short });
+      expect((await SubmissionFeedback.findOne({ submissionId: submission._id })).teacherComments).toBe('Keep my saved comment');
     });
   });
 

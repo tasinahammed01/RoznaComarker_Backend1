@@ -2641,6 +2641,7 @@ function isAllowedRubricUploadMime(mime) {
 }
 
 async function generateTeacherCommentDraft(req, res) {
+  const startedAt = Date.now();
   try {
     const teacherId = req.user?._id;
     if (!teacherId) return sendError(res, 401, "Unauthorized");
@@ -2653,11 +2654,14 @@ async function generateTeacherCommentDraft(req, res) {
     if (submission.evaluationStatus !== "completed" || ["started", "processing", "failed"].includes(submission.assessmentStatus))
       return sendError(res, 409, "AI feedback is not available for this submission yet.");
     const feedback = await SubmissionFeedback.findOne({ submissionId: submission._id })
-      .select("aiFeedback detailedFeedback rubricScores evaluationStatus evaluationSourceHash").lean();
+      .select("detailedFeedback detailedFeedbackSourceHash rubricScores scoreAuthority evaluationStatus evaluationSourceHash overriddenByTeacher").lean();
     if (!feedback) return sendError(res, 404, "AI feedback is not available for this submission yet.");
-    if (feedback.evaluationStatus !== "completed" || submission.correctionSourceHash && feedback.evaluationSourceHash !== submission.correctionSourceHash)
+    if (feedback.evaluationStatus !== "completed" || feedback.overriddenByTeacher || !submission.correctionSourceHash || feedback.evaluationSourceHash !== submission.correctionSourceHash)
       return sendError(res, 409, "AI feedback is not available for this submission yet.");
+    if (feedback.detailedFeedbackSourceHash !== submission.correctionSourceHash) delete feedback.detailedFeedback;
+    logger.info({ event: "teacher_comment_ai_draft_started", submissionId: String(submission._id) });
     const draft = await require("../services/teacherComments.service").generateTeacherCommentDraft(feedback, submission._id);
+    logger.info({ event: "teacher_comment_ai_draft_completed", submissionId: String(submission._id), durationMs: Date.now() - startedAt });
     return sendSuccess(res, draft);
   } catch (error) {
     logger.warn({ event: "teacher_comment_draft_failed", feature: "teacher_comment_draft",
