@@ -400,7 +400,19 @@ async function extractOcrFromImageFile(absoluteFilePath, options = {}) {
 
 
 
+// Preflight uses the same configured client, request slots and error mapping.
+// Keep raw ordered polygons; normal assessment geometry remains unchanged.
+async function detectOrientationAnnotation(content) {
+  try {
+    const [result] = await withOcrSlot(() => getVisionClient().documentTextDetection(
+      { image: { content } }, { timeout: requestTimeoutMs(), retry: null }));
+    if (result?.error?.message) throw new Error('Orientation provider response error');
+    return result?.fullTextAnnotation || null;
+  } catch (error) { throw classifyVisionError(error); }
+}
+
 module.exports = {
+  detectOrientationAnnotation,
 
   extractOcrFromImageFile,
   buildTranscriptFromWords,

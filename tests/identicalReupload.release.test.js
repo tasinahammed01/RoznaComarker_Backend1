@@ -1,3 +1,4 @@
+jest.mock('../src/services/visionOcr.service', () => ({ detectOrientationAnnotation: jest.fn(async () => require('./fixtures/orientationAnnotation').annotation()) }));
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-secret';
 jest.setTimeout(30000);
@@ -24,7 +25,8 @@ const { evaluationPolicyHash } = require('../src/services/teacherEvaluationPolic
 const { connectInMemoryMongo, disconnectInMemoryMongo, clearDatabase } = require('./helpers/testServer');
 const { seedTestPlans } = require('./helpers/seedTestPlans');
 const { signTestJwt } = require('./helpers/auth');
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=', 'base64');
+const { pageImage } = require('./fixtures/imagePreflightPage');
+let png;
 
 describe('persisted assessment reuse through the upload API (mocked AI)', () => {
   let teacher, student, classDoc, assignment, token, submission, before, feedbackBefore, evaluate;
@@ -34,6 +36,9 @@ describe('persisted assessment reuse through the upload API (mocked AI)', () => 
   const upload = (bytes = png) => request(app).post('/api/submissions/qr/release-test')
     .set('Authorization', `Bearer ${token}`).attach('file', bytes, { filename: 'essay.png', contentType: 'image/png' });
   beforeEach(async () => {
+    require('../src/services/visionOcr.service').detectOrientationAnnotation.mockReset()
+      .mockResolvedValue(require('./fixtures/orientationAnnotation').annotation());
+    png = await pageImage();
     await clearDatabase(); await seedTestPlans();
     teacher = await User.create({ firebaseUid: 'release-teacher', email: 'release-t@example.com', role: 'teacher' });
     student = await User.create({ firebaseUid: 'release-student', email: 'release-s@example.com', role: 'student' });
@@ -71,6 +76,23 @@ describe('persisted assessment reuse through the upload API (mocked AI)', () => 
     feedbackBefore = await Feedback.findOne({ submissionId: submission._id }).lean();
     ocr.runOcrAndPersistForFiles.mockClear();
     evaluate = jest.spyOn(evaluation, 'generate').mockResolvedValue({ status: 'completed' });
+  });
+  test.each(['resolution', 'rotation', 'undetermined'])('failed %s preflight creates no records or credit transaction and starts no OCR', async reason => {
+    const File = require('../src/models/File');
+    const AssessmentRun = require('../src/models/AssessmentRun');
+    const counts = await Promise.all([Submission.countDocuments(), File.countDocuments(),
+      AssessmentRun.countDocuments(), Transaction.countDocuments()]);
+    const vision = require('../src/services/visionOcr.service');
+    if (reason !== 'resolution') vision.detectOrientationAnnotation.mockResolvedValueOnce(
+      reason === 'rotation' ? require('./fixtures/orientationAnnotation').annotation(Array(6).fill(90)) : null);
+    expect((await upload(reason === 'resolution' ? await pageImage({ width: 160, height: 200 })
+      : await pageImage({ gain: 0.92 }))).status)
+      .toBe(reason === 'undetermined' ? 503 : 422);
+    await new Promise(setImmediate);
+    expect(await Promise.all([Submission.countDocuments(), File.countDocuments(),
+      AssessmentRun.countDocuments(), Transaction.countDocuments()])).toEqual(counts);
+    expect(ocr.runOcrAndPersistForFiles).not.toHaveBeenCalled();
+    expect(evaluate).not.toHaveBeenCalled();
   });
   test('same exact bytes/new File ID preserve corrections, statistics, score and feedback without AI', async () => {
     const count = await Transaction.countDocuments();

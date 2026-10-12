@@ -1,6 +1,7 @@
 const express = require('express');
 
 const submissionController = require('../controllers/submission.controller');
+const { preflightImage, enforceImagePreflight } = require('../middlewares/imagePreflight.middleware');
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { requireRole } = require('../middlewares/role.middleware');
 const {
@@ -34,6 +35,12 @@ const noStore = (_req, res, next) => {
   res.set('Expires', '0');
   next();
 };
+
+// Analysis-only temporary upload: no persisted File/Submission, OCR, or credits.
+router.post('/image-preflight', verifyJwtToken, requireRole('student'), uploadUserLimiter,
+  createUserConcurrencyGuard({ operation: 'image_preflight', maxConcurrent: 2 }),
+  noStore, setUploadType('submissions'), upload.single('file'), handleUploadError,
+  validateUploadedFileSignature, preflightImage);
 
 /**
  * @openapi
@@ -110,6 +117,7 @@ router.post(
     }
     return next();
   },
+  enforceImagePreflight,
   enforceStorageLimitFromUploadedFiles(),
   submissionController.submitByQrToken
 );
@@ -207,6 +215,7 @@ router.post(
     }
     return next();
   },
+  enforceImagePreflight,
   enforceStorageLimitFromUploadedFiles(),
   submissionController.submitByAssignmentId
 );
