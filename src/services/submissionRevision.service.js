@@ -27,6 +27,8 @@ async function captureCurrentRevision(submission) {
       correctionStatistics: plain(submission.correctionStatistics), correctionStatus: submission.correctionStatus,
       correctionSourceHash: submission.correctionSourceHash, ocrJobId: submission.ocrJobId,
       correctionJobId: submission.correctionJobId, correctionVersion: submission.correctionVersion,
+      correctionOcrJobId: submission.correctionOcrJobId, correctionOcrEvidenceHash: submission.correctionOcrEvidenceHash,
+      correctionGenerationConfig: plain(submission.correctionGenerationConfig),
       semanticStatus: submission.semanticStatus, semanticMetrics: plain(submission.semanticMetrics),
       evaluationStatus: submission.evaluationStatus, assessmentStatus: submission.assessmentStatus,
       assessmentCompletedAt: submission.assessmentCompletedAt, evaluationSourceHash: submission.evaluationSourceHash,

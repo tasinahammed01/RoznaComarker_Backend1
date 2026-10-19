@@ -2,6 +2,7 @@
 
 const { canonicalOcrWordId } = require('../utils/ocrWordIdentity');
 const { validateVisualTarget } = require('./correctionVisualTarget.service');
+const { bindingFailure } = require('./correctionEvidenceIdentity.service');
 
 function normalizedId(value) {
   return String(value?._id || value?.id || value || '').trim();
@@ -21,7 +22,7 @@ function scopeCanonicalCorrections(corrections, requestedFileId) {
   return list.filter((correction) => normalizedId(correction?.fileId) === requested);
 }
 
-function normalizeCorrectionWordIds(corrections, canonicalTranscript, storedPages) {
+function normalizeCorrectionWordIds(corrections, canonicalTranscript, storedPages, options = {}) {
   const pages = Array.isArray(canonicalTranscript?.pages) ? canonicalTranscript.pages : [];
   const spans = Array.isArray(canonicalTranscript?.wordSpans) ? canonicalTranscript.wordSpans : [];
   const aliases = new Map();
@@ -38,6 +39,13 @@ function normalizeCorrectionWordIds(corrections, canonicalTranscript, storedPage
     const page = pages.find((item) => normalizedId(item?.fileId) === fileId && Number(item?.pageNumber || 1) === pageNumber);
     if (!page) return { ...correction, wordIds: [], visualTarget: undefined };
     const validIds = new Set((page.words || []).map((word) => String(word.id)));
+    const resolveId = value => validIds.has(String(value)) ? String(value) : aliases.get(`${fileId}:${pageNumber}:${String(value)}`);
+    const requested = [...(correction.wordIds || []), ...(correction.evidenceWordIds || [])];
+    if (!requested.length) requested.push(...(correction.visualTarget?.wordIds || []),
+      ...(correction.visualTarget?.anchors || []).map(a => a.wordId));
+    const reason = bindingFailure(correction, canonicalTranscript, options.submission)
+      || (requested.some(id => !validIds.has(resolveId(id))) ? 'foreign_or_unresolved_word_ids' : null);
+    if (reason) return { ...correction, wordIds: [], visualTarget: undefined, targetVerification: { state: 'rejected', reason } };
     let wordIds = (Array.isArray(correction?.wordIds) ? correction.wordIds : []).map((value) => {
       const raw = String(value || '').trim();
       return validIds.has(raw) ? raw : aliases.get(`${fileId}:${pageNumber}:${raw}`);
@@ -47,6 +55,19 @@ function normalizeCorrectionWordIds(corrections, canonicalTranscript, storedPage
       if (Number.isFinite(start) && Number.isFinite(end) && end > start) wordIds = spans.filter((span) =>
         normalizedId(span?.fileId) === fileId && Number(span?.page || 1) === pageNumber
         && start < Number(span.end) && end > Number(span.start)).map((span) => String(span.wordId));
+    }
+    const hasOffsets = Number.isInteger(correction.startChar) && Number.isInteger(correction.endChar)
+      && correction.endChar > correction.startChar;
+    const quote = correction.quotedText || correction.originalText;
+    if (hasOffsets && typeof canonicalTranscript.text === 'string' && quote) {
+      if (canonicalTranscript.text.slice(correction.startChar, correction.endChar) !== quote) {
+        return { ...correction, wordIds: [], visualTarget: undefined,
+          targetVerification: { state: 'rejected', reason: 'canonical_quote_mismatch' } };
+      }
+      // An identical token elsewhere on the page is not interchangeable evidence.
+      // Current exact offsets own the occurrence, even if another valid ID has the same text.
+      wordIds = spans.filter(s => normalizedId(s.fileId) === fileId && Number(s.page || 1) === pageNumber
+        && correction.startChar < s.end && correction.endChar > s.start).map(s => String(s.wordId));
     }
     if (!wordIds.length) {
       const quote = String(correction?.quotedText || '').trim(); const pageText = String(page.text || '');

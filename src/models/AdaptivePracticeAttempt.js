@@ -12,7 +12,8 @@ const checklistResultSchema = new Schema({
 const adaptivePracticeAttemptSchema = new Schema({
   sessionId: { type: Schema.Types.ObjectId, ref: 'AdaptivePracticeSession', required: true, index: true },
   submissionId: { type: Schema.Types.ObjectId, ref: 'Submission', required: true, index: true },
-  studentId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  studentId: { type: Schema.Types.ObjectId, ref: 'User', required: function () { return !this.guestSubmissionId; }, index: true },
+  guestSubmissionId: { type: Schema.Types.ObjectId, ref: 'Submission' },
   activityId: { type: String, required: true, trim: true },
   practiceId: { type: String, trim: true, index: true },
   questionId: { type: String, trim: true },

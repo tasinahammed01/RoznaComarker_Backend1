@@ -23,6 +23,8 @@ const {
 } = require('../middlewares/usage.middleware');
 
 const router = express.Router();
+router.post('/:submissionId/guest-access/revoke', verifyJwtToken, requireRole('teacher'),
+  param('submissionId').isMongoId(), handleValidationResult, require('../controllers/guestSubmission.controller').revoke);
 const uploadUserLimiter = createUserRateLimiter({
   windowMs: process.env.UPLOAD_USER_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000,
   limit: process.env.UPLOAD_USER_RATE_LIMIT_MAX || 30,

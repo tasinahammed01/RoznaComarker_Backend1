@@ -42,6 +42,19 @@ test('all required components transition run to complete before exactly one debi
   expect(await CreditTransaction.countDocuments({ type: 'ASSESSMENT_DEBIT', status: 'committed' })).toBe(1);
   expect(report.buildPersistedSubmissionFeedbackReport).not.toHaveBeenCalled();
 });
+test('guest completion retries charge the real teacher exactly once with no student wallet', async () => {
+  await Submission.updateOne({ _id: submission._id }, { $set: { submissionMode: 'guest',
+    guest: { displayName: 'Guest', normalizedEmail: 'guest@example.com' } }, $unset: { student: 1 } });
+  await SubmissionFeedback.updateOne({ submissionId: submission._id }, {
+    $set: { submissionMode: 'guest' }, $unset: { studentId: 1 } });
+  submission = await Submission.findById(submission._id);
+  const args = { runId: 'guest-complete', submissionId: submission._id, teacherId: teacher._id, sourceHash: 'source-1' };
+  await completion.start({ ...args, submission });
+  await Promise.all([completion.complete(args), completion.complete(args), completion.complete(args)]);
+  const debits = await CreditTransaction.find({ type: 'ASSESSMENT_DEBIT', status: 'committed' }).lean();
+  expect(debits).toHaveLength(1); expect(String(debits[0].userId)).toBe(teacher.id);
+  expect((await Submission.findById(submission._id)).student).toBeUndefined();
+});
 
 test('completion replay reconciles an interrupted debit without a second wallet mutation', async () => {
   const args = { runId: 'interrupted-completion', submissionId: submission._id, teacherId: teacher._id, sourceHash: 'source-1' };

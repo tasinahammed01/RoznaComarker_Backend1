@@ -1,3 +1,4 @@
+const accessContext = require('./submissionAccessContext.service');
 'use strict';
 
 const crypto = require('crypto');
@@ -40,7 +41,7 @@ function responseFingerprint({ sessionId, activityId, questionId, studentId, res
   return crypto.createHash('sha256').update(JSON.stringify({
     promptVersion: ADAPTIVE_PRACTICE_CHECK_PROMPT_VERSION, sessionId: String(sessionId), activityId,
     ...(questionId ? { questionId: String(questionId) } : {}),
-    studentId: String(studentId), response: normalizeResponse(response)
+    studentId: accessContext.isGuest(studentId) ? `guest:${studentId.submissionId}` : String(studentId), response: normalizeResponse(response)
   }), 'utf8').digest('hex');
 }
 
@@ -86,7 +87,7 @@ async function loadOwnedSession(sessionId, studentId, activityId, questionId) {
   if (!mongoose.Types.ObjectId.isValid(sessionId)) throw new AttemptError(400, 'INVALID_SESSION_ID', 'Invalid practice session id.');
   const session = await AdaptivePracticeSession.findById(sessionId);
   if (!session) throw new AttemptError(404, 'SESSION_NOT_FOUND', 'Practice session not found.');
-  if (String(session.studentId) !== String(studentId)) throw new AttemptError(403, 'FORBIDDEN', 'You cannot access this practice session.');
+  if (!accessContext.ownsSession(session, studentId)) throw new AttemptError(403, 'FORBIDDEN', 'You cannot access this practice session.');
   if (session.status !== 'ready') throw new AttemptError(409, 'SESSION_NOT_READY', 'Practice is not ready for checking.');
   const activity = session.activities.find((item) => item.activityId === activityId);
   if (!activity) throw new AttemptError(404, 'ACTIVITY_NOT_FOUND', 'Practice activity not found.');
@@ -151,7 +152,7 @@ async function allocateAttempt(base, response, fingerprint) {
 
 async function getProgressSummary(session) {
   if (!session) return { improvedActivities: 0, completedActivities: 0, totalActivities: 0, requiredActivityCount: 0, completed: false, percentage: 0, activities: [] };
-  const attempts = await AdaptivePracticeAttempt.find({ sessionId: session._id, studentId: session.studentId, status: 'ready' }).sort({ attemptNumber: 1 }).lean();
+  const attempts = await AdaptivePracticeAttempt.find({ sessionId: session._id, ...accessContext.sessionOwnerFields(session), status: 'ready' }).sort({ attemptNumber: 1 }).lean();
   const activities = session.activities.map((rawActivity) => {
     const activity = normalizePractice(rawActivity);
     const legacy = !(Array.isArray(rawActivity.questions) && rawActivity.questions.length);
@@ -190,7 +191,7 @@ async function checkResponse(sessionId, activityId, studentId, body = {}) {
   const response = validateResponse(body.response, gradingQuestion);
   const fingerprint = responseFingerprint({ sessionId, activityId,
     questionId: legacy ? undefined : question.questionId, studentId, response });
-  const base = { sessionId: session._id, submissionId: session.submissionId, studentId,
+  const base = { sessionId: session._id, submissionId: session.submissionId, ...accessContext.ownerFields(studentId),
     activityId: attemptActivityId, ...(legacy ? {} : { practiceId: activityId, questionId: question.questionId }) };
   let attempt = await AdaptivePracticeAttempt.findOne({ ...base, responseFingerprint: fingerprint });
   let reused = Boolean(attempt);
@@ -263,7 +264,7 @@ async function checkResponse(sessionId, activityId, studentId, body = {}) {
 
 async function listAttempts(sessionId, studentId, activityId, questionId) {
   const { session, attemptActivityId } = await loadOwnedSession(sessionId, studentId, activityId, questionId);
-  const attempts = await AdaptivePracticeAttempt.find({ sessionId, studentId, activityId: attemptActivityId }).sort({ attemptNumber: 1 }).lean();
+  const attempts = await AdaptivePracticeAttempt.find({ sessionId, ...accessContext.ownerFields(studentId), activityId: attemptActivityId }).sort({ attemptNumber: 1 }).lean();
   return { attempts, progress: await getProgressSummary(session) };
 }
 

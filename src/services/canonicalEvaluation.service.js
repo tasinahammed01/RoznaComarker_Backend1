@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const logger = require('../utils/logger');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
+const Submission = require('../models/Submission');
 const Class = require('../models/class.model');
 const User = require('../models/user.model');
 const { computeCanonicalCorrectionStatistics } = require('./correctionCanonical.service');
@@ -219,12 +220,12 @@ async function persistProvisionalScore({ submission, assignment, sourceHash, job
   const overallScore = customRubricScores ? customRubricScores.overallScore
     : Object.values(rubricScores).reduce((sum, item) => sum + item.score, 0);
   const grade = gradeFromOverallScore(overallScore);
-  const ownsJob = await submission.constructor.exists({ _id: submission._id, correctionSourceHash: sourceHash,
+  const ownsJob = await Submission.exists({ _id: submission._id, correctionSourceHash: sourceHash,
     correctionJobId: jobId, evaluationJobId: jobId });
   if (!ownsJob) throw supersededEvaluationError();
   const feedback = await SubmissionFeedback.findOneAndUpdate({ submissionId: submission._id,
     overriddenByTeacher: { $ne: true } }, { $set: {
-    submissionId: submission._id, classId: submission.class, studentId: submission.student,
+    submissionId: submission._id, classId: submission.class, studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
     teacherId: classDoc?.teacher, evaluationJobId: jobId,
     assessmentVersion: ASSESSMENT_VERSION, evaluationVersion: VERSION,
     evaluationSourceHash: sourceHash, evaluationRubricSourceHash: rubricHash,
@@ -236,7 +237,7 @@ async function persistProvisionalScore({ submission, assignment, sourceHash, job
     sourceRubric: customRubricResult.rubric, overallScore, grade
   } }, { new: true, runValidators: true, upsert: true });
   if (!feedback) throw supersededEvaluationError();
-  const updated = await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash,
+  const updated = await Submission.updateOne({ _id: submission._id, correctionSourceHash: sourceHash,
     correctionJobId: jobId, evaluationJobId: jobId }, { $set: {
     evaluationStatus: 'partial', evaluationSourceHash: sourceHash, evaluationVersion: VERSION,
     evaluationRubricSourceHash: rubricHash, evaluationPolicyHash: policyHash,
@@ -336,7 +337,12 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
         model: existingFeedback.evaluationModel || null, overallScore: Number(existingFeedback.overallScore), errorCode: null };
     }
   }
-  const creditState = accountingEnabled ? await CreditService.canRunAssessment(classDoc?.teacher) : { allowed: true, availableCredits: null };
+  const creditState = accountingEnabled
+    ? submission.submissionMode === 'guest'
+      ? await require('./assessmentCreditRouter.service').canRunAssessment({ teacherUserId: classDoc?.teacher,
+        submissionId: submission._id, assignmentId: submission.assignment })
+      : await CreditService.canRunAssessment(classDoc?.teacher)
+    : { allowed: true, availableCredits: null };
   if (!creditState.allowed) {
     await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash }, { $set: {
       evaluationStatus: 'blocked', evaluationErrorCode: 'INSUFFICIENT_ASSESSMENT_CREDITS',
@@ -361,7 +367,7 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
   let feedbackPersisted = false;
   try {
     await SubmissionFeedback.findOneAndUpdate({ submissionId: submission._id }, { $set: {
-      submissionId: submission._id, classId: submission.class, studentId: submission.student,
+      submissionId: submission._id, classId: submission.class, studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
       teacherId: classDoc?.teacher, evaluationJobId: jobId
     }}, { upsert: true, runValidators: true });
     if (JSON.stringify(stats) !== JSON.stringify(submission.correctionStatistics?.toObject?.() || submission.correctionStatistics || {}))
@@ -553,7 +559,7 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
     let savedFeedback = existing;
     if (!existing?.overriddenByTeacher) savedFeedback = await SubmissionFeedback.findOneAndUpdate({ submissionId: submission._id,
       evaluationJobId: jobId, overriddenByTeacher: { $ne: true } }, { $set: {
-      submissionId: submission._id, classId: submission.class, studentId: submission.student, teacherId: classDoc?.teacher,
+      submissionId: submission._id, classId: submission.class, studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered', teacherId: classDoc?.teacher,
       assessmentVersion: ASSESSMENT_VERSION, evaluationVersion: VERSION, evaluationSourceHash: sourceHash,
       analysisInputHash: analysisInputHash({ sourceHash, rubricHash, policyHash, contextHash: builtInContextHash }),
       evaluationRubricSourceHash: rubricHash, evaluationPolicyHash: policyHash,

@@ -7,6 +7,10 @@ const fs = require('fs');
 const { ImageAnnotatorClient } = require('@google-cloud/vision');
 
 const sizeOf = require('image-size');
+const sharp = require('sharp');
+const { createHash } = require('crypto');
+const OCR_PIPELINE_VERSION = 'vision-normalized-evidence-v1';
+const OCR_PREPROCESSING_VERSION = 'sharp-auto-orient-v1';
 
 
 
@@ -275,8 +279,13 @@ async function detectDocument(image, dimensions, pageOffset = 0, pdfPage = false
   for (let pIndex = 0; pIndex < Math.max(1, pages.length); pIndex += 1) {
     const page = pages[pIndex] || {};
     const pageNumber = pageOffset + pIndex + 1;
-    const width = Number(page.width) || dimensions.width;
-    const height = Number(page.height) || dimensions.height;
+    const width = dimensions.width;
+    const height = dimensions.height;
+    if ((Number.isFinite(Number(page.width)) && Math.abs(Number(page.width) - width) > 1)
+      || (Number.isFinite(Number(page.height)) && Math.abs(Number(page.height) - height) > 1)) {
+      logger.warn({ event: 'ocr_page_dimensions_mismatch', width, height,
+        reportedWidth: Number(page.width), reportedHeight: Number(page.height), pageNumber });
+    }
     let pageWordIndex = 0;
     const pageWords = [];
     for (const block of page.blocks || []) {
@@ -297,7 +306,9 @@ async function detectDocument(image, dimensions, pageOffset = 0, pdfPage = false
         }
       }
     }
-    outputPages.push({ pageNumber, width, height, words: pageWords.map(word => ({
+    outputPages.push({ pageNumber, width, height, coordinateSpace: 'display-image',
+      ocrImageWidth: width, ocrImageHeight: height, ocrExifOrientation: dimensions.ocrExifOrientation || 1,
+      words: pageWords.map(word => ({
       id: word.id, text: word.text, bbox: word.bbox, paragraphIndex: word.paragraphIndex, confidence: word.confidence
     })), lines: [] });
   }
@@ -390,7 +401,27 @@ async function extractOcrFromImageFile(absoluteFilePath, options = {}) {
 
   }
   options.reservePages?.(1);
-  return detectDocument({ source: { filename: absoluteFilePath } }, { width, height });
+  // Normalize only the in-memory OCR input, never the stored student source.
+  let normalized;
+  let sourceBytes;
+  try {
+    sourceBytes = await fs.promises.readFile(absoluteFilePath);
+    normalized = await sharp(sourceBytes, { failOn: 'error' })
+      .rotate().toBuffer({ resolveWithObject: true });
+  } catch (error) {
+    throw new OcrProviderError('OCR_INVALID_IMAGE_DIMENSIONS', 'Unable to normalize the uploaded image.', {
+      safeMessage: 'The uploaded image could not be decoded.', cause: error });
+  }
+  const result = await detectDocument({ content: normalized.data }, { width: normalized.info.width,
+    height: normalized.info.height, ocrExifOrientation: dims.orientation || 1 });
+  const provenance = { sourceSha256: createHash('sha256').update(sourceBytes).digest('hex'),
+    ocrInputSha256: createHash('sha256').update(normalized.data).digest('hex'),
+    encodedImageWidth: width, encodedImageHeight: height,
+    sourceMimeType: dims.type === 'jpg' ? 'image/jpeg' : `image/${dims.type}`,
+    ocrProvider: 'google_vision', ocrApi: 'documentTextDetection',
+    ocrPipelineVersion: OCR_PIPELINE_VERSION, ocrPreprocessingVersion: OCR_PREPROCESSING_VERSION };
+  result.pages.forEach(page => Object.assign(page, provenance));
+  return result;
 
 }
 

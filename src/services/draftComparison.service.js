@@ -1,3 +1,4 @@
+const accessContext = require('./submissionAccessContext.service');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const Class = require('../models/class.model');
@@ -194,6 +195,7 @@ function liveAssessment(submission, feedback) {
 }
 
 async function authorizeSubmission(submission, user) {
+  if (accessContext.isGuest(user)) return accessContext.ownsSubmission(submission, user);
   if (user?.role === 'student') return String(submission.student) === String(user._id);
   if (user?.role === 'teacher') return Boolean(await Class.exists({ _id: submission.class, teacher: user._id }));
   return false;
@@ -204,7 +206,7 @@ async function comparisonForSubmission(submissionId, user) {
   const submission = await Submission.findById(submissionId).lean();
   if (!submission) throw Object.assign(new Error('Submission not found'), { statusCode: 404 });
   if (!await authorizeSubmission(submission, user)) throw Object.assign(new Error('Forbidden'), { statusCode: 403 });
-  if (user?.role === 'student') {
+  if (user?.role === 'student' || accessContext.isGuest(user)) {
     const assignment = await Assignment.findById(submission.assignment).select('showMarksToStudent').lean();
     if (!showMarksToStudent(assignment)) {
       return unavailable('MARKS_HIDDEN', 'Your teacher has not released marks for this assignment yet.', {

@@ -3,6 +3,10 @@ jest.mock('nodemailer', () => ({ createTransport: jest.fn(() => ({ sendMail: jes
 jest.mock('../src/utils/logger', () => ({ info: jest.fn(), error: jest.fn() }));
 const nodemailer = require('nodemailer');
 const { sendInvitationEmail } = require('../src/services/email.service');
+beforeEach(() => {
+  Object.assign(process.env, { SMTP_HOST: 'smtp.resend.com', SMTP_PORT: '465', SMTP_SECURE: 'true',
+    SMTP_USER: 'resend', SMTP_PASS: 'synthetic-smtp-password', MAIL_FROM_EMAIL: 'sender@mail.example.com' });
+});
 
 test('escapes class content and preserves the canonical join link', async () => {
   const joinUrl = 'https://comarkers.roznahub.com/student/join-class?joinCode=A%26B';

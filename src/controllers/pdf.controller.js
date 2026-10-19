@@ -19,8 +19,9 @@ const fs = require("fs");
 const os = require("os");
 const { v4: uuidv4 } = require("uuid");
 const { showMarksToStudent } = require("../services/assignmentAccessPolicy.service");
+const submissionAccess = require('../services/submissionAccessContext.service');
 
-async function getSubmissionWithPermissionsOrThrow({ user, submissionId }) {
+async function getSubmissionWithPermissionsOrThrow({ user, submissionId, guestContext }) {
   if (!mongoose.Types.ObjectId.isValid(submissionId)) {
     throw new ApiError(400, "Invalid submission id");
   }
@@ -38,6 +39,11 @@ async function getSubmissionWithPermissionsOrThrow({ user, submissionId }) {
 
   if (!submission) {
     throw new ApiError(404, "Submission not found");
+  }
+
+  if (submissionAccess.isGuest(guestContext)) {
+    if (!submissionAccess.ownsSubmission(submission, guestContext) || !submission.assignment?.isActive) throw new ApiError(403, 'Forbidden');
+    return submission;
   }
 
   if (!user) {
@@ -80,9 +86,10 @@ async function downloadSubmissionPdf(req, res, next) {
     const submission = await getSubmissionWithPermissionsOrThrow({
       user: req.user,
       submissionId,
+      guestContext: req.guestAccessContext,
     });
 
-    const marksVisible = req.user?.role !== "student" || showMarksToStudent(submission.assignment);
+    const marksVisible = (req.user?.role !== "student" && !submissionAccess.isGuest(req.guestAccessContext)) || showMarksToStudent(submission.assignment);
 
     if (process.env.NODE_ENV === "test" && process.env.ENABLE_TEST_PDF_HTTP !== "true") {
       throw new ApiError(
@@ -119,7 +126,7 @@ async function downloadSubmissionPdf(req, res, next) {
         : null;
 
     const identity = {
-      studentName,
+      studentName: studentName || submission.guest?.displayName || '',
       studentEmail,
       title: String(submission.assignment?.title || submission.assignment?.name || ""),
       className: String(submission.class?.name || ""),

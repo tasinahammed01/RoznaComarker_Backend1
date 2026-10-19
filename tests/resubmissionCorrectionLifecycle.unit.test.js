@@ -26,7 +26,8 @@ describe('replacement-draft canonical correction lifecycle', () => {
       writingCorrections: [{ id: 'old' }], correctionStatistics: { total: 1 }, correctionSourceHash: 'old-source',
       semanticStatus: 'completed', semanticAttempt: 2, semanticSourceKey: 'old-semantic',
       evaluationStatus: 'completed', evaluationSourceHash: 'old-source', evaluationJobId: 'old-evaluation',
-      evaluationProvider: 'old-provider', evaluationModel: 'old-model', evaluationAttempts: [{ status: 'success' }]
+      evaluationProvider: 'old-provider', evaluationModel: 'old-model', evaluationAttempts: [{ status: 'success' }],
+      correctionOcrJobId: 'old-ocr', correctionOcrEvidenceHash: 'old-evidence', correctionGenerationConfig: { model: 'old' }
     };
     resetSubmissionAnalysisState(replacement, {
       ocrJobId: 'ocr-replacement', now: new Date('2026-08-11T00:00:00Z')
@@ -39,7 +40,8 @@ describe('replacement-draft canonical correction lifecycle', () => {
       evaluationStatus: 'pending'
     });
     for (const field of ['correctionStatistics', 'correctionSourceHash', 'semanticSourceKey',
-      'evaluationSourceHash', 'evaluationJobId', 'evaluationProvider', 'evaluationModel', 'evaluationAttempts']) {
+      'evaluationSourceHash', 'evaluationJobId', 'evaluationProvider', 'evaluationModel', 'evaluationAttempts',
+      'correctionOcrJobId', 'correctionOcrEvidenceHash', 'correctionGenerationConfig']) {
       expect(replacement[field]).toBeUndefined();
     }
   });

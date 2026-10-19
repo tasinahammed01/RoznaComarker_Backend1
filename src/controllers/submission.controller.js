@@ -35,6 +35,7 @@ const { getPublicApiUrl, buildPublicUploadUrl } = require('../utils/publicApiUrl
 const { showMarksToStudent, redactStudentMarks } = require('../services/assignmentAccessPolicy.service');
 const { scopeCanonicalPages, scopeCanonicalCorrections } = require('../services/canonicalCorrectionResponse.service');
 const { buildCanonicalCorrectionRenderModels } = require('../services/canonicalCorrectionRender.service');
+const { annotationImageGeometry } = require('../services/annotationImageGeometry.service');
 const { pendingAnalysisState, resetSubmissionAnalysisState } = require('../services/submissionAnalysisLifecycle.service');
 const submissionRemoval = require('../services/submissionRemoval.service');
 const { getAdaptiveCompletionForResubmission } = require('../services/adaptivePractice.service');
@@ -48,6 +49,7 @@ const { normalizeTeacherEvaluationPolicy, evaluationPolicyHash } = require('../s
 const { normalizeAssignmentRubric, hashNormalizedRubric } = require('../services/assignmentRubric.service');
 
 const ADAPTIVE_RESUBMISSION_MESSAGE = 'Complete the required Adaptive Learning activities before submitting another draft.';
+const submissionAccess = require('../services/submissionAccessContext.service');
 
 function sendSuccess(res, data) {
   return res.json({
@@ -313,8 +315,8 @@ function toStoredPath(type, filename) {
 }
 
 async function persistUploadedFile(req, type, providedFile, uploadOrder) {
-  const userId = req.user && req.user._id;
-  const role = req.user && req.user.role;
+  const userId = req.uploadOwner?._id || (req.user && req.user._id);
+  const role = req.uploadOwner?.role || (req.user && req.user.role);
 
   if (!userId || !role) {
     return { error: { statusCode: 401, message: 'Unauthorized' } };
@@ -346,7 +348,7 @@ async function persistUploadedFile(req, type, providedFile, uploadOrder) {
   };
 }
 
-async function persistUploadedFiles(req, type) {
+async function persistUploadedFiles(req, type, onPersisted) {
   const list = Array.isArray(req.files) ? req.files : [];
   if (!list.length) {
     // allow legacy single-file
@@ -354,6 +356,7 @@ async function persistUploadedFiles(req, type) {
     if (!single) return { error: { statusCode: 400, message: 'No file provided' } };
     const one = await persistUploadedFile(req, type, single, 0);
     if (one.error) return one;
+    if (onPersisted) onPersisted(one.fileDoc);
     return { files: [one.fileDoc], urls: [one.url] };
   }
 
@@ -365,6 +368,7 @@ async function persistUploadedFiles(req, type) {
       return persisted;
     }
     fileDocs.push(persisted.fileDoc);
+    if (onPersisted) onPersisted(persisted.fileDoc);
     urls.push(persisted.url);
   }
 
@@ -418,7 +422,7 @@ function remapDraftFileReferences(value, previousFileIds, currentFileIds) {
       return replacement ? new mongoose.Types.ObjectId(replacement) : item;
     }
     if (typeof item === 'string') {
-      if (!['fileId', 'wordId', 'wordIds', 'id'].includes(key)) return item;
+      if (!['fileId', 'wordId', 'wordIds', 'evidenceWordIds', 'id'].includes(key)) return item;
       let result = item;
       for (const [before, after] of replacements) if (after) {
         if (result === before) result = after;
@@ -593,6 +597,13 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
         existing.ocrPages = remapDraftFileReferences(existing.ocrPages || [], previousFileIds, currentFileIds);
         existing.ocrData = remapDraftFileReferences(existing.ocrData, previousFileIds, currentFileIds);
         existing.writingCorrections = remapDraftFileReferences(existing.writingCorrections || [], previousFileIds, currentFileIds);
+        // This branch already proved exact source/context/version reuse. Rebind
+        // immutable evidence after its deliberate file-ID remap, never on a GET.
+        const reusedCanonical = buildCanonicalSubmissionTranscript(existing);
+        const evidenceIdentity = require('../services/correctionEvidenceIdentity.service');
+        existing.writingCorrections = evidenceIdentity.bindCorrections(existing.writingCorrections, reusedCanonical, existing);
+        existing.correctionOcrJobId = existing.ocrJobId;
+        existing.correctionOcrEvidenceHash = evidenceIdentity.ocrEvidenceHash(reusedCanonical, existing);
         existing.reusedFromRevisionId = previousRevision._id;
         existing.reusedAssessment = reusableAssessment;
         if (!reusableAssessment) {
@@ -885,13 +896,13 @@ async function getSubmissionsByAssignment(req, res) {
     const submissionQuery = Submission.find({
       assignment: assignment._id,
       class: classDoc._id
-    }).sort({ submittedAt: -1 });
+    }).sort({ submittedAt: -1 }).select('+guest.normalizedEmail');
 
     // Teacher class activity needs only identity and timestamps. Keep the
     // existing detailed response as the default for review/report screens.
     if (req.query?.view === 'activity') {
       const activity = await submissionQuery
-        .select('_id student submittedAt createdAt updatedAt')
+        .select('_id student guest.displayName submissionMode submittedAt createdAt updatedAt')
         .lean();
       return sendSuccess(res, activity);
     }
@@ -900,7 +911,7 @@ async function getSubmissionsByAssignment(req, res) {
     // assessment/OCR fields remain available through the existing detail view.
     if (req.query?.view === 'cards') {
       const cards = await submissionQuery
-        .select('_id student class submittedAt createdAt updatedAt evaluationStatus')
+        .select('_id student guest.displayName guest.normalizedEmail submissionMode class submittedAt createdAt updatedAt evaluationStatus')
         .populate('student', '_id email displayName photoURL role')
         .lean();
       return sendSuccess(res, cards);
@@ -1027,7 +1038,7 @@ async function getOcrCorrections(req, res) {
     const submissionId = req.params && req.params.submissionId;
     const user = req.user;
 
-    if (!user) {
+    if (!user && !submissionAccess.isGuest(req.guestAccessContext)) {
       return sendError(res, 401, 'Unauthorized');
     }
 
@@ -1048,14 +1059,19 @@ async function getOcrCorrections(req, res) {
     const requestedFileId = typeof requestFileId === 'string' ? requestFileId.trim() : '';
     logContext = {
       submissionId: String(submissionId),
-      userId: String(user._id),
-      role: user.role,
+      userId: user ? String(user._id) : undefined,
+      role: user?.role || 'guest',
       fileId: requestedFileId || null,
       ocrStatus: doc.ocrStatus || null
     };
 
     let marksVisible = true;
-    if (user.role === 'student') {
+    if (submissionAccess.isGuest(req.guestAccessContext)) {
+      if (kind !== 'submission' || !submissionAccess.ownsSubmission(doc, req.guestAccessContext)) return sendError(res, 403, 'Forbidden');
+      const assignmentPolicy = await Assignment.findById(doc.assignment).select('showMarksToStudent isActive').lean();
+      if (!assignmentPolicy?.isActive) return sendError(res, 404, 'Assignment unavailable');
+      marksVisible = showMarksToStudent(assignmentPolicy);
+    } else if (user.role === 'student') {
       if (String(doc.student) !== String(user._id)) {
         return sendError(res, 403, 'Forbidden');
       }
@@ -1114,22 +1130,25 @@ async function getOcrCorrections(req, res) {
     const canonicalPages = hasRequestedFile
       ? canonicalTranscript.pages.filter((page) => page.fileId === requestedFileId)
       : canonicalTranscript.pages;
-    const ocr = canonicalPages.map((p) => {
+    const ocr = await Promise.all(canonicalPages.map(async (p) => {
       const fileId = String(p.fileId || 'legacy');
       const words = normalizeOcrWordsFromStored(p.words || [], { fileId });
       const separators = new Map((p.words || []).map((word) => [word.id, word.separatorBefore || '']));
       const stored = pages.find(page => String(page.fileId) === fileId && Number(page.pageNumber || 1) === Number(p.pageNumber || 1));
+      const sourceGeometry = await annotationImageGeometry(stored,
+        id => File.findById(id).select('path').lean());
       return { pageNumber: Number(p.pageNumber || 1), fileId, width: stored?.width || null, height: stored?.height || null,
+        sourceGeometry,
         pageImageUrl: stored?.pageImageUrl || null, derivedImageFileId: stored?.derivedImageFileId || null,
         rasterHash: stored?.rasterHash || null, rasterizationVersion: stored?.rasterizationVersion || null,
         words: words.map((w) => ({ id: w.id, fileId, text: w.text, bbox: w.bbox, separatorBefore: separators.get(w.id) || '' })), lines: [] };
-    });
+    }));
     const evaluationDoc = kind === 'submission' ? await SubmissionFeedback.findOne({ submissionId: doc._id }).lean() : null;
     const resultState = buildCanonicalResultState({ submission: doc, feedback: evaluationDoc });
     const hasCanonicalCorrections = resultState.correctionCurrent && Array.isArray(doc.writingCorrections);
     const allCorrections = hasCanonicalCorrections ? doc.writingCorrections : [];
     const corrections = buildCanonicalCorrectionRenderModels(
-      scopeCanonicalCorrections(allCorrections, requestedFileId), canonicalTranscript, doc.ocrPages);
+      scopeCanonicalCorrections(allCorrections, requestedFileId), canonicalTranscript, doc.ocrPages, { submission: doc });
     const currentWordIds = new Set(ocr.flatMap((page) => page.words || []).map((word) => String(word.id)));
     const correctionsWithWordIds = corrections.filter((correction) => correction.wordIds?.length).length;
     const correctionsMappedToCurrentWords = corrections.filter((correction) =>
@@ -1240,6 +1259,21 @@ async function regenerateCanonicalCorrections(req, res) {
         'You have used all your Assessment Credits for this billing cycle.', 'INSUFFICIENT_ASSESSMENT_CREDITS');
     }
     
+    if (submission.ocrCoordinateSpaceReviewRequired === true) {
+      // Only this explicit, already authorized regeneration request may re-OCR
+      // an ambiguous legacy source. Reads/backfills never schedule provider work.
+      const jobId = new mongoose.Types.ObjectId().toString();
+      const accepted = await Submission.updateOne({ _id: submission._id, ocrJobId: submission.ocrJobId || null,
+        ocrCoordinateSpaceReviewRequired: true, ocrStatus: { $nin: ['pending', 'processing'] },
+        correctionStatus: { $ne: 'processing' }, assessmentStatus: { $ne: 'processing' } }, { $set: {
+          ocrStatus: 'pending', ocrJobId: jobId, correctionStatus: 'pending', semanticStatus: 'pending',
+          evaluationStatus: 'stale', assessmentStatus: 'started', analysisAttempt: 0, analysisNextRetryAt: null
+        }, $unset: { analysisLeaseOwner: 1, analysisLeaseExpiresAt: 1 } });
+      if (!accepted.modifiedCount) return sendError(res, 409, 'Source analysis is already processing.');
+      scheduleSubmissionAnalysis(submission._id, jobId);
+      return res.status(202).json({ success: true, data: { ocrStatus: 'pending', correctionStatus: 'pending',
+        sourceReocrRequested: true, processingActive: true, automaticPollingAllowed: true, terminal: false } });
+    }
     if (submission.correctionStatus === 'processing') return res.status(409).json({ success: false, message: 'Correction generation is already processing', data: {
       correctionStatus: 'processing', processingActive: true, automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false
     }});
@@ -1332,6 +1366,8 @@ async function getDraftComparison(req, res) {
 }
 
 module.exports = {
+  persistUploadedFiles,
+  fileContentIdentity,
   enforceResubmissionPermission,
   submitByAssignmentId,
   submitByQrToken,

@@ -48,11 +48,8 @@ const feedbackSchema = new Schema(
       ref: 'User',
       required: true
     },
-    student: {
-      type: Schema.Types.ObjectId,
-      ref: 'User',
-      required: true
-    },
+    submissionMode: { type: String, enum: ['registered', 'guest'], default: 'registered' },
+    student: { type: Schema.Types.ObjectId, ref: 'User', required: function () { return this.submissionMode !== 'guest'; } },
     class: {
       type: Schema.Types.ObjectId,
       ref: 'Class',

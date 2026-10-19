@@ -111,7 +111,10 @@ const submissionFeedbackSchema = new Schema(
   {
     submissionId: { type: Schema.Types.ObjectId, ref: 'Submission', required: true, unique: true, index: true },
     classId: { type: Schema.Types.ObjectId, ref: 'Class', required: true, index: true },
-    studentId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    submissionMode: { type: String, enum: ['registered', 'guest'], default: 'registered' },
+    studentId: { type: Schema.Types.ObjectId, ref: 'User', required: function () {
+      return (this.get?.('submissionMode') || this.submissionMode) !== 'guest';
+    }, index: true },
     teacherId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
     // Assessment version to track rubric changes (e.g., "writing-rubric-100-v1")
@@ -141,7 +144,8 @@ const submissionFeedbackSchema = new Schema(
     evaluationPolicy: { type: Schema.Types.Mixed, default: undefined },
     evaluationSource: { type: String, enum: ['ai', 'deterministic_fallback', 'provisional'], default: 'deterministic_fallback' },
     evaluationStatus: { type: String, enum: ['pending', 'processing', 'completed', 'partial', 'failed', 'blocked', 'stale'], default: 'pending' },
-    evaluationStaleReason: { type: String, enum: ['rubric'], default: undefined },
+    evaluationStaleReason: { type: String, enum: ['rubric', 'policy'], default: undefined },
+    evaluationStatusBeforeStale: { type: String, enum: ['completed', 'partial'], default: undefined },
     previousEvaluation: { type: Schema.Types.Mixed, default: undefined },
     evaluationErrorCode: { type: String, trim: true },
     evaluationProvider: { type: String, trim: true },

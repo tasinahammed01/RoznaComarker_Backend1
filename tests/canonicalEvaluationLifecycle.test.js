@@ -41,6 +41,27 @@ describe('canonical evaluation write guards', () => {
     mockFindOneAndUpdate.mockResolvedValue({});
     mockFindOne.mockReturnValue({ lean: jest.fn().mockResolvedValue(null) });
   });
+  test('guest evaluation checks the assignment credit router without a guest wallet', async () => {
+    require('../src/models/user.model').findById.mockReturnValueOnce({ select: () => ({ lean: async () => ({ role: 'teacher' }) }) });
+    const router = require('../src/services/assessmentCreditRouter.service');
+    const routed = jest.spyOn(router, 'canRunAssessment').mockResolvedValue({ allowed: false });
+    const personal = jest.spyOn(require('../src/services/credit.service'), 'canRunAssessment');
+    try {
+      const record = submission(true);
+      delete record.value.student; record.value.submissionMode = 'guest'; record.value.assignment = 'assignment-1';
+      const result = await generate({ submission: record.value, assignment: { title: 'Essay' } });
+      expect(result).toMatchObject({ status: 'blocked', errorCode: 'INSUFFICIENT_ASSESSMENT_CREDITS' });
+      expect(routed).toHaveBeenCalledWith({ teacherUserId: 'teacher-1', submissionId: 'submission-1', assignmentId: 'assignment-1' });
+      expect(personal).not.toHaveBeenCalled(); expect(mockAssess).not.toHaveBeenCalled();
+    } finally { routed.mockRestore(); personal.mockRestore(); }
+  });
+  test('guest scoring persists through canonical evaluation without a student identifier', async () => {
+    const record = submission(true); delete record.value.student; record.value.submissionMode = 'guest';
+    const result = await generate({ submission: record.value, assignment: { title: 'Essay' } });
+    expect(result.status).toBe('completed');
+    expect(mockFindOneAndUpdate.mock.calls.at(-1)[1].$set).toMatchObject({ submissionMode: 'guest', overallScore: expect.any(Number) });
+    expect(mockFindOneAndUpdate.mock.calls.at(-1)[1].$set.studentId).toBeUndefined();
+  });
 
   test('a superseded job cannot persist detailed feedback', async () => {
     const record = submission(false);

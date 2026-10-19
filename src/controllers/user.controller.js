@@ -257,34 +257,52 @@ async function updateMe(req, res) {
       try {
         failureStage = 'evaluation_stale_propagation';
         // Cursor plus fixed-size batches bounds memory independently of teacher history.
+        const { restoreOne } = require('../services/policyEvaluationRestore.service');
+        const { currentEvaluationSettings } = require('../services/evaluationSettingsContext.service');
+        const Assignment = require('../models/assignment.model');
+        let staleCount = 0, restoredCount = 0;
         for await (const classroom of Class.find({ teacher: saved._id }).select('_id').lean().cursor()) {
           let batch = [];
           const flush = async () => {
             if (!batch.length) return;
-            const feedback = await SubmissionFeedback.find({ submissionId: { $in: batch.map(item => item._id) } })
-              .select('submissionId overriddenByTeacher evaluationPolicyHash').lean();
-            const byId = new Map(feedback.map(item => [String(item.submissionId), item]));
-            const staleIds = batch.filter(item => {
-              const detail = byId.get(String(item._id));
-              const hash = detail?.evaluationPolicyHash || item.evaluationPolicyHash;
-              return !detail?.overriddenByTeacher && hash && hash !== nextPolicyHash;
-            }).map(item => item._id);
-            await Submission.updateMany({ _id: { $in: staleIds }, evaluationPolicyHash: { $ne: nextPolicyHash },
-              evaluationStatus: { $in: ['completed', 'partial', 'stale'] } },
-              { $set: { evaluationStatus: 'stale' } });
-            await SubmissionFeedback.updateMany({ submissionId: { $in: staleIds }, overriddenByTeacher: { $ne: true },
-              evaluationPolicyHash: { $ne: nextPolicyHash } }, { $set: { evaluationStatus: 'stale' } });
+            const details = await SubmissionFeedback.find({ submissionId: { $in: batch.map(item => item._id) } }).lean();
+            const byId = new Map(details.map(item => [String(item.submissionId), item]));
+            for (const status of ['completed', 'partial']) {
+              const candidates = batch.filter(item => {
+                const detail = byId.get(String(item._id));
+                return detail && !detail.overriddenByTeacher && detail.evaluationStaleReason !== 'rubric'
+                  && detail.evaluationStatus === status && item.evaluationStatus === status
+                  && detail.evaluationPolicyHash && detail.evaluationPolicyHash !== nextPolicyHash;
+              });
+              const ids = candidates.map(item => item._id);
+              await SubmissionFeedback.updateMany({ submissionId: { $in: ids }, evaluationStatus: status,
+                overriddenByTeacher: { $ne: true }, evaluationStaleReason: { $ne: 'rubric' },
+                evaluationPolicyHash: { $ne: nextPolicyHash } }, { $set: { evaluationStatus: 'stale',
+                  evaluationStaleReason: 'policy', evaluationStatusBeforeStale: status } });
+              await Submission.updateMany({ _id: { $in: ids }, evaluationStatus: status,
+                evaluationPolicyHash: { $ne: nextPolicyHash } }, { $set: { evaluationStatus: 'stale' } });
+            }
+            // A revert must inspect matching hashes too, rather than skipping them.
+            for (const item of batch) {
+              const submission = await Submission.findById(item._id).select('_id assignment evaluationStatus evaluationPolicyHash assessmentStatus ocrStatus ocrJobId evaluationJobId updatedAt correctionStatus semanticStatus correctionSourceHash correctionTranscriptLayoutVersion evaluationVersion evaluationSourceHash evaluationRubricSourceHash semanticErrorCode').lean();
+              const feedback = await SubmissionFeedback.findOne({ submissionId: item._id }).lean();
+              if (submission?.evaluationStatus !== 'stale') continue;
+              const assignment = await Assignment.findById(submission.assignment).lean();
+              const currentSettings = assignment ? await currentEvaluationSettings(assignment) : null;
+              const decision = await restoreOne({ submission, feedback, nextPolicyHash, currentSettings });
+              if (decision.restore) restoredCount++;
+              else staleCount++;
+            }
             batch = [];
           };
           for await (const submission of Submission.find({ class: classroom._id,
-            evaluationStatus: { $in: ['completed', 'partial', 'stale'] } })
-            .select('_id evaluationStatus evaluationPolicyHash').lean().cursor()) {
+            evaluationStatus: { $in: ['completed', 'partial', 'stale'] } }).select('_id assignment evaluationStatus evaluationPolicyHash assessmentStatus ocrStatus ocrJobId evaluationJobId updatedAt correctionStatus semanticStatus correctionSourceHash correctionTranscriptLayoutVersion evaluationVersion evaluationSourceHash evaluationRubricSourceHash semanticErrorCode').lean().cursor()) {
             batch.push(submission);
             if (batch.length === 200) await flush();
           }
           await flush();
         }
-        evaluationPropagation = { status: 'completed', policyHash: nextPolicyHash };
+        evaluationPropagation = { status: 'completed', policyHash: nextPolicyHash, staleCount, restoredCount };
       } catch (err) {
         logger.error({
           event: 'users.updateMe.evaluationPropagationFailed',

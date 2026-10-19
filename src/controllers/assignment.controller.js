@@ -667,7 +667,7 @@ async function createAssignment(req, res) {
   try {
     const {
       title, writingType, instructions, rubric, rubrics, deadline,
-      classId, allowLateResubmission, showMarksToStudent, allowResubmission, requireAdaptiveBeforeResubmission,
+      classId, allowLateResubmission, allowGuestSubmission, showMarksToStudent, allowResubmission, requireAdaptiveBeforeResubmission,
       /** PART 1 — resource fields for flashcard / worksheet assignments */
       resourceType, resourceId
     } = req.body || {};
@@ -705,6 +705,9 @@ async function createAssignment(req, res) {
 
     if (typeof allowLateResubmission !== 'undefined' && typeof allowLateResubmission !== 'boolean') {
       return sendError(res, 400, 'allowLateResubmission must be a boolean');
+    }
+    if (typeof allowGuestSubmission !== 'undefined' && typeof allowGuestSubmission !== 'boolean') {
+      return sendError(res, 400, 'allowGuestSubmission must be a boolean');
     }
     if (typeof showMarksToStudent !== 'undefined' && typeof showMarksToStudent !== 'boolean') {
       return sendError(res, 400, 'showMarksToStudent must be a boolean');
@@ -763,6 +766,7 @@ async function createAssignment(req, res) {
           class: classDoc._id,
           teacher: teacherId,
           qrToken,
+          allowGuestSubmission: resolvedResourceType === 'essay' && allowGuestSubmission === true,
           allowLateResubmission: typeof allowLateResubmission === 'boolean' ? allowLateResubmission : undefined,
           showMarksToStudent: typeof showMarksToStudent === 'boolean' ? showMarksToStudent : undefined,
           allowResubmission: resolvedResourceType === 'essay' && allowResubmission === true,
@@ -849,7 +853,7 @@ async function updateAssignment(req, res) {
   try {
     const { id } = req.params;
     const { title, writingType, instructions, rubric, rubrics, deadline, allowLateResubmission,
-      showMarksToStudent, allowResubmission, requireAdaptiveBeforeResubmission } = req.body || {};
+      allowGuestSubmission, showMarksToStudent, allowResubmission, requireAdaptiveBeforeResubmission } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return sendError(res, 400, 'Invalid assignment id');
@@ -929,6 +933,10 @@ async function updateAssignment(req, res) {
       assignment.allowLateResubmission = allowLateResubmission;
     }
 
+    if (typeof allowGuestSubmission !== 'undefined') {
+      if (typeof allowGuestSubmission !== 'boolean') return sendError(res, 400, 'allowGuestSubmission must be a boolean');
+      assignment.allowGuestSubmission = (!assignment.resourceType || assignment.resourceType === 'essay') && allowGuestSubmission === true;
+    }
     if (typeof showMarksToStudent !== 'undefined') {
       if (typeof showMarksToStudent !== 'boolean') {
         return sendError(res, 400, 'showMarksToStudent must be a boolean');

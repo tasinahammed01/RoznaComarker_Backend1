@@ -36,6 +36,7 @@ coverage/
 Thumbs.db
 
 # secrets / credentials
+/key/vision_key.json
 key/
 Key/
 *.pem
@@ -43,6 +44,10 @@ Key/
 *.pfx
 *.key
 *.crt
+
+# Generated diagnostic trees and browser profiles (existing tracked copies retained).
+backend_root_tree*.txt
+tmp/chrome-badge-profile*/
 
 # google/firebase service accounts and downloaded keys
 *.json

@@ -9,7 +9,11 @@ describe('cross-device canonical result contracts', () => {
   test('one student and assignment identify exactly one canonical submission', () => {
     const model = read('../src/models/Submission.js');
     const controller = read('../src/controllers/submission.controller.js');
-    expect(model).toMatch(/index\(\{ student: 1, assignment: 1 \}, \{ unique: true \}\)/);
+    const Submission = require('../src/models/Submission');
+    expect(Submission.schema.indexes()).toContainEqual([
+      { student: 1, assignment: 1 },
+      expect.objectContaining({ unique: true, partialFilterExpression: { student: { $type: 'objectId' } } })
+    ]);
     expect(controller).toMatch(/Submission\.findOne\(\{[\s\S]*student: studentId,[\s\S]*assignment: assignmentId/);
   });
 

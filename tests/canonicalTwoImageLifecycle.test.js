@@ -39,6 +39,7 @@ const pageResult = (text) => ({
 });
 
 jest.mock('../src/services/visionOcr.service', () => ({
+  detectOrientationAnnotation: jest.fn(async () => require('./fixtures/orientationAnnotation').annotation()),
   extractOcrFromImageFile: jest.fn(async () => {
     await mockOcrGate;
     const text = mockOcrCall++ % 2 === 0
@@ -83,7 +84,8 @@ const { connectInMemoryMongo, disconnectInMemoryMongo, clearDatabase } = require
 const { signTestJwt } = require('./helpers/auth');
 const pdfMock = require('../src/modules/submissionFeedbackPdfGenerator');
 
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+const { pageImage } = require('./fixtures/imagePreflightPage');
+let png;
 const waitFor = async (id, predicate, timeoutMs = 10000) => {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -176,6 +178,8 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
   const originalFetch = global.fetch;
 
   beforeAll(async () => {
+    // Exercise the real upload/preflight boundary with a processable page, not a 1x1 pixel.
+    png = await pageImage();
     await connectInMemoryMongo();
     await seedTestPlans();
     global.fetch = jest.fn(async (url, options) => {

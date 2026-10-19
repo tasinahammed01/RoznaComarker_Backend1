@@ -79,7 +79,8 @@ activitySchema.pre('validate', function validateCanonicalQuestions() {
 
 const adaptivePracticeSessionSchema = new Schema({
   submissionId: { type: Schema.Types.ObjectId, ref: 'Submission', required: true, index: true },
-  studentId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  studentId: { type: Schema.Types.ObjectId, ref: 'User', required: function () { return !this.guestSubmissionId; }, index: true },
+  guestSubmissionId: { type: Schema.Types.ObjectId, ref: 'Submission' },
   assignmentId: { type: Schema.Types.ObjectId, ref: 'Assignment', required: true },
   status: { type: String, enum: ['generating', 'ready', 'failed'], required: true, index: true },
   threshold: { type: Number, default: ADAPTIVE_PRACTICE_THRESHOLD, immutable: true },

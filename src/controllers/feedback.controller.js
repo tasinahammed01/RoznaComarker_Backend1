@@ -1025,7 +1025,7 @@ async function getSubmissionFeedback(req, res) {
         {
           submissionId: submission._id,
           classId: submission.class,
-          studentId: submission.student,
+          studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
           teacherId,
           assessmentVersion: assessment.assessmentVersion,
           evaluationSourceHash: submission.correctionSourceHash || null,
@@ -1297,7 +1297,7 @@ async function generateRubricDesignerFromContext(req, res) {
       : buildDefaultSubmissionFeedbackDoc({
           submissionId: submission._id,
           classId: submission.class,
-          studentId: submission.student,
+          studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
           teacherId,
         });
 
@@ -1390,7 +1390,7 @@ Rules:
         $set: {
           submissionId: submission._id,
           classId: submission.class,
-          studentId: submission.student,
+          studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
           teacherId,
           rubricDesigner: sanitizedRubricDesigner
         },
@@ -1477,7 +1477,7 @@ async function generateRubricDesignerFromFile(req, res) {
         : buildDefaultSubmissionFeedbackDoc({
             submissionId: submission._id,
             classId: submission.class,
-            studentId: submission.student,
+            studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
             teacherId,
           });
 
@@ -1487,7 +1487,7 @@ async function generateRubricDesignerFromFile(req, res) {
           $set: {
             submissionId: submission._id,
             classId: submission.class,
-            studentId: submission.student,
+            studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
             teacherId,
             rubricDesigner: sanitizedRubricDesigner
           },
@@ -1530,7 +1530,7 @@ async function generateRubricDesignerFromFile(req, res) {
         : buildDefaultSubmissionFeedbackDoc({
             submissionId: submission._id,
             classId: submission.class,
-            studentId: submission.student,
+            studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
             teacherId,
           });
 
@@ -1540,7 +1540,7 @@ async function generateRubricDesignerFromFile(req, res) {
           $set: {
             submissionId: submission._id,
             classId: submission.class,
-            studentId: submission.student,
+            studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
             teacherId,
             rubricDesigner: sanitizedRubricDesigner
           },
@@ -1584,7 +1584,7 @@ async function generateRubricDesignerFromFile(req, res) {
         : buildDefaultSubmissionFeedbackDoc({
             submissionId: submission._id,
             classId: submission.class,
-            studentId: submission.student,
+            studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
             teacherId,
           });
 
@@ -1594,7 +1594,7 @@ async function generateRubricDesignerFromFile(req, res) {
           $set: {
             submissionId: submission._id,
             classId: submission.class,
-            studentId: submission.student,
+            studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
             teacherId,
             rubricDesigner: sanitizedRubricDesigner
           },
@@ -1640,7 +1640,7 @@ async function generateRubricDesignerFromFile(req, res) {
       : buildDefaultSubmissionFeedbackDoc({
           submissionId: submission._id,
           classId: submission.class,
-          studentId: submission.student,
+          studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
           teacherId,
         });
 
@@ -1650,7 +1650,7 @@ async function generateRubricDesignerFromFile(req, res) {
         $set: {
           submissionId: submission._id,
           classId: submission.class,
-          studentId: submission.student,
+          studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
           teacherId,
           rubricDesigner
         },
@@ -1839,7 +1839,7 @@ async function generateAiRubricFromDesigner(req, res) {
       : buildDefaultSubmissionFeedbackDoc({
           submissionId: submission._id,
           classId: submission.class,
-          studentId: submission.student,
+          studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
           teacherId,
         });
 
@@ -1956,7 +1956,7 @@ async function generateAiRubricFromDesigner(req, res) {
     const update = {
       submissionId: submission._id,
       classId: submission.class,
-      studentId: submission.student,
+      studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
       teacherId,
       rubricDesigner: sanitizedRubricDesigner
     };
@@ -2230,7 +2230,7 @@ async function generateAiRubricDesigner(req, res) {
       : buildDefaultSubmissionFeedbackDoc({
           submissionId: submission._id,
           classId: submission.class,
-          studentId: submission.student,
+          studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
           teacherId,
         });
 
@@ -2246,7 +2246,7 @@ async function generateAiRubricDesigner(req, res) {
         $set: {
           submissionId: submission._id,
           classId: submission.class,
-          studentId: submission.student,
+          studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
           teacherId,
           rubricDesigner,
         },
@@ -2394,7 +2394,7 @@ async function upsertSubmissionFeedback(req, res) {
     const update = {
       submissionId: submission._id,
       classId: submission.class,
-      studentId: submission.student,
+      studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
       teacherId,
       rubricScores: normalizedRubric,
       overriddenByTeacher: true,
@@ -2713,7 +2713,7 @@ async function updateTeacherComments(req, res) {
       $setOnInsert: {
         submissionId: submission._id,
         classId: submission.class,
-        studentId: submission.student,
+        studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
         teacherId,
       },
     };
@@ -2779,7 +2779,7 @@ async function markSubmissionReviewed(req, res) {
             $setOnInsert: {
               submissionId: submission._id,
               classId: submission.class,
-              studentId: submission.student,
+              studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
               teacherId,
               teacherReviewedAt: now,
               teacherReviewedBy: teacherId,
@@ -3009,7 +3009,7 @@ async function generateRubricDesignerFromPrompt(req, res) {
       : buildDefaultSubmissionFeedbackDoc({
           submissionId: submission._id,
           classId: submission.class,
-          studentId: submission.student,
+          studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
           teacherId,
         });
 
@@ -3070,7 +3070,7 @@ Rules:
         $set: {
           submissionId: submission._id,
           classId: submission.class,
-          studentId: submission.student,
+          studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
           teacherId,
           rubricDesigner: sanitizedRubricDesigner
         },
@@ -3768,7 +3768,7 @@ async function createFeedback(req, res) {
     try {
       const created = await Feedback.create({
         teacher: teacherId,
-        student: submission.student,
+        student: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
         class: submission.class,
         assignment: submission.assignment,
         submission: submission._id,
@@ -3979,7 +3979,7 @@ async function generateAiFeedbackFromOcr(req, res) {
     if (!feedbackDoc) {
       feedbackDoc = await Feedback.create({
         teacher: teacherId,
-        student: submission.student,
+        student: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered',
         class: submission.class,
         assignment: submission.assignment,
         submission: submission._id,

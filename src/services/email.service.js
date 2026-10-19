@@ -1,5 +1,6 @@
 const nodemailer = require('nodemailer');
 const logger = require('../utils/logger');
+const { emailReadiness, safeEmailFailure, smtpTransportOptions } = require('./emailReadiness.service');
 const escapeHtml = value => String(value == null ? '' : value).replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 
@@ -8,15 +9,7 @@ let transporter = null;
 
 function getTransporter() {
   if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || 'smtp.gmail.com',
-      port: parseInt(process.env.SMTP_PORT) || 587,
-      secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-    });
+    transporter = nodemailer.createTransport(smtpTransportOptions());
   }
   return transporter;
 }
@@ -72,12 +65,13 @@ async function sendInvitationEmail({ to, className, classCode, joinUrl, teacherN
     };
 
     const result = await transporter.sendMail(mailOptions);
-    logger.info(`Email sent successfully: ${result.messageId}`);
+    logger.info({ event: 'class_invitation_email_sent', provider: 'smtp' });
     return { success: true, messageId: result.messageId };
     
   } catch (error) {
-    logger.error(`Failed to send email: ${error && error.message ? error.message : error}`);
-    return { success: false, error: error.message };
+    const code = safeEmailFailure(error);
+    logger.error({ event: 'class_invitation_email_failed', code });
+    return { success: false, error: code };
   }
 }
 
@@ -89,12 +83,38 @@ async function testEmailConfig() {
     logger.info('Email service is ready');
     return { success: true };
   } catch (error) {
-    logger.error(`Email service configuration error: ${error && error.message ? error.message : error}`);
-    return { success: false, error: error.message };
+    const code = safeEmailFailure(error);
+    logger.error({ event: 'email_configuration_failed', code });
+    return { success: false, error: code };
   }
 }
 
 module.exports = {
+  async sendGuestSubmissionEmail({ to, assignmentTitle, returnUrl }) {
+    try {
+      const readiness = emailReadiness();
+      if (!readiness.ready) throw Object.assign(new Error('Email configuration unavailable'), { code: readiness.code });
+      let message;
+      try { message = {
+        from: `"${process.env.MAIL_FROM_NAME || 'CoMarker'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
+        to,
+        subject: `Your Co-Marker assignment submission: ${String(assignmentTitle).replace(/[\r\n]/g, ' ').slice(0, 150)}`,
+        text: `Rozna Co-Marker\n\nYour submission for ${assignmentTitle} was received.\nUse this private link to access your feedback without logging in:\n${returnUrl}\nKeep this link private. Do not share it. It expires; request a new link from the assignment page if needed.`,
+        html: `<h2>Rozna Co-Marker</h2><p>Your submission for <strong>${escapeHtml(assignmentTitle)}</strong> was received.</p><p>Use this private link to access your feedback without logging in:</p><p><a href="${escapeHtml(returnUrl)}">Return to your results</a></p><p>Keep this link private. Do not share it. It expires; request a new link from the assignment page if needed.</p>`
+      }; } catch { throw Object.assign(new Error('Email template unavailable'), { code: 'TEMPLATE_FAILURE' }); }
+      const result = await getTransporter().sendMail(message);
+      if (result?.rejected?.length && !result?.accepted?.length) {
+        throw Object.assign(new Error('Email rejected'), { code: 'PROVIDER_REJECTED' });
+      }
+      logger.info({ event: 'guest_confirmation_email_sent', provider: 'smtp' });
+      return { success: true };
+    } catch (error) {
+      const code = safeEmailFailure(error);
+      logger.warn({ event: 'guest_confirmation_email_failed', code });
+      return { success: false, code };
+    }
+  },
   sendInvitationEmail,
-  testEmailConfig
+  testEmailConfig,
+  emailReadiness
 };

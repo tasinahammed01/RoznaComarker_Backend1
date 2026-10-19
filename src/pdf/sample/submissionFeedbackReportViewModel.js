@@ -150,7 +150,7 @@ function buildReportViewModel(input = {}) {
   const fileIds = (submission.files || []).map(id).filter(Boolean); const fileOrder = new Map(fileIds.map((fileId, index) => [fileId, index]));
   const pageSource = Array.isArray(submission.transcriptPages) ? submission.transcriptPages : [];
   const canonical = input.canonicalTranscript || { pages: pageSource, wordSpans: [] };
-  const renderCorrections = buildCanonicalCorrectionRenderModels(rawCorrections, canonical, submission.ocrPages);
+  const renderCorrections = buildCanonicalCorrectionRenderModels(rawCorrections, canonical, submission.ocrPages, { submission });
   const corrections = renderCorrections.map((item, index) => {
     const category = String(item?.category || '').toUpperCase(); const symbol = String(item?.symbol || ''); const legendItem = legendBySymbol.get(symbol);
     const fileId = id(item?.fileId); const page = Number(item?.page || item?.pageNumber || 1);

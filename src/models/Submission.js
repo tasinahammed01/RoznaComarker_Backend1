@@ -19,8 +19,19 @@ const submissionSchema = new Schema(
     student: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      required: true
+      required: function () { return this.submissionMode !== 'guest'; }
     },
+    submissionMode: { type: String, enum: ['registered', 'guest'], default: 'registered' },
+    guest: {
+      displayName: { type: String, maxlength: 120 },
+      normalizedEmail: { type: String, maxlength: 254, select: false },
+      requestHash: { type: String, select: false },
+      accessHash: { type: String, select: false },
+      expiresAt: Date,
+      revokedAt: Date,
+      recoveredAt: Date
+    },
+    guestRequestKey: { type: String, select: false },
     assignment: {
       type: Schema.Types.ObjectId,
       ref: 'Assignment',
@@ -70,6 +81,21 @@ const submissionSchema = new Schema(
         pageIndex: { type: Number, min: 0, required: false },
         width: Number,
         height: Number,
+        coordinateSpace: { type: String, enum: ['display-image', 'encoded-image'] },
+        ocrImageWidth: Number,
+        ocrImageHeight: Number,
+        ocrExifOrientation: Number,
+        sourceSha256: String,
+        ocrInputSha256: String,
+        encodedImageWidth: Number,
+        encodedImageHeight: Number,
+        sourceMimeType: String,
+        ocrProvider: String,
+        ocrApi: String,
+        ocrPipelineVersion: String,
+        ocrPreprocessingVersion: String,
+        ocrRunId: String,
+        ocrCreatedAt: Date,
         derivedImageFileId: { type: Schema.Types.ObjectId, ref: 'File' },
         pageImageUrl: String,
         rasterHash: String,
@@ -131,6 +157,7 @@ const submissionSchema = new Schema(
     ocrUpdatedAt: {
       type: Date
     },
+    ocrCoordinateSpaceReviewRequired: { type: Boolean, default: undefined },
     draftNumber: { type: Number, min: 1, default: 1 },
     previousRevision: { type: Schema.Types.ObjectId, ref: 'SubmissionRevision', default: null },
     fileContentIdentity: { type: String, trim: true, index: true },
@@ -165,6 +192,9 @@ const submissionSchema = new Schema(
     correctionError: { type: String, trim: true },
     correctionUpdatedAt: { type: Date },
     correctionJobId: { type: String, index: true },
+    correctionOcrJobId: String,
+    correctionOcrEvidenceHash: String,
+    correctionGenerationConfig: { type: Schema.Types.Mixed, default: undefined },
     languageToolStatus: { type: String, enum: ['pending', 'processing', 'completed', 'failed'], default: undefined },
     languageToolSourceHash: { type: String, trim: true },
     languageToolVersion: { type: String, trim: true },
@@ -219,7 +249,12 @@ const submissionSchema = new Schema(
   }
 );
 
-submissionSchema.index({ student: 1, assignment: 1 }, { unique: true });
+submissionSchema.index({ student: 1, assignment: 1 }, { unique: true,
+  partialFilterExpression: { student: { $type: 'objectId' } } });
+submissionSchema.index({ assignment: 1, guestRequestKey: 1 }, { unique: true,
+  partialFilterExpression: { guestRequestKey: { $type: 'string' } } });
+submissionSchema.index({ assignment: 1, 'guest.normalizedEmail': 1, submittedAt: -1 },
+  { name: 'guest_recovery_lookup_v1', partialFilterExpression: { submissionMode: 'guest' } });
 submissionSchema.index({ assignment: 1 });
 submissionSchema.index({ class: 1 });
 submissionSchema.index({ class: 1, student: 1, submittedAt: 1 });

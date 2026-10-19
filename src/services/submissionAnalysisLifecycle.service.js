@@ -11,6 +11,7 @@ function pendingAnalysisState({ ocrJobId, now = new Date() }) {
     correctionSourceHash: undefined, correctionVersion: undefined,
     correctionTranscriptLayoutVersion: undefined, correctionError: undefined,
     correctionUpdatedAt: undefined, correctionJobId: undefined,
+    correctionOcrJobId: undefined, correctionOcrEvidenceHash: undefined, correctionGenerationConfig: undefined,
     semanticSourceKey: undefined, semanticStatus: 'pending', semanticAttempt: 0,
     semanticMaxAttempts: undefined, semanticNextRetryAt: undefined, semanticErrorCode: undefined,
     semanticProvider: undefined, semanticModel: undefined, semanticPromptVersion: undefined,

@@ -145,7 +145,7 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
     ? (!rubricHashCurrent && currentSettings?.hasValidCustomRubric ? 'rubric'
       : !policyHashCurrent ? 'policy'
         : !rubricHashCurrent ? 'settings'
-          : !evaluationCurrent ? 'other' : null)
+          : !evaluationCurrent ? (feedback?.evaluationStaleReason || 'other') : null)
     : null;
   const hasCompletedEvaluation = Boolean(feedback?.evaluationSourceHash
     && Number.isFinite(Number(feedback?.overallScore))

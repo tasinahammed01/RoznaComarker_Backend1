@@ -1,3 +1,4 @@
+const accessContext = require('./submissionAccessContext.service');
 'use strict';
 
 const crypto = require('crypto');
@@ -127,7 +128,7 @@ async function loadOwnedSource(submissionId, studentId) {
   if (!mongoose.Types.ObjectId.isValid(submissionId)) throw new AdaptivePracticeError(400, 'INVALID_SUBMISSION_ID', 'Invalid submission id.');
   const submission = await Submission.findById(submissionId).lean();
   if (!submission) throw new AdaptivePracticeError(404, 'SUBMISSION_NOT_FOUND', 'Submission not found.');
-  if (String(submission.student) !== String(studentId)) throw new AdaptivePracticeError(403, 'FORBIDDEN', 'You cannot access this submission.');
+  if (!accessContext.ownsSubmission(submission, studentId)) throw new AdaptivePracticeError(403, 'FORBIDDEN', 'You cannot access this submission.');
 
   const feedback = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
   if (!feedback) throw new AdaptivePracticeError(202, 'ANALYSIS_INCOMPLETE', 'Writing analysis is not complete yet.');
@@ -209,7 +210,7 @@ async function sessionResponseWithProgress(state, session = null, marksVisible =
 }
 
 async function findReusableSession(source, studentId, options = {}) {
-  const query = { submissionId: source.submission._id, studentId };
+  const query = { submissionId: source.submission._id, ...accessContext.ownerFields(studentId) };
   if (options.status) query.status = options.status;
   let session = await AdaptivePracticeSession.findOne({ ...query, sourceFingerprint: source.sourceFingerprint });
   if (session || source.legacySourceFingerprint === source.sourceFingerprint) return session;
@@ -447,7 +448,7 @@ async function generateSession(submissionId, studentId, options = {}) {
   const source = await loadOwnedSource(submissionId, studentId);
   timings.databaseLookupMs = Date.now() - dbLookupStarted;
   if (!source.weakSkills.length) return sessionResponse('no-weaknesses', null, source.assessedSkills, source);
-  const key = { submissionId: source.submission._id, studentId, sourceFingerprint: source.sourceFingerprint };
+  const key = { submissionId: source.submission._id, ...accessContext.ownerFields(studentId), sourceFingerprint: source.sourceFingerprint };
   let session = await findReusableSession(source, studentId);
   if (session?.status === 'ready') return sessionResponseWithProgress('ready', session.toObject(), source.marksVisible, source.assessedSkills, source);
   if (session?.status === 'generating' && Date.now() - session.updatedAt.getTime() < ADAPTIVE_PRACTICE_STALE_MS) return sessionResponse('generating', sanitizeAdaptiveSession(session.toObject(), source.marksVisible), source.assessedSkills, source);

@@ -13,6 +13,7 @@ const semanticMetrics = require('./semanticMetrics.service');
 const { resolveLegend } = require('./correctionLegendResolver.service');
 const inputIdentity = require('../utils/assessmentInputIdentity');
 const correctionPolicy = require('./aiCorrectionPolicy.service');
+const evidenceIdentity = require('./correctionEvidenceIdentity.service');
 
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -251,7 +252,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     semanticSucceeded: !semanticError, errorCode: safeErrorCode(semanticError) || null });
   const mergeStartedAt = Date.now();
   const merged = canonical.mergeCanonicalCorrections({ aiCorrections: ai });
-  const corrections = merged.corrections;
+  const corrections = evidenceIdentity.bindCorrections(merged.corrections, canonicalTranscript, doc);
   const combinedStatistics = canonical.statistics(corrections);
   const semanticCanonicalFingerprint = canonical.canonicalFingerprint(corrections, hash);
   const canonicalMergeMs = Date.now() - mergeStartedAt;
@@ -319,6 +320,13 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     ...rejectionStageCounts };
   const finalWrite = await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
     writingCorrections: corrections, correctionStatistics: combinedStatistics, correctionSourceHash: hash,
+    correctionOcrJobId: doc.ocrJobId || null, correctionOcrEvidenceHash: evidenceIdentity.ocrEvidenceHash(canonicalTranscript, doc),
+    correctionGenerationConfig: { provider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
+      model: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
+      chain: (semanticConfig.chain || []).map(entry => ({ provider: entry.provider, model: entry.model })),
+      temperature: 0, topP: null, seed: null, responseFormat: semanticConfig.responseFormat,
+      promptVersion: semantic.SEMANTIC_PROMPT_VERSION, schemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
+      coordinatorVersion: semanticCoordinator.VERSION },
     correctionVersion: canonical.VERSION, correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
     correctionStatus: failedStage || semanticRun?.status === 'partial' ? 'partial' : 'completed',
     correctionError: failedStage || (semanticRun?.status === 'partial' ? 'SEMANTIC_CHUNK_PARTIAL' : null),

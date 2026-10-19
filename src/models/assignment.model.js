@@ -89,6 +89,7 @@ const assignmentSchema = new Schema(
       type: Boolean,
       default: false
     },
+    allowGuestSubmission: { type: Boolean, default: false },
     showMarksToStudent: {
       type: Boolean,
       default: true

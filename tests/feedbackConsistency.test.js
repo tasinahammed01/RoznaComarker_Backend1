@@ -60,7 +60,7 @@ describe('canonical website and static report feedback', () => {
     const bbox = { ...legacy, id: 'bbox', wordIds: [], quotedText: '', startChar: undefined, endChar: undefined };
     const [words, boxes] = buildCanonicalCorrectionRenderModels([legacy, bbox], input.canonicalTranscript, input.submission.ocrPages);
     expect(words.renderTarget.source).toBe('wordIds'); expect(words.renderTarget.wordIds).toHaveLength(3);
-    expect(boxes.renderTarget.source).toBe('bboxList'); expect(boxes.renderTarget.boxes).toEqual(first.bboxList);
+    expect(boxes.renderTarget.source).toBe('none'); expect(boxes.renderTarget.boxes).toEqual([]);
     const [invalid] = buildCanonicalCorrectionRenderModels([{ ...first, visualTarget: { version: 1, wordIds: ['foreign'], anchors: [] } }], input.canonicalTranscript);
     expect(invalid.renderTarget.source).toBe('wordIds');
   });

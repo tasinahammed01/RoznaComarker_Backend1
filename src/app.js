@@ -193,6 +193,7 @@ app.use("/api/assignments", assignmentRoutes);
 app.use("/api/files", fileRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/submissions", submissionRoutes);
+app.use('/api/guest', require('./routes/guestSubmission.routes'));
 app.use("/api/feedback", feedbackRoutes);
 app.use("/api/pdf", pdfRoutes);
 app.use("/api/plans", plansRoutes);

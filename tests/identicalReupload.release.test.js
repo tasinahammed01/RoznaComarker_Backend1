@@ -53,10 +53,11 @@ describe('persisted assessment reuse through the upload API (mocked AI)', () => 
     await new Promise(setImmediate);
     submission = await Submission.findById(first.body.data._id);
     const fileId = String(submission.files[0]);
-    const wordId = `word_${fileId}_1_1`;
+    const wordId = `word_${fileId}_1_2`;
     submission.ocrPages = [{ fileId, fileOrder: 0, pageNumber: 1, pageIndex: 0,
-      text: 'I goes home.', rawText: 'I goes home.', words: [{ id: wordId, text: 'I', page: 1,
-        bbox: { x0: 0, y0: 0, x1: 10, y1: 10 } }] }];
+      text: 'I goes home.', rawText: 'I goes home.', words: ['I', 'goes', 'home.'].map((text, i) => ({
+        id: `word_${fileId}_1_${i + 1}`, text, page: 1,
+        bbox: { x0: i * 15, y0: 0, x1: i * 15 + 10, y1: 10 } })) }];
     const transcript = buildCanonicalSubmissionTranscript(submission);
     const sourceHash = pipeline.buildCorrectionSourceHash({ transcript: transcript.text, pages: transcript.pages,
       assignment, fileContentIdentity: submission.fileContentIdentity, legend: await resolveLegend() });
@@ -65,6 +66,11 @@ describe('persisted assessment reuse through the upload API (mocked AI)', () => 
       writingCorrections: [{ id: 'stable-correction', fileId, wordIds: [wordId], page: 1,
         startChar: 2, endChar: 6, quotedText: 'goes', suggestedText: 'go', category: 'GRAMMAR', symbol: 'AGR' }],
       correctionStatistics: { grammar: 1, total: 1 }, evaluationStatus: 'completed', assessmentStatus: 'complete' });
+    const evidence = require('../src/services/correctionEvidenceIdentity.service');
+    submission.writingCorrections[0].evidenceWordIds = [wordId];
+    submission.writingCorrections = evidence.bindCorrections(submission.writingCorrections, transcript, submission);
+    submission.correctionOcrJobId = submission.ocrJobId;
+    submission.correctionOcrEvidenceHash = evidence.ocrEvidenceHash(transcript, submission);
     await submission.save();
     const rubricHash = evaluation.hashRubric(assignment), policyHash = evaluationPolicyHash(teacher.aiConfig);
     await Feedback.create({ submissionId: submission._id, classId: classDoc._id, studentId: student._id, teacherId: teacher._id,
@@ -105,7 +111,12 @@ describe('persisted assessment reuse through the upload API (mocked AI)', () => 
     expect(after.correctionSourceHash).toBe(before.correctionSourceHash);
     expect(after.correctionStatistics).toEqual(before.correctionStatistics);
     expect(after.writingCorrections).toEqual(before.writingCorrections.map(item => ({ ...item,
-      fileId: String(after.files[0]), wordIds: [`word_${after.files[0]}_1_1`] })));
+      fileId: String(after.files[0]), wordIds: [`word_${after.files[0]}_1_2`],
+      evidenceWordIds: [`word_${after.files[0]}_1_2`], ocrEvidenceHash: after.correctionOcrEvidenceHash })));
+    expect(after.writingCorrections[0].correctionFingerprint).toBe(before.writingCorrections[0].correctionFingerprint);
+    const rendered = require('../src/services/canonicalCorrectionRender.service').buildCanonicalCorrectionRenderModels(
+      after.writingCorrections, buildCanonicalSubmissionTranscript(after), after.ocrPages, { submission: after });
+    expect(rendered[0].renderTarget.wordIds).toEqual([`word_${after.files[0]}_1_2`]);
     expect(String(after.ocrPages[0].fileId)).toBe(String(after.files[0]));
     expect(after.ocrPages[0].words[0].id).toBe(`word_${after.files[0]}_1_1`);
     expect(feedbackAfter.overallScore).toBe(feedbackBefore.overallScore);

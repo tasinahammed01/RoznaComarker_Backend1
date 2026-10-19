@@ -51,6 +51,11 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
     const values = targetDoc.toObject({ depopulate: true });
     delete values._id;
     delete values.__v;
+    // A normal worker read excludes guest secrets. Replacing the whole nested
+    // guest object would delete its hash (and overwrite concurrent recovery/revocation).
+    // OCR does not own guest identity or access metadata.
+    delete values.guest;
+    delete values.guestRequestKey;
     const persisted = await targetDoc.constructor.updateOne(
       ownership,
       { $set: values }
@@ -171,6 +176,14 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
           text: typeof p?.text === 'string' ? normalizeOcrTranscript(p.text) : text,
           rawText: typeof p?.rawText === 'string' ? p.rawText : rawText,
           width: p.width, height: p.height,
+          coordinateSpace: p.coordinateSpace,
+          ocrImageWidth: p.ocrImageWidth, ocrImageHeight: p.ocrImageHeight,
+          ocrExifOrientation: p.ocrExifOrientation,
+          sourceSha256: p.sourceSha256, ocrInputSha256: p.ocrInputSha256,
+          encodedImageWidth: p.encodedImageWidth, encodedImageHeight: p.encodedImageHeight,
+          sourceMimeType: p.sourceMimeType, ocrProvider: p.ocrProvider, ocrApi: p.ocrApi,
+          ocrPipelineVersion: p.ocrPipelineVersion, ocrPreprocessingVersion: p.ocrPreprocessingVersion,
+          ocrRunId: targetDoc.ocrJobId || null, ocrCreatedAt: new Date(),
           derivedImageFileId: p.derivedImageFileId, pageImageUrl: p.pageImageUrl,
           rasterHash: p.rasterHash, rasterizationVersion: p.rasterizationVersion,
           words: pageWords
@@ -243,6 +256,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
   targetDoc.rawOcrText = legacyFirstRawOcrText;
   targetDoc.ocrData = { words: legacyFirstOcrWords };
   targetDoc.ocrPages = ocrPages;
+  targetDoc.ocrCoordinateSpaceReviewRequired = false;
   targetDoc.combinedOcrText = perFileTexts
     .map((t) => (typeof t === 'string' ? t.trim() : ''))
     .filter(Boolean)
