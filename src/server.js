@@ -34,7 +34,17 @@ process.on("uncaughtException", (err) => {
 });
 
 async function start() {
+  const ocrConfiguration = require('./config/ocr').validateOcrConfiguration();
+  logger.info({ event: 'ocr_source_configuration', ...ocrConfiguration });
   await connectDB();
+  if(ocrConfiguration.mode==='astra_human_confirm')await require('./services/sourceFidelity/transactionSupport').requireTransactions();
+  if (['astra_verified','astra_human_confirm','gpt_vision_exact'].includes(ocrConfiguration.mode)) {
+    // Normal connections disable autoIndex. Preserve the existing private
+    // evidence TTL and receipt lookup indexes when opting into this mode.
+    await require('./models/SourceFidelityEvidence').createIndexes();
+    await require('./models/SourceFidelitySnapshot').createIndexes();
+    if(ocrConfiguration.mode==='astra_human_confirm')await require('./models/SourceHumanReview').createIndexes();
+  }
   require('./services/planEntitlementWorker.service').startPlanEntitlementWorker();
   if (String(process.env.ASSESSMENT_RECOVERY_ENABLED || 'true').toLowerCase() !== 'false') {
     assessmentRecoveryWorker = require('./services/assessmentRecovery.service').startAssessmentRecoveryWorker();

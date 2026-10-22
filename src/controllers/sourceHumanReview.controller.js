@@ -1,0 +1,14 @@
+'use strict';
+const service=require('../services/sourceHumanReview.service');
+const run=fn=>async(req,res)=>{res.set('Cache-Control','no-store');res.set('X-Content-Type-Options','nosniff');
+  try{await fn(req,res);}catch(e){const code=typeof e.code==='string'&&/^(HUMAN_REVIEW_|SOURCE_VERSION_CONFLICT)/.test(e.code)?e.code:'HUMAN_REVIEW_REGION_UNAVAILABLE';
+    res.status(e.status||409).json({success:false,error:{code},message:code});}};
+exports.prepare=run(async(req,res)=>res.json({success:true,data:await service.ensure(req.params.submissionId,req.user)}));
+exports.crop=run(async(req,res)=>{if(Object.keys(req.query||{}).length)throw Object.assign(Error(),{code:'HUMAN_REVIEW_INVALID',status:400});
+  res.type('png').send(await service.crop(req.params.submissionId,req.params.itemId,req.user));});
+exports.resolve=run(async(req,res)=>res.json({success:true,data:await service.resolve(req.params.submissionId,req.params.itemId,req.body,req.user)}));
+exports.page=run(async(req,res)=>{if(Object.keys(req.query||{}).length)throw Object.assign(Error(),{code:'HUMAN_REVIEW_INVALID',status:400});
+  res.json({success:true,data:await service.pageReview(req.params.submissionId,req.params.pageIndex,req.user)});});
+exports.pageImage=run(async(req,res)=>{if(Object.keys(req.query||{}).length)throw Object.assign(Error(),{code:'HUMAN_REVIEW_INVALID',status:400});
+  res.type('png').send(await service.pageReview(req.params.submissionId,req.params.pageIndex,req.user,true));});
+exports.pageResolve=run(async(req,res)=>res.json({success:true,data:await service.resolve(req.params.submissionId,req.params.pageIndex,req.body,req.user,true)}));

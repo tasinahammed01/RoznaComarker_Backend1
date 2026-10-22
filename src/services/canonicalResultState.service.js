@@ -43,6 +43,15 @@ function safeErrorCode(error) {
 }
 
 function buildCanonicalResultState({ submission = {}, feedback = null, currentSettings = null } = {}) {
+  const source=require('../utils/sourceFidelity');
+  if(source.isExact(submission)&&!source.eligible(submission))return {
+    ocrStatus:submission.ocrStatus,ocrErrorCode:submission.sourceFidelityMode==='gpt_vision_exact'?(submission.ocrErrorCode||'OCR_GPT_SOURCE_UNCERTAIN'):'OCR_SOURCE_REVIEW_REQUIRED',ocrFailureMessage:submission.sourceFidelityMode==='gpt_vision_exact'?'The handwriting source could not be read confidently. Please contact your teacher.':'Source review required before assessment.',
+    correctionStatus:'failed',correctionCurrent:false,correctionsAvailable:false,correctionsCompleteness:'none',
+    statistics:null,statisticsStatus:'failed',statisticsCompleteness:'none',categoryAvailability:{},sourceCounts:{},
+    semanticStatus:'failed',semanticSucceeded:false,semanticErrorCode:'OCR_SOURCE_REVIEW_REQUIRED',
+    evaluationStatus:'blocked',evaluationCurrent:false,evaluationFreshness:'not_ready',evaluationBlockedReason:'source_review_required',
+    detailedFeedbackStatus:'blocked',detailedFeedbackCurrent:false,score:null,grade:null,
+    processingActive:false,automaticPollingAllowed:false,terminal:true,manualRetryAllowed:false,retryable:false};
   const ocrFailed = submission.ocrStatus === 'failed';
   const storedCorrectionStatus = String(submission.correctionStatus || 'pending');
   const layoutCurrent = !submission.correctionSourceHash

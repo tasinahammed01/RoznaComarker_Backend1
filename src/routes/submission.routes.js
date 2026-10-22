@@ -23,6 +23,8 @@ const {
 } = require('../middlewares/usage.middleware');
 
 const router = express.Router();
+const humanReview=require('../controllers/sourceHumanReview.controller');
+const reviewLimiter=createUserRateLimiter({windowMs:60000,limit:40,event:'SOURCE_REVIEW_RATE_LIMITED',reason:'source_human_review'});
 router.post('/:submissionId/guest-access/revoke', verifyJwtToken, requireRole('teacher'),
   param('submissionId').isMongoId(), handleValidationResult, require('../controllers/guestSubmission.controller').revoke);
 const uploadUserLimiter = createUserRateLimiter({
@@ -31,6 +33,10 @@ const uploadUserLimiter = createUserRateLimiter({
   event: 'UPLOAD_RATE_LIMITED',
   reason: 'submission_upload_user'
 });
+// The two-phase preview must still support 20 files. Cheap basic requests have
+// their own bounded allowance; paid source checks retain the upload allowance.
+const basicPreflightLimiter=createUserRateLimiter({windowMs:process.env.UPLOAD_USER_RATE_LIMIT_WINDOW_MS||15*60*1000,
+  limit:process.env.UPLOAD_USER_RATE_LIMIT_MAX||30,event:'UPLOAD_RATE_LIMITED',reason:'image_preflight_basic'});
 const noStore = (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
   res.set('Pragma', 'no-cache');
@@ -38,11 +44,17 @@ const noStore = (_req, res, next) => {
   next();
 };
 
-// Analysis-only temporary upload: no persisted File/Submission, OCR, or credits.
-router.post('/image-preflight', verifyJwtToken, requireRole('student'), uploadUserLimiter,
+// Temporary upload: basic checks and opt-in private exact source evidence;
+// no persisted File/Submission or assessment credits.
+router.post('/image-preflight', verifyJwtToken, requireRole('student'),
   createUserConcurrencyGuard({ operation: 'image_preflight', maxConcurrent: 2 }),
   noStore, setUploadType('submissions'), upload.single('file'), handleUploadError,
-  validateUploadedFileSignature, preflightImage);
+  validateUploadedFileSignature,
+  (req,res,next)=>{
+    let admitted=false;
+    res.once('finish',()=>{if(!admitted&&req.file?.path)require('fs/promises').unlink(req.file.path).catch(()=>{});});
+    return (req.body?.phase==='basic'?basicPreflightLimiter:uploadUserLimiter)(req,res,()=>{admitted=true;next();});
+  },preflightImage);
 
 /**
  * @openapi
@@ -349,4 +361,11 @@ router.get(
   submissionController.getMySubmissionByAssignmentId
 );
 
+// Keep the established QR routes ahead of this generic submission-ID prefix.
+router.post('/:submissionId/source-review',verifyJwtToken,requireRole('teacher'),reviewLimiter,param('submissionId').isMongoId(),handleValidationResult,humanReview.prepare);
+router.get('/:submissionId/source-review/:itemId/crop',verifyJwtToken,requireRole('teacher'),reviewLimiter,createUserConcurrencyGuard({operation:'source_review_crop',maxConcurrent:2}),param('submissionId').isMongoId(),param('itemId').matches(/^[a-f0-9]{64}$/),handleValidationResult,humanReview.crop);
+router.post('/:submissionId/source-review/:itemId/resolve',verifyJwtToken,requireRole('teacher'),reviewLimiter,createUserConcurrencyGuard({operation:'source_review_resolve',maxConcurrent:1}),param('submissionId').isMongoId(),param('itemId').matches(/^[a-f0-9]{64}$/),handleValidationResult,humanReview.resolve);
+router.get('/:submissionId/source-review/page/:pageIndex',verifyJwtToken,requireRole('teacher'),reviewLimiter,param('submissionId').isMongoId(),param('pageIndex').matches(/^(0|[1-9]\d*)$/),handleValidationResult,humanReview.page);
+router.get('/:submissionId/source-review/page/:pageIndex/image',verifyJwtToken,requireRole('teacher'),reviewLimiter,createUserConcurrencyGuard({operation:'source_review_page_image',maxConcurrent:2}),param('submissionId').isMongoId(),param('pageIndex').matches(/^(0|[1-9]\d*)$/),handleValidationResult,humanReview.pageImage);
+router.post('/:submissionId/source-review/page/:pageIndex/resolve',verifyJwtToken,requireRole('teacher'),reviewLimiter,createUserConcurrencyGuard({operation:'source_review_resolve',maxConcurrent:1}),param('submissionId').isMongoId(),param('pageIndex').matches(/^(0|[1-9]\d*)$/),handleValidationResult,humanReview.pageResolve);
 module.exports = router;

@@ -5,6 +5,178 @@ const { canonicalOcrWordId } = require('./ocrWordIdentity');
 // Increment whenever canonical reading-order or separator rules change. This is
 // intentionally independent from the correction prompt/schema version.
 const CANONICAL_TRANSCRIPT_LAYOUT_VERSION = 'ocr-layout-v5-native-text';
+const HANDWRITING_LAYOUT_VERSION = 'vision-handwriting-geometry-v1';
+
+// Separate from the historical printed/display normalizer. No vocabulary,
+// paragraph ids or margin-artifact removal supplies source text. Immediate
+// source neighbors may prove a local insertion, never a page-wide ordering.
+function buildHandwritingGeometryTranscript(words) {
+  const source=(Array.isArray(words)?words:[]).map((word,inputIndex)=>({word,inputIndex})).filter(c=>typeof c.word?.text==='string'&&c.word.text.length);
+  const candidates=source.map(({word,inputIndex},sourceIndex)=>{
+    const b=word.bbox,values=b&&('x0' in b?[b.x0,b.y0,b.x1,b.y1]:[b.x,b.y,b.w,b.h]);
+    return {word,inputIndex,sourceIndex,box:values?.every(n=>typeof n==='number'&&Number.isFinite(n))?bboxOf(word):null};
+  });
+  const valid=candidates.filter(c=>c.box);
+  const coverage={totalWords:source.length,geometricWords:valid.length,ratio:source.length?valid.length/source.length:0};
+  const lines=[];
+  const h=median(valid.map(c=>c.box.height));
+  const placementStats=()=>({detectedWordCount:source.length,geometricWordCount:valid.length,rawGeometryCoverage:coverage.ratio,
+    resolvedWordCount:candidates.filter(c=>c.line).length,resolvedPlacementCoverage:source.length?candidates.filter(c=>c.line).length/source.length:0,
+    fallbackPlacementCount:candidates.filter(c=>c.structural).length,ambiguousWordCount:candidates.filter(c=>c.ambiguous).length,
+    soleCandidateOutlierPlacementCount:candidates.filter(c=>c.soleCandidate).length,
+    unresolvedWordCount:candidates.filter(c=>!c.line).length,lineCount:lines.length,medianWordHeight:h,
+    unresolvedDescriptors:candidates.filter(c=>!c.line).slice(0,20).map(c=>({inputIndex:c.inputIndex,textLength:c.word.text.length,hasGeometry:!!c.box,
+      candidateLineCount:c.candidateLineCount||0,reason:c.reason||(c.box?'UNRESOLVED_OUTLIER':'MISSING_GEOMETRY_UNRESOLVED'),...(c.soleDiagnostics||{})}))});
+  const degraded=reason=>({text:'',words:[],spans:[],separators:[],...placementStats(),geometryCoverage:coverage,
+    readingOrderStrategy:HANDWRITING_LAYOUT_VERSION,layoutDegraded:true,reason});
+  if(!source.length||!valid.length)return degraded('MISSING_GEOMETRY_UNRESOLVED');
+  const core=valid.filter(c=>c.box.height>=h*.65&&c.box.height<=h*1.45);
+  // Spatial neighbors vote, never Google's block/paragraph traversal order.
+  const slopes=[];
+  for(const a of core){
+    const ax=(a.box.x0+a.box.x1)/2;
+    const neighbors=core.filter(b=>b!==a).map(b=>({dx:(b.box.x0+b.box.x1)/2-ax,dy:b.box.centerY-a.box.centerY}))
+      .filter(p=>p.dx>h*1.5&&p.dx<h*12&&Math.abs(p.dy)<h*.65&&Math.abs(p.dy/p.dx)<.18)
+      .sort((a,b)=>a.dx-b.dx||Math.abs(a.dy)-Math.abs(b.dy)).slice(0,2);
+    slopes.push(...neighbors.map(p=>p.dy/p.dx));
+  }
+  const slope=slopes.length>=3?median(slopes):0;
+  for(const c of valid){const dy=slope*(c.box.x0+c.box.x1)/2;c.top=c.box.y0-dy;c.bottom=c.box.y1-dy;c.center=c.box.centerY-dy;}
+  const compare=(a,b)=>a.box.x0-b.box.x0||a.center-b.center||a.box.x1-b.box.x1||a.box.height-b.box.height;
+  const update=line=>{
+    const anchors=line.words.filter(c=>c.box.height>=h*.65&&c.box.height<=h*1.45);
+    const basis=anchors.length?anchors:line.words;
+    line.height=median(basis.map(c=>c.box.height));line.center=median(basis.map(c=>c.center));
+    line.baseline=median(basis.map(c=>c.bottom));line.top=median(basis.map(c=>c.top));line.bottom=median(basis.map(c=>c.bottom));
+  };
+  const memberships=(c,loose=false)=>lines.map(line=>{
+    const localH=Math.min(h*1.35,Math.max(h*.75,line.height));
+    const overlap=Math.max(0,Math.min(c.bottom,line.bottom)-Math.max(c.top,line.top))/Math.min(c.box.height,localH);
+    const baseline=Math.abs(c.bottom-line.baseline)/localH;
+    const center=Math.abs(c.center-line.center)/localH;
+    const tall=c.box.height>h*1.45;
+    const effective=tall?Math.min(center,baseline):center;
+    // A broad word box is not allowed to swallow another line. Stable seed and
+    // robust medians prevent incremental low-word/tall-word chain drift.
+    const seed=tall?Math.min(Math.abs(c.center-line.seed),Math.abs(c.bottom-localH/2-line.seed)):Math.abs(c.center-line.seed);
+    const horizontalCollision=line.words.some(w=>w!==c&&w.box&&!w.structural&&Math.min(w.box.x1,c.box.x1)-Math.max(w.box.x0,c.box.x0)>Math.min(w.box.width,c.box.width)*.5);
+    const plausible=(!horizontalCollision||loose)&&overlap>=(loose ? .1 : .25)&&effective<=(loose?1.15:.72)&&seed<=h*(loose?1.4:.95)&&(baseline<=(loose?1.6:1.05)||tall&&center<=.55);
+    return {line,plausible,horizontalCollision,localH,normalizedCenterDistance:center,normalizedBaselineDistance:baseline,verticalOverlapRatio:overlap,
+      score:effective*.6+Math.min(baseline,1.5)*.25+(1-Math.min(overlap,1))*.15};
+  }).filter(m=>m.plausible).sort((a,b)=>a.score-b.score||a.line.center-b.line.center);
+  // Normal-height words establish baselines before ascenders/descenders vote.
+  const pending=valid.filter(c=>!core.includes(c));
+  for(const c of [...core].sort(compare)){
+    const matches=memberships(c);
+    if(matches.length>1&&matches[1].score-matches[0].score<.10){c.ambiguous=true;pending.push(c);continue;}
+    if(matches.length){matches[0].line.words.push(c);update(matches[0].line);}
+    else if(lines.some(l=>Math.abs(c.center-l.center)<h*.85)){pending.push(c);}
+    else{const line={words:[c],seed:c.center};update(line);lines.push(line);}
+  }
+  // Revisit isolated normal-height outliers once established lines have robust
+  // medians. An early high/low word must not remain a false physical line.
+  for(const line of [...lines]){
+    if(line.words.length!==1)continue;
+    const c=line.words[0],matches=memberships(c).filter(m=>m.line!==line);
+    if(matches.length&&(!matches[1]||matches[1].score-matches[0].score>=.10)){
+      matches[0].line.words.push(c);update(matches[0].line);lines.splice(lines.indexOf(line),1);
+    }
+  }
+  // A later-created line may compete with an early assignment. Recheck the
+  // complete line bank before any word is allowed to act as a reliable neighbor.
+  const reconsider=[];
+  for(const line of lines)for(const c of line.words){
+    const matches=memberships(c,true);
+    const tied=matches.length>1&&matches[1].score-matches[0].score<.10;
+    if(tied||matches[0]&&matches[0].line!==line){if(tied)c.ambiguous=true;reconsider.push({line,c});}
+  }
+  for(const {line,c} of reconsider){line.words.splice(line.words.indexOf(c),1);pending.push(c);}
+  for(const line of [...lines]){if(line.words.length)update(line);else lines.splice(lines.indexOf(line),1);}
+  for(const line of lines)for(const c of line.words){c.line=line;c.reliable=true;}
+  const deferred=[];
+  for(const c of pending.sort(compare)){
+    const matches=memberships(c,true);c.candidateLineCount=matches.length;
+    const tied=matches.length>1&&matches[1].score-matches[0].score<.10;if(tied)c.ambiguous=true;
+    if(!matches.length||tied||matches[0].horizontalCollision){deferred.push(c);continue;}
+    c.line=matches[0].line;c.reliable=true;c.line.words.push(c);
+    // Outliers never move the already established line baseline.
+  }
+  // An immediate reliable pair must also be consecutive left-to-right on its
+  // physical line. Reversed/scrambled Google blocks cannot establish a slot.
+  for(const c of [...deferred,...candidates.filter(c=>!c.box)].sort((a,b)=>a.sourceIndex-b.sourceIndex)){
+    const before=candidates[c.sourceIndex-1],after=candidates[c.sourceIndex+1];
+    const matches=c.box?memberships(c,true):[];c.candidateLineCount=c.box?matches.length:before?.line===after?.line&&before?.line?1:0;
+    const basis=before?.line?.words.filter(w=>w.reliable).sort(compare)||[];
+    const left=basis.indexOf(before),right=basis.indexOf(after);
+    const pair=before?.reliable&&after?.reliable&&before.line===after.line&&left>=0&&right===left+1&&before.box.x0<after.box.x0;
+    const tiedLines=matches.filter(m=>matches[0]&&m.score-matches[0].score<.10).map(m=>m.line);
+    if(pair&&(!c.box||tiedLines.includes(before.line))){c.line=before.line;c.structural={before,after};c.line.words.push(c);}
+    else c.reason=!c.box?'MISSING_GEOMETRY_UNRESOLVED':c.ambiguous?'AMBIGUOUS_LINE_MEMBERSHIP':'UNRESOLVED_OUTLIER';
+  }
+  // Narrow final rule: one existing candidate, strong vertical fit and a unique
+  // geometric slot inside the established text region. Never use text/glyph
+  // identity or promote this placement into a reliable recursive anchor.
+  const horizontalSlot=(c,ordered)=>{
+    const x=(c.box.x0+c.box.x1)/2,centers=ordered.map(w=>(w.box.x0+w.box.x1)/2);
+    if(centers.some((v,i)=>Math.abs(v-x)<1e-7||i&&v<=centers[i-1]+1e-7))return null;
+    const index=centers.findIndex(v=>v>x);
+    return index<0?ordered.length:index;
+  };
+  for(const c of candidates.filter(c=>!c.line&&c.box&&c.reason==='UNRESOLVED_OUTLIER')){
+    const matches=memberships(c,true);c.candidateLineCount=matches.length;
+    if(matches.length!==1)continue;
+    const m=matches[0],anchors=m.line.words.filter(w=>w.reliable).sort(compare);
+    const slot=horizontalSlot(c,anchors),cx=(c.box.x0+c.box.x1)/2;
+    const allAnchors=lines.flatMap(l=>l.words.filter(w=>w.reliable));
+    const left=Math.min(...anchors.map(w=>w.box.x0)),right=Math.max(...anchors.map(w=>w.box.x1));
+    const bodyLeft=Math.min(...allAnchors.map(w=>w.box.x0)),bodyRight=Math.max(...allAnchors.map(w=>w.box.x1));
+    const edgeArtifactRisk=cx<left-m.localH||cx>right+m.localH||cx<bodyLeft-m.localH*.5||cx>bodyRight+m.localH*.5;
+    const conflictingLine=lines.some(l=>l!==m.line&&Math.max(0,Math.min(c.bottom,l.bottom)-Math.max(c.top,l.top))/Math.min(c.box.height,l.height)>=.25);
+    const before=candidates[c.sourceIndex-1],after=candidates[c.sourceIndex+1];
+    const neighborSupport=slot!==null&&slot>0&&slot<anchors.length&&before?.reliable&&after?.reliable&&before.line===m.line&&after.line===m.line&&anchors[slot-1]===before&&anchors[slot]===after;
+    c.soleDiagnostics={normalizedCenterDistance:m.normalizedCenterDistance,normalizedBaselineDistance:m.normalizedBaselineDistance,
+      verticalOverlapRatio:m.verticalOverlapRatio,horizontalInsertionResolved:slot!==null,neighborSupport:!!neighborSupport,edgeArtifactRisk,
+      neighboringLineConflict:conflictingLine,establishedAnchorCount:anchors.length};
+    const strongFit=m.verticalOverlapRatio>=.5&&(m.normalizedCenterDistance<=.55||m.normalizedBaselineDistance<=.35);
+    if(anchors.length<2||!strongFit||conflictingLine||slot===null||edgeArtifactRisk)continue;
+    c.line=m.line;c.soleCandidate=true;c.reliable=false;c.line.words.push(c);delete c.reason;
+  }
+  if(candidates.some(c=>!c.line))return degraded(candidates.find(c=>!c.line).reason||'UNRESOLVED_OUTLIER');
+  lines.sort((a,b)=>a.baseline-b.baseline||a.center-b.center);
+  if(lines.some((line,i)=>i&&line.baseline-lines[i-1].baseline<h*.6)){
+    for(const c of candidates){c.line=null;c.reason='OVERLAPPING_LINE_CLUSTERS';}
+    return degraded('OVERLAPPING_LINE_CLUSTERS');
+  }
+  const pitches=lines.slice(1).map((l,i)=>l.baseline-lines[i].baseline).filter(p=>p>0).sort((a,b)=>a-b);
+  // Estimate normal ruled-line spacing from the lower half of observed gaps.
+  // Widely spaced handwriting is not, by itself, a series of paragraphs.
+  const pitch=median(pitches.slice(0,Math.ceil(pitches.length/2)))||h*1.5;
+  let text='',previous=null;const spans=[];
+  for(const [i,line] of lines.entries()){
+    const prior=lines[i-1],paragraph=prior&&line.baseline-prior.baseline>Math.max(h*2.3,pitch*1.6)&&line.top-prior.bottom>h*.9;
+    const ordered=line.words.filter(c=>!c.structural&&!c.soleCandidate).sort(compare);
+    for(const c of line.words.filter(c=>c.soleCandidate).sort((a,b)=>(a.box.x0+a.box.x1)-(b.box.x0+b.box.x1))){
+      const slot=horizontalSlot(c,ordered);
+      if(slot===null){c.line=null;c.reason='UNRESOLVED_OUTLIER';return degraded(c.reason);}
+      ordered.splice(slot,0,c);
+    }
+    for(const c of line.words.filter(c=>c.structural).sort((a,b)=>a.sourceIndex-b.sourceIndex)){
+      const left=ordered.indexOf(c.structural.before),right=ordered.indexOf(c.structural.after);
+      if(left<0||right!==left+1){c.line=null;c.reason='UNRESOLVED_OUTLIER';return degraded(c.reason);}
+      ordered.splice(right,0,c);
+    }
+    for(const [j,c] of ordered.entries()){
+      const separatorBefore=!spans.length?'':j===0?(paragraph?'\n\n':'\n'):getOcrWordSeparator(previous.text,c.word.text,' ');
+      text+=separatorBefore;const start=text.length;text+=c.word.text;
+      spans.push({word:{...c.word},wordId:c.word.id,start,end:text.length,separatorBefore,fileId:c.word.fileId,page:c.word.page,bbox:c.word.bbox});previous=c.word;
+    }
+  }
+  const stats=placementStats();
+  if(stats.resolvedPlacementCoverage!==1||stats.unresolvedWordCount!==0||spans.length!==candidates.length||new Set(lines.flatMap(l=>l.words.map(c=>c.inputIndex))).size!==candidates.length)return degraded('UNRESOLVED_OUTLIER');
+  return {text,words:spans.map(s=>s.word),spans,separators:spans.map(s=>s.separatorBefore),...stats,
+    geometryCoverage:coverage,readingOrderStrategy:HANDWRITING_LAYOUT_VERSION,layoutDegraded:false,comparisonSlope:slope,
+    mapping:{totalWords:source.length,mappedWords:spans.length,alignmentRatio:1}};
+}
 
 const CLOSING_PUNCTUATION = /^[,.!?:;%\)\]\}’”]/u;
 const OPENING_PUNCTUATION = /[\(\[\{“]$/u;
@@ -259,9 +431,10 @@ function alignWordsToAuthoritativeText(authoritativeText, words) {
 function assessCanonicalTranscriptQuality(canonical) {
   const pages = Array.isArray(canonical?.pages) ? canonical.pages : [];
   const diagnostics = pages.map((page) => ({ fileId: page.fileId, pageNumber: page.pageNumber,
+    layoutDegraded:page.layoutDegraded===true,
     alignmentRatio: Number(page.mapping?.alignmentRatio ?? 1), mappedWords: Number(page.mapping?.mappedWords || 0),
     totalWords: Number(page.mapping?.totalWords || 0) }));
-  const unreliable = diagnostics.find((item) => item.totalWords >= 8 && item.alignmentRatio < 0.6);
+  const unreliable = diagnostics.find((item) => item.layoutDegraded||item.totalWords >= 8 && item.alignmentRatio < 0.6);
   return { reliable: !unreliable && Boolean(String(canonical?.text || '').trim()),
     code: unreliable ? 'OCR_READING_ORDER_UNRELIABLE' : (!String(canonical?.text || '').trim() ? 'OCR_TEXT_EMPTY' : null),
     diagnostics };
@@ -284,6 +457,7 @@ function getNormalizedSubmissionTranscript(submission) {
 }
 
 function buildCanonicalSubmissionTranscript(submission) {
+  if (require('./sourceFidelity').isExact(submission)) return require('./sourceFidelity').canonical(submission);
   const empty = { text: '', pages: [], paragraphs: [], wordSpans: [], separators: [], source: 'none',
     isComplete: false, version: CANONICAL_TRANSCRIPT_LAYOUT_VERSION };
   if (!submission || typeof submission !== 'object') return empty;
@@ -296,7 +470,11 @@ function buildCanonicalSubmissionTranscript(submission) {
     .map((item) => String(item?._id || item));
   const order = new Map(expected.map((id, index) => [id, index]));
   const seen = new Set();
-  const pages = (Array.isArray(submission.ocrPages) ? submission.ocrPages : [])
+  const storedPages=Array.isArray(submission.ocrPages)?submission.ocrPages:[];
+  const inputPages=!storedPages.length&&submission.ocrData?.readingOrderStrategy===HANDWRITING_LAYOUT_VERSION
+    ?[{fileId:expected[0]||'legacy',pageNumber:1,pageIndex:0,words:submission.ocrData.words||[],ocrPipelineVersion:HANDWRITING_LAYOUT_VERSION,
+      studentSourceVersion:submission.ocrData.studentSourceVersion,studentSourceTextSha256:submission.ocrData.studentSourceTextSha256}]:storedPages;
+  const pages = inputPages
     .map((page, originalIndex) => ({ page, originalIndex, fileId: String(page?.fileId?._id || page?.fileId || ''),
       fileOrder: Number.isFinite(Number(page?.fileOrder)) ? Number(page.fileOrder) : null,
       pageNumber: Number(page?.pageNumber || 1), pageIndex: Number.isFinite(Number(page?.pageIndex)) ? Number(page.pageIndex) : null }))
@@ -306,7 +484,8 @@ function buildCanonicalSubmissionTranscript(submission) {
       || (a.pageIndex ?? a.pageNumber - 1) - (b.pageIndex ?? b.pageNumber - 1)
       || a.pageNumber - b.pageNumber || a.originalIndex - b.originalIndex)
     .filter(({ fileId, pageNumber }) => { const key = `${fileId}:${pageNumber}`; if (seen.has(key)) return false; seen.add(key); return true; });
-  const completed = new Set(pages.filter(({ page }) => normalizeOcrTranscript(page.text || '') || buildCanonicalPageFromWords(page.words || []).text)
+  const completed = new Set(pages.filter(({ page }) => page.ocrPipelineVersion===HANDWRITING_LAYOUT_VERSION
+    ?!(page.studentSourceVersion?require('./legacyStudentSource').assembleActive(page.words||[],page.studentSourceTextSha256):buildHandwritingGeometryTranscript(page.words||[])).layoutDegraded:normalizeOcrTranscript(page.text || '') || buildCanonicalPageFromWords(page.words || []).text)
     .map(({ fileId }) => fileId));
   const isComplete = expected.length > 0 && expected.every((id) => completed.has(id));
   let text = '';
@@ -321,13 +500,14 @@ function buildCanonicalSubmissionTranscript(submission) {
       fileId: entry.fileId,
       page: entry.pageNumber
     }));
-    const structured = buildCanonicalPageFromWords(identifiedWords);
-    const authoritativeText = normalizeLegacyDisplayText(entry.page.rawText || '');
+    const handwriting=entry.page.ocrPipelineVersion===HANDWRITING_LAYOUT_VERSION;
+    const structured = handwriting?(entry.page.studentSourceVersion?require('./legacyStudentSource').assembleActive(identifiedWords,entry.page.studentSourceTextSha256):buildHandwritingGeometryTranscript(identifiedWords)):buildCanonicalPageFromWords(identifiedWords);
+    const authoritativeText = handwriting?'':normalizeLegacyDisplayText(entry.page.rawText || '');
     const authoritative = authoritativeText ? alignWordsToAuthoritativeText(authoritativeText, identifiedWords) : null;
     const selected = authoritative || structured;
-    const pageText = selected.text || normalizeLegacyDisplayText(entry.page.text || '');
-    if (!pageText) continue;
-    const pageSeparator = text ? getOcrWordSeparator(lastWordText || text.slice(-1), pageText, ' ') : '';
+    const pageText = handwriting?selected.text:selected.text || normalizeLegacyDisplayText(entry.page.text || '');
+    if (!pageText){if(handwriting&&selected.layoutDegraded)manifest.push({fileId:entry.fileId,pageNumber:entry.pageNumber,text:'',layoutDegraded:true,mapping:{totalWords:identifiedWords.length,mappedWords:0,alignmentRatio:0}});continue;}
+    const pageSeparator = text ? (handwriting?'\n\n':getOcrWordSeparator(lastWordText || text.slice(-1), pageText, ' ')) : '';
     text += pageSeparator;
     const startChar = text.length;
     text += pageText;
@@ -339,13 +519,13 @@ function buildCanonicalSubmissionTranscript(submission) {
     manifest.push({ fileId: entry.fileId,
       fileOrder: order.get(entry.fileId) ?? entry.fileOrder ?? Number.MAX_SAFE_INTEGER,
       pageNumber: entry.pageNumber, pageIndex: entry.pageIndex ?? entry.pageNumber - 1, text: pageText,
-      source: authoritative ? 'visionFullText' : 'wordReconstruction', mapping: selected.mapping || null,
+      source: handwriting?'handwritingGeometry':authoritative ? 'visionFullText' : 'wordReconstruction', mapping: selected.mapping || null,
       startChar, endChar: text.length, words: pageSpans.map((span) => ({ ...span.word, fileId: entry.fileId,
       page: entry.pageNumber, separatorBefore: span.separatorBefore })), paragraphs: paragraphsFromSpans(pageText, selected.spans).map((paragraph) => ({
         ...paragraph, startChar: paragraph.startChar + startChar, endChar: paragraph.endChar + startChar })) });
     lastWordText = selected.spans[selected.spans.length - 1]?.word?.text || pageText;
   }
-  if (text) return { text, pages: manifest, paragraphs: paragraphsFromSpans(text, wordSpans), wordSpans,
+  if (text||manifest.some(p=>p.layoutDegraded)) return { text, pages: manifest, paragraphs: paragraphsFromSpans(text, wordSpans), wordSpans,
     separators: wordSpans.map((span) => span.separatorBefore), source: 'ocrPages', isComplete,
     version: CANONICAL_TRANSCRIPT_LAYOUT_VERSION };
   const fallbacks = [['combinedOcrText', submission.combinedOcrText], ['transcriptText', submission.transcriptText], ['ocrText', submission.ocrText]];
@@ -363,6 +543,8 @@ function withNormalizedWordSeparators(words) {
 
 module.exports = {
   CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
+  HANDWRITING_LAYOUT_VERSION,
+  buildHandwritingGeometryTranscript,
   normalizeOcrTranscript,
   getOcrWordSeparator,
   buildNormalizedTranscriptFromWords,

@@ -1,3 +1,4 @@
+const correctionShadowStagingHook = require('../services/correctionShadow/stagingHook');
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
@@ -165,6 +166,8 @@ function normalizeSubmissionForClient(req, submission) {
   if (!submission) return submission;
 
   const doc = submission;
+  const sourcePayload=require('../utils/sourceFidelity').payload(doc);
+  if(sourcePayload)doc.sourceFidelity=sourcePayload;
 
   const legacyFileId = doc.file;
   const legacyUrl = typeof doc.fileUrl === 'string' ? doc.fileUrl : '';
@@ -340,6 +343,7 @@ async function persistUploadedFile(req, type, providedFile, uploadOrder) {
     type,
     sizeBytes: Number.isFinite(Number(file.size)) ? Number(file.size) : undefined,
     uploadOrder: Number.isInteger(uploadOrder) ? uploadOrder : undefined
+    ,...(file.gptSourcePreflight?{gptSourcePreflight:file.gptSourcePreflight}:{})
   });
 
   return {
@@ -647,7 +651,10 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
 
       await incrementUsage(studentId, { storageMB: uploadedMB });
 
-      if (!reusableAssessment) scheduleSubmissionAnalysis(saved._id, saved.ocrJobId);
+      if (!reusableAssessment) {
+        if (correctionShadowStagingHook.enabled()) correctionShadowStagingHook.trackResponse(saved._id, saved.ocrJobId, res);
+        scheduleSubmissionAnalysis(saved._id, saved.ocrJobId);
+      }
 
       const populated = await Submission.findById(saved._id)
         .populate('student', '_id email displayName photoURL role')
@@ -727,6 +734,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
 
     await incrementUsage(studentId, { submissions: 1, storageMB: uploadedMB });
 
+    if (correctionShadowStagingHook.enabled()) correctionShadowStagingHook.trackResponse(created._id, created.ocrJobId, res);
     scheduleSubmissionAnalysis(created._id, created.ocrJobId);
 
     const populated = await Submission.findById(created._id)
@@ -1100,6 +1108,10 @@ async function getOcrCorrections(req, res) {
         ocrError: null, fileId: requestedFileId || null
       }});
     }
+    const sourceFidelity=require('../utils/sourceFidelity').payload(doc);
+    if(sourceFidelity&&!sourceFidelity.assessmentAllowed)return res.json({success:true,data:{
+      sourceFidelity,transcript:sourceFidelity.transcriptExact,corrections:[],ocr:[],
+      ...require('../services/canonicalResultState.service').buildCanonicalResultState({submission:doc})}});
     if (doc.ocrStatus === 'failed') {
       return res.status(422).json({ success: false, message: 'OCR processing failed', data: {
         processing: false, ocrStatus: 'failed', ocrError: doc.ocrError || 'OCR could not process this upload.',
@@ -1132,7 +1144,8 @@ async function getOcrCorrections(req, res) {
       : canonicalTranscript.pages;
     const ocr = await Promise.all(canonicalPages.map(async (p) => {
       const fileId = String(p.fileId || 'legacy');
-      const words = normalizeOcrWordsFromStored(p.words || [], { fileId });
+      const preserveSourceTokens = doc.sourceFidelityMode === 'gpt_vision_exact';
+      const words = normalizeOcrWordsFromStored(p.words || [], { fileId, preserveSourceTokens });
       const separators = new Map((p.words || []).map((word) => [word.id, word.separatorBefore || '']));
       const stored = pages.find(page => String(page.fileId) === fileId && Number(page.pageNumber || 1) === Number(p.pageNumber || 1));
       const sourceGeometry = await annotationImageGeometry(stored,
@@ -1141,7 +1154,7 @@ async function getOcrCorrections(req, res) {
         sourceGeometry,
         pageImageUrl: stored?.pageImageUrl || null, derivedImageFileId: stored?.derivedImageFileId || null,
         rasterHash: stored?.rasterHash || null, rasterizationVersion: stored?.rasterizationVersion || null,
-        words: words.map((w) => ({ id: w.id, fileId, text: w.text, bbox: w.bbox, separatorBefore: separators.get(w.id) || '' })), lines: [] };
+        words: words.map((w) => ({ id: w.id, fileId, ...(preserveSourceTokens ? { page: w.page } : {}), text: w.text, bbox: w.bbox, separatorBefore: separators.get(w.id) || '' })), lines: [] };
     }));
     const evaluationDoc = kind === 'submission' ? await SubmissionFeedback.findOne({ submissionId: doc._id }).lean() : null;
     const resultState = buildCanonicalResultState({ submission: doc, feedback: evaluationDoc });
@@ -1189,6 +1202,7 @@ async function getOcrCorrections(req, res) {
       coverageComplete: resultState.coverageComplete,
       statistics,
       transcript: canonicalTranscript.text,
+      ...(sourceFidelity?{sourceFidelity}:{}),
       transcriptPages: canonicalTranscript.pages.map((page) => ({ fileId: page.fileId, pageNumber: page.pageNumber,
         startChar: page.startChar, endChar: page.endChar, paragraphs: page.paragraphs || [] })),
       transcriptWordSpans: canonicalTranscript.wordSpans.map((span) => ({ wordId: span.wordId, fileId: span.fileId,
@@ -1249,6 +1263,7 @@ async function regenerateCanonicalCorrections(req, res) {
     // Role-based authorization
     if (req.user.role !== 'teacher') return sendError(res, 403, 'Forbidden');
     await uploadService.assertTeacherOwnsClassOrThrow(req.user._id, submission.class);
+    if(!require('../utils/sourceFidelity').eligible(submission))return sendError(res,409,'Source review required before assessment.','OCR_SOURCE_REVIEW_REQUIRED');
     if (await SubmissionFeedback.exists({ submissionId: submission._id, overriddenByTeacher: true })) {
       return sendError(res, 409, 'Teacher-overridden evaluations cannot be regenerated');
     }
@@ -1270,6 +1285,7 @@ async function regenerateCanonicalCorrections(req, res) {
           evaluationStatus: 'stale', assessmentStatus: 'started', analysisAttempt: 0, analysisNextRetryAt: null
         }, $unset: { analysisLeaseOwner: 1, analysisLeaseExpiresAt: 1 } });
       if (!accepted.modifiedCount) return sendError(res, 409, 'Source analysis is already processing.');
+      if (correctionShadowStagingHook.enabled()) correctionShadowStagingHook.trackResponse(submission._id, jobId, res);
       scheduleSubmissionAnalysis(submission._id, jobId);
       return res.status(202).json({ success: true, data: { ocrStatus: 'pending', correctionStatus: 'pending',
         sourceReocrRequested: true, processingActive: true, automaticPollingAllowed: true, terminal: false } });
@@ -1302,6 +1318,7 @@ async function retryCanonicalEvaluation(req, res) {
     if (!submission) return sendError(res, 404, 'Submission not found');
     if (req.user.role !== 'teacher') return sendError(res, 403, 'Forbidden');
     await uploadService.assertTeacherOwnsClassOrThrow(req.user._id, submission.class);
+    if(!require('../utils/sourceFidelity').eligible(submission))return sendError(res,409,'Source review required before assessment.','OCR_SOURCE_REVIEW_REQUIRED');
     if (await SubmissionFeedback.exists({ submissionId: submission._id, overriddenByTeacher: true })) {
       return sendError(res, 409, 'Teacher-overridden evaluations cannot be re-evaluated');
     }

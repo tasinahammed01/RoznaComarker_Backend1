@@ -38,6 +38,7 @@ const fileSchema = new mongoose.Schema(
       required: [true, 'type is required']
     },
     uploadOrder: { type: Number, min: 0, required: false },
+    gptSourcePreflight: {type:mongoose.Schema.Types.Mixed,select:false},
     sizeBytes: { type: Number, min: 0, required: false },
     sourceFileId: { type: mongoose.Schema.Types.ObjectId, ref: 'File' },
     sourceHash: String,
@@ -60,6 +61,7 @@ const fileSchema = new mongoose.Schema(
 fileSchema.index({ uploadedBy: 1, type: 1, createdAt: -1 });
 fileSchema.index({ sourceFileId: 1, rasterizationVersion: 1 });
 
+fileSchema.set('toJSON',{transform(_doc,ret){delete ret.gptSourcePreflight;return ret;}});
 const File = mongoose.model('File', fileSchema);
 
 module.exports = File;

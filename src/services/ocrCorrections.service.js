@@ -15,11 +15,14 @@ function normalizeOcrWordsFromStored(ocrDataWords, options = {}) {
   const list = Array.isArray(ocrDataWords) ? ocrDataWords : [];
 
   const fileId = String(options.fileId || 'legacy');
+  // Public exact-source tokens survive without geometry. Default callers retain
+  // their existing geometry-only behavior, including correction analysis.
+  const preserveSourceTokens = options.preserveSourceTokens === true;
   const perPageCounters = new Map();
 
   return list
     .map((w, wordIndex) => {
-      const text = typeof w?.text === 'string' ? w.text.trim() : '';
+      const text = typeof w?.text === 'string' ? (preserveSourceTokens ? w.text : w.text.trim()) : '';
       if (!text) return null;
 
       const pageNum = typeof w?.page === 'number' ? w.page : Number(w?.page);
@@ -31,7 +34,8 @@ function normalizeOcrWordsFromStored(ocrDataWords, options = {}) {
       const x1 = bbox ? Number(bbox.x1) : NaN;
       const y1 = bbox ? Number(bbox.y1) : NaN;
 
-      if (![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0) return null;
+      const validBox = [x0, y0, x1, y1].every(Number.isFinite) && x1 > x0 && y1 > y0;
+      if (!validBox && !preserveSourceTokens) return null;
 
       const next = (perPageCounters.get(page) || 0) + 1;
       perPageCounters.set(page, next);
@@ -46,7 +50,8 @@ function normalizeOcrWordsFromStored(ocrDataWords, options = {}) {
         ocrLayoutSuspicious: w?.ocrLayoutSuspicious === true,
         paragraphIndex: Number.isFinite(Number(w?.paragraphIndex)) ? Number(w.paragraphIndex) : undefined,
         text,
-        bbox: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+        ...(preserveSourceTokens ? { separatorBefore: typeof w.separatorBefore === 'string' ? w.separatorBefore : '' } : {}),
+        bbox: validBox ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null
       };
     })
     .filter(Boolean);

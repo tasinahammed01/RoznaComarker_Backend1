@@ -148,6 +148,7 @@ function validatePreparedRubric(prepared, expected) {
 }
 
 async function prepareRubricAssessment({ submission, assignment, sourceHash, deadlineAt = null, authoritativeCorrections = false }) {
+  if (!require('../utils/sourceFidelity').eligible(submission)) throw Object.assign(Error('OCR_SOURCE_REVIEW_REQUIRED'),{code:'OCR_SOURCE_REVIEW_REQUIRED'});
   const rubricStartedAt = Date.now();
   const classDoc = await Class.findById(submission.class).select('teacher').lean();
   const teacher = classDoc?.teacher ? await User.findById(classDoc.teacher).select('aiConfig role').lean() : null;
@@ -253,6 +254,7 @@ async function persistProvisionalScore({ submission, assignment, sourceHash, job
 
 async function generate({ submission, assignment, prelockedJobId = null, allowDegradedCorrections = false,
   preparedRubricAssessment = null, preparedRubricRequired = false }) {
+  if (!require('../utils/sourceFidelity').eligible(submission)) return {status:'blocked',errorCode:'OCR_SOURCE_REVIEW_REQUIRED'};
   const totalStartedAt = Date.now();
   const sourceHash = submission.correctionSourceHash;
   const correctionsAvailable = submission.semanticStatus !== 'failed' && submission.correctionStatus === 'completed';

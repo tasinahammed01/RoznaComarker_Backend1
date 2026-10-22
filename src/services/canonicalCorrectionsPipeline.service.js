@@ -91,6 +91,7 @@ function holisticCoverageMismatchCategories(categoryScores = {}, statistics = {}
 }
 
 async function generateAndPersist(doc, { assignment = {}, force = false } = {}) {
+  if (!require('../utils/sourceFidelity').eligible(doc)) return {errorCode:'OCR_SOURCE_REVIEW_REQUIRED',semanticSucceeded:false};
   const totalStartedAt = Date.now();
   logger.info({ message: 'Canonical evaluation timing', submissionId: String(doc._id),
     stage: 'correction_start', attemptNumber: null, provider: null, model: null,

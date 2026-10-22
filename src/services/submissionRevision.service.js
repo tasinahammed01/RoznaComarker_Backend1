@@ -18,6 +18,8 @@ async function captureCurrentRevision(submission) {
       sourceSubmissionId: submission._id, student: submission.student, assignment: submission.assignment,
       class: submission.class, draftNumber, submittedAt: submission.submittedAt,
       fileContentIdentity: submission.fileContentIdentity,
+      ...(require('../utils/sourceFidelity').isExact(submission)?Object.fromEntries(['sourceTranscriptExact','sourceTranscriptSha256',
+        'sourceFidelityStatus','sourceFidelityMode','sourceFidelityVersion','sourceFidelityInputIdentity'].map(k=>[k,submission[k]])):{}),
       file: submission.file, fileUrl: submission.fileUrl, files: plain(submission.files),
       fileOrder: plain(submission.fileOrder), fileUrls: plain(submission.fileUrls),
       transcriptText: submission.transcriptText || submission.combinedOcrText || submission.ocrText || '',

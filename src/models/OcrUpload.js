@@ -46,6 +46,7 @@ const ocrUploadSchema = new Schema(
       type: Schema.Types.Mixed,
       default: undefined
     },
+    studentSourceEvidence: {type:Schema.Types.Mixed,select:false},
     ocrUpdatedAt: {
       type: Date
     }
@@ -56,5 +57,6 @@ const ocrUploadSchema = new Schema(
 );
 
 ocrUploadSchema.index({ student: 1, createdAt: -1 });
+ocrUploadSchema.set('toJSON',{transform(_doc,ret){delete ret.studentSourceEvidence;return ret;}});
 
 module.exports = mongoose.model('OcrUpload', ocrUploadSchema);

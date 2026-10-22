@@ -2,7 +2,9 @@
 
 const mockBrowser = { connected: true, once: jest.fn(), close: jest.fn(async () => { mockBrowser.connected = false; }) };
 const mockLaunch = jest.fn(async () => { mockBrowser.connected = true; return mockBrowser; });
-jest.mock('puppeteer', () => ({ executablePath: () => process.execPath, launch: mockLaunch }), { virtual: true });
+jest.mock('puppeteer', () => ({ executablePath: () => process.execPath, launch: mockLaunch }));
+// Match the runtime's local frontend fallback when backend Puppeteer is absent.
+jest.mock('../../RoznaComarker/node_modules/puppeteer', () => ({ executablePath: () => process.execPath, launch: mockLaunch }));
 
 describe('PDF browser lifecycle and queue', () => {
   let manager;

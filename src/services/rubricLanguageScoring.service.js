@@ -38,6 +38,7 @@ const clamp = (value, max) => Math.max(0, Math.min(max, Number(value) || 0));
 const countWords = (text) => String(text || '').trim().split(/\s+/).filter(Boolean).length;
 
 function normalizedTranscript(submission, transcriptText) {
+  if (require('../utils/sourceFidelity').isExact(submission)) return getNormalizedSubmissionTranscript(submission);
   return normalizeOcrTranscript(transcriptText || getNormalizedSubmissionTranscript(submission || {}));
 }
 

@@ -131,6 +131,9 @@ async function deleteDatabaseState(context, mongoSession = null) {
   ] }, options);
   await AdaptivePracticeSession.deleteMany({ submissionId: submission._id }, options);
   await SubmissionFeedback.deleteMany({ submissionId: submission._id }, options);
+  await require('../models/SourceFidelitySnapshot').deleteMany({submissionId:submission._id},options);
+    await require('../models/SourceHumanReview').deleteMany({submissionId:submission._id},options);
+  await require('../models/SourceFidelityEvidence').deleteMany({'identity.submissionId':String(submission._id)},options);
   await Feedback.deleteMany({ submission: submission._id }, options);
   await Upload.deleteMany({ submissionId: submission._id }, options);
   await Notification.deleteMany({ 'data.submissionId': String(submission._id) }, options);

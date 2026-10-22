@@ -457,7 +457,7 @@ async function analyze(input, dependencies = {}) {
   const runCompletion = dependencies.runCompletion || runSemanticCompletion;
   const completion = await runCompletion({ messages: request.messages, config,
     env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
-    onAttempt: input.onAttempt, onRetry: input.onRetry, deadlineAt: input.deadlineAt, validate, feature: 'semantic_corrections',
+    onAttempt: input.onAttempt, onRetry: input.onRetry, deadlineAt: input.deadlineAt, onDiagnostic: dependencies.onDiagnostic, validate, feature: 'semantic_corrections',
     responseSchema: semanticCorrectionsSchema(input.transcriptHash, selectedCategories, runtimeCategorySymbols), schemaName: 'semantic_corrections' });
   const parseStartedAt = Date.now();
   let validated;
@@ -501,7 +501,7 @@ async function analyze(input, dependencies = {}) {
         config: auditConfig,
         env: dependencies.env || process.env, fetchImpl: dependencies.fetchImpl || global.fetch,
         deadlineAt: input.deadlineAt,
-        validate: auditValidate, feature: 'semantic_corrections_category_audit',
+        validate: auditValidate, onDiagnostic: dependencies.onDiagnostic, feature: 'semantic_corrections_category_audit',
         responseSchema: semanticCorrectionsSchema(input.transcriptHash, auditCategories, runtimeCategorySymbols), schemaName: 'semantic_corrections_category_audit' });
       const auditValidated = auditCompletion.value || auditValidate(auditCompletion.content);
       const merged = canonical.mergeCanonicalCorrections({ aiCorrections: [...validated.corrections, ...auditValidated.corrections] });
@@ -561,6 +561,9 @@ async function analyze(input, dependencies = {}) {
 }
 
 module.exports = { SEMANTIC_PROMPT_VERSION, SEMANTIC_SCHEMA_VERSION, CATEGORY_REVIEW_POLICY_VERSION,
+  // Explicit vNext entry; legacy analyze remains frozen for replay/rollback.
+  analyzeHardened: (...args) => require('./correctionContractVNext.service').analyze(...args),
+  analyzeSourceLocated: (...args) => require('./correctionSourceLocator.service').analyze(...args),
   DEFAULT_NO_FINDING_REASON,
   compactAssignment, compactSemanticLegend,
   categorySymbolCatalog, symbolCoverageDiagnostics,

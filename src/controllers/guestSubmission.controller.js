@@ -1,4 +1,5 @@
 'use strict';
+const correctionShadowStagingHook = require('../services/correctionShadow/stagingHook');
 const mongoose = require('mongoose');
 const fs = require('fs/promises');
 const Assignment = require('../models/assignment.model');
@@ -138,6 +139,7 @@ const submit = endpoint(async (req, res) => {
   // Once committed, upload cleanup must never remove the assessment's source files.
   req.guestCommitted = true;
   req.files = [];
+  if (correctionShadowStagingHook.enabled()) correctionShadowStagingHook.trackResponse(created._id, created.ocrJobId, res);
   scheduleSubmissionAnalysis(created._id, created.ocrJobId);
   const delivery = await email.sendGuestSubmissionEmail({ to: guest.normalizedEmail,
     assignmentTitle: assignment.title, returnUrl: link });
@@ -157,6 +159,7 @@ const results = endpoint(async (req, res) => {
   const publicFeedback = ready ? { overallScore: state.score, rubricScores: feedback.rubricScores,
     detailedFeedback: feedback.detailedFeedback, teacherComments: feedback.teacherComments || '' } : null;
   const data = { title: assignment.title, name: doc.guest.displayName, submittedAt: doc.submittedAt,
+    ...(require('../utils/sourceFidelity').payload(doc)?{sourceFidelity:require('../utils/sourceFidelity').payload(doc)}:{}),
     status, ocrStatus: doc.ocrStatus,
     processingMessage: status === 'blocked'
       ? doc.evaluationErrorCode === 'INSUFFICIENT_ASSESSMENT_CREDITS'

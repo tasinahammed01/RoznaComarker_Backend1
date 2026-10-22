@@ -75,6 +75,22 @@ const submissionSchema = new Schema(
     ],
     ocrPages: [
       {
+        sourceTextExact: String,
+        sourceTextSha256: String,
+        sourceFidelityStatus: String,
+        sourceFidelityMode: String,
+        sourcePrimaryProvider: String,
+        sourcePrimaryModel: String,
+        sourceSecondaryProvider: String,
+        sourceSecondaryModel: String,
+        sourceDisagreementCount: Number,
+        sourceUncertainSpans: { type: Schema.Types.Mixed, default: undefined },
+        sourceInputSha256: String,
+        sourceFidelityVersion: String,
+        sourceHumanReceiptHash: String,
+        sourceHumanReviewUnresolved: Number,
+        sourceVerificationStage: String,
+        sourceVerificationSummary: { type: Schema.Types.Mixed, default: undefined },
         fileId: { type: Schema.Types.ObjectId, ref: 'File', required: false },
         fileOrder: { type: Number, min: 0, required: false },
         pageNumber: { type: Number, required: false },
@@ -93,6 +109,9 @@ const submissionSchema = new Schema(
         ocrProvider: String,
         ocrApi: String,
         ocrPipelineVersion: String,
+        studentSourceVersion: String,
+        studentSourceTextSha256: String,
+        studentSourceEvidence: { type: Schema.Types.Mixed, select:false },
         ocrPreprocessingVersion: String,
         ocrRunId: String,
         ocrCreatedAt: Date,
@@ -109,6 +128,14 @@ const submissionSchema = new Schema(
       type: String,
       trim: true
     },
+    sourceTranscriptExact: String,
+    sourceTranscriptSha256: String,
+    sourceFidelityStatus: String,
+    sourceFidelityMode: String,
+    sourceFidelityVersion: String,
+    sourceFidelityInputIdentity: String,
+    sourceHumanReviewId: String,
+    sourceHumanReviewSummary: { type: Schema.Types.Mixed, default: undefined },
     rawCombinedOcrText: {
       type: String
     },
@@ -263,4 +290,9 @@ submissionSchema.index({ class: 1, assignment: 1, createdAt: 1 });
 submissionSchema.index({ feedback: 1 });
 submissionSchema.index({ ocrStatus: 1, analysisNextRetryAt: 1, analysisLeaseExpiresAt: 1, updatedAt: 1 });
 
+require('../services/sourceFidelity/immutability').install(submissionSchema);
+submissionSchema.set('toJSON',{transform(_doc,ret){
+  for(const page of ret.ocrPages||[])delete page.studentSourceEvidence;
+  const source=require('../utils/sourceFidelity').payload(ret);if(source)ret.sourceFidelity=source;return ret;
+}});
 module.exports = mongoose.model('Submission', submissionSchema);

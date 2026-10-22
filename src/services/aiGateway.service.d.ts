@@ -31,6 +31,7 @@ export function generate<T = unknown>(options: {
   config?: Record<string, unknown>;
   onAttempt?: (attempt: Record<string, unknown>) => void | Promise<void>;
   onRetry?: (retry: Record<string, unknown>) => void | Promise<void>;
+  onDiagnostic?: (diagnostic: Readonly<Record<string, unknown>>) => void;
 }): Promise<GatewayResult<T>>;
 
 export function getAIConfig(env?: NodeJS.ProcessEnv): Record<string, unknown>;

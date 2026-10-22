@@ -1,6 +1,7 @@
 'use strict';
 
 const logger = require('../utils/logger');
+const requestDiagnostics = require('./aiRequestDiagnostics.service');
 
 const SUPPORTED_PROVIDERS = new Set(['google', 'openrouter']);
 const RETRYABLE_HTTP = new Set([408, 429, 500, 502, 503, 504]);
@@ -309,10 +310,15 @@ function googleBody(messages, maxOutputTokens, temperature, responseFormat, thin
 }
 
 async function providerAttempt({ entry, messages, maxOutputTokens, temperature, responseFormat,
-  responseSchema, schemaName, attemptTimeoutMs, fetchImpl, env, now, googleThinkingLevel, feature }) {
+  responseSchema, schemaName, attemptTimeoutMs, fetchImpl, env, now, googleThinkingLevel, feature, onDiagnostic,
+  requestProfile, signal }) {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) controller.abort();
   const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
   const started = now();
+  let failureStage = 'REQUEST_BUILD_FAILURE', responseReceived = false, bodyRead = false, httpStatus = null;
   try {
     const google = entry.provider === 'google';
     const base = endpointFor(entry.provider, env).replace(/\/$/u, '');
@@ -327,7 +333,17 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
           schema: responseSchema }
       } } : responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {})
     };
-    const response = await fetchImpl(url, {
+    if (requestProfile) {
+      const profileModelAllowed=requestProfile==='gpt_vision_exact_v1'
+        ? [require('./hybridSource/contract').MODEL,'openai/gpt-6-astra'].includes(entry.model)
+        : requestProfile==='source_fidelity_v1'&&['openai/gpt-6-astra','anthropic/claude-fable-5.1'].includes(entry.model);
+      if (!profileModelAllowed || google
+        || base !== 'https://openrouter.ai/api/v1') throw attemptError('OCR_SOURCE_PROFILE_INVALID', 'Invalid source reader profile.');
+      delete body.temperature; delete body.max_tokens;
+      body.max_completion_tokens = requestProfile==='gpt_vision_exact_v1'?16000:12000;
+      body.provider = { require_parameters: true, allow_fallbacks: false };
+    }
+    const options = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -338,9 +354,18 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
         })
       },
       body: JSON.stringify(body),
-      signal: controller.signal
-    });
+      signal: controller.signal,
+      ...(requestProfile ? { redirect: 'error' } : {})
+    };
+    failureStage = 'TRANSPORT_FAILURE';
+    if(requestProfile && controller.signal.aborted) throw attemptError('OCR_SOURCE_CANCELLED','Source reader cancelled.');
+    const response = await fetchImpl(url, options);
+    responseReceived = true; httpStatus = response.status;
+    failureStage = 'RESPONSE_BODY_READ_FAILURE';
     const responseText = await response.text();
+    if(requestProfile && controller.signal.aborted) throw attemptError('OCR_SOURCE_CANCELLED','Source reader cancelled.');
+    bodyRead = true;
+    failureStage = response.ok ? 'RESPONSE_JSON_PARSE_FAILURE' : 'HTTP_ERROR_RESPONSE';
     let payload;
     try { payload = JSON.parse(responseText); }
     catch {
@@ -348,8 +373,11 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
         'AI provider request failed.', { status: response.status, retryAfterMs: retryAfterMs(response, now()) });
       throw attemptError('AI_RESPONSE_INVALID', 'AI provider returned invalid JSON transport.');
     }
+    if (requestProfile && response.ok && payload?.model !== entry.model)
+      throw attemptError('OCR_SOURCE_MODEL_IDENTITY', 'Source reader model identity mismatch.');
     const payloadError = payload && typeof payload.error === 'object' ? payload.error : null;
     if (!response.ok || payloadError) {
+      failureStage = 'HTTP_ERROR_RESPONSE';
       const payloadStatus = Number(payloadError?.status || payloadError?.code);
       const status = Number.isInteger(payloadStatus) && payloadStatus >= 400 && payloadStatus <= 599
         ? payloadStatus : response.ok ? 500 : response.status;
@@ -366,18 +394,24 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
         schemaPath: status === 400 ? providerDetails.path : null
       });
     }
+    failureStage = 'PROVIDER_RESPONSE_SHAPE_INVALID';
     const extracted = google ? extractGoogle(payload, { maxOutputTokens })
       : extractOpenRouter(payload, { maxOutputTokens });
     const usage = google ? extracted.usage : (payload.usage ? {
       ...payload.usage,
       thoughts_tokens: payload.usage?.completion_tokens_details?.reasoning_tokens
     } : null);
-    return { ...extracted, usage, durationMs: now() - started };
+    return { ...extracted, usage, durationMs: now() - started,
+      ...(requestProfile ? { returnedModel: payload.model } : {}) };
   } catch (error) {
+    requestDiagnostics.notify(onDiagnostic, { failureStage: controller.signal.aborted || error?.name === 'AbortError'
+      ? 'REQUEST_ABORTED' : failureStage, error, safeCode: controller.signal.aborted ? 'AI_ATTEMPT_TIMEOUT' : safeCode(error),
+    httpStatus, responseReceived, bodyRead });
     if (controller.signal.aborted) throw attemptError('AI_ATTEMPT_TIMEOUT', 'AI provider attempt timed out.');
     throw error;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
   }
 }
 
@@ -386,7 +420,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
   env = process.env, fetchImpl = global.fetch,
   now = Date.now, sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   randomFn = Math.random, config = getAIConfig(env), onAttempt, onRetry, deadlineAt = null,
-  retryableSameModelCodes = [], terminalCodes = [] } = {}) {
+  retryableSameModelCodes = [], terminalCodes = [], onDiagnostic } = {}) {
   if (!Array.isArray(messages) || typeof fetchImpl !== 'function') {
     throw new TypeError('AI gateway requires messages and fetch.');
   }
@@ -436,12 +470,14 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
       try {
         const result = await providerAttempt({ entry, messages, maxOutputTokens, temperature,
           responseFormat, responseSchema, schemaName, attemptTimeoutMs: timeout, fetchImpl, env, now,
-          googleThinkingLevel, feature });
+          googleThinkingLevel, feature, onDiagnostic });
         let value = result.content;
         if (typeof validate === 'function') {
           try { value = await validate(result.content, { provider: entry.provider, model: entry.model,
             attemptIndex: attemptCount - 1, attemptNumber: attemptCount }); }
           catch (error) {
+            requestDiagnostics.notify(onDiagnostic, { failureStage: requestDiagnostics.validationStage(error),
+              error, safeCode: 'AI_OUTPUT_VALIDATION_FAILED', httpStatus: 200, responseReceived: true, bodyRead: true });
             throw attemptError('AI_OUTPUT_VALIDATION_FAILED', 'AI output failed feature validation.', {
               validationCode: error?.code || null, ...safeFailureMetadata(error), cause: error
             });

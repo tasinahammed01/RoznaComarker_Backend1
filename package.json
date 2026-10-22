@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
+    "ocr:preflight": "node scripts/ocrPreflight.cjs",
     "migrate:flashcard-indexes": "node scripts/migrateFlashcardIndexes.js",
     "verify:runtime": "node scripts/verify-runtime-contract.js",
     "verify:production-security": "node scripts/verify-production-security.js --dry-run",

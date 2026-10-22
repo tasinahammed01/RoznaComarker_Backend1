@@ -11,7 +11,9 @@ function assessmentContext(assignment = {}) {
 function pageContentIdentity(pages = []) {
   return pages.map((page, index) => ({ order: index,
     pageIndex: Number.isFinite(Number(page?.pageIndex)) ? Number(page.pageIndex) : Number(page?.pageNumber || 1) - 1,
-    textHash: hash(String(page?.text || '')) }));
+    textHash: hash(String(page?.text || '')),
+    ...(page?.sourceFidelityVersion ? {sourceFidelityVersion:page.sourceFidelityVersion,
+      sourceTextSha256:page.sourceTextSha256,sourceInputSha256:page.sourceInputSha256,fileId:String(page.fileId),pageNumber:page.pageNumber} : {}) }));
 }
 function correctionInputHash({ transcript, pages = [], assignment = {}, fileContentIdentity = null, versions = {}, legend = {} }) {
   return hash({ identityVersion: IDENTITY_VERSION, transcript: String(transcript || ''),

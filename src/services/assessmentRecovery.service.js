@@ -140,7 +140,7 @@ async function runClaimedSubmission(doc, owner, config = workerConfig()) {
     logger.info({ event: 'recovery_completed', ...context, durationMs: Date.now() - startedAt });
     return { status: 'completed' };
   } catch (error) {
-    const exhausted = Number(doc.analysisAttempt || 0) >= config.maxAttempts;
+    const exhausted = ['astra_verified','astra_human_confirm','gpt_vision_exact'].includes(process.env.OCR_SOURCE_MODE) || Number(doc.analysisAttempt || 0) >= config.maxAttempts;
     const code = String(error?.code || 'ASSESSMENT_RECOVERY_FAILED').slice(0, 100);
     const terminalState = exhausted ? (doc.ocrStatus === 'pending' ? {
       ocrStatus: 'failed', ocrErrorCode: 'ASSESSMENT_RECOVERY_EXHAUSTED',

@@ -8,8 +8,9 @@ const logger = require('../utils/logger');
 
 const visionOcr = require('./visionOcr.service');
 const { normalizeOcrTranscript, buildCanonicalSubmissionTranscript,
-  assessCanonicalTranscriptQuality } = require('../utils/ocrTranscriptNormalizer');
+  assessCanonicalTranscriptQuality, HANDWRITING_LAYOUT_VERSION } = require('../utils/ocrTranscriptNormalizer');
 const canonicalCorrectionsPipeline = require('./canonicalCorrectionsPipeline.service');
+const correctionShadowHook = require('./correctionShadow/stagingHook');
 
 function toAbsoluteStoredPath(storedPath) {
   if (!storedPath || typeof storedPath !== 'string') return null;
@@ -25,7 +26,10 @@ function safeOcrFailure(error, fallbackCode = 'OCR_PROVIDER_FAILED') {
     retryable: error?.retryable === true };
 }
 
+function storedStudentWord(word){const b=word.bbox;return {...word,bbox:b?{x0:b.x0??b.x,y0:b.y0??b.y,x1:b.x1??b.x+b.w,y1:b.y1??b.y+b.h}:null};}
 async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
+  const exactMode = ['astra_verified','astra_human_confirm','gpt_vision_exact'].includes(require('./hybridSource/contract').mode());
+  const source = require('../utils/sourceFidelity');
   const ocrStartedAt = Date.now();
   const ids = Array.isArray(fileIds) ? fileIds.filter(Boolean) : [];
   const first = ids.length ? ids[0] : null;
@@ -58,7 +62,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
     delete values.guestRequestKey;
     const persisted = await targetDoc.constructor.updateOne(
       ownership,
-      { $set: values }
+      { $set: values,...(targetDoc.sourceHumanReviewId===undefined?{$unset:{sourceHumanReviewId:1,sourceHumanReviewSummary:1}}:{}) }
     );
     return persisted.modifiedCount === 1 || persisted.matchedCount === 1;
   };
@@ -80,7 +84,8 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
   };
   const processFile = async (fileId, fileOrder) => {
 
-    const fileDoc = await File.findById(fileId);
+    const fileQuery=File.findById(fileId);
+    const fileDoc = await (typeof fileQuery?.select==='function'?fileQuery.select('+gptSourcePreflight'):fileQuery);
     if (!fileDoc || !fileDoc.path) {
       logger.warn({
         message: 'OCR skipped: file doc not found or missing path',
@@ -116,7 +121,14 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
 
     let ocr;
     try {
-      ocr = await visionOcr.extractOcrFromImageFile(absolute, { sourceFile: fileDoc, isCurrentJob, reservePages });
+      let sourceAssignment={};
+      if((require('./hybridSource/contract').mode()==='gpt_vision_exact'||!exactMode&&require('./hybridSource/contract').mode()==='legacy'&&process.env.OCR_READING_ORDER!=='native')&&targetDoc.assignment)try{sourceAssignment=await Assignment.findById(targetDoc.assignment).lean()||{};}catch{/* No reference: preserve source and flag boundary uncertainty. */}
+      ocr = await visionOcr.extractOcrFromImageFile(absolute, { sourceFile: fileDoc, fileOrder, signal: sourceAbort.signal, isCurrentJob, reservePages,
+        sourceAssignment,
+        targetedBudget,
+        isCurrentSourceRun: async () => Boolean(jobId && await targetDoc.constructor.exists({ _id: targetDoc._id, ocrJobId: jobId })),
+        hybridIdentity: { submissionId: String(targetDoc._id || ''), runId: String(jobId || ''),
+          assignmentId:String(targetDoc.assignment?._id||targetDoc.assignment||''),studentId:targetDoc.student?String(targetDoc.student?._id||targetDoc.student):null } });
     } catch (err) {
       const failure = safeOcrFailure(err);
       logger.error({
@@ -128,10 +140,10 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
       return { ok: false, fileId, fileOrder, failure: { ...failure, isPdf: path.extname(absolute).toLowerCase() === '.pdf' } };
     }
     const rawText = ocr && (ocr.fullText || ocr.transcriptText) ? String(ocr.fullText || ocr.transcriptText) : '';
-    // Vision's native full text owns semantic reading order. Word geometry is
-    // retained for annotation mapping and must never replace this text.
-    const text = normalizeOcrTranscript(ocr && (ocr.fullText || ocr.transcriptText));
-    const words = toStoredOcrWords(ocr && Array.isArray(ocr.words) ? ocr.words : []);
+    const handwriting=ocr?.ocrPipelineVersion===HANDWRITING_LAYOUT_VERSION||ocr?.pages?.some(p=>p.ocrPipelineVersion===HANDWRITING_LAYOUT_VERSION);
+    // Geometry handwriting text already carries physical line separators.
+    const text = exactMode||handwriting ? rawText : normalizeOcrTranscript(ocr && (ocr.fullText || ocr.transcriptText));
+    const words = toStoredOcrWords(ocr && Array.isArray(ocr.words) ? ocr.words : [],handwriting);
 
     const pages = (ocr && Array.isArray(ocr.pages) ? ocr.pages : [])
       .map((p, pageIndex) => {
@@ -142,14 +154,17 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
         const pageWords = Array.isArray(p?.words)
           ? p.words
               .map((w) => {
+                if(p.studentSourceVersion||p.sourceFidelityMode==='gpt_vision_exact')return storedStudentWord(w);
                 const t = typeof w?.text === 'string' ? w.text : '';
                 const bbox = w?.bbox && typeof w.bbox === 'object' ? w.bbox : null;
-                if (!t || !bbox) return null;
+                if (!t) return null;
+                if (!bbox&&handwriting){wordIndex++;return {id:`word_${String(fileId)}_${n}_${wordIndex}`,text:t,page:n,bbox:null};}
+                if (!bbox) return null;
                 const x = Number(bbox.x);
                 const y = Number(bbox.y);
                 const ww = Number(bbox.w);
                 const hh = Number(bbox.h);
-                if (![x, y, ww, hh].every((v) => Number.isFinite(v))) return null;
+                if (![x, y, ww, hh].every((v) => Number.isFinite(v))){if(handwriting){wordIndex++;return {id:`word_${String(fileId)}_${n}_${wordIndex}`,text:t,page:n,bbox:null};}return null;}
                 wordIndex += 1;
                 return {
                   id: `word_${String(fileId)}_${n}_${wordIndex}`,
@@ -169,12 +184,13 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
           : [];
 
         return {
+          ...(exactMode ? Object.fromEntries(Object.entries(p).filter(([key])=>key.startsWith('source'))) : {}),
           fileId,
           fileOrder,
           pageNumber: n,
           pageIndex,
-          text: typeof p?.text === 'string' ? normalizeOcrTranscript(p.text) : text,
-          rawText: typeof p?.rawText === 'string' ? p.rawText : rawText,
+          ...(exactMode ? {} : { text: typeof p?.text === 'string' ? (handwriting?p.text:normalizeOcrTranscript(p.text)) : text,
+            rawText: typeof p?.rawText === 'string' ? p.rawText : rawText }),
           width: p.width, height: p.height,
           coordinateSpace: p.coordinateSpace,
           ocrImageWidth: p.ocrImageWidth, ocrImageHeight: p.ocrImageHeight,
@@ -183,6 +199,8 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
           encodedImageWidth: p.encodedImageWidth, encodedImageHeight: p.encodedImageHeight,
           sourceMimeType: p.sourceMimeType, ocrProvider: p.ocrProvider, ocrApi: p.ocrApi,
           ocrPipelineVersion: p.ocrPipelineVersion, ocrPreprocessingVersion: p.ocrPreprocessingVersion,
+          ...(p.studentSourceVersion?{studentSourceVersion:p.studentSourceVersion,studentSourceTextSha256:p.studentSourceTextSha256,
+            studentSourceEvidence:ocr[visionOcr.STUDENT_SOURCE_EVIDENCE]?.byPage?.[n]||ocr[visionOcr.STUDENT_SOURCE_EVIDENCE]}:{}),
           ocrRunId: targetDoc.ocrJobId || null, ocrCreatedAt: new Date(),
           derivedImageFileId: p.derivedImageFileId, pageImageUrl: p.pageImageUrl,
           rasterHash: p.rasterHash, rasterizationVersion: p.rasterizationVersion,
@@ -191,7 +209,7 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
       })
       .filter(Boolean);
 
-    return { ok: true, fileId, fileOrder, text, rawText, words, pages: pages.length ? pages : [{
+    return { ok: true, fileId, fileOrder, text, rawText, words, handwriting, pages: pages.length ? pages : [{
         fileId,
         fileOrder,
         pageNumber: 1,
@@ -202,13 +220,20 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
       }] };
   };
   const results = new Array(ids.length);
+  const targetedBudget=exactMode&&require('./hybridSource/contract').mode()==='astra_verified'&&require('./sourceFidelity/targetedVerification').enabled()
+    ?require('./sourceFidelity/targetedVerification').createBudget():undefined;
   let nextFile = 0;
-  await Promise.all(Array.from({ length: Math.min(2, ids.length) }, async () => {
+  const sourceAbort = new AbortController();
+  const currentMonitor = exactMode && jobId ? setInterval(() => {
+    isCurrentJob().then(current=>{if(!current)sourceAbort.abort();}).catch(()=>sourceAbort.abort());
+  }, 1000) : null;
+  try { await Promise.all(Array.from({ length: Math.min(2, ids.length) }, async () => {
     while (nextFile < ids.length) {
       const index = nextFile++;
       results[index] = await processFile(ids[index], index);
     }
-  }));
+  })); } finally { if(currentMonitor)clearInterval(currentMonitor); }
+  if(exactMode && (sourceAbort.signal.aborted || !(await isCurrentJob()))) return {ocrStatus:'superseded'};
   const completedResults = results.filter(result => result?.ok).sort((a, b) => a.fileOrder - b.fileOrder);
   const failures = results.filter(result => result && !result.ok).map(result => ({
     fileId: String(result.fileId), fileOrder: result.fileOrder, ...result.failure
@@ -223,7 +248,24 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
   const legacyFirstRawOcrText = firstResult?.rawText || '';
   const legacyFirstOcrWords = firstResult?.words || [];
 
-  if (!processed || !ocrPages.length || failures.some(failure => failure.isPdf || failure.code === 'OCR_PDF_LIMIT')) {
+  if (exactMode) {
+    // Exact source never traverses legacy normalizers or trimmed aliases as authority.
+    targetDoc.ocrPages=ocrPages;
+    if(['astra_human_confirm','gpt_vision_exact'].includes(require('./hybridSource/contract').mode()))targetDoc.sourceFidelityMode=require('./hybridSource/contract').mode();
+    Object.assign(targetDoc,source.aggregate(targetDoc,failures));
+    targetDoc.ocrFailures=failures.map(f=>({...f,retryable:false}));
+    targetDoc.ocrUpdatedAt=new Date();
+    if(!source.eligible(targetDoc)){Object.assign(targetDoc,source.blockedState());if(targetDoc.sourceFidelityMode==='gpt_vision_exact'){const f=failures[0]||{code:'OCR_GPT_SOURCE_UNCERTAIN',message:'The handwriting source could not be read confidently.'};Object.assign(targetDoc,{ocrErrorCode:f.code,ocrError:f.message,semanticErrorCode:f.code,evaluationErrorCode:f.code,assessmentErrorCode:f.code});}}
+    else if(targetDoc.sourceFidelityMode==='gpt_vision_exact'){const c=source.canonical(targetDoc);Object.assign(targetDoc,{ocrText:c.text,rawOcrText:c.text,combinedOcrText:c.text,combinedRawOcrText:c.text,ocrWords:c.wordSpans.map(s=>s.word)});}
+    if(source.eligible(targetDoc)){targetDoc.ocrStatus='completed';targetDoc.ocrErrorCode=undefined;targetDoc.ocrError=undefined;}
+    if(!(await saveCurrentJob()))return {ocrStatus:'superseded'};
+    if(!source.eligible(targetDoc))return {ocrStatus:'failed',sourceFidelityStatus:targetDoc.sourceFidelityStatus};
+    const assignment=targetDoc.assignment?await Assignment.findById(targetDoc.assignment).lean():{};
+    await canonicalCorrectionsPipeline.generateAndPersist(targetDoc,{assignment:assignment||{}});
+    return {ocrStatus:'completed',sourceFidelityStatus:targetDoc.sourceFidelityStatus};
+  }
+
+  if (!processed || !ocrPages.length || failures.some(failure => failure.isPdf || failure.code === 'OCR_PDF_LIMIT'||failure.code==='OCR_READING_ORDER_UNRELIABLE')) {
     const primaryFailure = failures[0] || { code: 'OCR_TEXT_EMPTY', message: 'OCR produced no readable text.' };
     const msg = primaryFailure.message;
 
@@ -258,18 +300,18 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
   targetDoc.ocrPages = ocrPages;
   targetDoc.ocrCoordinateSpaceReviewRequired = false;
   targetDoc.combinedOcrText = perFileTexts
-    .map((t) => (typeof t === 'string' ? t.trim() : ''))
+    .map((t,index) => (typeof t === 'string' ? (completedResults[index].handwriting?t:t.trim()) : ''))
     .filter(Boolean)
     .join('\n\n');
   targetDoc.rawCombinedOcrText = perFileRawTexts
-    .map((t) => (typeof t === 'string' ? t.trim() : ''))
+    .map((t,index) => (typeof t === 'string' ? (completedResults[index].handwriting?t:t.trim()) : ''))
     .filter(Boolean)
     .join('\n\n');
   targetDoc.ocrFailures = failures;
   const canonicalTranscript = buildCanonicalSubmissionTranscript(targetDoc);
   const transcriptQuality = assessCanonicalTranscriptQuality(canonicalTranscript);
   if (!transcriptQuality.reliable) {
-    if (transcriptQuality.code === 'OCR_READING_ORDER_UNRELIABLE' && canonicalTranscript.text.trim()) {
+    if (transcriptQuality.code === 'OCR_READING_ORDER_UNRELIABLE' && canonicalTranscript.text.trim()&&!transcriptQuality.diagnostics.some(p=>p.layoutDegraded)) {
       targetDoc.ocrStatus = 'completed';
       targetDoc.ocrErrorCode = 'OCR_LAYOUT_DEGRADED';
       targetDoc.ocrError = 'Transcription completed, but some image annotations may be unavailable.';
@@ -305,8 +347,10 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
   logger.info({ message: 'Assessment pipeline timing', submissionId: String(targetDoc._id),
     stage: 'ocrReadyAt', timestamp: new Date().toISOString(), durationMs: Date.now() - ocrStartedAt,
     provider: 'google_vision', model: null, pageCount: ocrPages.length, fileCount: processed });
+  let shadowAssignment = {};
   try {
     const assignmentDoc = targetDoc.assignment ? await Assignment.findById(targetDoc.assignment).lean().catch(() => null) : null;
+    shadowAssignment = assignmentDoc ? { title: assignmentDoc.title || '', description: assignmentDoc.description || assignmentDoc.instructions || '', rubric: assignmentDoc.rubric || null, rubrics: assignmentDoc.rubrics || null } : {};
     await canonicalCorrectionsPipeline.generateAndPersist(targetDoc, { assignment: assignmentDoc ? {
       title: assignmentDoc.title || '', description: assignmentDoc.description || assignmentDoc.instructions || '',
       rubric: assignmentDoc.rubric || null, rubrics: assignmentDoc.rubrics || null
@@ -315,26 +359,41 @@ async function runOcrAndPersistForFiles({ fileIds, targetDoc, jobId }) {
     logger.error({ message: 'Canonical correction generation failed after OCR', error: err?.message || err });
   }
 
+  // Normal persisted OCR and production corrections have finished. No experimental await.
+  if (correctionShadowHook.enabled()) {
+    const shadowStarted = performance.now();
+    try {
+      const snapshots = correctionShadowHook.snapshotCompleted({ submissionId: String(targetDoc._id),
+        runId: jobId, status: targetDoc.ocrStatus, pages: targetDoc.ocrPages, failures,
+        assignment: shadowAssignment });
+      correctionShadowHook.observeCompleted(snapshots, { requireResponseBoundary: true });
+    } catch { correctionShadowHook.recordSkipped(); }
+    finally { correctionShadowHook.recordHookOverhead(performance.now() - shadowStarted); }
+  }
+
   return {
     ocrText: targetDoc.ocrText,
     ocrStatus: targetDoc.ocrStatus
   };
 }
 
-function toStoredOcrWords(words) {
+function toStoredOcrWords(words,keepMissingGeometry=false) {
   const list = Array.isArray(words) ? words : [];
   return list
     .map((w) => {
+      if(w.studentSourceStatus)return storedStudentWord(w);
       const text = typeof w.text === 'string' ? w.text : '';
       const page = typeof w.page === 'number' ? w.page : Number(w.page);
       const bbox = w && w.bbox && typeof w.bbox === 'object' ? w.bbox : null;
-      if (!text || !Number.isFinite(page) || !bbox) return null;
+      if (!text || !Number.isFinite(page)) return null;
+      if(!bbox&&keepMissingGeometry)return {text,page,bbox:null};
+      if(!bbox)return null;
 
       const x0 = Number(bbox.x);
       const y0 = Number(bbox.y);
       const wPct = Number(bbox.w);
       const hPct = Number(bbox.h);
-      if (![x0, y0, wPct, hPct].every((n) => Number.isFinite(n))) return null;
+      if (![x0, y0, wPct, hPct].every((n) => Number.isFinite(n)))return keepMissingGeometry?{text,page,bbox:null}:null;
 
       return {
         text,
@@ -353,6 +412,8 @@ function toStoredOcrWords(words) {
 }
 
 async function runOcrAndPersist({ fileId, targetDoc }) {
+  if (['astra_verified','astra_human_confirm','gpt_vision_exact'].includes(require('./hybridSource/contract').mode()))
+    throw Object.assign(Error('Exact source mode requires the assignment analysis lifecycle.'),{code:'OCR_SOURCE_ASSIGNMENT_REQUIRED'});
   const ocrStartedAt = Date.now();
   if (!fileId) {
     throw new Error('Missing file id');
@@ -380,17 +441,20 @@ async function runOcrAndPersist({ fileId, targetDoc }) {
       throw new Error(`Uploaded file not found on disk at: ${absolute}`);
     }
 
-    const ocr = await visionOcr.extractOcrFromImageFile(absolute);
+    let sourceAssignment={};if(require('./hybridSource/contract').mode()==='legacy'&&process.env.OCR_READING_ORDER!=='native'&&targetDoc.assignment)try{sourceAssignment=await Assignment.findById(targetDoc.assignment).lean()||{};}catch{}
+    const ocr = await visionOcr.extractOcrFromImageFile(absolute,{sourceFile:fileDoc,sourceAssignment});
 
     targetDoc.ocrStatus = 'completed';
     targetDoc.rawOcrText = ocr && (ocr.fullText || ocr.transcriptText) ? String(ocr.fullText || ocr.transcriptText) : '';
-    targetDoc.ocrText = normalizeOcrTranscript(ocr && (ocr.transcriptText || ocr.fullText));
+    targetDoc.ocrText = ocr?.ocrPipelineVersion===HANDWRITING_LAYOUT_VERSION?ocr.transcriptText:normalizeOcrTranscript(ocr && (ocr.transcriptText || ocr.fullText));
     targetDoc.ocrError = undefined;
     targetDoc.ocrUpdatedAt = new Date();
 
     targetDoc.ocrData = {
-      words: toStoredOcrWords(ocr.words || [])
+      words: toStoredOcrWords(ocr.words || [],ocr?.ocrPipelineVersion===HANDWRITING_LAYOUT_VERSION),
+      ...(ocr?.ocrPipelineVersion===HANDWRITING_LAYOUT_VERSION?{readingOrderStrategy:HANDWRITING_LAYOUT_VERSION}:{})
     };
+    if(ocr.studentSourceVersion){Object.assign(targetDoc.ocrData,{studentSourceVersion:ocr.studentSourceVersion,studentSourceTextSha256:ocr.studentSourceTextSha256});targetDoc.studentSourceEvidence=ocr[visionOcr.STUDENT_SOURCE_EVIDENCE];}
 
     await targetDoc.save();
     logger.info({ message: 'Assessment pipeline timing', submissionId: String(targetDoc._id),

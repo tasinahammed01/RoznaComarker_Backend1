@@ -1843,6 +1843,7 @@ async function generateAiRubricFromDesigner(req, res) {
           teacherId,
         });
 
+    if(require('../utils/sourceFidelity').isExact(submission))return sendError(res,409,'This source uses the canonical assessment pipeline.');
     const transcriptText = getNormalizedSubmissionTranscript(submission);
 
     if (!transcriptText.trim()) {
@@ -2009,6 +2010,7 @@ async function generateAiSubmissionFeedback(req, res) {
       return sendError(res, 403, "Not class teacher");
     }
 
+    if(require('../utils/sourceFidelity').isExact(submission))return sendError(res,409,'This source uses the canonical assessment pipeline.');
     const transcriptText = getNormalizedSubmissionTranscript(submission);
 
     const normalizedWords = normalizeOcrWordsFromStored(

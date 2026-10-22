@@ -2,6 +2,9 @@
 
 function pendingAnalysisState({ ocrJobId, now = new Date() }) {
   return {
+    sourceTranscriptExact:undefined,sourceTranscriptSha256:undefined,sourceFidelityStatus:undefined,
+    sourceFidelityMode:undefined,sourceFidelityVersion:undefined,sourceFidelityInputIdentity:undefined,
+    sourceHumanReviewId:undefined,sourceHumanReviewSummary:undefined,
     ocrStatus: 'pending', ocrJobId, ocrText: undefined, rawOcrText: undefined,
     rawCombinedOcrText: undefined, ocrError: undefined, ocrErrorCode: undefined,
     ocrFailures: undefined, ocrData: undefined, ocrPages: [],

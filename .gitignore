@@ -16,6 +16,7 @@ yarn-error.log*
 
 # uploads / user content
 uploads/
+tests/fixtures/hybrid-source/private/
 
 # build artifacts
 build/
@@ -36,6 +37,7 @@ coverage/
 Thumbs.db
 
 # secrets / credentials
+.local-shadow/
 /key/vision_key.json
 key/
 Key/
@@ -48,6 +50,15 @@ Key/
 # Generated diagnostic trees and browser profiles (existing tracked copies retained).
 backend_root_tree*.txt
 tmp/chrome-badge-profile*/
+tmp/targeted-v2-failure/
+tmp/targeted-v2-live-smoke/
+tmp/targeted-v3/
+tmp/targeted-v3-live-smoke/
+tmp/targeted-v4/
+tmp/targeted-v4-live-smoke/
+tmp/ocr-benchmark-inputs/
+tmp/ocr-benchmark-results/
+tmp/benchmark003-gold-preparation/
 
 # google/firebase service accounts and downloaded keys
 *.json
