@@ -34,6 +34,9 @@ process.on("uncaughtException", (err) => {
 });
 
 async function start() {
+  const assessmentTiming=require('./services/assessmentExecutionPolicy.service').validateConfiguration();
+  logger.info({event:'assessment_effective_configuration',...assessmentTiming.settings});
+  if(assessmentTiming.errors.length)throw Object.assign(new Error('Unsafe assessment timing/output configuration: '+assessmentTiming.errors.join(',')),{code:'ASSESSMENT_CONFIGURATION_INVALID'});
   const ocrConfiguration = require('./config/ocr').validateOcrConfiguration();
   logger.info({ event: 'ocr_source_configuration', ...ocrConfiguration });
   await connectDB();

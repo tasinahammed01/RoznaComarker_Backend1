@@ -88,6 +88,26 @@ async function releaseLease(doc, owner, set = {}) {
 }
 
 async function runClaimedSubmission(doc, owner, config = workerConfig()) {
+  const accounting=require('./providerAttemptAccounting.service');
+  return accounting.run(async()=>{
+    try{return await runClaimedSubmissionWork(doc,owner,config);}
+    finally{
+      const calls=accounting.snapshot();let performance={sourcePreflightMs:null,sourceReuseMs:null,geometryMs:null,
+        correctionPromptTokens:null,correctionRequestedOutputTokens:null,correctionPrimaryMs:0,correctionPrimaryOutcome:'not_started',
+        correctionRecoveryStrategy:'none',correctionRecoveryMs:0,correctionRecoveryOutcome:'not_started',rubricMs:0,feedbackBuildMs:0,totalResultReadyMs:null};
+      try{const latest=await Submission.findById(doc._id).select('semanticMetrics').lean();performance={...performance,...latest?.semanticMetrics?.performance};
+        if(performance.providerAttemptExecutionId===calls.providerAttemptExecutionId)await Submission.updateOne({_id:doc._id,ocrJobId:doc.ocrJobId,
+          'semanticMetrics.performance.providerAttemptExecutionId':calls.providerAttemptExecutionId},{$set:Object.fromEntries(Object.entries({...calls,
+          rubricProviderAttempts:calls.rubricAssessmentCalls,rubricDesignerAttempts:calls.rubricDesignerCalls,
+          providerCallCount:calls.totalProviderAttempts}).map(([k,v])=>['semanticMetrics.performance.'+k,v]))});
+      }catch{/* Counters must never change result/lease semantics. */}
+      logger.info({event:'assessment_execution_summary',submissionId:String(doc._id),...performance,...calls,
+        providerCounterScope:'current_worker_execution',timingScope:performance.providerAttemptExecutionId===calls.providerAttemptExecutionId?'current_execution':'persisted_result_attempt',
+        rubricProviderAttempts:calls.rubricAssessmentCalls,rubricDesignerAttempts:calls.rubricDesignerCalls,providerCallCount:calls.totalProviderAttempts});
+    }
+  },{worker:true});
+}
+async function runClaimedSubmissionWork(doc, owner, config = workerConfig()) {
   const startedAt = Date.now();
   const context = { submissionId: String(doc._id), ocrJobId: doc.ocrJobId || null,
     leaseOwner: owner, attempt: Number(doc.analysisAttempt || 0) };

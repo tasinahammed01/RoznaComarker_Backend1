@@ -101,6 +101,8 @@ function holisticCoverageMismatchCategories(categoryScores = {}, statistics = {}
 }
 
 async function generateAndPersist(doc, { assignment = {}, force = false } = {}) {
+  const accounting=require('./providerAttemptAccounting.service');
+  if(!accounting.active())return accounting.run(()=>generateAndPersist(doc,{assignment,force}));
   if (!require('../utils/sourceFidelity').eligible(doc)) return {errorCode:'OCR_SOURCE_REVIEW_REQUIRED',semanticSucceeded:false};
   const totalStartedAt = Date.now();
   logger.info({ message: 'Canonical evaluation timing', submissionId: String(doc._id),
@@ -309,6 +311,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const terminalAttempts = semanticRun?.metrics?.attempts || semanticError?.attempts || [];
   const terminalAttempt = terminalAttempts[terminalAttempts.length - 1] || null;
   const gatewayMetrics = semanticRun?.metrics || (semanticError ? {
+    ...semanticError.correctionMetrics,
     ...(semanticError.correctionRequestCounts || {}),
     attemptCount: semanticError.attemptCount || terminalAttempts.length,
     timeoutCount: semanticError.timeoutCount
@@ -515,12 +518,26 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const totalResultReadyMs = Date.now() - totalStartedAt;
   const sourcePerformance=(doc.ocrPages||[]).map(p=>p.sourceVerificationSummary?.performance).filter(Boolean);
   const sourceTotal=key=>sourcePerformance.reduce((sum,p)=>sum+(Number(p[key])||0),0);
-  const performance={preflightSourceMs:sourceTotal('preflightSourceMs'),sourceReuseMs:sourceTotal('sourceReuseMs'),geometryMs:sourceTotal('geometryMs'),
+  const attempts=accounting.snapshot();
+  const performance={...attempts,sourcePreflightMs:sourceTotal('preflightSourceMs'),preflightSourceMs:sourceTotal('preflightSourceMs'),sourceReuseMs:sourceTotal('sourceReuseMs'),geometryMs:sourceTotal('geometryMs'),
+    correctionPromptTokens:gatewayMetrics.requestInputTokenEstimate||null,correctionRequestedOutputTokens:gatewayMetrics.requestedOutputTokenBudget||null,
+    correctionPromptInputTokens:gatewayMetrics.requestInputTokenEstimate||null,
+    correctionSchemaEstimatedTokens:gatewayMetrics.promptTokenProfile?.responseSchemaTokens||null,
+    correctionValidationMs:gatewayMetrics.correctionValidationMs??null,correctionGroundingMs:gatewayMetrics.correctionGroundingMs??null,
+    correctionAcceptedCount:semanticRun?.corrections?.length||0,
+    correctionRejectedCount:semanticRun?.diagnostics?.rejectedCorrectionCount||0,
+    reviewedCategories:semanticRun?.diagnostics?.reviewedCategories||[],categoryCoverageComplete:semanticRun?.diagnostics?.categoryCoverageComplete||{},
+    primaryOutcome:gatewayMetrics.correctionPrimaryOutcome||failedStage||'completed',
+    recoveryUsed:Number(gatewayMetrics.recoveryRequestCount||0)>0,recoveryStrategy:gatewayMetrics.correctionRecoveryStrategy||'none',
+    recoveryProviderMs:Number(gatewayMetrics.correctionRecoveryMs)||0,
+    totalCorrectionStageMs:semanticAiMs,
+    correctionPrimaryOutcome:gatewayMetrics.correctionPrimaryOutcome||failedStage||'completed',
+    correctionRecoveryStrategy:gatewayMetrics.correctionRecoveryStrategy||'none',correctionRecoveryOutcome:gatewayMetrics.correctionRecoveryOutcome||'not_required',
     correctionPrimaryMs:Number(gatewayMetrics.correctionPrimaryMs)||0,correctionRecoveryMs:Number(gatewayMetrics.correctionRecoveryMs)||0,
     coverageRepairMs:Number(gatewayMetrics.coverageRepairMs)||0,qualityAuditMs:Number(gatewayMetrics.qualityAuditMs)||0,
-    rubricMs:Math.max(0,evaluationMs-detailedFeedbackMs),feedbackBuildMs:detailedFeedbackMs,
-    totalAssessmentMs:totalResultReadyMs+sourceTotal('sourceMs')+sourceTotal('geometryMs'),providerCallCount:Number(gatewayMetrics.providerCallCount||0)+preparedRubricAttemptCount
-      +sourceTotal('sourceProviderCallCount')+sourceTotal('geometryProviderCallCount')};
+    rubricMs:Math.max(0,evaluationMs-detailedFeedbackMs),rubricProviderAttempts:attempts.rubricAssessmentCalls,
+    rubricDesignerAttempts:attempts.rubricDesignerCalls,feedbackBuildMs:detailedFeedbackMs,totalResultReadyMs,
+    totalAssessmentMs:totalResultReadyMs+sourceTotal('sourceMs')+sourceTotal('geometryMs'),providerCallCount:attempts.totalProviderAttempts};
   logger.info({ message: 'Canonical evaluation timing', submissionId: String(doc._id),
     stage: 'correction_end', attemptNumber: null,
     provider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
@@ -536,7 +553,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
       holisticCorrectionCoverageMismatchCategories,
       rubricDeductionWithZeroCorrectionsByCategory: holisticCorrectionCoverageMismatchCategories }
   }}).catch(() => {});
-  logger.info({ event: 'assessment_execution_summary', submissionId: String(doc._id),
+  logger.info({ event: accounting.worker()?'assessment_result_ready':'assessment_execution_summary', submissionId: String(doc._id),
     ...performance,assessmentProvider:semanticRun?.provider||semanticConfig.provider,assessmentModel:semanticConfig.model,
     routingMode: gatewayMetrics.mode || null, routingReason: gatewayMetrics.routingReason || null,
     assessmentDeadlineMs: assessmentDeadlineAt, correctionStageBudgetMs: execution.correctionStageBudgetMs,

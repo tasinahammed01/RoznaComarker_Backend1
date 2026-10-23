@@ -101,8 +101,11 @@ describe('production-shaped recovery, evaluation and read-only freshness', () =>
     if (field === 'action') result.actionSteps[0].action = 'Invented advice';
     expect(details.validateDetailedFeedback(result, input)).toBeNull();
   });
-  test('90s timeout + 70s recovery + 40s rubric completes 21 counts and fresh holistic feedback', async () => {
+  test('long-document 90s timeout + 20s recovery + 40s rubric completes 21 counts and fresh holistic feedback', async () => {
     const data = fixture(), feedback = require('../src/models/SubmissionFeedback');
+    // This recovery regression belongs outside the new short-timeout policy.
+    // Appending neutral source leaves all existing correction spans unchanged.
+    data.transcript += ' neutral'.repeat(300);
     let stored = null, clock = 1000, correctionCalls = 0;
     const timer = jest.spyOn(Date, 'now').mockImplementation(() => clock);
     const state = { _id: 'submission', class: 'class', student: 'student', files: ['f'], ocrJobId: 'ocr', ocrStatus: 'completed',
@@ -122,7 +125,7 @@ describe('production-shaped recovery, evaluation and read-only freshness', () =>
       if (prompt.includes('transcriptHash=')) {
         correctionCalls++;
         if (correctionCalls === 1) { clock += 90000; throw Object.assign(Error('timeout'), { name: 'TimeoutError' }); }
-        clock += 70000;
+        clock += 20000;
         payload = reviewPayload(prompt.match(/^transcriptHash=(.+)$/mu)[1], undefined, data.findings);
       } else {
         clock += 40000;
@@ -156,7 +159,7 @@ describe('production-shaped recovery, evaluation and read-only freshness', () =>
       expect(state.semanticStatus).toBe('completed'); expect(state.evaluationStatus).toBe('completed');
       expect(state.semanticMetrics).toMatchObject({ correctionCoverageComplete: true,
         qualityAuditStatus: 'skipped_recovery_bound', coverageRepairCategories: [], rubricSucceeded: true, detailedFeedbackFresh: true });
-      expect(state.semanticMetrics.performance).toMatchObject({correctionPrimaryMs:90000,correctionRecoveryMs:70000,
+      expect(state.semanticMetrics.performance).toMatchObject({correctionPrimaryMs:90000,correctionRecoveryMs:20000,
         coverageRepairMs:0,qualityAuditMs:0,rubricMs:40000,feedbackBuildMs:0,providerCallCount:3});
       expect(state.correctionStatistics).toMatchObject({ content: 1, organization: 0, vocabulary: 2, grammar: 7, mechanics: 11, total: 21 });
       expect(stored.evaluationStatus).toBe('completed'); expect(stored.overallScore).toBeCloseTo(69);

@@ -64,7 +64,7 @@ describe('Astra model-aware operational routing', () => {
 });
 
 describe('absolute stage deadlines and bounded recovery', () => {
-  test('one slow recovery consumes only correction time and cannot starve the real rubric attempt', async () => {
+  test('long-document recovery still consumes only correction time and cannot starve the real rubric attempt', async () => {
     let clock = 1000;
     const plan = execution.plan({ startedAt: clock, env });
     const deadlines = [];
@@ -74,7 +74,7 @@ describe('absolute stage deadlines and bounded recovery', () => {
         clock = Math.min(clock + 90000, input.deadlineAt);
         throw Object.assign(Error('mock transport timeout'), { code: 'AI_ATTEMPT_TIMEOUT' });
       }) };
-    await expect(coordinator.analyze({ ...source(), deadlineAt: plan.correctionDeadlineAt },
+    await expect(coordinator.analyze({ ...source('word '.repeat(300)), deadlineAt: plan.correctionDeadlineAt },
       { env, now: () => clock, config: config(), semanticService })).rejects.toMatchObject({ code: 'AI_ATTEMPT_TIMEOUT' });
     expect(deadlines).toEqual([plan.correctionDeadlineAt, plan.correctionDeadlineAt]);
     const fetchImpl = jest.fn(async () => response('{}'));

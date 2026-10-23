@@ -66,6 +66,12 @@ async function autoGenerateRubricDesignerForSubmission({ submissionId, expectedO
   if (existing && existing.overriddenByTeacher && existing.rubricDesigner) {
     return { ok: true, skipped: true, reason: 'teacher_overridden' };
   }
+  if(require('./rubricCompletion.service').validateRubric(existing?.rubricDesigner))
+    return {ok:true,skipped:true,reason:'valid_submission_rubric_reused'};
+  if(require('./assignmentRubric.service').normalizeAssignmentRubric(assignment).status==='valid')
+    return {ok:true,skipped:true,reason:'valid_assignment_rubric_reused'};
+  if(existing){const current=require('./canonicalResultState.service').buildCanonicalResultState({submission,feedback:existing});
+    if(current.evaluationStatus==='completed')return {ok:true,skipped:true,reason:'current_canonical_rubric_reused'};}
 
   const systemInstruction = `
 You are a rubric generator.

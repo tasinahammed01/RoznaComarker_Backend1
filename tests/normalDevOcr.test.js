@@ -46,13 +46,14 @@ test('ordinary dotenv process-over-file precedence is unchanged',()=>{
   const loader=fs.readFileSync(path.join(__dirname,'../src/config/env.js'),'utf8');
   expect(loader).toContain("dotenv.config({ path: path.join(__dirname, '..', '..', '.env') })");
 });
-async function startup(valid=true){
+async function startup(valid=true,timingEnv={}){
   const connect=jest.fn(async()=>{}),listen=jest.fn((_port,_host,cb)=>{cb();return {}}),validate=jest.fn(()=>{
     if(!valid)throw Object.assign(Error('OCR_SOURCE_CONFIGURATION_INVALID'),{code:'OCR_SOURCE_CONFIGURATION_INVALID'});
     return validateOcrConfiguration(configured());
   });
   const logger={info:jest.fn(),warn:jest.fn(),error:jest.fn(),metric:jest.fn()};
   const modules={ './config/env':{PORT:5000,NODE_ENV:'development'},'./config/db':connect,'./utils/logger':logger,
+    './services/assessmentExecutionPolicy.service':{validateConfiguration:()=>require('../src/services/assessmentExecutionPolicy.service').validateConfiguration(timingEnv)},
     './services/aiGeneration.service':{validateAIConfig:()=>({isValid:true,chain:[]})},
     './services/pdfBrowserManager.service':{validateBrowserRuntime:jest.fn(),closeBrowser:jest.fn()},
     './services/runtimeContractFingerprint.service':{runtimeContractFingerprint:()=>({})},
@@ -70,9 +71,17 @@ test('actual normal startup validates before Mongo/workers and binds ordinary po
   const r=await startup();expect(r.validate).toHaveBeenCalledTimes(1);expect(r.connect).toHaveBeenCalledTimes(1);
   expect(r.listen).toHaveBeenCalledWith(5000,'0.0.0.0',expect.any(Function));
   expect(r.logger.info).toHaveBeenCalledWith(expect.objectContaining({event:'ocr_source_configuration',mode:'astra_verified'}));
+  expect(r.logger.info).toHaveBeenCalledWith(expect.objectContaining({event:'assessment_effective_configuration',
+    shortCorrectionAttemptTimeoutMs:60000,shortCorrectionAutoRecoveryEnabled:false,
+    correctionStageBudgetMs:180000,rubricReservedBudgetMs:90000}));
 });
 test('invalid startup config exits before database, workers or listener',async()=>{
   const r=await startup(false);expect(r.connect).not.toHaveBeenCalled();expect(r.listen).not.toHaveBeenCalled();expect(r.process.exit).toHaveBeenCalledWith(1);
+});
+test('unsafe assessment timing exits before OCR validation, database or workers',async()=>{
+  const r=await startup(true,{ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS:'200000'});
+  expect(r.validate).not.toHaveBeenCalled();expect(r.connect).not.toHaveBeenCalled();expect(r.listen).not.toHaveBeenCalled();expect(r.process.exit).toHaveBeenCalledWith(1);
+  expect(r.logger.info).toHaveBeenCalledWith(expect.objectContaining({event:'assessment_effective_configuration',attemptTimeoutMs:200000}));
 });
 test('normal ng serve stays on development and API 5000; isolated frontend remains separate',()=>{
   const angular=JSON.parse(fs.readFileSync(path.join(__dirname,'../../RoznaComarker/angular.json'))).projects['rozna-comarker-fe'].architect;

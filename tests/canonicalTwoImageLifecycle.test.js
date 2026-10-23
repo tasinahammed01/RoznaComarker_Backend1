@@ -211,7 +211,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
       }
       if (String(url).includes('/chat/completions')) {
         const prompt = rubricPromptFromRequest(options);
-        if (prompt.includes('schema=semantic-corrections-v13-astra-reviewed')) {
+        if (prompt.includes('reviewContract=astra-compact-review-v1') || prompt.includes('schema=semantic-corrections-v14-compact-reviewed')) {
           correctionProviderRequestCount += 1;
           lifecycleEvents.push('correction-started');
           return { ok: true, status: 200, headers: { get: () => 'application/json' },

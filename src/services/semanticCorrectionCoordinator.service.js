@@ -8,7 +8,7 @@ const teacherPolicy = require('./teacherEvaluationPolicy.service');
 const executionPolicy = require('./assessmentExecutionPolicy.service');
 const { CORRECTION_CATEGORIES } = require('./structuredOutputSchemas.service');
 const logger = require('../utils/logger');
-const VERSION = 'semantic-chunk-coordinator-v6-hard-vs-quality-review';
+const VERSION = 'semantic-chunk-coordinator-v8-compact-wire';
 
 function auditPlan(enabledCategories, baseReviewCoverage, suspiciousCategories, recoveryUsed, canRun) {
   const coverageRepairCategories = enabledCategories.filter(category => !baseReviewCoverage[category]);
@@ -217,6 +217,8 @@ function aggregateMetrics(results, chunks, startedAt, mode) {
       : record?.attempts?.length || 1 + Number(record?.categoryAuditRequestCount || 0));
   }, 0);
   return { mode, chunkCount: chunks.length, numberOfChunks: chunks.length,
+    correctionValidationMs: successful.reduce((n,r)=>n+Number(r.value.metrics?.semanticValidationMs||0),0),
+    correctionGroundingMs: successful.reduce((n,r)=>n+Number(r.value.metrics?.semanticGroundingMs||0),0),
     correctionPrimaryMs: results.filter(r=>r.role==='main').reduce((n,r)=>n+(r.durationMs||0),0),
     correctionRecoveryMs: results.filter(r=>r.role==='recovery').reduce((n,r)=>n+(r.durationMs||0),0),
     coverageRepairMs: results.filter(r=>r.role==='coverageRepair').reduce((n,r)=>n+(r.durationMs||0),0),
@@ -282,9 +284,8 @@ async function analyze(input, dependencies = {}) {
   const env = dependencies.env || process.env;
   const settings = { ...config(env), ...(dependencies.settings || {}) };
   const semanticService = dependencies.semanticService || semanticWriting;
-  const requestEstimate = typeof semanticService.buildSemanticRequest === 'function'
-    ? semanticService.buildSemanticRequest(input).promptInputTokenEstimate
-    : Math.ceil(String(input.transcript || '').length / 4);
+  const profiledRequest = typeof semanticService.buildSemanticRequest === 'function'?semanticService.buildSemanticRequest(input):null;
+  const requestEstimate = profiledRequest?.promptInputTokenEstimate||Math.ceil(String(input.transcript || '').length / 4);
   const baseConfig = dependencies.config || getSemanticAIConfig(env);
   const deadlineAt = executionPolicy.stageDeadline(startedAt,
     Math.min(settings.totalBudgetMs, executionPolicy.budgets(env).correctionBudgetMs), input.deadlineAt);
@@ -293,6 +294,10 @@ async function analyze(input, dependencies = {}) {
   const primaryConfig = { ...baseConfig, primaryRetries: 0, fallbackRetries: 0, maxRetries: 0, retriesPerModel: 0,
     maxOutputTokens: capabilities ? Math.min(Number(baseConfig.maxOutputTokens) || capabilities.safeOutputBudget,
       capabilities.safeOutputBudget) : baseConfig.maxOutputTokens };
+  const outputBudget=executionPolicy.correctionOutputBudget({transcript:input.transcript,pageCount:Math.max(1,input.pageManifest?.length||0),
+    categoryCount:enabledCategories.length,symbolCount:(input.legend?.groups||[]).filter(g=>enabledCategories.includes(g.key)).reduce((n,g)=>n+g.symbols.length,0)||28,
+    ceiling:primaryConfig.maxOutputTokens||8000});
+  if(capabilities)primaryConfig.maxOutputTokens=outputBudget.requestedOutputTokenBudget;
   // Do not start another full expensive pass with only a token amount of time.
   const canFundAdditionalRequest = () => deadlineAt - now() >= Math.min(Number(primaryConfig.attemptTimeoutMs) || 1, 30000);
   const singleBudget = capabilities
@@ -314,29 +319,82 @@ async function analyze(input, dependencies = {}) {
     modelCapabilities: capabilities, preferredSingleRequestTokens: singleBudget,
     outputRisk: { ...outputRisk, indicators: outputRisk.indicators } });
   if (!useChunking) {
+    const shortAstraReview=Boolean(capabilities && outputRisk.pageCount === 1 && outputRisk.wordCount <= 250);
+    const shortPolicy=executionPolicy.shortCorrectionPolicy({env,attemptTimeoutMs:Number(primaryConfig.attemptTimeoutMs)||90000});
+    if (shortAstraReview) primaryConfig.attemptTimeoutMs=shortPolicy.shortCorrectionAttemptTimeoutMs;
     const requests = []; let result;
-    const run = async (request, role) => {
+    let recoveryStrategy='none',recoveryOutcome='not_required';
+    const run = async (request, role,requestConfig=primaryConfig) => {
       executionPolicy.assertRemaining(deadlineAt, now());
       const requestStarted=now();
+      const actualProfile=semanticWriting.buildSemanticRequest(request);
+      const requestPolicy=require('./aiGateway.service').correctionRequestPolicy({provider:requestConfig.provider,
+        model:requestConfig.model,feature:'semantic_corrections',responseFormat:'json',responseSchema:true}).diagnostics;
       try {
-        const value = await semanticService.analyze({ ...request, deadlineAt, disableCategoryAudit: true },
-          { ...dependencies, config: primaryConfig });
+        const value = await require('./providerAttemptAccounting.service').withRole(role,()=>semanticService.analyze({ ...request, deadlineAt, disableCategoryAudit: true },
+          { ...dependencies, config: requestConfig }));
+        logger.info({event:'correction_request_performance',role,model:requestConfig.model,...requestPolicy,
+          correctionPrimaryOutcome:role==='main'?'completed':null,
+          correctionReasoningTokens:value.usage?.thoughts_tokens??null,
+          correctionPromptInputTokens:actualProfile.promptInputTokenEstimate,
+          correctionSchemaEstimatedTokens:actualProfile.tokenProfile.responseSchemaTokens,
+          correctionRequestedOutputTokens:requestConfig.maxOutputTokens,
+          correctionProviderMs:value.metrics?.semanticProviderMs??now()-requestStarted,
+          correctionValidationMs:value.metrics?.semanticValidationMs??null,correctionGroundingMs:value.metrics?.semanticGroundingMs??null,
+          correctionAcceptedCount:value.diagnostics?.acceptedCorrectionCount??value.corrections?.length??0,
+          correctionRejectedCount:value.diagnostics?.rejectedCorrectionCount??0,
+          reviewedCategories:value.diagnostics?.reviewedCategories||[],categoryCoverageComplete:value.diagnostics?.categoryCoverageComplete||{},
+          prompt_tokens:value.usage?.prompt_tokens??null,completion_tokens:value.usage?.completion_tokens??null,
+          reasoning_tokens:value.usage?.thoughts_tokens??null,total_tokens:value.usage?.total_tokens??null,
+          finish_reason:value.metrics?.attempts?.at(-1)?.finishReason??null});
         requests.push({ status: 'fulfilled', value, role, durationMs:now()-requestStarted }); return value;
-      } catch (reason) { requests.push({ status: 'rejected', reason, role, durationMs:now()-requestStarted }); throw reason; }
+      } catch (reason) {
+        logger.info({event:'correction_request_performance',role,model:requestConfig.model,...requestPolicy,
+          correctionPrimaryOutcome:role==='main'?(reason.finalFailureCode||reason.code||'failed'):null,
+          correctionPromptInputTokens:actualProfile.promptInputTokenEstimate,
+          correctionSchemaEstimatedTokens:actualProfile.tokenProfile.responseSchemaTokens,
+          correctionRequestedOutputTokens:requestConfig.maxOutputTokens,correctionProviderMs:now()-requestStarted,
+          primaryOutcome:reason.finalFailureCode||reason.code||'failed',reviewedCategories:[],categoryCoverageComplete:{}});
+        requests.push({ status: 'rejected', reason, role, durationMs:now()-requestStarted }); throw reason; }
     };
     let recoveryUsed = false;
     try { result = await run({ ...input, categories: enabledCategories }, 'main'); }
     catch (error) {
       error.correctionRequestCounts = { mainCorrectionRequestCount: requests.length, recoveryRequestCount: 0,
         structuralRequestCount: 0, auditRequestCount: 0 };
-      if (!recoverableFailure(error) || !canFundAdditionalRequest()) throw error;
+      const failWithMetrics=(reason)=>{
+        const metrics=aggregateMetrics(requests,[],startedAt,'single');
+        const root=requests[0]?.reason?.finalFailureCode||requests[0]?.reason?.attempts?.at(-1)?.code||requests[0]?.reason?.code;
+        if(root==='AI_ATTEMPT_TIMEOUT')reason.code='AI_ATTEMPT_TIMEOUT';
+        Object.assign(reason,{correctionMetrics:{...metrics,...outputBudget,requestInputTokenEstimate:requestEstimate,
+          promptTokenProfile:profiledRequest?.tokenProfile,correctionRecoveryStrategy:recoveryStrategy,
+          correctionPrimaryOutcome:root||'failed',correctionRecoveryOutcome:recoveryOutcome},
+          attempts:metrics.attempts,attemptCount:metrics.attemptCount,
+          correctionRequestCounts:{mainCorrectionRequestCount:1,recoveryRequestCount:recoveryUsed?1:0,structuralRequestCount:0,auditRequestCount:0}});
+        throw reason;
+      };
+      const failureCode=error.finalFailureCode||error.attempts?.at(-1)?.code||error.code;
+      if(shortAstraReview && failureCode==='AI_ATTEMPT_TIMEOUT' && !shortPolicy.shortCorrectionAutoRecoveryEnabled){
+        recoveryStrategy='short_timeout_no_auto_recovery';recoveryOutcome='not_attempted';failWithMetrics(error);
+      }
+      if (!recoverableFailure(error) || deadlineAt-now()<Math.min((Number(primaryConfig.attemptTimeoutMs)||90000)/3,30000))failWithMetrics(error);
+      const compactInput={...input,categories:enabledCategories,analysisMode:'compact_recovery'};
+      const originalRequest=semanticWriting.buildSemanticRequest({...input,categories:enabledCategories});
+      const compactRequest=semanticWriting.buildSemanticRequest(compactInput);
+      const sourceCharacters = JSON.stringify(String(input.transcript||'')).length;
+      if(compactRequest.promptCharacters-sourceCharacters >= (originalRequest.promptCharacters-sourceCharacters)*.85){
+        recoveryStrategy='withheld_not_materially_smaller';recoveryOutcome='not_attempted';failWithMetrics(error);
+      }
       recoveryUsed = true;
-      try { result = await run({ ...input, categories: enabledCategories }, 'recovery'); }
+      recoveryStrategy='compact_same_model';recoveryOutcome='processing';
+      const truncated=/TRUNCAT|MAX_TOKENS/.test(String(error.finalFailureCode||error.code||''));
+      try { result = await run(compactInput, 'recovery',{...primaryConfig,
+        ...(truncated?{maxOutputTokens:Math.min(baseConfig.maxOutputTokens||8000,capabilities?.safeOutputBudget||8000)}:{}),
+        attemptTimeoutMs:executionPolicy.correctionRecoveryTimeout(Number(primaryConfig.attemptTimeoutMs)||90000,deadlineAt-now())});
+        recoveryOutcome='completed'; }
       catch (reason) {
-        const metrics = aggregateMetrics(requests, [], startedAt, 'single');
-        throw Object.assign(reason, { attempts: metrics.attempts, attemptCount: metrics.attemptCount,
-          correctionRequestCounts: { mainCorrectionRequestCount: 1, recoveryRequestCount: 1,
-            structuralRequestCount: 0, auditRequestCount: 0 } });
+        recoveryOutcome=reason.finalFailureCode||reason.attempts?.at(-1)?.code||reason.code||'failed';
+        failWithMetrics(reason);
       }
     }
     const reviewed = categoryReviewCoverage(result, enabledCategories);
@@ -380,6 +438,8 @@ async function analyze(input, dependencies = {}) {
       totalChunks: 1, successfulChunks: 1, failedChunks: 0, structuralPassStatus: 'not_required',
       sourceHashMatches: true, expectedTextRangesCovered: true, finalMergeCompleted: true,
       categoryCoverageComplete }, metrics: { ...(result.metrics || {}), ...coordinatorMetrics,
+        ...outputBudget,promptTokenProfile:profiledRequest?.tokenProfile,correctionRecoveryStrategy:recoveryStrategy,correctionRecoveryOutcome:recoveryOutcome,
+        correctionPrimaryOutcome:requests[0].status==='fulfilled'?'completed':requests[0].reason?.finalFailureCode||requests[0].reason?.attempts?.at(-1)?.code||requests[0].reason?.code||'failed',
         routingReason, requestInputTokenEstimate: requestEstimate, outputRisk, correctionDeadlineAt: deadlineAt,
         mainCorrectionRequestCount: requests.filter(request => request.role === 'main').length,
         recoveryRequestCount: requests.filter(request => request.role === 'recovery').length,
@@ -395,7 +455,9 @@ async function analyze(input, dependencies = {}) {
       requestHistory.push({ status: 'fulfilled', value, role, durationMs:now()-requestStarted }); return value;
     } catch (reason) { requestHistory.push({ status: 'rejected', reason, role, durationMs:now()-requestStarted }); throw reason; }
   };
-  const localPromptOverheadTokens = semanticWriting.buildSemanticRequest({ ...input, transcript: '',
+  // Keep established long-document chunk boundaries/concurrency unchanged.
+  // The lean wire request saves tokens inside each already planned chunk.
+  const localPromptOverheadTokens = semanticWriting.buildVerboseSemanticRequest({ ...input, transcript: '',
     analysisMode: 'local_chunk', categories: enabledCategories }).promptInputTokenEstimate;
   const chunks = buildChunks(input.transcript, input.pageManifest || [], { ...settings,
     chunkInputTokens: Math.max(400, settings.chunkInputTokens - localPromptOverheadTokens) });
@@ -406,9 +468,10 @@ async function analyze(input, dependencies = {}) {
     const chunkHash = chunkIdentity(input, chunk, stage === 'initial' ? '' : stage);
     const result = await runRequest({ ...input, transcript: chunk.text, transcriptHash: chunkHash,
       spans: localSpans(input.spans, chunk), pageManifest: localPages(input.pageManifest, chunk),
-      analysisMode: 'local_chunk', transcriptComplete: false, categories: enabledCategories, disableCategoryAudit: true, deadlineAt },
+      analysisMode: stage==='initial'?'local_chunk':'compact_recovery', transcriptComplete: false, categories: enabledCategories, disableCategoryAudit: true, deadlineAt },
     stage === 'initial' ? chunkConfig : { ...chunkConfig, maxOutputTokens: Math.min(
-      Number(primaryConfig.maxOutputTokens) || settings.chunkMaxOutputTokens, settings.chunkMaxOutputTokens * 2) },
+      Number(primaryConfig.maxOutputTokens) || settings.chunkMaxOutputTokens, settings.chunkMaxOutputTokens * 2),
+      attemptTimeoutMs:executionPolicy.correctionRecoveryTimeout(Number(primaryConfig.attemptTimeoutMs)||90000,deadlineAt-now()) },
     stage === 'initial' ? 'main' : 'recovery');
     return { ...result, corrections: remapCorrections(result.corrections, chunk, input), chunk,
       chunkId: chunkIdentity(input, chunk) };

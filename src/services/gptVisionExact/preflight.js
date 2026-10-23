@@ -13,14 +13,16 @@ function binding(context,page,env=process.env){
   return {...identity,key:sha(JSON.stringify(identity)).slice(0,24)};
 }
 async function pagesFor(file){
+  const started=Date.now();
   const bytes=file.buffer||await fs.readFile(file.path),sourceSha256=sha(bytes);
   if((file.detectedMime||file.mimetype)==='application/pdf'){
     if(bytes.length>10*1024*1024||bytes.subarray(0,5).toString()!=='%PDF-')throw fail('OCR_PDF_INVALID');
     const pages=await require('../pdfSubmissionPages.service').rasterize(bytes);
-    return pages.map((p,i)=>({bytes:p.buffer,mimeType:'image/jpeg',pageNumber:i+1,sourceSha256}));
+    return pages.map((p,i)=>({bytes:p.buffer,mimeType:'image/jpeg',pageNumber:i+1,sourceSha256,sourceImagePrepareMs:Date.now()-started}));
   }
   const normalized=await orientImage(bytes);
-  return [{bytes:normalized.data,mimeType:normalized.info.format==='jpeg'?'image/jpeg':`image/${normalized.info.format}`,pageNumber:1,sourceSha256}];
+  return [{bytes:normalized.data,mimeType:normalized.info.format==='jpeg'?'image/jpeg':`image/${normalized.info.format}`,pageNumber:1,sourceSha256,
+    width:normalized.info.width,height:normalized.info.height,sourceImagePrepareMs:Date.now()-started}];
 }
 async function find(key){return Evidence.findById(key).select('+payload').lean();}
 const sameBinding=(a,b)=>a&&b&&Object.keys(b).every(k=>a[k]===b[k]);
@@ -50,7 +52,8 @@ async function checkPages(pages,context,{run=false,env=process.env}={}){
   for(const page of pages){
     const bound=binding(context,page,env);bindings.push(bound);
     if(run)await require('../gptVisionExact.service').readPage({bytes:page.bytes,mimeType:page.mimeType,assignment:context.assignment,
-      identity:{submissionId:'preflight',fileId:page.sourceSha256,pageNumber:page.pageNumber,sourceSha256:page.sourceSha256},env,reservation:reservationFor(bound)});
+      identity:{submissionId:'preflight',fileId:page.sourceSha256,pageNumber:page.pageNumber,sourceSha256:page.sourceSha256,
+        width:page.width,height:page.height,sourceImagePrepareMs:page.sourceImagePrepareMs},env,reservation:reservationFor(bound)});
     const saved=await find(bound.key);
     if(saved?.status!=='GPT_SOURCE_ACCEPTED'||!sameBinding(saved.identity,bound)||!saved.payload?.primary){
       if(saved?.status==='GPT_SOURCE_FAILED')throw fail(saved.payload?.safeFailureCode||'OCR_GPT_PROVIDER_FAILED');

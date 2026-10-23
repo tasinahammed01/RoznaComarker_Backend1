@@ -123,7 +123,7 @@ describe('semantic correction chunk coordinator', () => {
     const semanticService = { analyze: jest.fn(async (input) => {
       calls.push(input.transcript);
       if (input.analysisMode === 'local_chunk' && !failedOriginal) failedOriginal = input.transcript;
-      if (input.analysisMode === 'local_chunk' && input.transcript === failedOriginal) {
+      if (['local_chunk','compact_recovery'].includes(input.analysisMode) && input.transcript === failedOriginal) {
         const error = new Error('response length'); error.code = 'AI_RESPONSE_TRUNCATED'; error.finishReason = 'length'; throw error;
       }
       return semanticResult(input);

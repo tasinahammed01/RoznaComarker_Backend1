@@ -68,6 +68,22 @@ test('cached source revalidated, no new paid request, request cancellation fails
   const o=options();o.reservation.acquire.mockResolvedValue({_id:'r',cached:true,evidence:{payload:{primary:fixture()}}});await service.readPage(o);expect(o.read).not.toHaveBeenCalled();expect(o.reservation.complete).not.toHaveBeenCalled();
   const p=options(),abort=new AbortController();abort.abort();await expect(service.readPage({...p,signal:abort.signal})).rejects.toThrow('SUPERSEDED');expect(p.reservation.acquire).not.toHaveBeenCalled();
 });
+test('source profiling separates provider, validation and persistence; cache reuse retains historical profile without another read',async()=>{
+  let clock=1000;const timer=jest.spyOn(Date,'now').mockImplementation(()=>clock);
+  try{
+    const o=options();Object.assign(o.identity,{width:1200,height:1600,sourceImagePrepareMs:22});
+    o.google=undefined;o.read.mockImplementation(async()=>{clock+=57000;return {content:JSON.stringify(fixture()),returnedModel:env.OCR_GPT_VISION_MODEL};});
+    o.reservation.complete.mockImplementation(async()=>{clock+=12;});
+    const result=await service.readPage(o),saved=o.reservation.complete.mock.calls[0][1].payload;
+    expect(saved.sourceProfile).toMatchObject({sourceImagePrepareMs:22,sourceProviderMs:57000,sourceValidationMs:0,
+      imageWidth:1200,imageHeight:1600,encodedImageBytes:3,requestedOutputTokens:16000,imageDetail:'provider_default'});
+    expect(result.source.sourceVerificationSummary.performance.sourcePersistMs).toBe(12);
+    const reused=options();reused.google=undefined;reused.reservation.acquire.mockResolvedValue({_id:'r',cached:true,evidence:{payload:saved}});
+    const cache=await service.readPage(reused);
+    expect(reused.read).not.toHaveBeenCalled();expect(cache.source.sourceVerificationSummary.performance).toMatchObject({
+      preflightSourceMs:57000,sourceProviderCallCount:0,sourceReused:true,preflightProfile:saved.sourceProfile});
+  }finally{timer.mockRestore();}
+});
 test('exact canonical offsets preserve repeated words, null boxes, hash source and frontend-compatible words',async()=>{
   const r=await service.readPage(options()),p={...r.pages[0],fileId:'f',fileOrder:0,pageIndex:0},d={files:['f'],sourceFidelityMode:'gpt_vision_exact',ocrPages:[p]};Object.assign(d,sf.aggregate(d));
   const canonical=sf.canonical(d);expect(sf.eligible(d)).toBe(true);expect(canonical.text).toBe(r.fullText);expect(canonical.isComplete).toBe(true);

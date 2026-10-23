@@ -23,14 +23,17 @@ async function readPage({bytes,mimeType,identity,assignment,google,isCurrentJob=
   const attempt=await reservation.acquire(bound);
   let result,value,diagnostic,rejectionDiagnostic,alignment={coverage:0,words:[]},validationStage='PROVIDER_REQUEST',code=null;
   let geometryMs=0,sourceReuseMs=0,preflightSourceMs=0;
+  let sourceValidationMs=0,sourcePersistMs=0,sourceProviderMs=0;
   try{
-    if(attempt.cached){value=validate(JSON.stringify(attempt.evidence.payload.primary));result={returnedModel:model};
+    if(attempt.cached){const validationStarted=Date.now();value=validate(JSON.stringify(attempt.evidence.payload.primary));sourceValidationMs=Date.now()-validationStarted;result={returnedModel:model};
       sourceReuseMs=Date.now()-started;preflightSourceMs=Number(attempt.evidence.payload.sourceReadMs
         ??attempt.evidence.payload.readers?.[0]?.durationMs)||0;}
     else{
+      const providerStarted=Date.now();
       result=await read({model,bytes,mimeType,prompt:PROMPT,assignmentReference,env,signal,onDiagnostic:d=>{diagnostic=d;}});
+      sourceProviderMs=Date.now()-providerStarted;
       validationStage='MODEL_IDENTITY_VALIDATION';if(result.returnedModel!==model)throw fail('OCR_SOURCE_MODEL_IDENTITY');
-      validationStage='JSON_OR_SCHEMA_VALIDATION';value=validate(result.content);
+      validationStage='JSON_OR_SCHEMA_VALIDATION';const validationStarted=Date.now();value=validate(result.content);sourceValidationMs=Date.now()-validationStarted;
     }
     if(signal?.aborted||!await isCurrentJob())throw fail('OCR_JOB_SUPERSEDED');
     // Geometry is optional evidence, obtained only after valid active source.
@@ -40,8 +43,15 @@ async function readPage({bytes,mimeType,identity,assignment,google,isCurrentJob=
     geometryMs=Date.now()-geometryStarted;
     if(signal?.aborted||!await isCurrentJob())throw fail('OCR_JOB_SUPERSEDED');
     validationStage='ACCEPTED';
-    if(!attempt.cached)await reservation.complete(attempt._id,{status:'GPT_SOURCE_ACCEPTED',payload:{primary:value,sourceReadMs:Date.now()-started-geometryMs,...safeSourceDiagnostic(diagnostics(value)),
+    const sourceProfile={sourceImagePrepareMs:Number(identity.sourceImagePrepareMs)||0,sourceProviderMs,sourceValidationMs,
+      imageWidth:identity.width||null,imageHeight:identity.height||null,encodedImageBytes:bytes.length,imageDetail:'provider_default',reasoningControl:'not_set',
+      promptTokenEstimate:Math.ceil((PROMPT.length+JSON.stringify(assignmentReference).length)/4),responseSchemaTokenEstimate:Math.ceil(JSON.stringify(schema).length/4),
+      requestedOutputTokens:16000,requestToHeadersMs:result.transportTimings?.requestToHeadersMs??null,responseBodyMs:result.transportTimings?.responseBodyMs??null};
+    const persistStarted=Date.now();
+    if(!attempt.cached)await reservation.complete(attempt._id,{status:'GPT_SOURCE_ACCEPTED',payload:{primary:value,sourceReadMs:Date.now()-started-geometryMs,sourceProfile,...safeSourceDiagnostic(diagnostics(value)),
       readers:[{requestedModel:model,returnedModel:result.returnedModel,usage:require('./sourceFidelityOcr.service').safeUsage(result.usage),durationMs:result.durationMs}]}});
+    sourcePersistMs=Date.now()-persistStarted;
+    if(!attempt.cached)require('../utils/logger').info({event:'gpt_source_performance',...sourceProfile,sourcePersistMs,sourceMode:'gpt_vision_exact',model,safeOutcomeCode:'GPT_SOURCE_ACCEPTED'});
   }catch(error){
     rejectionDiagnostic=safeSourceDiagnostic(error.sourceDiagnostic);
     code=failureCode(error);if(error.code==='OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH')validationStage='SOURCE_CONTRACT_VALIDATION';
@@ -67,6 +77,8 @@ async function readPage({bytes,mimeType,identity,assignment,google,isCurrentJob=
     sourceFidelityStatus:'GPT_SOURCE_ACCEPTED',sourcePrimaryProvider:'openrouter',sourcePrimaryModel:model,sourceInputSha256:bound.inputSha256,
     sourceSha256:identity.sourceSha256,ocrInputSha256:bound.inputSha256,sourceMimeType:mimeType,sourceDisagreementCount:0,
     sourceVerificationSummary:{performance:{preflightSourceMs,sourceReuseMs,geometryMs,sourceMs:Date.now()-started-geometryMs,
+      sourceImagePrepareMs:Number(identity.sourceImagePrepareMs)||0,sourceProviderMs,sourceValidationMs,sourcePersistMs,
+      preflightProfile:attempt.cached?attempt.evidence.payload.sourceProfile||null:null,
       sourceProviderCallCount:attempt.cached?0:1,geometryProviderCallCount:google?1:0,sourceReused:attempt.cached===true,
       provider:'openrouter',model,safeOutcomeCode:'GPT_SOURCE_ACCEPTED',geometry:alignment.diagnostics}}};
   return {fullText:text,transcriptText:text,words:alignment.words,pages:[{pageNumber:identity.pageNumber,words:alignment.words,...source}],source};

@@ -152,6 +152,6 @@ test('new analyze makes one explicit adapter invocation and disables generation 
  await expect(next.analyze(i)).rejects.toMatchObject({code:'HARDENED_COMPLETION_ADAPTER_REQUIRED'});
 });
 test('new entry/version do not overwrite frozen legacy experiments',()=>{
- expect(old.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-astra-v11-organization-closure');expect(old.SEMANTIC_SCHEMA_VERSION).toBe('semantic-corrections-v13-astra-reviewed');
+ expect(old.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-astra-v12-compact-organization-closure');expect(old.SEMANTIC_SCHEMA_VERSION).toBe('semantic-corrections-v14-compact-reviewed');
  expect(next.PROMPT_VERSION).not.toBe(old.SEMANTIC_PROMPT_VERSION);expect(typeof old.analyzeHardened).toBe('function');
 });

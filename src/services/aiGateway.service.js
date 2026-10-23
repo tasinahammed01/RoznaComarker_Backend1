@@ -6,6 +6,15 @@ const requestDiagnostics = require('./aiRequestDiagnostics.service');
 const SUPPORTED_PROVIDERS = new Set(['google', 'openrouter']);
 const ASSESSMENT_MODEL = 'openai/gpt-6-astra';
 const ASSESSMENT_AUTHORITY_VERSION = 'astra-assessment-authority-v1';
+const ASTRA_CORRECTION_FEATURES = new Set(['semantic_corrections', 'semantic_corrections_category_audit']);
+function correctionRequestPolicy({provider,model,feature,responseFormat='json',responseSchema}={}) {
+  const configured=provider==='openrouter' && model===ASSESSMENT_MODEL && ASTRA_CORRECTION_FEATURES.has(feature);
+  return {reasoning:configured?{effort:'minimal'}:null,
+    diagnostics:{correctionReasoningEffort:configured?'minimal':null,correctionReasoningConfigured:configured,
+      // Route only: never log a configured URL, query string or credentials.
+      correctionRequestEndpoint:provider==='openrouter'?'/chat/completions':null,
+      correctionResponseFormat:responseFormat==='json'?(responseSchema?'json_schema_strict':'json_object'):null}};
+}
 const isAssessmentFeature = feature => /^(?:semantic_corrections(?:_category_audit)?|semantic_rubric_assessment|rubric_completion(?:_repair)?|rubric_from_file|submission_feedback|teacher_comment_draft)$/u.test(feature);
 const RETRYABLE_HTTP = new Set([408, 429, 500, 502, 503, 504]);
 const DEFAULTS = Object.freeze({
@@ -313,9 +322,19 @@ function googleBody(messages, maxOutputTokens, temperature, responseFormat, thin
   };
 }
 
+function abortable(promise,signal){
+  return new Promise((resolve,reject)=>{
+    const abort=()=>{signal.removeEventListener('abort',abort);reject(attemptError('AI_ATTEMPT_TIMEOUT','AI request cancelled.'));};
+    signal.addEventListener('abort',abort,{once:true});
+    Promise.resolve(promise).then(value=>{signal.removeEventListener('abort',abort);
+      if(signal.aborted){try{const cancelled=value?.body?.cancel?.();cancelled?.catch?.(()=>{});}catch{/* Late transport body cannot be accepted. */}return;}
+      resolve(value);},error=>{signal.removeEventListener('abort',abort);reject(error);});
+    if(signal.aborted)abort();
+  });
+}
 async function providerAttempt({ entry, messages, maxOutputTokens, temperature, responseFormat,
   responseSchema, schemaName, attemptTimeoutMs, fetchImpl, env, now, googleThinkingLevel, feature, onDiagnostic,
-  requestProfile, signal }) {
+  requestProfile, signal, timeoutScope='local_attempt_timeout' }) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener('abort', abort, { once: true });
@@ -323,6 +342,7 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
   const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
   const started = now();
   let failureStage = 'REQUEST_BUILD_FAILURE', responseReceived = false, bodyRead = false, httpStatus = null;
+  let finishAccounting=()=>{},accountingOutcome='failed',headersMs=null,bodyMs=null;
   try {
     const google = entry.provider === 'google';
     const base = endpointFor(entry.provider, env).replace(/\/$/u, '');
@@ -337,6 +357,8 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
           schema: responseSchema }
       } } : responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {})
     };
+    const correctionPolicy=correctionRequestPolicy({provider:entry.provider,model:entry.model,feature,responseFormat,responseSchema});
+    if(correctionPolicy.reasoning) body.reasoning=correctionPolicy.reasoning;
     if (requestProfile) {
       const profileModelAllowed=requestProfile==='gpt_vision_exact_v1'
         ? [require('./hybridSource/contract').MODEL,'openai/gpt-6-astra'].includes(entry.model)
@@ -362,12 +384,15 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
       ...(requestProfile ? { redirect: 'error' } : {})
     };
     failureStage = 'TRANSPORT_FAILURE';
-    if(requestProfile && controller.signal.aborted) throw attemptError('OCR_SOURCE_CANCELLED','Source reader cancelled.');
-    const response = await fetchImpl(url, options);
+    if(controller.signal.aborted) throw attemptError('AI_ATTEMPT_TIMEOUT','Request cancelled before transport.');
+    finishAccounting=require('./providerAttemptAccounting.service').begin(requestProfile||feature,entry.model,now);
+    const response = await abortable(fetchImpl(url, options),controller.signal);
+    headersMs=now()-started;
     responseReceived = true; httpStatus = response.status;
     failureStage = 'RESPONSE_BODY_READ_FAILURE';
-    const responseText = await response.text();
-    if(requestProfile && controller.signal.aborted) throw attemptError('OCR_SOURCE_CANCELLED','Source reader cancelled.');
+    const responseText = await abortable(response.text(),controller.signal);
+    bodyMs=now()-started-headersMs;
+    if(controller.signal.aborted) throw attemptError('AI_ATTEMPT_TIMEOUT','Cancelled provider response withheld.');
     bodyRead = true;
     failureStage = response.ok ? 'RESPONSE_JSON_PARSE_FAILURE' : 'HTTP_ERROR_RESPONSE';
     let payload;
@@ -411,15 +436,19 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
       ...payload.usage,
       thoughts_tokens: payload.usage?.completion_tokens_details?.reasoning_tokens
     } : null);
-    return { ...extracted, usage, durationMs: now() - started,
+    accountingOutcome='completed';
+    return { ...extracted, usage, durationMs: now() - started,transportTimings:{requestToHeadersMs:headersMs,responseBodyMs:bodyMs},
       ...(requestProfile ? { returnedModel: payload.model } : {}) };
   } catch (error) {
+    accountingOutcome=controller.signal.aborted?'AI_ATTEMPT_TIMEOUT':safeCode(error);
     requestDiagnostics.notify(onDiagnostic, { failureStage: controller.signal.aborted || error?.name === 'AbortError'
       ? 'REQUEST_ABORTED' : failureStage, error, safeCode: controller.signal.aborted ? 'AI_ATTEMPT_TIMEOUT' : safeCode(error),
-    httpStatus, responseReceived, bodyRead });
-    if (controller.signal.aborted) throw attemptError('AI_ATTEMPT_TIMEOUT', 'AI provider attempt timed out.');
+    httpStatus, responseReceived, bodyRead,timeoutOrigin:controller.signal.aborted?(signal?.aborted?'caller_cancelled':timeoutScope):null });
+    if (controller.signal.aborted) throw attemptError('AI_ATTEMPT_TIMEOUT', 'AI provider attempt timed out.',{
+      timeoutOrigin:signal?.aborted?'caller_cancelled':timeoutScope,responseReceived,bodyRead,httpStatus});
     throw error;
   } finally {
+    finishAccounting(accountingOutcome);
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
   }
@@ -483,7 +512,8 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
       try {
         const result = await providerAttempt({ entry, messages, maxOutputTokens, temperature,
           responseFormat, responseSchema, schemaName, attemptTimeoutMs: timeout, fetchImpl, env, now,
-          googleThinkingLevel, feature, onDiagnostic });
+          googleThinkingLevel, feature, onDiagnostic,
+          timeoutScope:deadlineAt&&timeout<config.attemptTimeoutMs?'shared_stage_deadline':'local_attempt_timeout' });
         let value = result.content;
         if (typeof validate === 'function') {
           try { value = await validate(result.content, { provider: entry.provider, model: entry.model,
@@ -524,6 +554,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
           durationMs: now() - attemptStarted, attemptTimeoutMs: timeout,
           remainingBudgetMs: Math.max(0, deadline - now()), maxOutputTokens,
           retryDelayMs: null, ...failureMetadata };
+        if(['caller_cancelled','shared_stage_deadline','local_attempt_timeout'].includes(error.timeoutOrigin))attemptRecord.timeoutOrigin=error.timeoutOrigin;
         attempts.push(attemptRecord);
         logger.warn({ message: 'AI gateway attempt failed', feature, ...requestMetadata, attemptNumber: attemptCount,
           maxAttempts,
@@ -608,7 +639,7 @@ function validateAIConfig(env = process.env) {
 }
 
 module.exports = {
-  ASSESSMENT_MODEL, ASSESSMENT_AUTHORITY_VERSION, isAssessmentFeature,
+  ASSESSMENT_MODEL, ASSESSMENT_AUTHORITY_VERSION, isAssessmentFeature, correctionRequestPolicy,
   SUPPORTED_PROVIDERS, DEFAULTS, MAX_RETRIES, MAX_RETRY_DELAY_MS, credentialFor, endpointFor,
   getAIConfig, getAssessmentAIConfig, getWorksheetExtractionAIConfig, sanitizedAssessmentChain, validateAIConfig,
   retryAfterMs, safeCode, extractGoogle, extractOpenRouter, googleUsage, safeFailureMetadata,

@@ -67,6 +67,7 @@ test('assessment prompt transmits each legend definition once without reducing a
   expect(JSON.stringify(request.legend).length).toBeLessThan(JSON.stringify(duplicated).length);
   for(const group of request.legend)for(const symbol of group.symbols){expect(symbol.description).toBeTruthy();expect(symbol).not.toHaveProperty('rule');}
   const prompt=request.messages[1].content;
-  for(const required of ['reviewedSymbols','noFindingReason','teacherEvaluationPolicy=','transcript=Exact literal source.'])expect(prompt).toContain(required);
+  for(const required of ['reviewedSymbols','including zero findings','teacherEvaluationPolicy=','transcript=Exact literal source.'])expect(prompt).toContain(required);
+  expect(prompt).not.toContain('noFindingReason'); // Server derives prose only after explicit reviewed-symbol evidence.
   expect(require('../src/services/semanticAIClient.service').getAssessmentAIConfig({OPENROUTER_API_KEY:'mock-only'})).toMatchObject({model:'openai/gpt-6-astra',maxOutputTokens:8000});
 });

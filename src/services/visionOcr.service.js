@@ -282,10 +282,13 @@ async function detectDocument(image, dimensions, pageOffset = 0, pdfPage = false
   let result;
   try {
     const languageHints=!sourceReader?(process.env.OCR_LANGUAGE_HINTS||'').split(',').map(s=>s.trim()).filter(Boolean):[];
-    [result] = await withOcrSlot(() => getVisionClient().documentTextDetection({ image,...(languageHints.length?{imageContext:{languageHints}}:{}) }, {
+    [result] = await withOcrSlot(async() => {
+      const client=getVisionClient(),done=require('./providerAttemptAccounting.service').begin(sourceReader?'google_geometry':'google_source','google_vision');
+      try{return await client.documentTextDetection({ image,...(languageHints.length?{imageContext:{languageHints}}:{}) }, {
       timeout: pdfPage ? Math.min(requestTimeoutMs(), 30000) : requestTimeoutMs(),
       ...((pdfPage || sourceReader) ? { retry: null } : {})
-    }));
+      });}finally{done('settled');}
+    });
   } catch (error) {
     throw classifyVisionError(error);
   }

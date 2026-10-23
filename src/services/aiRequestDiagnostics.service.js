@@ -5,7 +5,7 @@ const STAGES = Object.freeze(['REQUEST_BUILD_FAILURE', 'TRANSPORT_FAILURE', 'REQ
   'PROVIDER_RESPONSE_SHAPE_INVALID', 'MODEL_STRUCTURED_OUTPUT_INVALID',
   'CORRECTION_SCHEMA_VALIDATION_FAILURE', 'NORMALIZATION_FAILURE']);
 const safeIdentifier = value => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,79}$/u.test(value) ? value : null;
-function notify(observer, { failureStage, error, safeCode, httpStatus = null, responseReceived = false, bodyRead = false }) {
+function notify(observer, { failureStage, error, safeCode, httpStatus = null, responseReceived = false, bodyRead = false,timeoutOrigin=null }) {
   if (typeof observer !== 'function') return;
   const causes = []; let current = error;
   for (let i = 0; current && i < 4; i++, current = current.cause) {
@@ -13,7 +13,8 @@ function notify(observer, { failureStage, error, safeCode, httpStatus = null, re
       errno: Number.isInteger(current.errno) ? current.errno : null });
   }
   const diagnostic = { failureStage, safeCode, httpStatus: Number.isInteger(httpStatus) ? httpStatus : null,
-    responseReceived, bodyRead, internalCauseCode: causes.find(c => c.code)?.code || null, causes };
+    responseReceived, bodyRead, internalCauseCode: causes.find(c => c.code)?.code || null, causes,
+    ...(['caller_cancelled','shared_stage_deadline','local_attempt_timeout'].includes(timeoutOrigin)?{timeoutOrigin}:{}) };
   try { observer(Object.freeze(diagnostic)); } catch { /* Observer must not change gateway semantics. */ }
 }
 function validationStage(error) {

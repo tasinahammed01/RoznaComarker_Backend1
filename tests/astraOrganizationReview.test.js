@@ -39,7 +39,7 @@ describe('primary Organization review prompt contract',()=>{
       'smallest exact existing final sentence','Never invent missing conclusion text','Content/DEV','Content/TA',
       'genuinely independent problems','naturally phrased opening claim'])expect(prompt).toContain(text);
     expect(prompt).toContain('transcriptComplete=true');expect(prompt).toContain('complete symbol list in reviewedSymbols');
-    expect(prompt).toContain('noFindingReason');expect(prompt).toContain('Never return CONC when transcriptComplete=false');
+    expect(prompt).not.toContain('noFindingReason');expect(prompt).toContain('Never return CONC when transcriptComplete=false');
     expect(prompt).not.toContain('comfortable Moment');
     const definition=require('../src/services/writingCategoryDefinitions.service').DEFINITIONS.ORGANIZATION;
     for(const symbol of ['COH','CO','PU','TS','CONC'])expect(definition).toContain('('+symbol+')');
@@ -50,9 +50,9 @@ describe('primary Organization review prompt contract',()=>{
     expect(prompt).toContain('CONC (closure)');expect(prompt).toContain('Zero findings is valid after all five checks');
   });
   test('prompt/review identities advance while JSON response shape stays unchanged',()=>{
-    expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-astra-v11-organization-closure');
+    expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-astra-v12-compact-organization-closure');
     expect(semantic.CATEGORY_REVIEW_POLICY_VERSION).toBe('astra-category-review-v7-organization-checklist');
-    expect(semantic.SEMANTIC_SCHEMA_VERSION).toBe('semantic-corrections-v13-astra-reviewed');
+    expect(semantic.SEMANTIC_SCHEMA_VERSION).toBe('semantic-corrections-v14-compact-reviewed');
   });
 });
 describe('unchanged Organization grounding and canonical statistics',()=>{

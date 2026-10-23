@@ -43,7 +43,7 @@ describe('safe hybrid correction policy', () => {
     });
     const prompt = request.messages[1].content;
     expect(prompt).toContain('transcriptHash=hash-123');
-    expect(prompt).toContain('localized means a specific passage');
+    expect(prompt).toContain('localized requires specific replacement suggestedText');
     expect(prompt).not.toContain('localized|global');
     expect(prompt).not.toContain('<exact supplied hash>');
   });
@@ -340,18 +340,15 @@ describe('safe hybrid correction policy', () => {
       languageToolCorrections: []
     });
     const prompt = request.messages[1].content;
-    expect(request.messages[0].content).toContain('rigorous source-grounded academic writing error detector');
-    expect(request.messages[0].content).toContain('Review every enabled category and supplied legend symbol systematically');
-    expect(request.messages[0].content).toContain('sentence by sentence from the first page through the final page');
-    expect(request.messages[0].content).toContain('Do not stop after finding several examples.');
-    expect(prompt).toContain('CONTENT: REL, DEV, TA, CL, SD');
-    expect(prompt).toContain('ORGANIZATION: COH, CO, PU, TS, CONC');
-    expect(prompt).toContain('GRAMMAR: T, VF, AGR, FRAG, RO, WO, ART, PREP');
-    expect(prompt).toContain('VOCABULARY: WC, WF, REP, FORM, COL');
-    expect(prompt).toContain('MECHANICS: SP, P, CAP, SPC, FMT');
-    expect(prompt).toContain('Inspect every finite verb and phrase');
-    expect(prompt).toContain('Do not use Grammar as a fallback for lexical problems.');
-    expect(prompt).toContain('Review every requested category exactly once');
+    expect(request.messages[0].content).toContain('Source-grounded academic writing error detection');
+    expect(prompt).toContain('Inspect every enabled category and supplied symbol');
+    expect(prompt).toContain('sentence by sentence, including its ending');
+    expect(prompt).toContain('no samples, quotas');
+    const transmittedLegend=JSON.parse(prompt.split('\n').find(line=>line.startsWith('legend=')).slice('legend='.length));
+    for(const group of request.legend) expect(transmittedLegend.find(g=>g.category===group.category).symbols.map(s=>s.symbol))
+      .toEqual(group.symbols.map(s=>s.symbol));
+    expect(prompt).toContain('inspect every finite verb and phrase');
+    expect(prompt).toContain('Do not duplicate one underlying error');
     expect(prompt).not.toContain('LanguageTool');
   });
 
@@ -649,11 +646,10 @@ describe('deterministic canonical hybrid merge', () => {
     const text = 'there are a big problem every student cames Taking a taxis is than taken private cars cars gives without pay more money';
     const built = semantic.buildSemanticRequest({ transcript: text, transcriptHash: 'a'.repeat(64), languageToolCorrections: [] });
     const prompt = built.messages[1].content;
-    expect(prompt).toContain('Review every requested category exactly once');
-    expect(prompt).toContain('Analyze the entire canonical transcript independently');
-    expect(prompt).toContain('No external grammar checker is available');
-    expect(prompt).toContain('GRAMMAR: T, VF, AGR');
-    expect(prompt).toContain('MECHANICS: SP, P, CAP');
+    expect(prompt).toContain('Inspect every enabled category and supplied symbol');
+    expect(prompt).toContain('Review the complete response sentence by sentence');
+    expect(prompt).toContain('No external verification');
+    for(const symbol of ['T','VF','AGR','SP','P','CAP']) expect(prompt).toContain(`"symbol":"${symbol}"`);
     expect(prompt).not.toContain('LanguageTool exclusions');
     expect(prompt).not.toContain('LanguageTool auxiliary');
   });
