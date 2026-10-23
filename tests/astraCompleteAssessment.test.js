@@ -243,7 +243,8 @@ describe('immutable teacher policy and rubric evidence', () => {
     const source = input('She Know  the truth.\nBut she was empty Soul.');
     const request = semantic.buildSemanticRequest(source), prompt = request.messages[1].content;
     expect(prompt).toContain(source.transcript); expect(prompt).toContain('Friendly suppresses trivial refinements');
-    expect(prompt).toContain('CONTENT concerns meaning'); expect(prompt).toContain('ORGANIZATION concerns logical progression');
+    expect(prompt).toContain('CONTENT concerns meaning'); expect(prompt).toContain('COH (coherence): check progression');
+    expect(prompt).toContain('CONC (closure): when transcriptComplete=true');
     expect(request.legend).toEqual(semantic.compactSemanticLegend(defaultLegend()));
     expect(rubric.buildRequest({ transcript: source.transcript, sourceHash: 'h', policy: source.policy }).messages[1].content)
       .toContain('findingScope=localized');

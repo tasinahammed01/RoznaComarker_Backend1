@@ -490,7 +490,8 @@ describe('safe hybrid correction policy', () => {
     expect(prompts[1]).toContain('previous pass produced unexpectedly sparse coverage');
     expect(prompts[1]).toContain('Re-read the COMPLETE canonical transcript independently');
     expect(prompts[1]).toContain('CONTENT boundaries: REL=relevance, DEV=idea development');
-    expect(prompts[1]).toContain('ORGANIZATION boundaries: COH=logical progression/coherence');
+    expect(prompts[1]).toContain('COH (coherence): check progression');
+    expect(prompts[1]).toContain('CONC (closure): when transcriptComplete=true');
     expect(prompts[1]).toContain('Zero is allowed only after complete review');
     expect(result.corrections).toEqual(expect.arrayContaining([
       expect.objectContaining({ category: 'GRAMMAR', symbol: 'AGR' }),
