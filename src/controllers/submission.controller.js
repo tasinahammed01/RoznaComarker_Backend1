@@ -1119,6 +1119,8 @@ async function getOcrCorrections(req, res) {
       return res.status(202).json({ success: true, data: {
         processing: true, ocrStatus: doc.ocrStatus || 'pending', corrections: [], ocr: [],
         processingActive: true, automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false,
+        processingProgress: require('../services/submissionProgress.service').resultProgress({
+          ocrStatus: doc.ocrStatus || 'pending', processingActive: true, terminal: false }),
         ocrError: null, fileId: requestedFileId || null
       }});
     }

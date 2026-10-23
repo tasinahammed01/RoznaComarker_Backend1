@@ -43,7 +43,7 @@ function safeErrorCode(error) {
   return 'SEMANTIC_ANALYSIS_FAILED';
 }
 
-function buildCanonicalResultState({ submission = {}, feedback = null, currentSettings = null } = {}) {
+function canonicalState({ submission = {}, feedback = null, currentSettings = null } = {}) {
   const source=require('../utils/sourceFidelity');
   if(source.isExact(submission)&&!source.eligible(submission))return {
     ocrStatus:submission.ocrStatus,ocrErrorCode:submission.sourceFidelityMode==='gpt_vision_exact'?(submission.ocrErrorCode||'OCR_GPT_SOURCE_UNCERTAIN'):'OCR_SOURCE_REVIEW_REQUIRED',ocrFailureMessage:submission.sourceFidelityMode==='gpt_vision_exact'?'The handwriting source could not be read confidently. Please contact your teacher.':'Source review required before assessment.',
@@ -233,6 +233,11 @@ function buildCanonicalResultState({ submission = {}, feedback = null, currentSe
     evaluationRubricSourceHash: storedRubricHash,
     evaluationPolicyHash: storedPolicyHash
   };
+}
+
+function buildCanonicalResultState(input) {
+  const state=canonicalState(input);
+  return {...state,processingProgress:require('./submissionProgress.service').resultProgress(state)};
 }
 
 function buildPreviousEvaluation(feedback, resultState) {

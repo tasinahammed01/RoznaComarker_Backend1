@@ -2,6 +2,7 @@
 
 const fs = require('fs/promises');
 const { evaluateImage } = require('../services/imagePreflight.service');
+const {withPreflightProgress}=require('../services/submissionProgress.service');
 const exact=()=>require('../services/hybridSource/contract').mode()==='gpt_vision_exact';
 async function sourceContext(req){
   if(req.guestContext){
@@ -45,15 +46,15 @@ async function preflightImage(req, res) {
     }
     const required=exact(),context=required?await sourceContext(req):null;
     const basic=await basicFor(file,req.user?._id,required);
-    if(!required||!basic.result.ready)return res.json({success:true,data:{...basic.result,...(required?{basicChecksPassed:basic.result.ready,sourceReadRequired:true,canSubmit:false}:{})}});
+    if(!required||!basic.result.ready)return res.json({success:true,data:withPreflightProgress({...basic.result,...(required?{basicChecksPassed:basic.result.ready,sourceReadRequired:true,canSubmit:false}:{})})});
     const source=require('../services/gptVisionExact/preflight');let state;
     if(req.body?.phase==='basic')state=source.ui({code:'OCR_GPT_SOURCE_CHECKING'});
     else try{await source.checkPages(basic.pages||await source.pagesFor(file),context,{run:true});state=source.ui();}catch(error){state=source.ui(error);}
-    return res.json({success:true,data:source.withSourceCheck(basic.result,state)});
+    return res.json({success:true,data:withPreflightProgress(source.withSourceCheck(basic.result,state))});
   } catch(error){
     if(error.status===403)return res.status(403).json({success:false,code:error.code,message:'Assignment access is required for handwriting verification.'});
     const source=require('../services/gptVisionExact/preflight');
-    return res.json({success:true,data:source.withSourceCheck({ready:false,checks:[]},source.ui(error))});
+    return res.json({success:true,data:withPreflightProgress(source.withSourceCheck({ready:false,checks:[]},source.ui(error)))});
   } finally {
     await cleanup(files);
   }
