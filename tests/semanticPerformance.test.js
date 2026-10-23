@@ -24,7 +24,7 @@ describe('semantic performance contract', () => {
     expect(getSemanticAIConfig(env({
       SEMANTIC_AI_PROVIDER: 'google', SEMANTIC_AI_MODEL: 'ignored'
     }))).toMatchObject({
-      provider: 'openrouter', model: 'openai/gpt-4.1',
+      provider: 'openrouter', model: 'openai/gpt-6-astra',
       attemptTimeoutMs: 45000, totalBudgetMs: 90000, maxOutputTokens: 1800
     });
   });
@@ -50,7 +50,7 @@ describe('semantic performance contract', () => {
       .rejects.toMatchObject({ code: 'AI_PROVIDER_AUTH_ERROR', attemptCount: 1 });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls.map((call) => JSON.parse(call[1].body).model))
-      .toEqual(['openai/gpt-4.1']);
+      .toEqual(['openai/gpt-6-astra']);
   });
 
   test('audited category-review prompt keeps bounded overhead over the incomplete legacy contract', () => {

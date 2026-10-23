@@ -43,11 +43,10 @@ describe('semantic assessment-chain facade', () => {
 
   test('reads the assessment chain and semantic token limit only', () => {
     expect(getSemanticAIConfig(env())).toMatchObject({
-      provider: 'openrouter', model: 'openai/gpt-4.1', maxOutputTokens: 1800,
+      provider: 'openrouter', model: 'openai/gpt-6-astra', maxOutputTokens: 1800,
       temperature: 0, responseFormat: 'json', thinkingLevel: 'minimal',
       chain: [
-        { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 0 },
-        { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 1 }
+        { provider: 'openrouter', model: 'openai/gpt-6-astra', fallbackIndex: 0 }
       ]
     });
   });
@@ -74,8 +73,8 @@ describe('semantic assessment-chain facade', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test('12000 reaches both OpenRouter assessment models', async () => {
-    const configuredEnv = env({ SEMANTIC_AI_MAX_OUTPUT_TOKENS: '12000' });
+  test('12000 reaches Astra and its bounded same-model retry', async () => {
+    const configuredEnv = env({ SEMANTIC_AI_MAX_OUTPUT_TOKENS: '12000', ASSESSMENT_AI_PRIMARY_RETRIES: '1' });
     const fetchImpl = jest.fn().mockResolvedValueOnce(response(503, {}))
       .mockResolvedValueOnce(router('{"ok":true}'));
     await runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
@@ -89,32 +88,23 @@ describe('semantic assessment-chain facade', () => {
     await expect(runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
       config: getSemanticAIConfig(env()), env: env(), fetchImpl })).rejects.toMatchObject({
       code: 'AI_CHAIN_EXHAUSTED',
-      attemptCount: 2,
+      attemptCount: 1,
       timeoutCount: 0,
       finalFailureCode: 'AI_PROVIDER_UNAVAILABLE',
       attempts: [
-        expect.objectContaining({ provider: 'openrouter', model: 'openai/gpt-4.1' }),
-        expect.objectContaining({ provider: 'openrouter', model: 'openai/gpt-4.1-mini' })
+        expect.objectContaining({ provider: 'openrouter', model: 'openai/gpt-6-astra' })
       ]
     });
   });
 
-  test('feature validation failure selects fallback', async () => {
-    const fetchImpl = jest.fn()
-      .mockResolvedValueOnce(router('{"ok":false}'))
-      .mockResolvedValueOnce(router('{"ok":true}'));
-    const result = await runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
-      config: getSemanticAIConfig(env()), env: env(), fetchImpl,
-      validate: (content) => {
-        const parsed = JSON.parse(content);
-        if (!parsed.ok) throw new Error('schema');
-        return parsed;
-      } });
-    expect(result.value).toEqual({ ok: true });
-    expect(result.model).toBe('openai/gpt-4.1-mini');
+  test('feature validation failure without retries remains unavailable and never falls back', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(router('{"ok":false}')).mockResolvedValueOnce(router('{"ok":true}'));
+    await expect(runSemanticCompletion({ messages: [], config: getSemanticAIConfig(env()), env: env(), fetchImpl,
+      validate: () => { throw new Error('schema'); } })).rejects.toMatchObject({ attemptCount: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test('feature validation failure uses the bounded primary retry before fallback', async () => {
+  test('feature validation failure uses the bounded primary retry without fallback', async () => {
     const configuredEnv = env({ ASSESSMENT_AI_PRIMARY_RETRIES: '1' });
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(router('{"ok":false}'))
@@ -127,7 +117,7 @@ describe('semantic assessment-chain facade', () => {
         return parsed;
       } });
     expect(result.value).toEqual({ ok: true });
-    expect(result.model).toBe('openai/gpt-4.1');
+    expect(result.model).toBe('openai/gpt-6-astra');
     expect(result.metrics.attempts.map((attempt) => attempt.retryIndex)).toEqual([0, 1]);
   });
 });

@@ -57,7 +57,7 @@ describe('canonical teacher comments', () => {
       expect(result.headers['cache-control']).toBe('no-store');
       expect(provider).toHaveBeenCalledTimes(1);
       const [url, options] = provider.mock.calls[0]; const body = JSON.parse(options.body);
-      expect(url).toContain('/chat/completions'); expect(body.model).toBe('openai/gpt-4.1-mini');
+      expect(url).toContain('/chat/completions'); expect(body.model).toBe('openai/gpt-6-astra');
       expect(body.max_tokens).toBe(240); expect(body.response_format.json_schema.name).toBe('teacher_comment_draft');
       const input = JSON.stringify(body.messages);
       expect(input).toContain('main idea'); expect(input).not.toContain('Keep my saved comment');

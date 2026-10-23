@@ -10,7 +10,7 @@ const HANDWRITING_LAYOUT_VERSION = 'vision-handwriting-geometry-v1';
 // Separate from the historical printed/display normalizer. No vocabulary,
 // paragraph ids or margin-artifact removal supplies source text. Immediate
 // source neighbors may prove a local insertion, never a page-wide ordering.
-function buildHandwritingGeometryTranscript(words) {
+function buildHandwritingGeometryTranscript(words, { geometryEvidenceOnly = false } = {}) {
   const source=(Array.isArray(words)?words:[]).map((word,inputIndex)=>({word,inputIndex})).filter(c=>typeof c.word?.text==='string'&&c.word.text.length);
   const candidates=source.map(({word,inputIndex},sourceIndex)=>{
     const b=word.bbox,values=b&&('x0' in b?[b.x0,b.y0,b.x1,b.y1]:[b.x,b.y,b.w,b.h]);
@@ -141,7 +141,7 @@ function buildHandwritingGeometryTranscript(words) {
     if(anchors.length<2||!strongFit||conflictingLine||slot===null||edgeArtifactRisk)continue;
     c.line=m.line;c.soleCandidate=true;c.reliable=false;c.line.words.push(c);delete c.reason;
   }
-  if(candidates.some(c=>!c.line))return degraded(candidates.find(c=>!c.line).reason||'UNRESOLVED_OUTLIER');
+  if(!geometryEvidenceOnly&&candidates.some(c=>!c.line))return degraded(candidates.find(c=>!c.line).reason||'UNRESOLVED_OUTLIER');
   lines.sort((a,b)=>a.baseline-b.baseline||a.center-b.center);
   if(lines.some((line,i)=>i&&line.baseline-lines[i-1].baseline<h*.6)){
     for(const c of candidates){c.line=null;c.reason='OVERLAPPING_LINE_CLUSTERS';}
@@ -172,7 +172,7 @@ function buildHandwritingGeometryTranscript(words) {
     }
   }
   const stats=placementStats();
-  if(stats.resolvedPlacementCoverage!==1||stats.unresolvedWordCount!==0||spans.length!==candidates.length||new Set(lines.flatMap(l=>l.words.map(c=>c.inputIndex))).size!==candidates.length)return degraded('UNRESOLVED_OUTLIER');
+  if(!geometryEvidenceOnly&&(stats.resolvedPlacementCoverage!==1||stats.unresolvedWordCount!==0||spans.length!==candidates.length||new Set(lines.flatMap(l=>l.words.map(c=>c.inputIndex))).size!==candidates.length))return degraded('UNRESOLVED_OUTLIER');
   return {text,words:spans.map(s=>s.word),spans,separators:spans.map(s=>s.separatorBefore),...stats,
     geometryCoverage:coverage,readingOrderStrategy:HANDWRITING_LAYOUT_VERSION,layoutDegraded:false,comparisonSlope:slope,
     mapping:{totalWords:source.length,mappedWords:spans.length,alignmentRatio:1}};

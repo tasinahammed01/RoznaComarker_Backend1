@@ -391,10 +391,13 @@ function detectWithShadow(bytes, dimensions, pageOffset, pdfPage, options, sourc
     ...(options.hybridIdentity?{reservation:require('./gptVisionExact/preflight').claimReservation(options.sourceFile||{},options.hybridIdentity)}:{}),
     assignment:options.sourceAssignment,google:async()=>{
       const geometry=await detectDocument({content:bytes},dimensions,pageOffset,pdfPage,true,true);
-      return geometry[require('./hybridSource/shadow').rawEvidence]?.every(p=>p.dimensionsMatch===true)?geometry:null;
+      const evidence=geometry[require('./hybridSource/shadow').rawEvidence];
+      return evidence?.length&&evidence.every(p=>p.dimensionsMatch===true)?geometry:{words:[],geometryFailureCode:'GEOMETRY_DIMENSIONS_MISMATCH'};
     },
     isCurrentJob:options.isCurrentJob,signal:options.signal}).then(result=>{
-      result.pages.forEach(page=>Object.assign(page,{width:dimensions.width,height:dimensions.height,pageNumber:pageOffset+1}));return result;
+      result.pages.forEach(page=>Object.assign(page,{width:dimensions.width,height:dimensions.height,pageNumber:pageOffset+1,
+        coordinateSpace:'display-image',ocrImageWidth:dimensions.width,ocrImageHeight:dimensions.height,
+        ocrExifOrientation:dimensions.ocrExifOrientation||1}));return result;
     });
   if (['astra_verified','astra_human_confirm'].includes(selected)) {
     return require('./sourceFidelityOcr.service').readPage({bytes,mimeType,

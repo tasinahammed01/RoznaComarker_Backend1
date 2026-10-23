@@ -16,7 +16,7 @@ const { generate } = require('../src/services/canonicalEvaluation.service');
 const env = {
   ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1-mini',
   ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter', ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1',
-  ASSESSMENT_AI_PRIMARY_RETRIES: '0', ASSESSMENT_AI_FALLBACK_RETRIES: '0',
+  ASSESSMENT_AI_PRIMARY_RETRIES: '1', ASSESSMENT_AI_FALLBACK_RETRIES: '0',
   ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '30000', ASSESSMENT_AI_TOTAL_BUDGET_MS: '90000',
   ASSESSMENT_AI_RETRY_DELAY_MS: '0', SEMANTIC_AI_MAX_OUTPUT_TOKENS: '6000',
   OPENROUTER_API_KEY: 'test-key', OPENROUTER_BASE_URL: 'https://router.test/v1'
@@ -64,7 +64,7 @@ function providerPayload(input) {
     categories: Object.fromEntries(['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'].map(category => [category, {
       score: 12, maxScore: 20, comment: 'The passage communicates an idea but needs revision.',
       strengthEvidence: [{ evidenceId, explanation: 'The passage explains how students communicate.' }],
-      improvementEvidence: [{ evidenceType: 'correction', evidenceId: null,
+      improvementEvidence: [{ findingScope: 'localized', evidenceType: 'correction', evidenceId: null,
         correctionId: input.corrections.find(item => item.category === category).id,
         explanation: 'Revise the identified wording.', suggestion: 'Apply the suggested correction.' }]
     }])), customCriteria: input.customRubric.criteria.map(criterion => ({ criterionId: criterion.id,

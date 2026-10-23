@@ -8,12 +8,15 @@ const SubmissionFeedback = require('../models/SubmissionFeedback');
 const canonicalEvaluation = require('./canonicalEvaluation.service');
 const semanticRubricAssessment = require('./semanticRubricAssessment.service');
 const { safeErrorCode } = require('./canonicalResultState.service');
-const { getSemanticAIConfig, getSemanticAIConfigStatus } = require('./semanticAIClient.service');
+const { getAssessmentAIConfig: getSemanticAIConfig, getSemanticAIConfigStatus } = require('./semanticAIClient.service');
 const semanticMetrics = require('./semanticMetrics.service');
 const { resolveLegend } = require('./correctionLegendResolver.service');
 const inputIdentity = require('../utils/assessmentInputIdentity');
 const correctionPolicy = require('./aiCorrectionPolicy.service');
 const evidenceIdentity = require('./correctionEvidenceIdentity.service');
+const teacherPolicy = require('./teacherEvaluationPolicy.service');
+const { ASSESSMENT_MODEL } = require('./aiGateway.service');
+const executionPolicy = require('./assessmentExecutionPolicy.service');
 
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -76,6 +79,13 @@ function plannedSemanticAttempts(config = {}) {
     + Math.max(0, modelCount - 1) * (1 + Number(config.fallbackRetries || 0));
 }
 
+function buildCorrectionReviewIdentity({ assignment = {}, policy } = {}) {
+  const context = typeof assignment?.toObject === 'function' ? assignment.toObject() : assignment;
+  return inputIdentity.hash({ assessmentModel: ASSESSMENT_MODEL,
+    promptVersion: semantic.SEMANTIC_PROMPT_VERSION, schemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
+    policyHash: teacherPolicy.evaluationPolicyHash(policy), assignment: semantic.compactAssignment(context) });
+}
+
 function hasHolisticCoverageMismatch(categoryScores = {}, statistics = {}) {
   return holisticCoverageMismatchCategories(categoryScores, statistics).length > 0;
 }
@@ -111,12 +121,17 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const spans = canonicalTranscript.wordSpans.map((span) => ({ ...span }));
   if (!transcript) return;
   const legend = await resolveLegend();
+  const assessmentPolicy = await canonicalEvaluation.resolveAssessmentPolicy(doc);
+  assignment = deepFreeze(JSON.parse(JSON.stringify({ ...inputIdentity.assessmentContext(assignment),
+    ...(assignment.rubric !== undefined ? { rubric: assignment.rubric } : {}),
+    ...(assignment.rubrics !== undefined ? { rubrics: assignment.rubrics } : {}) })));
   const hash = buildCorrectionSourceHash({ transcript, pages: canonicalTranscript.pages, assignment,
     fileContentIdentity: doc.fileContentIdentity || null, legend });
   const semanticConfig = getSemanticAIConfig();
-  const assignmentHash = inputIdentity.hash(inputIdentity.assessmentContext(assignment));
+  const assignmentHash = inputIdentity.hash(semantic.compactAssignment(assignment));
   const semanticSourceKey = buildSemanticSourceKey(semantic.semanticSourceKey({ correctionSourceHash: hash, config: semanticConfig,
-    legendVersion: legend.version, legendContentHash: legend.contentHash, assignmentHash }));
+    legendVersion: legend.version, legendContentHash: legend.contentHash, assignmentHash,
+    policyHash: assessmentPolicy.policyHash }));
   if (!force && doc.correctionSourceHash === hash && doc.correctionVersion === canonical.VERSION
     && doc.correctionTranscriptLayoutVersion === CANONICAL_TRANSCRIPT_LAYOUT_VERSION && doc.correctionStatus === 'completed'
     && doc.semanticSourceKey === semanticSourceKey) {
@@ -143,14 +158,24 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   await SubmissionFeedback.updateOne({ submissionId: doc._id, overriddenByTeacher: { $ne: true } },
     { $unset: { evaluationSourceHash: 1, evaluationRubricSourceHash: 1, evaluationPolicyHash: 1 } }).catch(() => {});
   const transcriptReadyAt = Date.now();
-  const assessmentDeadlineAt = transcriptReadyAt + semanticConfig.totalBudgetMs;
+  const execution = executionPolicy.plan({ startedAt: transcriptReadyAt });
+  const assessmentDeadlineAt = execution.assessmentDeadlineAt;
   logger.info({ message: 'Assessment pipeline timing', submissionId: String(doc._id), stage: 'transcriptReadyAt',
-    timestamp: new Date(transcriptReadyAt).toISOString(), correctionSourceHash: hash });
+    timestamp: new Date(transcriptReadyAt).toISOString(), correctionSourceHash: hash,
+    assessmentDeadlineMs: assessmentDeadlineAt, correctionStageBudgetMs: execution.correctionStageBudgetMs,
+    rubricReservedBudgetMs: execution.rubricReservedBudgetMs });
   const evaluationSubmission = { ...(doc.toObject?.() || doc), correctionSourceHash: hash,
     correctionVersion: canonical.VERSION, correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
     correctionStatus: 'processing', semanticStatus: 'processing', evaluationStatus: 'processing', evaluationJobId: jobId };
-  const rubricPromise = canonicalEvaluation.prepareRubricAssessment({ submission: evaluationSubmission, assignment, sourceHash: hash,
-    deadlineAt: assessmentDeadlineAt }).then(async (rawValue) => {
+  let rubricRemainingBudgetAtStart = 0;
+  const prepareRubric = async () => {
+    rubricRemainingBudgetAtStart = Math.max(0, assessmentDeadlineAt - Date.now());
+    const rubricDeadlineAt = executionPolicy.stageDeadline(Date.now(), execution.rubricBudgetMs, assessmentDeadlineAt);
+    try { executionPolicy.assertRemaining(rubricDeadlineAt, Date.now(), 'ASSESSMENT_RUBRIC_STAGE_BUDGET_EXHAUSTED'); }
+    catch (reason) { return { status: 'rejected', reason }; }
+    return canonicalEvaluation.prepareRubricAssessment({
+    submission: { ...evaluationSubmission, writingCorrections: corrections }, assignment, sourceHash: hash,
+    assessmentPolicy, authoritativeCorrections: true, deadlineAt: rubricDeadlineAt }).then(async (rawValue) => {
       // Retain the successful provider result independently from the optional
       // provisional-score write. A persistence failure must never erase valid
       // rubric evidence or turn it into a synthetic provider failure.
@@ -158,8 +183,8 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
       if (typeof canonicalEvaluation.persistProvisionalScore === 'function') {
         const provisionalStartedAt = Date.now();
         try {
-          await canonicalEvaluation.persistProvisionalScore({ submission: evaluationSubmission, assignment,
-            sourceHash: hash, jobId, preparedRubricAssessment: value });
+          await canonicalEvaluation.persistProvisionalScore({ submission: { ...evaluationSubmission, writingCorrections: corrections }, assignment,
+            assessmentPolicy, sourceHash: hash, jobId, preparedRubricAssessment: value });
         } catch (error) {
           const diagnostic = safePersistenceError(error);
           let ownsCurrentAnalysis = null;
@@ -180,6 +205,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
       }
       return { status: 'fulfilled', value };
     }, (error) => ({ status: 'rejected', reason: error })).catch((error) => ({ status: 'rejected', reason: error }));
+  };
   let ai = []; let semanticError = null; let semanticReturnedCount = 0; let semanticRun = null; let failedSemanticAttempt = 0;
   const rejectionReasons = {};
   let semanticValidationMs = 0; let semanticMappingMs = 0;
@@ -188,7 +214,9 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     timestamp: new Date(semanticStartedAt).toISOString(), correctionSourceHash: hash });
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'aiOnlyStarted' });
   try {
-    semanticRun = await semanticCoordinator.analyze({ transcript, assignment: inputIdentity.assessmentContext(assignment), legend, transcriptHash: hash, spans,
+    semanticRun = await semanticCoordinator.analyze({ transcript, assignment, legend, transcriptHash: hash, spans,
+      policy: assessmentPolicy.policy, transcriptComplete: canonicalTranscript.isComplete,
+      deadlineAt: execution.correctionDeadlineAt,
       submissionId: String(doc._id), assessmentRunId: doc.assessmentRunId || jobId,
       pageManifest: canonicalTranscript.pages.map((page) => ({ fileId: page.fileId, fileOrder: page.fileOrder,
         pageNumber: page.pageNumber, pageIndex: page.pageIndex, startChar: page.startChar, endChar: page.endChar })),
@@ -247,10 +275,16 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     });
   }
   const semanticAiMs = Date.now() - semanticStartedAt;
+  const providerProducedSomeSemanticOutput = Boolean(semanticRun && (semanticRun.provider || semanticRun.model
+    || semanticRun.metrics?.successfulRequestCount > 0));
   const semanticEndedAt = Date.now();
   logger.info({ message: 'Assessment pipeline timing', submissionId: String(doc._id), stage: 'semanticEndedAt',
     timestamp: new Date(semanticEndedAt).toISOString(), correctionSourceHash: hash, durationMs: semanticAiMs,
-    semanticSucceeded: !semanticError, errorCode: safeErrorCode(semanticError) || null });
+    providerProducedSomeSemanticOutput,
+    correctionCoverageComplete: semanticRun?.coverage?.coverageComplete === true,
+    canonicalCorrectionStageSucceeded: !semanticError && semanticRun?.status === 'completed',
+    correctionElapsedMs: semanticAiMs, correctionRemainingMs: Math.max(0, execution.correctionDeadlineAt - Date.now()),
+    errorCode: safeErrorCode(semanticError) || null });
   const mergeStartedAt = Date.now();
   const merged = canonical.mergeCanonicalCorrections({ aiCorrections: ai });
   const corrections = evidenceIdentity.bindCorrections(merged.corrections, canonicalTranscript, doc);
@@ -275,6 +309,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const terminalAttempts = semanticRun?.metrics?.attempts || semanticError?.attempts || [];
   const terminalAttempt = terminalAttempts[terminalAttempts.length - 1] || null;
   const gatewayMetrics = semanticRun?.metrics || (semanticError ? {
+    ...(semanticError.correctionRequestCounts || {}),
     attemptCount: semanticError.attemptCount || terminalAttempts.length,
     timeoutCount: semanticError.timeoutCount
       ?? terminalAttempts.filter((attempt) => attempt.code === 'AI_ATTEMPT_TIMEOUT').length,
@@ -295,6 +330,23 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     removedAsOverlapDuplicate: Number(merged.diagnostics?.overlapDuplicates || 0)
   };
   const persistedSemanticMetrics = { ...gatewayMetrics, semanticQueueWaitMs: null, semanticValidationMs, semanticMappingMs,
+    assessmentDeadlineMs: assessmentDeadlineAt, correctionStageBudgetMs: execution.correctionStageBudgetMs,
+    rubricReservedBudgetMs: execution.rubricReservedBudgetMs,
+    correctionElapsedMs: semanticAiMs, correctionRemainingMs: Math.max(0, execution.correctionDeadlineAt - Date.now()),
+    providerProducedSomeSemanticOutput,
+    correctionCoverageComplete: semanticRun?.coverage?.coverageComplete === true,
+    canonicalCorrectionStageSucceeded: !semanticError && semanticRun?.status === 'completed',
+    assessmentModel: semanticConfig.model, policyHash: assessmentPolicy.policyHash,
+    correctionPromptVersion: semantic.SEMANTIC_PROMPT_VERSION, correctionSchemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
+    rubricPromptVersion: semanticRubricAssessment.PROMPT_VERSION, rubricSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
+    reviewedCategories: terminalValidation.reviewedCategories || [],
+    baseReviewCoverage: terminalValidation.baseReviewCoverage || {},
+    coverageRepairCategories: terminalValidation.coverageRepairCategories || [],
+    qualityAuditCategories: terminalValidation.qualityAuditCategories || [],
+    qualityAuditStatus: terminalValidation.qualityAuditStatus || 'not_required',
+    coverageRepairStatus: terminalValidation.coverageRepairStatus || 'not_required',
+    categoryAudit: terminalValidation.categoryAudit || null,
+    categoryReviewStatus: terminalValidation.categoryReviewStatus || null,
     validationDiagnostics: semanticRun?.diagnostics || semanticError?.validationDiagnostics || null,
     canonicalMergeMs, mergeDiagnostics: merged.diagnostics,
     coverage: semanticRun?.coverage || { complete: false, coverageComplete: false,
@@ -327,7 +379,8 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
       chain: (semanticConfig.chain || []).map(entry => ({ provider: entry.provider, model: entry.model })),
       temperature: 0, topP: null, seed: null, responseFormat: semanticConfig.responseFormat,
       promptVersion: semantic.SEMANTIC_PROMPT_VERSION, schemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
-      coordinatorVersion: semanticCoordinator.VERSION },
+      coordinatorVersion: semanticCoordinator.VERSION, policyHash: assessmentPolicy.policyHash,
+      reviewIdentity: buildCorrectionReviewIdentity({ assignment, policy: assessmentPolicy.policy }) },
     correctionVersion: canonical.VERSION, correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
     correctionStatus: failedStage || semanticRun?.status === 'partial' ? 'partial' : 'completed',
     correctionError: failedStage || (semanticRun?.status === 'partial' ? 'SEMANTIC_CHUNK_PARTIAL' : null),
@@ -392,14 +445,23 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     aiOnlyCount: ai.length, totalCount: corrections.length });
   let evaluationMs = 0; let detailedFeedbackMs = 0; let holisticCorrectionCoverageMismatch = false;
   let holisticCorrectionCoverageMismatchCategories = [];
+  let rubricConcernCategories = []; let categoryCoverageDisagreements = []; let preparedRubricAttemptCount = 0;
+  let rubricSucceeded = false; let detailedFeedbackFresh = false;
   {
     const evaluationStartedAt = Date.now();
-    const preparedRubric = await rubricPromise;
+    const preparedRubric = await prepareRubric();
+    preparedRubricAttemptCount = Number(preparedRubric.value?.semantic?.metrics?.attemptCount
+      || preparedRubric.value?.semantic?.metrics?.attempts?.length
+      || preparedRubric.reason?.attemptCount || preparedRubric.reason?.attempts?.length || 0);
     logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'evaluationStarted',
-      semanticSucceeded: !semanticError && semanticRun?.status === 'completed', correctionsAvailable: !semanticError,
+      providerProducedSomeSemanticOutput,
+      correctionCoverageComplete: semanticRun?.coverage?.coverageComplete === true,
+      canonicalCorrectionStageSucceeded: !semanticError && semanticRun?.status === 'completed', correctionsAvailable: !semanticError,
       preparedRubricAvailable: preparedRubric.status === 'fulfilled', preparedRubricStatus: preparedRubric.status,
       preparedRubricProvider: preparedRubric.value?.semantic?.provider || null,
-      preparedRubricModel: preparedRubric.value?.semantic?.model || null });
+      preparedRubricModel: preparedRubric.value?.semantic?.model || null,
+      rubricAttempted: preparedRubricAttemptCount > 0, rubricAttemptCount: preparedRubricAttemptCount,
+      rubricRemainingBudgetAtStart });
     const refreshed = await doc.constructor.findById(doc._id);
     const correctionCoverageComplete = !semanticError
       && semanticRun?.status === 'completed'
@@ -407,11 +469,15 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
       && Number(semanticRun?.coverage?.failedChunks) === 0
       && ['completed', 'not_required'].includes(semanticRun?.coverage?.structuralPassStatus);
     const evaluationResult = refreshed ? await canonicalEvaluation.generate({ submission: refreshed, assignment,
-      prelockedJobId: jobId, allowDegradedCorrections: !correctionCoverageComplete,
-      preparedRubricRequired: true,
+      prelockedJobId: jobId, allowDegradedCorrections: !correctionCoverageComplete, assessmentPolicy,
+      preparedRubricRequired: true, preparedRubricAttempted: true, deadlineAt: assessmentDeadlineAt,
       preparedRubricAssessment: preparedRubric.status === 'fulfilled' ? preparedRubric.value : { error: preparedRubric.reason } }) : null;
     evaluationMs = Date.now() - evaluationStartedAt;
     detailedFeedbackMs = Number(evaluationResult?.timings?.detailedFeedbackMs || 0);
+    rubricSucceeded = evaluationResult?.rubricSucceeded === true;
+    detailedFeedbackFresh = evaluationResult?.detailedFeedbackFresh === true;
+    rubricConcernCategories = evaluationResult?.rubricConcernCategories || [];
+    categoryCoverageDisagreements = evaluationResult?.categoryCoverageDisagreements || [];
     holisticCorrectionCoverageMismatchCategories = holisticCoverageMismatchCategories(
       evaluationResult?.categoryScores, combinedStatistics);
     holisticCorrectionCoverageMismatch = holisticCorrectionCoverageMismatchCategories.length > 0;
@@ -447,6 +513,14 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     totalCorrectionsMs, totalResultReadyMs: Date.now() - totalStartedAt
   }});
   const totalResultReadyMs = Date.now() - totalStartedAt;
+  const sourcePerformance=(doc.ocrPages||[]).map(p=>p.sourceVerificationSummary?.performance).filter(Boolean);
+  const sourceTotal=key=>sourcePerformance.reduce((sum,p)=>sum+(Number(p[key])||0),0);
+  const performance={preflightSourceMs:sourceTotal('preflightSourceMs'),sourceReuseMs:sourceTotal('sourceReuseMs'),geometryMs:sourceTotal('geometryMs'),
+    correctionPrimaryMs:Number(gatewayMetrics.correctionPrimaryMs)||0,correctionRecoveryMs:Number(gatewayMetrics.correctionRecoveryMs)||0,
+    coverageRepairMs:Number(gatewayMetrics.coverageRepairMs)||0,qualityAuditMs:Number(gatewayMetrics.qualityAuditMs)||0,
+    rubricMs:Math.max(0,evaluationMs-detailedFeedbackMs),feedbackBuildMs:detailedFeedbackMs,
+    totalAssessmentMs:totalResultReadyMs+sourceTotal('sourceMs')+sourceTotal('geometryMs'),providerCallCount:Number(gatewayMetrics.providerCallCount||0)+preparedRubricAttemptCount
+      +sourceTotal('sourceProviderCallCount')+sourceTotal('geometryProviderCallCount')};
   logger.info({ message: 'Canonical evaluation timing', submissionId: String(doc._id),
     stage: 'correction_end', attemptNumber: null,
     provider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
@@ -454,10 +528,46 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     errorCode: failedStage || null, durationMs: totalResultReadyMs });
   await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
     semanticMetrics: { ...persistedSemanticMetrics, evaluationMs, detailedFeedbackMs,
+      rubricRemainingBudgetAtStart,
+      rubricAttempted: (preparedRubricAttemptCount || 0) > 0, rubricAttemptCount: preparedRubricAttemptCount,
+      rubricSucceeded, detailedFeedbackFresh, performance,
+      rubricConcernCategories, categoryCoverageDisagreements,
       totalCorrectionsMs, totalResultReadyMs, holisticCorrectionCoverageMismatch,
       holisticCorrectionCoverageMismatchCategories,
       rubricDeductionWithZeroCorrectionsByCategory: holisticCorrectionCoverageMismatchCategories }
   }}).catch(() => {});
+  logger.info({ event: 'assessment_execution_summary', submissionId: String(doc._id),
+    ...performance,assessmentProvider:semanticRun?.provider||semanticConfig.provider,assessmentModel:semanticConfig.model,
+    routingMode: gatewayMetrics.mode || null, routingReason: gatewayMetrics.routingReason || null,
+    assessmentDeadlineMs: assessmentDeadlineAt, correctionStageBudgetMs: execution.correctionStageBudgetMs,
+    rubricReservedBudgetMs: execution.rubricReservedBudgetMs, correctionElapsedMs: semanticAiMs,
+    correctionRemainingMs: persistedSemanticMetrics.correctionRemainingMs,
+    mainCorrectionRequestCount: Number(gatewayMetrics.mainCorrectionRequestCount || 0),
+    structuralRequestCount: Number(gatewayMetrics.structuralRequestCount || 0),
+    auditRequestCount: Number(gatewayMetrics.auditRequestCount || 0),
+    recoveryRequestCount: Number(gatewayMetrics.recoveryRequestCount || 0),
+    providerProducedSomeSemanticOutput, correctionCoverageComplete: persistedSemanticMetrics.correctionCoverageComplete,
+    canonicalCorrectionStageSucceeded: persistedSemanticMetrics.canonicalCorrectionStageSucceeded,
+    baseReviewCoverage: persistedSemanticMetrics.baseReviewCoverage,
+    coverageRepairCategories: persistedSemanticMetrics.coverageRepairCategories,
+    qualityAuditCategories: persistedSemanticMetrics.qualityAuditCategories,
+    qualityAuditStatus: persistedSemanticMetrics.qualityAuditStatus,
+    coverageRepairStatus: persistedSemanticMetrics.coverageRepairStatus,
+    categoryCoverageComplete: persistedSemanticMetrics.coverage.categoryCoverageComplete,
+    categoryReviewStatus: persistedSemanticMetrics.categoryReviewStatus,
+    semanticStatus: semanticError ? 'failed' : semanticRun?.status,
+    rubricSucceeded, detailedFeedbackFresh,
+    rubricAttempted: preparedRubricAttemptCount > 0, rubricAttemptCount: preparedRubricAttemptCount,
+    rubricRemainingBudgetAtStart });
+  if (process.env.NODE_ENV !== 'production') logger.info({ event: 'assessment_review_summary',
+    assessmentModel: semanticConfig.model, policyHash: assessmentPolicy.policyHash,
+    correctionPromptVersion: semantic.SEMANTIC_PROMPT_VERSION, correctionSchemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
+    rubricPromptVersion: semanticRubricAssessment.PROMPT_VERSION, rubricSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
+    reviewedCategories: persistedSemanticMetrics.reviewedCategories, returnedByCategory,
+    acceptedByCategory: retainedAfterMergeByCategory, rejectedByCategory,
+    categoryCoverageComplete: persistedSemanticMetrics.coverage.categoryCoverageComplete,
+    structuralPassStatus: persistedSemanticMetrics.coverage.structuralPassStatus,
+    categoryAudit: persistedSemanticMetrics.categoryAudit, rubricConcernCategories, categoryCoverageDisagreements });
   return { reused: false, semanticSourceKey, semanticSucceeded: !semanticError && semanticRun?.status === 'completed',
     correctionsAvailable: !semanticError, correctionsCompleteness: semanticError ? 'none' : semanticRun?.status || 'complete',
     semanticMetrics: semanticRun?.metrics || null };
@@ -465,9 +575,11 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
 
 function buildSemanticSourceKey(baseSourceKey, env = process.env) {
   return crypto.createHash('sha256').update(JSON.stringify({ baseSourceKey,
-    coordinatorVersion: semanticCoordinator.VERSION, chunking: semanticCoordinator.config(env) })).digest('hex');
+    coordinatorVersion: semanticCoordinator.VERSION, chunking: semanticCoordinator.config(env),
+    capabilities: executionPolicy.modelCapabilities(ASSESSMENT_MODEL, env) })).digest('hex');
 }
 
 module.exports = { wordsFromSubmission, orderedPageIdentity, buildCorrectionSourceHash, plannedSemanticAttempts,
+  buildCorrectionReviewIdentity,
   buildSemanticSourceKey, hasHolisticCoverageMismatch, holisticCoverageMismatchCategories,
   blockEvaluationAfterCorrectionFailure, generateAndPersist, safePersistenceError };

@@ -74,9 +74,11 @@ function categoryAssessment(transcriptEvidenceIds, correctionIds) {
     enum: transcriptIds.length ? transcriptIds : [NO_TRANSCRIPT_EVIDENCE_SENTINEL] },
     explanation: string(320, { minLength: 1 }) });
   const improvement = closedObject({
+    findingScope: { type: 'string', enum: ['holistic', 'localized'] },
     evidenceType: { type: 'string', enum: ['correction', 'transcript'] },
     correctionId: { type: ['string', 'null'], enum: [null, ...categoryCorrectionIds] },
-    evidenceId: { type: ['string', 'null'], enum: [null, ...transcriptIds] },
+    evidenceId: { type: ['string', 'null'], enum: [null, ...transcriptIds,
+      ...categoryCorrectionIds.map(id => `correction:${id}`)] },
     explanation: string(320, { minLength: 1 }),
     suggestion: string(240, { minLength: 1 })
   });

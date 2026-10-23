@@ -8,7 +8,8 @@ jest.mock('../src/services/imagePreflight.service',()=>({evaluateImage:jest.fn(a
 jest.mock('../src/services/aiGateway.service',()=>({providerAttempt:jest.fn()}));
 jest.mock('../src/services/email.service',()=>({sendGuestSubmissionEmail:jest.fn(async()=>({success:true}))}));
 jest.mock('../src/services/notification.service',()=>({createNotification:jest.fn(async()=>null)}));
-jest.mock('@google-cloud/vision',()=>({ImageAnnotatorClient:jest.fn(()=>({documentTextDetection:jest.fn(async()=>[{fullTextAnnotation:{pages:[]}}])}))}));
+const mockGoogleGeometry=jest.fn(async()=>[{fullTextAnnotation:{pages:[]}}]);
+jest.mock('@google-cloud/vision',()=>({ImageAnnotatorClient:jest.fn(()=>({documentTextDetection:mockGoogleGeometry}))}));
 const sharp=require('sharp'),request=require('supertest'),fs=require('fs'),path=require('path');
 const app=require('../src/app'),mongoose=require('mongoose');
 const {connectInMemoryMongo,disconnectInMemoryMongo}=require('./helpers/testServer'),{seedTestPlans}=require('./helpers/seedTestPlans'),{signTestJwt}=require('./helpers/auth');
@@ -25,6 +26,7 @@ beforeAll(async()=>{await connectInMemoryMongo();await seedTestPlans();
   token=signTestJwt({id:student._id,role:'student',firebaseUid:student.firebaseUid});cls=await Class.create({name:'Preflight',teacher:teacher._id,joinCode:'PRE',qrCodeUrl:'data:,'});await Membership.create({student:student._id,class:cls._id});
 });
 beforeEach(async()=>{process.env.OCR_SOURCE_MODE='gpt_vision_exact';process.env.OCR_GPT_VISION_MODEL='openai/gpt-6-astra';process.env.OPENROUTER_API_KEY='mock-only';
+  mockGoogleGeometry.mockReset().mockResolvedValue([{fullTextAnnotation:{pages:[]}}]);
   a=await Assignment.create({title:'Reference '+(++serial),class:cls._id,teacher:teacher._id,qrToken:'pre-'+serial});
   bytes=await sharp({create:{width:800,height:1000,channels:3,background:{r:220,g:30+serial,b:90}}}).png().toBuffer();
   basic.evaluateImage.mockReset().mockResolvedValue({ready:true,checks:[]});gateway.providerAttempt.mockReset().mockImplementation(async o=>({returnedModel:o.entry.model,content:JSON.stringify(value())}));scheduled.mockClear();corrections.generateAndPersist.mockClear();
@@ -35,6 +37,25 @@ test('basic failure never buys source; basic phase reports checking with no paid
   basic.evaluateImage.mockResolvedValueOnce({ready:false,checks:[{id:'resolution',required:true,status:'fail'}]});expect((await check()).body.data.ready).toBe(false);expect(gateway.providerAttempt).not.toHaveBeenCalled();
   const r=await check(bytes,a,'basic');expect(r.body.data).toMatchObject({ready:false,basicChecksPassed:true,sourceReadStatus:'CHECKING',canSubmit:false});expect(gateway.providerAttempt).not.toHaveBeenCalled();
 });
+test('real worker persistence and result API preserve 110 GPT tokens with 95 mapped and 15 null boxes',async()=>{
+  const tokens=Array.from({length:110},(_,i)=>'token'+String(i).padStart(3,'0'));
+  const lines=Array.from({length:11},(_,i)=>tokens.slice(i*10,i*10+10).join(' '));
+  const primary={version:c.VERSION,activeTranscript:lines.join('\n'),physicalLines:lines.map(text=>({segments:[{text,classification:'STUDENT_ACTIVE_TEXT',confidence:1}]})),uncertainties:[]};
+  gateway.providerAttempt.mockImplementation(async o=>({returnedModel:o.entry.model,content:JSON.stringify(primary)}));
+  mockGoogleGeometry.mockResolvedValue([{fullTextAnnotation:{text:'Not source authority',pages:[{width:800,height:1000,blocks:[{paragraphs:[{words:
+    tokens.slice(0,95).map((text,i)=>({symbols:[...text].map(text=>({text})),boundingBox:{vertices:[
+      {x:20+i%10*70,y:40+Math.floor(i/10)*70},{x:70+i%10*70,y:40+Math.floor(i/10)*70},
+      {x:70+i%10*70,y:80+Math.floor(i/10)*70},{x:20+i%10*70,y:80+Math.floor(i/10)*70}]}}))}]}]}]}}]);
+  expect((await check()).body.data.ready).toBe(true);expect((await submit()).status).toBe(200);
+  const doc=await Submission.findOne({assignment:a._id});
+  await require('../src/services/ocrPipeline.service').runOcrAndPersistForFiles({fileIds:doc.files,targetDoc:doc,jobId:doc.ocrJobId});
+  const r=await request(app).get('/api/submissions/'+doc._id+'/ocr-corrections').set('Authorization','Bearer '+token);
+  expect(r.status).toBe(200);expect(r.body.data.transcript).toBe(primary.activeTranscript);
+  const words=r.body.data.ocr[0].words;expect(words).toHaveLength(110);
+  expect(words.filter(w=>w.bbox)).toHaveLength(95);expect(words.filter(w=>w.bbox===null)).toHaveLength(15);
+  expect(words.map(w=>w.text)).toEqual(tokens);expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);
+  expect(mockGoogleGeometry).toHaveBeenCalledTimes(1);
+});
 test('accepted private preflight then submission and worker use exactly one paid source request',async()=>{
   const usage=(await User.findById(student._id)).usage;
   const r=await check();expect(r.body.data).toMatchObject({sourceReadStatus:'PASSED',ready:true,canSubmit:true});
@@ -43,6 +64,8 @@ test('accepted private preflight then submission and worker use exactly one paid
   await require('../src/services/ocrPipeline.service').runOcrAndPersistForFiles({fileIds:doc.files,targetDoc:doc,jobId:doc.ocrJobId});
   expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);expect(corrections.generateAndPersist).toHaveBeenCalledTimes(1);
   expect((await Submission.findById(doc._id)).sourceTranscriptExact).toBe(value().activeTranscript);
+  expect((await Submission.findById(doc._id)).ocrPages[0].sourceVerificationSummary.performance).toMatchObject({
+    sourceReused:true,sourceProviderCallCount:0,geometryProviderCallCount:1});
   const privateFile=await File.findById(doc.files[0]).select('+gptSourcePreflight');expect(privateFile.gptSourcePreflight).toBeTruthy();expect(privateFile.toJSON().gptSourcePreflight).toBeUndefined();
   const evidence=await Evidence.findById(privateFile.gptSourcePreflight.bindings[0].key).select('+payload');expect(evidence.payload.claims).toHaveLength(1);
 });
@@ -132,6 +155,8 @@ test('v2 non-active uncertainties pass preflight, stay private, reuse source aft
   const r=await request(app).get('/api/submissions/'+doc._id+'/ocr-corrections').set('Authorization','Bearer '+token);
   expect(r.status).toBe(200);expect(r.body.data.transcript).toBe(v.activeTranscript);expect(r.body.data.ocr[0].words.length).toBe(v.activeTranscript.split(/\s+/u).length);
   expect(r.body.data.ocr[0].words.every(w=>w.bbox===null)).toBe(true);
+  for(let poll=0;poll<2;poll++)expect((await request(app).get('/api/submissions/'+doc._id+'/ocr-corrections').set('Authorization','Bearer '+token)).status).toBe(200);
+  expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);
   const saved=await Evidence.findOne({'identity.assignmentId':String(a._id)}).select('+payload');expect(saved.payload).toMatchObject({nonActiveUncertainCount:2,blockingUncertaintyCount:0});
 });
 test.each(['ACTIVE_TEXT_UNCERTAIN','ACTIVE_ROLE_AMBIGUOUS','ACTIVE_REPLACEMENT_AMBIGUOUS','ACTIVE_PUNCTUATION'])('v2 %s still blocks preflight/upload and terminal repeats cost nothing',async kind=>{

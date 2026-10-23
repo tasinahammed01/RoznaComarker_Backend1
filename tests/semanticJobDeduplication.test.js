@@ -3,12 +3,21 @@
 jest.mock('../src/services/languageTool.service', () => ({ checkTextWithLanguageTool: jest.fn() }));
 jest.mock('../src/models/CorrectionLegend', () => ({ findOne: jest.fn(() => ({ lean: jest.fn().mockResolvedValue(null) })) }));
 jest.mock('../src/models/SubmissionFeedback', () => ({ updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }) }));
-jest.mock('../src/services/semanticAIClient.service', () => ({ getSemanticAIConfig: () => ({ provider: 'openrouter', model: 'approved/model',
-  maxRetries: 1, fallback: null }), getSemanticAIConfigStatus: () => ({ credentialConfigured: true }) }));
+jest.mock('../src/services/semanticAIClient.service', () => ({ getSemanticAIConfig: () => ({ provider: 'openrouter', model: 'openai/gpt-6-astra',
+  maxRetries: 1, fallback: null }), getAssessmentAIConfig: () => ({ provider: 'openrouter', model: 'openai/gpt-6-astra',
+  chain: [{ provider: 'openrouter', model: 'openai/gpt-6-astra', fallbackIndex: 0 }],
+  maxRetries: 1, fallback: null, totalBudgetMs: 120000 }), getSemanticAIConfigStatus: () => ({ credentialConfigured: true }) }));
 jest.mock('../src/services/semanticWritingCorrections.service', () => ({ SEMANTIC_PROMPT_VERSION: 'semantic-compact-v2',
-  semanticSourceKey: () => 'semantic-key', analyze: jest.fn(async () => ({ corrections: [], provider: 'openrouter', model: 'approved/model',
+  compactAssignment: (...args) => jest.requireActual('../src/services/semanticWritingCorrections.service').compactAssignment(...args),
+  suspiciousCoverageCategories: (...args) => jest.requireActual('../src/services/semanticWritingCorrections.service').suspiciousCoverageCategories(...args),
+  semanticSourceKey: () => 'semantic-key', analyze: jest.fn(async (input) => ({ ...require('./helpers/astraAssessmentFixtures.cjs').reviewedResult(input), corrections: [], provider: 'openrouter', model: 'openai/gpt-6-astra',
     metrics: { attemptCount: 1, promptInputTokenEstimate: 100 } })) }));
 jest.mock('../src/services/canonicalEvaluation.service', () => ({ stable: (value) => value,
+  resolveAssessmentPolicy: jest.fn(async () => {
+    const service = jest.requireActual('../src/services/teacherEvaluationPolicy.service');
+    const policy = service.normalizeTeacherEvaluationPolicy({});
+    return Object.freeze({ policy, policyHash: service.evaluationPolicyHash(policy), teacherId: null, teacherRole: null });
+  }),
   prepareRubricAssessment: jest.fn().mockResolvedValue({ sourceHash: 'prepared' }),
   persistProvisionalScore: jest.fn().mockResolvedValue({ status: 'partial', overallScore: 78 }),
   generate: jest.fn().mockResolvedValue(null) }));
@@ -32,6 +41,38 @@ describe('semantic single-flight job lock', () => {
     canonicalEvaluation.generate.mockClear();
     canonicalEvaluation.prepareRubricAssessment.mockClear();
     canonicalEvaluation.persistProvisionalScore.mockClear();
+    canonicalEvaluation.resolveAssessmentPolicy.mockClear();
+  });
+  test('real-size successful single correction passes canonical findings to one rubric with reserved time', async () => {
+    const fixture = require('./fixtures/astraAssessmentSmallEssay.cjs');
+    let clock = 1000;
+    const timer = jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    const state = { _id: 'small-essay', ocrJobId: 'ocr-current', semanticStatus: undefined };
+    const model = { updateOne: jest.fn(async (_query, update) => {
+      Object.assign(state, update.$set || {}); return { modifiedCount: 1 };
+    }), findById: jest.fn(async () => ({ ...state, constructor: model })) };
+    semantic.analyze.mockImplementationOnce(async input => {
+      clock += 20000;
+      expect(input.deadlineAt).toBe(181000);
+      return { ...require('./helpers/astraAssessmentFixtures.cjs').reviewedResult(input), metrics: { attemptCount: 1 } };
+    });
+    canonicalEvaluation.prepareRubricAssessment.mockImplementationOnce(async input => {
+      expect(input.deadlineAt - clock).toBe(120000);
+      expect(input.submission.writingCorrections).toEqual(state.writingCorrections);
+      clock += 19000;
+      return { semantic: { metrics: { attemptCount: 1 }, model: 'openai/gpt-6-astra' } };
+    });
+    try {
+      const result = await pipeline.generateAndPersist({ ...state, files: ['f1'], ocrPages: [{ fileId: 'f1', pageNumber: 1, text: fixture.text }],
+        constructor: model, writingCorrections: [] }, { assignment: { title: 'Essay' } });
+      expect(result.semanticSucceeded).toBe(true);
+      expect(semantic.analyze).toHaveBeenCalledTimes(1);
+      expect(canonicalEvaluation.prepareRubricAssessment).toHaveBeenCalledTimes(1);
+      expect(canonicalEvaluation.generate).toHaveBeenCalledWith(expect.objectContaining({ preparedRubricAttempted: true }));
+      expect(state.semanticMetrics).toMatchObject({ rubricAttempted: true, rubricAttemptCount: 1,
+        correctionCoverageComplete: true, canonicalCorrectionStageSucceeded: true,
+        mainCorrectionRequestCount: 1, structuralRequestCount: 0, auditRequestCount: 0 });
+    } finally { timer.mockRestore(); }
   });
 
   test('two concurrent starts for one source hash create exactly one semantic request', async () => {
@@ -55,6 +96,11 @@ describe('semantic single-flight job lock', () => {
     expect(canonicalEvaluation.prepareRubricAssessment).toHaveBeenCalledTimes(1);
     expect([first, second].filter((item) => item?.duplicate)).toHaveLength(1);
     expect(metrics.snapshot()).toMatchObject({ semanticJobsStarted: 1, semanticJobsRejectedAsDuplicate: 1 });
+    const correctionInput = semantic.analyze.mock.calls[0][0];
+    const rubricInput = canonicalEvaluation.prepareRubricAssessment.mock.calls[0][0];
+    expect(correctionInput.policy).toBe(rubricInput.assessmentPolicy.policy);
+    expect(correctionInput.assignment).toBe(rubricInput.assignment);
+    expect(Object.isFrozen(correctionInput.policy.checks)).toBe(true);
   });
 
   test('chunking configuration participates in the semantic idempotency key', () => {
@@ -64,18 +110,17 @@ describe('semantic single-flight job lock', () => {
     expect(first).toBe(pipeline.buildSemanticSourceKey('base', { SEMANTIC_AI_CHUNK_INPUT_TOKENS: '3000' }));
   });
 
-  test.each([2000, 5000, 10000])('rubric preparation overlaps semantic correction analysis for %i transcript chars and runs once', async (transcriptChars) => {
+  test.each([2000, 5000, 10000])('one rubric preparation waits for canonical corrections for %i transcript chars', async (transcriptChars) => {
     let releaseSemantic;
     const semanticGate = new Promise((resolve) => { releaseSemantic = resolve; });
     const starts = {};
-    semantic.analyze.mockImplementationOnce(async () => {
+    semantic.analyze.mockImplementationOnce(async (input) => {
       starts.semantic = Date.now();
       await semanticGate;
-      return { corrections: [], provider: 'openrouter', model: 'approved/model', metrics: { attemptCount: 1 } };
+      return { ...require('./helpers/astraAssessmentFixtures.cjs').reviewedResult(input), corrections: [], provider: 'openrouter', model: 'openai/gpt-6-astra', metrics: { attemptCount: 1 } };
     });
-    canonicalEvaluation.prepareRubricAssessment.mockImplementationOnce(async () => {
+    canonicalEvaluation.prepareRubricAssessment.mockImplementationOnce(async (input) => {
       starts.rubric = Date.now();
-      releaseSemantic();
       return { sourceHash: 'prepared' };
     });
     const state = { _id: 'submission-parallel', ocrJobId: 'ocr-job' };
@@ -84,24 +129,29 @@ describe('semantic single-flight job lock', () => {
       Object.assign(state, update.$set || {}); return { modifiedCount: 1 };
     }), findById: jest.fn(async () => ({ ...state, constructor: model })) };
 
-    await pipeline.generateAndPersist({ ...state, files: ['f1'], ocrStatus: 'completed',
+    const running = pipeline.generateAndPersist({ ...state, files: ['f1'], ocrStatus: 'completed',
       ocrPages: [{ fileId: 'f1', pageNumber: 1, text: 'x'.repeat(transcriptChars) }],
       writingCorrections: [], constructor: model }, { assignment: { title: 'Essay' } });
 
+    await new Promise(resolve => setImmediate(resolve));
+    expect(canonicalEvaluation.prepareRubricAssessment).not.toHaveBeenCalled();
+    releaseSemantic();
+    await running;
+
     expect(starts.semantic).toBeDefined();
     expect(starts.rubric).toBeDefined();
-    expect(Math.abs(starts.semantic - starts.rubric)).toBeLessThan(100);
+    expect(starts.rubric).toBeGreaterThanOrEqual(starts.semantic);
     expect(canonicalEvaluation.prepareRubricAssessment).toHaveBeenCalledTimes(1);
     expect(canonicalEvaluation.generate).toHaveBeenCalledTimes(1);
   });
 
-  test('publishes the provisional score before a slow semantic correction request finishes', async () => {
+  test('does not publish an unrelated provisional rubric before canonical corrections finish', async () => {
     let releaseSemantic;
     const semanticGate = new Promise((resolve) => { releaseSemantic = resolve; });
     let semanticFinished = false;
-    semantic.analyze.mockImplementationOnce(async () => {
+    semantic.analyze.mockImplementationOnce(async (input) => {
       await semanticGate; semanticFinished = true;
-      return { corrections: [], provider: 'openrouter', model: 'approved/model', metrics: { attemptCount: 1 } };
+      return { ...require('./helpers/astraAssessmentFixtures.cjs').reviewedResult(input), corrections: [], provider: 'openrouter', model: 'openai/gpt-6-astra', metrics: { attemptCount: 1 } };
     });
     canonicalEvaluation.prepareRubricAssessment.mockResolvedValueOnce({ sourceHash: 'prepared' });
     const state = { _id: 'submission-score-first', ocrJobId: 'ocr-job' };
@@ -113,21 +163,22 @@ describe('semantic single-flight job lock', () => {
       ocrPages: [{ fileId: 'f1', pageNumber: 1, text: 'A long-running semantic essay.' }],
       writingCorrections: [], constructor: model }, { assignment: { title: 'Essay' } });
     await new Promise((resolve) => setImmediate(resolve));
-    expect(canonicalEvaluation.persistProvisionalScore).toHaveBeenCalledTimes(1);
+    expect(canonicalEvaluation.persistProvisionalScore).not.toHaveBeenCalled();
     expect(semanticFinished).toBe(false);
     releaseSemantic();
     await running;
+    expect(canonicalEvaluation.persistProvisionalScore).toHaveBeenCalledTimes(1);
   });
 
   test('semantic may finish first and finalization still waits for and reuses the one rubric result', async () => {
     let releaseRubric;
     const rubricGate = new Promise((resolve) => { releaseRubric = resolve; });
     let semanticFinished = false;
-    semantic.analyze.mockImplementationOnce(async () => {
+    semantic.analyze.mockImplementationOnce(async (input) => {
       semanticFinished = true;
-      return { corrections: [], provider: 'openrouter', model: 'approved/model', metrics: { attemptCount: 1 } };
+      return { ...require('./helpers/astraAssessmentFixtures.cjs').reviewedResult(input), corrections: [], provider: 'openrouter', model: 'openai/gpt-6-astra', metrics: { attemptCount: 1 } };
     });
-    canonicalEvaluation.prepareRubricAssessment.mockImplementationOnce(async () => {
+    canonicalEvaluation.prepareRubricAssessment.mockImplementationOnce(async (input) => {
       await rubricGate;
       return { sourceHash: 'semantic-first-rubric' };
     });
@@ -176,7 +227,8 @@ describe('semantic single-flight job lock', () => {
           correctionKind: 'localized', severity: 'medium', occurrence: 0 },
         input.transcript, input.spans || [], input.legend, 'AI');
       })).filter(Boolean);
-      return { corrections, provider: 'openrouter', model: 'approved/model', metrics: { attemptCount: 1 } };
+      return { ...require('./helpers/astraAssessmentFixtures.cjs').reviewedResult(input, corrections),
+        metrics: { attemptCount: 1 } };
     });
     canonicalEvaluation.generate.mockResolvedValueOnce({ status: 'completed', overallScore: 81,
       timings: { detailedFeedbackMs: 1 } });
@@ -232,7 +284,7 @@ describe('semantic single-flight job lock', () => {
   test('failed provider attempt is numbered and safe diagnostics exclude request and response data', async () => {
     const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
     semantic.analyze.mockImplementationOnce(async (input) => {
-      await input.onAttempt({ attempt: 1, maxAttempts: 2, provider: 'openrouter', model: 'approved/model',
+      await input.onAttempt({ attempt: 1, maxAttempts: 2, provider: 'openrouter', model: 'openai/gpt-6-astra',
         attemptTimeoutMs: 1000, remainingBudgetMs: 2000 });
       const error = new Error('must-not-be-logged-provider-output');
       Object.assign(error, { code: 'SEMANTIC_RESPONSE_INVALID', validationStage: 'json_parse', responseTextLength: 27,
@@ -253,7 +305,7 @@ describe('semantic single-flight job lock', () => {
 
   test('two-page semantic timeout degrades corrections but still runs transcript-based scoring', async () => {
     const timeout = Object.assign(new Error('semantic timeout'), { code: 'AI_ATTEMPT_TIMEOUT' });
-    semantic.analyze.mockRejectedValueOnce(timeout);
+    semantic.analyze.mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout);
     canonicalEvaluation.generate.mockResolvedValueOnce({ overallScore: 76 });
     const state = { _id: 'submission-degraded', ocrJobId: 'ocr-job', semanticStatus: undefined };
     const model = {

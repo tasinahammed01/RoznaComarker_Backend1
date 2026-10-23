@@ -39,15 +39,15 @@ function rubricPayload(sourceHash) {
   return { sourceHash, categories: {
     CONTENT: { score: 18, maxScore: 20, comment: 'Relevant and developed.',
       strengthEvidence: [{ evidenceId: evidence[0].evidenceId, explanation: 'A controlling idea is present.' }],
-      improvementEvidence: [{ evidenceType: 'correction', correctionId: 'c1', evidenceId: null,
+      improvementEvidence: [{ findingScope: 'localized', evidenceType: 'correction', correctionId: 'c1', evidenceId: null,
         explanation: 'The claim needs support.', suggestion: 'Add evidence.' }] },
     ORGANIZATION: { score: 16, maxScore: 20, comment: 'Mostly logical.',
       strengthEvidence: [{ evidenceId: evidence[0].evidenceId, explanation: 'The opening is clear.' }],
-      improvementEvidence: [{ evidenceType: 'correction', correctionId: 'o1', evidenceId: null,
+      improvementEvidence: [{ findingScope: 'localized', evidenceType: 'correction', correctionId: 'o1', evidenceId: null,
         explanation: 'The ending repeats.', suggestion: 'Revise the conclusion.' }] },
     VOCABULARY: { score: 15, maxScore: 20, comment: 'Adequate but repetitive.',
       strengthEvidence: [{ evidenceId: evidence[0].evidenceId, explanation: 'The wording is understandable.' }],
-      improvementEvidence: [{ evidenceType: 'correction', correctionId: 'v1', evidenceId: null,
+      improvementEvidence: [{ findingScope: 'localized', evidenceType: 'correction', correctionId: 'v1', evidenceId: null,
         explanation: 'The phrase repeats.', suggestion: 'Use a precise phrase.' }] }
   } };
 }
@@ -60,8 +60,8 @@ async function deterministicResult(sourceHash) {
     config: getSemanticAIConfig(env), env,
     runCompletion: async ({ validate }) => {
       const content = JSON.stringify(rubricPayload(sourceHash));
-      return { content, value: validate(content), provider: 'openrouter', model: 'openai/gpt-4.1-mini',
-        metrics: { attempts: [{ provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 0,
+      return { content, value: validate(content), provider: 'openrouter', model: 'openai/gpt-6-astra',
+        metrics: { attempts: [{ provider: 'openrouter', model: 'openai/gpt-6-astra', fallbackIndex: 0,
           status: 'success' }] } };
     }
   });
@@ -86,8 +86,7 @@ describe('first submission and resubmission assessment parity', () => {
     expect(config).toMatchObject({ temperature: 0, responseFormat: 'json', thinkingLevel: 'minimal',
       maxOutputTokens: 8000 });
     expect(config.chain).toEqual([
-      { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 0 },
-      { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 1 }
+      { provider: 'openrouter', model: 'openai/gpt-6-astra', fallbackIndex: 0 }
     ]);
 
     const build = (sourceHash, fileId) => semanticCorrections.buildSemanticRequest({ transcript,

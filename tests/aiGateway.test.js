@@ -181,15 +181,14 @@ describe('global AI gateway', () => {
     ]);
   });
 
-  test('assessment profile uses paid GPT-4.1 then Gemini without changing the global chain', () => {
+  test('assessment profile uses only Astra without changing the global chain', () => {
     const configured = env({ ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter',
       ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1', ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'google',
       ASSESSMENT_AI_FALLBACK_1_MODEL: 'gemini-3.6-flash', ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '45000',
       ASSESSMENT_AI_TOTAL_BUDGET_MS: '120000', ASSESSMENT_AI_PRIMARY_RETRIES: '1',
       ASSESSMENT_AI_FALLBACK_RETRIES: '0', ASSESSMENT_AI_RETRY_DELAY_MS: '1500' });
     expect(gateway.getAssessmentAIConfig(configured)).toMatchObject({ chain: [
-      { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 0 },
-      { provider: 'google', model: 'gemini-3.6-flash', fallbackIndex: 1 }
+      { provider: 'openrouter', model: 'openai/gpt-6-astra', fallbackIndex: 0 }
     ], attemptTimeoutMs: 45000, totalBudgetMs: 120000, primaryRetries: 1,
     fallbackRetries: 0, retryDelayMs: 1500 });
     expect(gateway.getAIConfig(configured).chain[0]).toMatchObject({
@@ -205,19 +204,17 @@ describe('global AI gateway', () => {
     expect(() => gateway.getAssessmentAIConfig(configured)).toThrow(/invalid/i);
   });
 
-  test('assessment profile ignores fallback 2 and remains the closed paid OpenRouter chain', () => {
+  test('assessment profile ignores every fallback and remains Astra-only', () => {
     const configured = env({ ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter',
       ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1', ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter',
       ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini', ASSESSMENT_AI_FALLBACK_2_PROVIDER: 'google',
       ASSESSMENT_AI_FALLBACK_2_MODEL: 'gemini-3.6-flash', ASSESSMENT_AI_PRIMARY_RETRIES: '1',
       ASSESSMENT_AI_FALLBACK_RETRIES: '0' });
     expect(gateway.getAssessmentAIConfig(configured).chain).toEqual([
-      { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 0 },
-      { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 1 }
+      { provider: 'openrouter', model: 'openai/gpt-6-astra', fallbackIndex: 0 }
     ]);
     expect(gateway.sanitizedAssessmentChain(configured)).toEqual([
-      { index: 0, role: 'primary', provider: 'openrouter', model: 'openai/gpt-4.1' },
-      { index: 1, role: 'fallback_1', provider: 'openrouter', model: 'openai/gpt-4.1-mini' }
+      { index: 0, role: 'primary', provider: 'openrouter', model: 'openai/gpt-6-astra' }
     ]);
     expect(JSON.stringify(gateway.sanitizedAssessmentChain(configured))).not.toContain('router-key');
   });
@@ -233,18 +230,18 @@ describe('global AI gateway', () => {
       env: env(), fetchImpl: async () => response(503, {}), now: () => 0,
       onAttempt: ({ attemptTimeoutMs }) => allocations.push(attemptTimeoutMs) }))
       .rejects.toHaveProperty('code', 'AI_CHAIN_EXHAUSTED');
-    expect(allocations).toEqual([60000, 60000, 60000]);
+    expect(allocations).toEqual([60000, 60000]);
   });
 
-  test('assessment execution settings inherit globals and assessment values override them', () => {
+  test('assessment time bounds have dedicated defaults and explicit assessment values override them', () => {
     const base = env({ ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1',
       ASSESSMENT_AI_FALLBACK_1_PROVIDER: '', ASSESSMENT_AI_FALLBACK_1_MODEL: '',
       ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '', ASSESSMENT_AI_TOTAL_BUDGET_MS: '',
       ASSESSMENT_AI_PRIMARY_RETRIES: '', ASSESSMENT_AI_FALLBACK_RETRIES: '', ASSESSMENT_AI_RETRY_DELAY_MS: '',
       AI_ATTEMPT_TIMEOUT_MS: '41000', AI_TOTAL_BUDGET_MS: '111000', AI_PRIMARY_RETRIES: '1',
       AI_FALLBACK_RETRIES: '0', AI_RETRY_DELAY_MS: '700' });
-    expect(gateway.getAssessmentAIConfig(base)).toMatchObject({ attemptTimeoutMs: 41000,
-      totalBudgetMs: 111000, primaryRetries: 1, fallbackRetries: 0, retryDelayMs: 700 });
+    expect(gateway.getAssessmentAIConfig(base)).toMatchObject({ attemptTimeoutMs: 90000,
+      totalBudgetMs: 300000, primaryRetries: 1, fallbackRetries: 0, retryDelayMs: 700 });
     expect(gateway.getAssessmentAIConfig({ ...base, ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '52000',
       ASSESSMENT_AI_TOTAL_BUDGET_MS: '119000', ASSESSMENT_AI_RETRY_DELAY_MS: '900' }))
       .toMatchObject({ attemptTimeoutMs: 52000, totalBudgetMs: 119000, retryDelayMs: 900 });
@@ -272,16 +269,12 @@ describe('global AI gateway', () => {
     expect(() => gateway.getAIConfig(env({ AI_PRIMARY_RETRIES: '3' }))).toThrow(/invalid/i);
   });
 
-  test('zero assessment retries still performs one primary attempt and one configured fallback attempt', async () => {
-    const assessmentEnv = env({ ASSESSMENT_AI_PRIMARY_PROVIDER: 'google', ASSESSMENT_AI_PRIMARY_MODEL: 'primary-model',
-      ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter', ASSESSMENT_AI_FALLBACK_1_MODEL: 'fallback-one',
-      ASSESSMENT_AI_PRIMARY_RETRIES: '0', ASSESSMENT_AI_FALLBACK_RETRIES: '0' });
-    const config = gateway.getAssessmentAIConfig(assessmentEnv);
-    const fetchImpl = jest.fn().mockResolvedValueOnce(response(503, {})).mockResolvedValueOnce(router('fallback result'));
-    const result = await gateway.generate({ messages: [{ role: 'user', content: 'x' }], env: assessmentEnv,
-      config, fetchImpl, sleepFn: jest.fn(async () => {}) });
-    expect(result).toMatchObject({ content: 'fallback result', attemptCount: 2, fallbackUsed: true });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  test('zero assessment retries performs one Astra attempt and never a fallback', async () => {
+    const configured = env({ ASSESSMENT_AI_PRIMARY_RETRIES: '0' });
+    const fetchImpl = jest.fn().mockResolvedValueOnce(response(503, {})).mockResolvedValueOnce(router('unused fallback'));
+    await expect(gateway.generate({ messages: [], env: configured, config: gateway.getAssessmentAIConfig(configured), fetchImpl }))
+      .rejects.toMatchObject({ code: 'AI_CHAIN_EXHAUSTED', attemptCount: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   test('primary 503 retries once then succeeds without fallback', async () => {
@@ -483,11 +476,11 @@ describe('global AI gateway', () => {
         ASSESSMENT_AI_TOTAL_BUDGET_MS: '1000', ASSESSMENT_AI_PRIMARY_RETRIES: '1',
         ASSESSMENT_AI_FALLBACK_RETRIES: '0', ASSESSMENT_AI_RETRY_DELAY_MS: '0' })),
       env: env(), fetchImpl, sleepFn: async () => {} });
-    expect(result).toMatchObject({ model: 'openai/gpt-4.1-mini', attemptCount: 2, fallbackUsed: false });
+    expect(result).toMatchObject({ model: 'openai/gpt-6-astra', attemptCount: 2, fallbackUsed: false });
     expect(result.attempts.map((attempt) => attempt.retryIndex)).toEqual([0, 1]);
   });
 
-  test('assessment starts fallback only after the primary timeout retry is exhausted', async () => {
+  test('assessment never starts fallback after the primary timeout retry is exhausted', async () => {
     const timeout = (_url, options) => new Promise((_resolve, reject) => {
       options.signal.addEventListener('abort', () => {
         const error = new Error('aborted'); error.name = 'AbortError'; reject(error);
@@ -495,22 +488,14 @@ describe('global AI gateway', () => {
     });
     const fetchImpl = jest.fn().mockImplementationOnce(timeout).mockImplementationOnce(timeout)
       .mockResolvedValueOnce(router('{"ok":true}'));
-    const result = await gateway.generate({ messages: [{ role: 'user', content: 'x' }],
-      responseFormat: 'json', validate: JSON.parse,
-      config: gateway.getAssessmentAIConfig(env({ ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter',
-        ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1-mini', ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter',
-        ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1', ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '5',
-        ASSESSMENT_AI_TOTAL_BUDGET_MS: '1000', ASSESSMENT_AI_PRIMARY_RETRIES: '1',
-        ASSESSMENT_AI_FALLBACK_RETRIES: '0', ASSESSMENT_AI_RETRY_DELAY_MS: '0' })),
-      env: env(), fetchImpl, sleepFn: async () => {} });
-    expect(result.attempts.map(({ model, retryIndex }) => ({ model, retryIndex }))).toEqual([
-      { model: 'openai/gpt-4.1-mini', retryIndex: 0 },
-      { model: 'openai/gpt-4.1-mini', retryIndex: 1 },
-      { model: 'openai/gpt-4.1', retryIndex: 0 }
-    ]);
+    await expect(gateway.generate({ messages: [], config: gateway.getAssessmentAIConfig(env({
+      ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '5', ASSESSMENT_AI_TOTAL_BUDGET_MS: '1000',
+      ASSESSMENT_AI_PRIMARY_RETRIES: '1', ASSESSMENT_AI_RETRY_DELAY_MS: '0'
+    })), env: env(), fetchImpl, sleepFn: async () => {} })).rejects.toMatchObject({ attemptCount: 2, timeoutCount: 2 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  test('assessment reports chain exhaustion after primary timeout, retry, and fallback timeout', async () => {
+  test('assessment reports chain exhaustion after primary timeout and its bounded retry', async () => {
     const timeout = (_url, options) => new Promise((_resolve, reject) => {
       options.signal.addEventListener('abort', () => {
         const error = new Error('aborted'); error.name = 'AbortError'; reject(error);
@@ -523,7 +508,7 @@ describe('global AI gateway', () => {
       ASSESSMENT_AI_FALLBACK_RETRIES: '0', ASSESSMENT_AI_RETRY_DELAY_MS: '0' }));
     await expect(gateway.generate({ messages: [{ role: 'user', content: 'x' }], config: configured,
       env: env(), fetchImpl: jest.fn(timeout), sleepFn: async () => {} })).rejects.toMatchObject({
-      code: 'AI_CHAIN_EXHAUSTED', attemptCount: 3, timeoutCount: 3
+      code: 'AI_CHAIN_EXHAUSTED', attemptCount: 2, timeoutCount: 2
     });
   });
 
@@ -534,11 +519,9 @@ describe('global AI gateway', () => {
       ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1-mini', ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter',
       ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1', ASSESSMENT_AI_PRIMARY_RETRIES: '1',
       ASSESSMENT_AI_FALLBACK_RETRIES: '0' }));
-    const result = await gateway.generate({ messages: [{ role: 'user', content: 'x' }], config: configured,
-      responseFormat: 'json', validate: JSON.parse, env: env(), fetchImpl });
-    expect(result.attempts).toHaveLength(2);
-    expect(result.attempts[0]).toMatchObject({ code: 'AI_PROVIDER_AUTH_ERROR', retryIndex: 0 });
-    expect(result.attempts[1]).toMatchObject({ model: 'openai/gpt-4.1', retryIndex: 0 });
+    await expect(gateway.generate({ messages: [], config: configured, env: env(), fetchImpl }))
+      .rejects.toMatchObject({ attemptCount: 1, finalFailureCode: 'AI_PROVIDER_AUTH_ERROR' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   test('all failures return a sanitized chain error', async () => {

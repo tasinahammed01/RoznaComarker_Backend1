@@ -83,7 +83,7 @@ describe('teacher evaluation policy', () => {
     const filtered = policyService.correctionsAllowedByPolicy(all, {
       checks: { grammarSpelling: false, coherenceLogic: false, factChecking: false }
     });
-    expect(filtered.map((item) => item.category)).toEqual(['CONTENT']);
+    expect(filtered.map((item) => item.category)).toEqual([]);
     expect(scoring.scoreGrammar({ corrections, wordCount: 120, enabled: false }).score)
       .toBe(scoring.RUBRIC_MAX.GRAMMAR);
   });

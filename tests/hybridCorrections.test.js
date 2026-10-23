@@ -340,8 +340,8 @@ describe('safe hybrid correction policy', () => {
       languageToolCorrections: []
     });
     const prompt = request.messages[1].content;
-    expect(request.messages[0].content).toContain('strict academic writing correction examiner');
-    expect(request.messages[0].content).toContain('localized error detection, not general essay evaluation');
+    expect(request.messages[0].content).toContain('rigorous source-grounded academic writing error detector');
+    expect(request.messages[0].content).toContain('Review every enabled category and supplied legend symbol systematically');
     expect(request.messages[0].content).toContain('sentence by sentence from the first page through the final page');
     expect(request.messages[0].content).toContain('Do not stop after finding several examples.');
     expect(prompt).toContain('CONTENT: REL, DEV, TA, CL, SD');
@@ -470,12 +470,11 @@ describe('safe hybrid correction policy', () => {
         provider: 'openrouter', model: 'openai/gpt-4.1', usage: {}, metrics: { attemptCount: 1 } };
     });
     const mainConfig = {
-      provider: 'openrouter', model: 'openai/gpt-4.1-mini', attemptTimeoutMs: 30000,
-      primaryRetries: 1, fallbackRetries: 2,
+      provider: 'openrouter', model: 'openai/gpt-6-astra', attemptTimeoutMs: 30000,
+      primaryRetries: 1, fallbackRetries: 0,
       chain: [
-        { provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 0 },
-        { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 1 }
-      ], fallback: { provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 1 }
+        { provider: 'openrouter', model: 'openai/gpt-6-astra', fallbackIndex: 0 }
+      ], fallback: null
     };
     const result = await semantic.analyze({ transcript, transcriptHash: 'audit-hash' }, {
       runCompletion, env: { OPENROUTER_API_KEY: 'test-only' }, config: {
@@ -483,11 +482,11 @@ describe('safe hybrid correction policy', () => {
       }
     });
     expect(runCompletion).toHaveBeenCalledTimes(2);
-    expect(configs[0].model).toBe('openai/gpt-4.1-mini');
-    expect(configs[1].model).toBe('openai/gpt-4.1');
+    expect(configs[0].model).toBe('openai/gpt-6-astra');
+    expect(configs[1].model).toBe('openai/gpt-6-astra');
     expect(configs[0]).toEqual(mainConfig);
     expect(configs[1]).toMatchObject({ attemptTimeoutMs: 15000, primaryRetries: 0, fallbackRetries: 0 });
-    expect(configs[1].chain.map((entry) => entry.model)).toEqual(['openai/gpt-4.1', 'openai/gpt-4.1-mini']);
+    expect(configs[1].chain.map((entry) => entry.model)).toEqual(['openai/gpt-6-astra']);
     expect(prompts[1]).toContain('previous pass produced unexpectedly sparse coverage');
     expect(prompts[1]).toContain('Re-read the COMPLETE canonical transcript independently');
     expect(prompts[1]).toContain('CONTENT boundaries: REL=relevance, DEV=idea development');
@@ -534,7 +533,7 @@ describe('safe hybrid correction policy', () => {
   });
 
   test('allows the stronger audit to confirm legitimate zero findings without fabricating corrections', async () => {
-    const transcript = `students is present mispell vagueword ${'substantial context '.repeat(30)}`.trim();
+    const transcript = `students is present mispell vagueword ${'substantial context '.repeat(300)}`.trim();
     const primary = structuredFor([
       finding({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'students is', suggestedText: 'students are' }),
       finding({ category: 'MECHANICS', symbol: 'SP', quotedText: 'mispell', suggestedText: 'misspell' }),
@@ -566,7 +565,7 @@ describe('safe hybrid correction policy', () => {
   });
 
   test('keeps existing quote validation on the category audit and preserves valid primary corrections', async () => {
-    const transcript = `students is unclear ${'supporting context '.repeat(30)}`.trim();
+    const transcript = `students is unclear ${'supporting context '.repeat(300)}`.trim();
     const primary = structuredFor([finding({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'students is',
       suggestedText: 'students are' })], { transcriptHash: 'audit-invalid-hash' });
     const categories = ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'MECHANICS'];

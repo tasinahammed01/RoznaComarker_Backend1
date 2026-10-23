@@ -14,6 +14,7 @@ const vision = require('../src/services/visionOcr.service');
 const shadow = require('../src/services/hybridSource/shadow');
 let directory, file;
 const originalMode = process.env.OCR_SOURCE_MODE;
+const originalOrder = process.env.OCR_READING_ORDER;
 beforeAll(async () => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hybrid-source-unit-'));
   file = path.join(directory, 'synthetic-geometry.png');
@@ -22,8 +23,12 @@ beforeAll(async () => {
 afterAll(() => {
   fs.unlinkSync(file); fs.rmdirSync(directory);
   if (originalMode === undefined) delete process.env.OCR_SOURCE_MODE; else process.env.OCR_SOURCE_MODE = originalMode;
+  if (originalOrder === undefined) delete process.env.OCR_READING_ORDER; else process.env.OCR_READING_ORDER = originalOrder;
 });
-test('actual Vision adapter preserves identical public output in legacy/shadow/rollback', async () => {
+test('actual Vision adapter preserves identical native legacy output in shadow/rollback', async () => {
+  // Shadow historically observes native Google output; the newer opt-in
+  // handwriting layout/source gate is a separate legacy mode, not shadow output.
+  process.env.OCR_READING_ORDER = 'native';
   const options = { sourceFile: { _id: 'file' }, hybridIdentity: { submissionId: 'submission', runId: 'run' } };
   process.env.OCR_SOURCE_MODE = 'legacy';
   const legacy = await vision.extractOcrFromImageFile(file, options);

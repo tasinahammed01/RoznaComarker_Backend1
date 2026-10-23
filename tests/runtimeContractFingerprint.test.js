@@ -10,9 +10,9 @@ describe('runtime contract fingerprint', () => {
     const first = runtimeContractFingerprint(env);
     expect(first).toEqual(runtimeContractFingerprint(env));
     expect(first).toMatchObject({ applicationVersion: '1.0.0', environment: 'test', deploymentRevision: 'release-123',
-      contracts: { correctionPrompt: 'ai-only-correction-detection-v8-code-first', correctionSchema: 'semantic-corrections-v12-code-authoritative',
-        rubricPrompt: 'semantic-rubric-assessment-v9-conservative-transcript-relevance', rubricSchema: 'semantic-rubric-assessment-json-v5',
-        canonicalCorrection: 'canonical-7-code-authoritative', canonicalEvaluation: 'canonical-evaluation-9-fixed-skill-isolation' },
+      contracts: { correctionPrompt: 'semantic-corrections-astra-v10-compact-legend', correctionSchema: 'semantic-corrections-v13-astra-reviewed',
+        rubricPrompt: 'semantic-rubric-assessment-v11-server-evidence', rubricSchema: 'semantic-rubric-assessment-json-v7-server-evidence',
+        canonicalCorrection: 'canonical-8-source-grounded', canonicalEvaluation: 'canonical-evaluation-9-fixed-skill-isolation' },
       contractHash: expect.stringMatching(/^[a-f0-9]{16}$/) });
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.contracts)).toBe(true);

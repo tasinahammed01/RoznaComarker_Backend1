@@ -29,10 +29,10 @@ const { pageImage } = require('./fixtures/imagePreflightPage');
 let png;
 
 describe('persisted assessment reuse through the upload API (mocked AI)', () => {
-  let teacher, student, classDoc, assignment, token, submission, before, feedbackBefore, evaluate;
+  let teacher, student, classDoc, assignment, token, submission, before, feedbackBefore, evaluate, analyze;
   beforeAll(connectInMemoryMongo);
   afterAll(disconnectInMemoryMongo);
-  afterEach(() => evaluate?.mockRestore());
+  afterEach(() => { evaluate?.mockRestore(); analyze?.mockRestore(); });
   const upload = (bytes = png) => request(app).post('/api/submissions/qr/release-test')
     .set('Authorization', `Bearer ${token}`).attach('file', bytes, { filename: 'essay.png', contentType: 'image/png' });
   beforeEach(async () => {
@@ -62,6 +62,7 @@ describe('persisted assessment reuse through the upload API (mocked AI)', () => 
     const sourceHash = pipeline.buildCorrectionSourceHash({ transcript: transcript.text, pages: transcript.pages,
       assignment, fileContentIdentity: submission.fileContentIdentity, legend: await resolveLegend() });
     Object.assign(submission, { ocrStatus: 'completed', correctionStatus: 'completed', semanticStatus: 'completed',
+      correctionGenerationConfig: { reviewIdentity: pipeline.buildCorrectionReviewIdentity({ assignment, policy: teacher.aiConfig }) },
       correctionVersion: canonical.VERSION, correctionSourceHash: sourceHash,
       writingCorrections: [{ id: 'stable-correction', fileId, wordIds: [wordId], page: 1,
         startChar: 2, endChar: 6, quotedText: 'goes', suggestedText: 'go', category: 'GRAMMAR', symbol: 'AGR' }],
@@ -82,6 +83,7 @@ describe('persisted assessment reuse through the upload API (mocked AI)', () => 
     feedbackBefore = await Feedback.findOne({ submissionId: submission._id }).lean();
     ocr.runOcrAndPersistForFiles.mockClear();
     evaluate = jest.spyOn(evaluation, 'generate').mockResolvedValue({ status: 'completed' });
+    analyze = jest.spyOn(pipeline, 'generateAndPersist').mockResolvedValue({ semanticSucceeded: true });
   });
   test.each(['resolution', 'rotation', 'undetermined'])('failed %s preflight creates no records or credit transaction and starts no OCR', async reason => {
     const File = require('../src/models/File');
@@ -126,7 +128,7 @@ describe('persisted assessment reuse through the upload API (mocked AI)', () => 
     expect(await Transaction.countDocuments()).toBe(count);
     expect(await Revision.countDocuments({ sourceSubmissionId: submission._id })).toBe(1);
   });
-  test.each(['rubric', 'policy', 'evaluation-version'])('%s change reruns evaluation only', async change => {
+  test.each(['rubric', 'policy', 'evaluation-version'])('%s change invalidates only the necessary assessment stages and reuses OCR', async change => {
     if (change === 'policy') await User.updateOne({ _id: teacher._id }, { $set: { 'aiConfig.strictness': 'strict' } });
     else if (change === 'rubric') await Assignment.updateOne({ _id: assignment._id }, { $set: {
       rubrics: { totalPoints: 100, criteria: [{ name: 'Ideas', weight: 100,
@@ -139,10 +141,18 @@ describe('persisted assessment reuse through the upload API (mocked AI)', () => 
     const after = await Submission.findById(submission._id).lean();
     expect(after.reusedAssessment).toBe(false);
     expect(after.correctionSourceHash).toBe(before.correctionSourceHash);
-    expect(after.correctionStatistics).toEqual(before.correctionStatistics);
-    expect(after.evaluationStatus).toBe('stale');
+    expect(after.evaluationStatus).toBe(change === 'evaluation-version' ? 'stale' : 'pending');
     expect(ocr.runOcrAndPersistForFiles).not.toHaveBeenCalled();
-    expect(evaluate).toHaveBeenCalledTimes(1);
+    if (change === 'evaluation-version') {
+      expect(after.correctionStatistics).toEqual(before.correctionStatistics);
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      expect(analyze).not.toHaveBeenCalled();
+    } else {
+      expect(after.correctionStatus).toBe('pending');
+      expect(after.writingCorrections).toEqual([]);
+      expect(analyze).toHaveBeenCalledTimes(1);
+      expect(evaluate).not.toHaveBeenCalled();
+    }
   });
   test.each(['content', 'correction-version'])('%s change starts a new analysis', async change => {
     if (change === 'correction-version') await Submission.updateOne({ _id: submission._id }, { $set: { correctionVersion: 'obsolete' } });

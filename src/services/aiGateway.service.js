@@ -4,6 +4,9 @@ const logger = require('../utils/logger');
 const requestDiagnostics = require('./aiRequestDiagnostics.service');
 
 const SUPPORTED_PROVIDERS = new Set(['google', 'openrouter']);
+const ASSESSMENT_MODEL = 'openai/gpt-6-astra';
+const ASSESSMENT_AUTHORITY_VERSION = 'astra-assessment-authority-v1';
+const isAssessmentFeature = feature => /^(?:semantic_corrections(?:_category_audit)?|semantic_rubric_assessment|rubric_completion(?:_repair)?|rubric_from_file|submission_feedback|teacher_comment_draft)$/u.test(feature);
 const RETRYABLE_HTTP = new Set([408, 429, 500, 502, 503, 504]);
 const DEFAULTS = Object.freeze({
   attemptTimeoutMs: 30000,
@@ -92,30 +95,31 @@ function getAIConfig(env = process.env, { requireCredentials = true } = {}) {
 }
 
 function getAssessmentAIConfig(env = process.env, options = {}) {
+  if (text(env.ASSESSMENT_AI_MODEL) && text(env.ASSESSMENT_AI_MODEL) !== ASSESSMENT_MODEL)
+    throw configurationError(['ASSESSMENT_AI_MODEL must be openai/gpt-6-astra.']);
   const assessmentOrGlobal = (assessmentKey, globalKey) =>
     text(env[assessmentKey]) ? env[assessmentKey] : env[globalKey];
   const assessmentEnv = { ...env,
-    AI_PRIMARY_PROVIDER: text(env.ASSESSMENT_AI_PRIMARY_PROVIDER) || 'openrouter',
-    AI_PRIMARY_MODEL: text(env.ASSESSMENT_AI_PRIMARY_MODEL) || 'openai/gpt-4.1',
-    AI_FALLBACK_1_PROVIDER: text(env.ASSESSMENT_AI_FALLBACK_1_PROVIDER) || 'openrouter',
-    AI_FALLBACK_1_MODEL: text(env.ASSESSMENT_AI_FALLBACK_1_MODEL) || 'openai/gpt-4.1-mini',
-    // Assessment is intentionally a closed paid chain. Never inherit or append
-    // global/free fallbacks beyond the one explicitly declared assessment fallback.
+    // Deprecated primary/fallback model keys cannot override assessment truth.
+    AI_PRIMARY_PROVIDER: 'openrouter',
+    AI_PRIMARY_MODEL: ASSESSMENT_MODEL,
+    AI_FALLBACK_1_PROVIDER: '',
+    AI_FALLBACK_1_MODEL: '',
     AI_FALLBACK_2_PROVIDER: '',
     AI_FALLBACK_2_MODEL: '',
     AI_FALLBACK_3_PROVIDER: '',
     AI_FALLBACK_3_MODEL: '',
-    AI_ATTEMPT_TIMEOUT_MS: assessmentOrGlobal('ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS', 'AI_ATTEMPT_TIMEOUT_MS'),
-    AI_TOTAL_BUDGET_MS: assessmentOrGlobal('ASSESSMENT_AI_TOTAL_BUDGET_MS', 'AI_TOTAL_BUDGET_MS'),
+    AI_ATTEMPT_TIMEOUT_MS: text(env.ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS) || require('./assessmentExecutionPolicy.service').budgets(env).attemptTimeoutMs,
+    AI_TOTAL_BUDGET_MS: text(env.ASSESSMENT_AI_TOTAL_BUDGET_MS) || require('./assessmentExecutionPolicy.service').budgets(env).overallBudgetMs,
     AI_PRIMARY_RETRIES: assessmentOrGlobal('ASSESSMENT_AI_PRIMARY_RETRIES', 'AI_PRIMARY_RETRIES'),
-    AI_FALLBACK_RETRIES: assessmentOrGlobal('ASSESSMENT_AI_FALLBACK_RETRIES', 'AI_FALLBACK_RETRIES'),
+    AI_FALLBACK_RETRIES: '0',
     AI_RETRY_DELAY_MS: assessmentOrGlobal('ASSESSMENT_AI_RETRY_DELAY_MS', 'AI_RETRY_DELAY_MS')
   };
   const config = getAIConfig(assessmentEnv, options);
   if (config.primaryRetries > 1 || config.fallbackRetries !== 0) {
     throw configurationError(['Assessment AI permits at most one primary retry and no fallback retries.']);
   }
-  return config;
+  return { ...config, authorityVersion: ASSESSMENT_AUTHORITY_VERSION };
 }
 
 function getWorksheetExtractionAIConfig(env = process.env, options = {}) {
@@ -394,6 +398,12 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
         schemaPath: status === 400 ? providerDetails.path : null
       });
     }
+    if (isAssessmentFeature(feature) && typeof payload.model === 'string' && payload.model !== ASSESSMENT_MODEL) {
+      failureStage = 'MODEL_IDENTITY_VALIDATION';
+      throw attemptError('AI_ASSESSMENT_MODEL_MISMATCH', 'Assessment model identity mismatch.', {
+        status: response.status, requestedModel: entry.model, returnedModel: String(payload.model).slice(0, 120)
+      });
+    }
     failureStage = 'PROVIDER_RESPONSE_SHAPE_INVALID';
     const extracted = google ? extractGoogle(payload, { maxOutputTokens })
       : extractOpenRouter(payload, { maxOutputTokens });
@@ -424,13 +434,16 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
   if (!Array.isArray(messages) || typeof fetchImpl !== 'function') {
     throw new TypeError('AI gateway requires messages and fetch.');
   }
+  if (isAssessmentFeature(feature) && (config.chain?.length !== 1
+    || config.chain[0].provider !== 'openrouter' || config.chain[0].model !== ASSESSMENT_MODEL))
+    throw attemptError('AI_ASSESSMENT_AUTHORITY_INVALID', 'Assessment requires the sole Astra authority.');
   const started = now();
   const requestMetadata = metadata && typeof metadata === 'object'
     ? Object.fromEntries(Object.entries(metadata).filter(([key]) =>
       /^(?:submissionId|assignmentId|jobId|ocrJobId|sourceHash|caller|purpose|requestId)$/u.test(key)))
     : {};
   const sharedDeadline = Number(deadlineAt);
-  const deadline = Number.isFinite(sharedDeadline) && sharedDeadline > started
+  const deadline = Number.isFinite(sharedDeadline) && sharedDeadline > 0
     ? Math.min(started + config.totalBudgetMs, sharedDeadline) : started + config.totalBudgetMs;
   const attempts = [];
   const legacyRetries = Number.isInteger(config.retriesPerModel) ? config.retriesPerModel : 0;
@@ -595,6 +608,7 @@ function validateAIConfig(env = process.env) {
 }
 
 module.exports = {
+  ASSESSMENT_MODEL, ASSESSMENT_AUTHORITY_VERSION, isAssessmentFeature,
   SUPPORTED_PROVIDERS, DEFAULTS, MAX_RETRIES, MAX_RETRY_DELAY_MS, credentialFor, endpointFor,
   getAIConfig, getAssessmentAIConfig, getWorksheetExtractionAIConfig, sanitizedAssessmentChain, validateAIConfig,
   retryAfterMs, safeCode, extractGoogle, extractOpenRouter, googleUsage, safeFailureMetadata,

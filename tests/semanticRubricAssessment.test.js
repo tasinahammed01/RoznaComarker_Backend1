@@ -14,13 +14,13 @@ function valid() {
   return { sourceHash: 'hash', categories: {
     CONTENT: { score: 18, maxScore: 20, comment: 'Relevant and developed.',
       strengthEvidence: [{ evidenceId: evidence[0].evidenceId, explanation: 'This states a controlling idea.' }],
-      improvementEvidence: [{ evidenceType: 'correction', correctionId: 'c1', evidenceId: null, explanation: 'Needs more support.', suggestion: 'Add evidence.' }] },
+      improvementEvidence: [{ findingScope: 'localized', evidenceType: 'correction', correctionId: 'c1', evidenceId: null, explanation: 'Needs more support.', suggestion: 'Add evidence.' }] },
     ORGANIZATION: { score: 16, maxScore: 20, comment: 'Mostly logical.',
       strengthEvidence: [{ evidenceId: evidence[0].evidenceId, explanation: 'The opening is clear.' }],
-      improvementEvidence: [{ evidenceType: 'correction', correctionId: 'o1', evidenceId: null, explanation: 'The ending repeats.', suggestion: 'Revise the conclusion.' }] },
+      improvementEvidence: [{ findingScope: 'localized', evidenceType: 'correction', correctionId: 'o1', evidenceId: null, explanation: 'The ending repeats.', suggestion: 'Revise the conclusion.' }] },
     VOCABULARY: { score: 15, maxScore: 20, comment: 'Adequate but repetitive.',
       strengthEvidence: [{ evidenceId: evidence[0].evidenceId, explanation: 'The phrase is understandable.' }],
-      improvementEvidence: [{ evidenceType: 'correction', correctionId: 'v1', evidenceId: null, explanation: 'The wording is repetitive.', suggestion: 'Use a more precise phrase.' }] }
+      improvementEvidence: [{ findingScope: 'localized', evidenceType: 'correction', correctionId: 'v1', evidenceId: null, explanation: 'The wording is repetitive.', suggestion: 'Use a more precise phrase.' }] }
   } };
 }
 
@@ -60,7 +60,7 @@ describe('semantic rubric assessment validation', () => {
     });
     const prompt = request.messages.map((item) => item.content).join('\n');
     expect(prompt).toContain('For every custom criterion, do not deduct specifically for spelling, grammar, punctuation, capitalization, spacing, formatting');
-    expect(prompt).toContain('For every custom criterion, do not deduct specifically for organization, coherence, flow, transitions, or logical sequencing');
+    expect(prompt).toContain('Content and Organization review is disabled');
     expect(prompt).toContain('copy that level’s configured percentage exactly');
     expect(prompt).toContain('Evaluate CONTENT, ORGANIZATION, and VOCABULARY independently from customRubric');
   });
@@ -223,11 +223,11 @@ describe('semantic rubric assessment validation', () => {
   test('accepts transcript-grounded Content and Organization improvement evidence with zero corrections', () => {
     const payload = valid();
     payload.categories.CONTENT.improvementEvidence = [{
-      evidenceType: 'transcript', correctionId: null, evidenceId: evidence[0].evidenceId,
+      findingScope: 'holistic', evidenceType: 'transcript', correctionId: null, evidenceId: evidence[0].evidenceId,
       explanation: 'The idea needs more development.', suggestion: 'Add a specific supporting example.'
     }];
     payload.categories.ORGANIZATION.improvementEvidence = [{
-      evidenceType: 'transcript', correctionId: null, evidenceId: evidence[1].evidenceId,
+      findingScope: 'holistic', evidenceType: 'transcript', correctionId: null, evidenceId: evidence[1].evidenceId,
       explanation: 'The conclusion repeats rather than synthesizes.', suggestion: 'Synthesize the main point.'
     }];
     const result = validateAssessment(payload, {
@@ -236,11 +236,11 @@ describe('semantic rubric assessment validation', () => {
       corrections: corrections.filter((item) => !['CONTENT', 'ORGANIZATION'].includes(item.category))
     });
     expect(result.categories.CONTENT.improvementEvidence[0]).toMatchObject({
-      evidenceType: 'transcript', correctionId: null, evidenceId: evidence[0].evidenceId,
+      findingScope: 'holistic', evidenceType: 'transcript', correctionId: null, evidenceId: evidence[0].evidenceId,
       quotedText: evidence[0].quotedText
     });
     expect(result.categories.ORGANIZATION.improvementEvidence[0]).toMatchObject({
-      evidenceType: 'transcript', correctionId: null, evidenceId: evidence[1].evidenceId,
+      findingScope: 'holistic', evidenceType: 'transcript', correctionId: null, evidenceId: evidence[1].evidenceId,
       quotedText: evidence[1].quotedText
     });
   });
@@ -256,7 +256,7 @@ describe('semantic rubric assessment validation', () => {
   test('rejects an unknown transcript evidence ID', () => {
     const payload = valid();
     payload.categories.CONTENT.improvementEvidence = [{
-      evidenceType: 'transcript', correctionId: null, evidenceId: 'invented-id',
+      findingScope: 'holistic', evidenceType: 'transcript', correctionId: null, evidenceId: 'invented-id',
       explanation: 'Needs support.', suggestion: 'Add support.'
     }];
     expect(() => validateAssessment(payload, { sourceHash: 'hash', transcript, corrections: [] }))
@@ -268,11 +268,11 @@ describe('semantic rubric assessment validation', () => {
     payload.categories.ORGANIZATION.comment = 'The conclusion is weak.';
     payload.categories.ORGANIZATION.strengthEvidence = [{ evidenceId: evidence[0].evidenceId,
       explanation: 'The opening is clear.' }];
-    payload.categories.ORGANIZATION.improvementEvidence = [{ evidenceType: 'correction', correctionId: 'o1',
+    payload.categories.ORGANIZATION.improvementEvidence = [{ findingScope: 'localized', evidenceType: 'correction', correctionId: 'o1',
       evidenceId: null, explanation: 'The ending repeats.', suggestion: 'Revise the conclusion.' }];
     expect(() => validateAssessment(payload, { sourceHash: 'hash', transcript, corrections }))
       .toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_CONCLUSION_EVIDENCE_INVALID' }));
-    payload.categories.ORGANIZATION.improvementEvidence = [{ evidenceType: 'transcript', correctionId: null,
+    payload.categories.ORGANIZATION.improvementEvidence = [{ findingScope: 'holistic', evidenceType: 'transcript', correctionId: null,
       evidenceId: evidence[1].evidenceId, explanation: 'The ending repeats.', suggestion: 'Revise the conclusion.' }];
     expect(validateAssessment(payload, { sourceHash: 'hash', transcript, corrections })
       .categories.ORGANIZATION.improvementEvidence[0].quotedText).toBe(evidence[1].quotedText);
@@ -281,7 +281,7 @@ describe('semantic rubric assessment validation', () => {
   test('does not misclassify a general Organization observation as conclusion-specific', () => {
     const payload = valid();
     payload.categories.ORGANIZATION.comment = 'Coherence and transitions are uneven, and the conclusion could be stronger.';
-    payload.categories.ORGANIZATION.improvementEvidence = [{ evidenceType: 'correction', correctionId: 'o1',
+    payload.categories.ORGANIZATION.improvementEvidence = [{ findingScope: 'localized', evidenceType: 'correction', correctionId: 'o1',
       evidenceId: null, explanation: 'The progression repeats an earlier point.', suggestion: 'Improve the progression.' }];
     expect(validateAssessment(payload, { sourceHash: 'hash', transcript, corrections })
       .categories.ORGANIZATION.comment).toContain('Coherence');
@@ -290,7 +290,7 @@ describe('semantic rubric assessment validation', () => {
   test('requires a complete authoritative transcript for a missing-conclusion claim', () => {
     const payload = valid();
     payload.categories.ORGANIZATION.comment = 'The conclusion is missing.';
-    payload.categories.ORGANIZATION.improvementEvidence = [{ evidenceType: 'transcript', correctionId: null,
+    payload.categories.ORGANIZATION.improvementEvidence = [{ findingScope: 'holistic', evidenceType: 'transcript', correctionId: null,
       evidenceId: evidence[1].evidenceId, explanation: 'The conclusion is missing.', suggestion: 'Add a conclusion.' }];
     expect(() => validateAssessment(payload, { sourceHash: 'hash', transcript, corrections, transcriptComplete: false }))
       .toThrow(expect.objectContaining({ code: 'SEMANTIC_RUBRIC_ABSENCE_EVIDENCE_INVALID' }));
@@ -303,7 +303,7 @@ describe('semantic rubric assessment validation', () => {
     const withConclusion = [...corrections, { id: 'conc-1', category: 'ORGANIZATION', symbol: 'CONC',
       quotedText: 'The ending repeats', correctionKind: 'global' }];
     payload.categories.ORGANIZATION.comment = 'The conclusion is weak.';
-    payload.categories.ORGANIZATION.improvementEvidence = [{ evidenceType: 'correction', correctionId: 'conc-1',
+    payload.categories.ORGANIZATION.improvementEvidence = [{ findingScope: 'localized', evidenceType: 'correction', correctionId: 'conc-1',
       evidenceId: null, explanation: 'The conclusion is weak.', suggestion: 'Develop the conclusion.' }];
     expect(validateAssessment(payload, { sourceHash: 'hash', transcript, corrections: withConclusion,
       transcriptComplete: true }).categories.ORGANIZATION.improvementEvidence[0].correctionId).toBe('conc-1');
@@ -364,7 +364,7 @@ describe('semantic rubric assessment validation', () => {
   ('normalizes a zero-count Vocabulary contradiction without changing score or evidence: %s', (comment) => {
     const payload = valid();
     payload.categories.VOCABULARY.comment = comment;
-    payload.categories.VOCABULARY.improvementEvidence = [{ evidenceType: 'transcript', correctionId: null,
+    payload.categories.VOCABULARY.improvementEvidence = [{ findingScope: 'holistic', evidenceType: 'transcript', correctionId: null,
       evidenceId: evidence[1].evidenceId, explanation: 'The wording is repetitive.', suggestion: 'Use more precise wording.' }];
     const result = validateAssessment(payload, { sourceHash: 'hash', transcript,
       corrections: corrections.filter((item) => item.category !== 'VOCABULARY') });
@@ -386,12 +386,12 @@ describe('semantic rubric assessment validation', () => {
       commentNormalizationReason: 'NONZERO_CANONICAL_COUNT_CONTRADICTION' });
   });
 
-  test('accepts a gateway-validated fallback replacement in one transaction', async () => {
+  test('accepts a gateway-validated Astra result in one transaction', async () => {
     const invalid = valid();
     invalid.categories.CONTENT.score = 25;
     const runCompletion = jest.fn(async ({ validate }) => ({
       content: JSON.stringify(valid()), value: validate(JSON.stringify(valid())),
-      provider: 'openrouter', model: 'fallback-model',
+      provider: 'openrouter', model: 'openai/gpt-6-astra',
       metrics: { attempts: [{ status: 'failed', code: 'AI_OUTPUT_VALIDATION_FAILED' },
         { status: 'success', code: null }] }
     }));
@@ -401,7 +401,7 @@ describe('semantic rubric assessment validation', () => {
       runCompletion,
       config: {
         provider: 'google', model: 'primary-model',
-        chain: [{ provider: 'google', model: 'primary-model' }, { provider: 'openrouter', model: 'fallback-model' }],
+        chain: [{ provider: 'google', model: 'primary-model' }, { provider: 'openrouter', model: 'openai/gpt-6-astra' }],
         totalBudgetMs: 90000, attemptTimeoutMs: 45000, maxRetries: 0, maxOutputTokens: 4000
       }
     });
@@ -435,17 +435,17 @@ describe('semantic rubric assessment validation', () => {
     expect(runCompletion).toHaveBeenCalledTimes(1);
   });
 
-  test('validates transcript evidence returned by a gateway fallback', async () => {
+  test('validates transcript evidence returned by a Astra', async () => {
     const invalid = valid();
     invalid.categories.CONTENT.improvementEvidence[0].correctionId = 'invented-content-id';
     const repaired = valid();
     repaired.categories.CONTENT.improvementEvidence = [{
-      evidenceType: 'transcript', correctionId: null, evidenceId: evidence[0].evidenceId,
+      findingScope: 'holistic', evidenceType: 'transcript', correctionId: null, evidenceId: evidence[0].evidenceId,
       explanation: 'The idea needs more development.', suggestion: 'Add a specific supporting example.'
     }];
     const runCompletion = jest.fn(async ({ validate }) => ({
       content: JSON.stringify(repaired), value: validate(JSON.stringify(repaired)),
-      provider: 'openrouter', model: 'fallback-model',
+      provider: 'openrouter', model: 'openai/gpt-6-astra',
       metrics: { attempts: [{ status: 'failed', code: 'AI_OUTPUT_VALIDATION_FAILED' },
         { status: 'success', code: null }] }
     }));
@@ -460,23 +460,23 @@ describe('semantic rubric assessment validation', () => {
       runCompletion,
       config: {
         provider: 'google', model: 'primary-model',
-        chain: [{ provider: 'google', model: 'primary-model' }, { provider: 'openrouter', model: 'fallback-model' }],
+        chain: [{ provider: 'google', model: 'primary-model' }, { provider: 'openrouter', model: 'openai/gpt-6-astra' }],
         totalBudgetMs: 90000, attemptTimeoutMs: 45000, maxRetries: 0, maxOutputTokens: 4000
       }
     });
     expect(runCompletion).toHaveBeenCalledTimes(1);
     expect(result.categories.CONTENT.improvementEvidence[0]).toMatchObject({
-      evidenceType: 'transcript', correctionId: null
+      findingScope: 'holistic', evidenceType: 'transcript', correctionId: null
     });
     expect(result.metrics.attempts).toHaveLength(2);
     expect(result.metrics.attempts[1]).toMatchObject({ status: 'success' });
   });
 
-  test('rejects invented primary evidence, then normalizes a valid zero-count fallback comment', async () => {
+  test('rejects invented primary evidence, then normalizes a valid zero-count same-Astra retry comment', async () => {
     const configuredEnv = {
       ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1',
       ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter', ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini',
-      ASSESSMENT_AI_PRIMARY_RETRIES: '0', ASSESSMENT_AI_FALLBACK_RETRIES: '0',
+      ASSESSMENT_AI_PRIMARY_RETRIES: '1', ASSESSMENT_AI_FALLBACK_RETRIES: '0',
       ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '30000', ASSESSMENT_AI_TOTAL_BUDGET_MS: '90000',
       ASSESSMENT_AI_RETRY_DELAY_MS: '0', SEMANTIC_AI_MAX_OUTPUT_TOKENS: '4000',
       OPENROUTER_API_KEY: 'test-key', OPENROUTER_BASE_URL: 'https://router.test/v1'
@@ -485,8 +485,9 @@ describe('semantic rubric assessment validation', () => {
     invalidPrimary.categories.CONTENT.strengthEvidence[0].evidenceId = 'invented-id';
     const validFallback = valid();
     validFallback.categories.VOCABULARY.comment = '3 vocabulary errors were detected.';
-    validFallback.categories.VOCABULARY.improvementEvidence = [{ evidenceType: 'transcript', correctionId: null,
+    validFallback.categories.VOCABULARY.improvementEvidence = [{ findingScope: 'holistic', evidenceType: 'transcript', correctionId: null,
       evidenceId: evidence[1].evidenceId, explanation: 'The wording is repetitive.', suggestion: 'Use precise wording.' }];
+    invalidPrimary.categories.VOCABULARY = JSON.parse(JSON.stringify(validFallback.categories.VOCABULARY));
     const payloads = [invalidPrimary, validFallback];
     const fetchImpl = jest.fn(async () => ({ ok: true, status: 200, headers: { get: () => 'application/json' },
       text: async () => JSON.stringify({ choices: [{ finish_reason: 'stop',
@@ -495,11 +496,11 @@ describe('semantic rubric assessment validation', () => {
       corrections: corrections.filter((item) => item.category !== 'VOCABULARY'), statistics: { vocabulary: 0 },
       pageManifest: [] }, { config: getSemanticAIConfig(configuredEnv), env: configuredEnv, fetchImpl });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).model).toBe('openai/gpt-4.1');
-    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).model).toBe('openai/gpt-4.1-mini');
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).model).toBe('openai/gpt-6-astra');
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).model).toBe('openai/gpt-6-astra');
     expect(result.metrics.attempts[0]).toMatchObject({ fallbackIndex: 0, code: 'AI_OUTPUT_VALIDATION_FAILED',
       validationCode: 'SEMANTIC_RUBRIC_EVIDENCE_ID_INVALID' });
-    expect(result.metrics.attempts[1]).toMatchObject({ fallbackIndex: 1, status: 'success' });
+    expect(result.metrics.attempts[1]).toMatchObject({ fallbackIndex: 0, status: 'success' });
     expect(result.categories.VOCABULARY.score).toBe(15);
     expect(result.categories.VOCABULARY.comment).not.toMatch(/3 vocabulary errors|frequent vocabulary errors/iu);
     expect(result.diagnostics.commentNormalizations[0]).toMatchObject({ category: 'VOCABULARY',

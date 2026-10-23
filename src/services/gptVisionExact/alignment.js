@@ -14,13 +14,15 @@ function alignGeometry(text,google,identity){
     return {text:m[0],sourceStart:m.index,sourceEnd:cursor,separatorBefore,fileId:String(identity.fileId),
       id:`word_${identity.fileId}_${identity.pageNumber}_gpt_${i+1}`,page:identity.pageNumber,bbox:null};
   });
-  let layout;try{layout=require('../../utils/ocrTranscriptNormalizer').buildHandwritingGeometryTranscript(google?.words||[]);}catch{/* Mapping is optional. */}
+  let layout;try{layout=require('../../utils/ocrTranscriptNormalizer').buildHandwritingGeometryTranscript(google?.words||[],{geometryEvidenceOnly:true});}catch{/* Mapping is optional. */}
   const geometry=!layout?.layoutDegraded?(layout?.spans||[]).map(s=>({...s.word,line:layout.text.slice(0,s.start).split('\n').length})):[];
   if(tokens.length*geometry.length<=2000000&&geometry.length){
     const a=geometry.map((w,i)=>({text:normalized(w.text)||w.text,index:i})),b=tokens.map((w,i)=>({text:normalized(w.text)||w.text,index:i}));
     const ops=require('../sourceFidelity/exactEvidence').align(a,b);
     const frequency=list=>{const counts=new Map();for(const v of list)counts.set(v.text,(counts.get(v.text)||0)+1);return counts;};
-    const ga=frequency(a),gb=frequency(b);
+    // Include unresolved Google words when measuring ambiguity: dropping one
+    // duplicate from spatial evidence must never make the remaining one unique.
+    const ga=frequency((google?.words||[]).map(w=>({text:normalized(w.text)||w.text}))),gb=frequency(b);
     const contextFrequency=list=>{const counts=new Map();for(let i=1;i<list.length-1;i++){const key=JSON.stringify([list[i-1].text,list[i+1].text]);counts.set(key,(counts.get(key)||0)+1);}return counts;};
     const ca=contextFrequency(a),cb=contextFrequency(b);
     const exact=o=>o?.left&&o?.right&&!o.ambiguous&&o.left.text===o.right.text;
@@ -32,11 +34,16 @@ function alignGeometry(text,google,identity){
       const contextKey=sameLineAnchors?JSON.stringify([before.left.text,after.left.text]):null;
       const provenContext=sameLineAnchors&&ca.get(contextKey)===1&&cb.get(contextKey)===1;
       const punctuationMismatch=/^[\p{P}\p{S}]+$/u.test(token.text)&&/^[\p{N}\p{P}\p{S}]+$/u.test(g.text);
-      if(exact(o)&&(ga.get(o.left.text)===1&&gb.get(o.right.text)===1||provenContext)||provenContext&&(near(o.left.text,o.right.text)||punctuationMismatch)){
+      const partial=layout.unresolvedWordCount>0;
+      if(exact(o)&&(ga.get(o.left.text)===1&&gb.get(o.right.text)===1||!partial&&provenContext)||!partial&&provenContext&&(near(o.left.text,o.right.text)||punctuationMismatch)){
         token.bbox=g.bbox||null;token.geometryWordId=g.id||null;
       }
     }
   }
-  return {words:tokens,coverage:tokens.length?tokens.filter(w=>w.bbox).length/tokens.length:0,textSha256:sha(text)};
+  return {words:tokens,coverage:tokens.length?tokens.filter(w=>w.bbox).length/tokens.length:0,textSha256:sha(text),
+    diagnostics:{strategy:'gpt-monotonic-partial-geometry-v2',layoutDegraded:layout?.layoutDegraded!==false,
+      safeOutcomeCode:['GEOMETRY_PROVIDER_UNAVAILABLE','GEOMETRY_DIMENSIONS_MISMATCH'].includes(google?.geometryFailureCode)?google.geometryFailureCode
+        :!google?'GEOMETRY_UNAVAILABLE':layout?.layoutDegraded?'GEOMETRY_LAYOUT_WITHHELD':layout?.unresolvedWordCount?'GEOMETRY_PARTIAL':'GEOMETRY_ORDERED',
+      mappedTokenCount:tokens.filter(w=>w.bbox).length,unmappedTokenCount:tokens.filter(w=>!w.bbox).length}};
 }
 module.exports={alignGeometry};

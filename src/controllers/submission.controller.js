@@ -588,9 +588,12 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
         && existing.correctionStatus === 'completed' && existing.semanticStatus === 'completed'
         && existing.correctionSourceHash === expectedCorrectionHash
         && existing.correctionVersion === correctionCanonical.VERSION);
+      const reusableCorrectionReview = reusableCorrections
+        && existing.correctionGenerationConfig?.reviewIdentity === canonicalCorrectionsPipeline.buildCorrectionReviewIdentity({
+          assignment, policy: normalizeTeacherEvaluationPolicy(teacher?.aiConfig) });
       const expectedAnalysisHash = canonicalEvaluation.analysisInputHash({ sourceHash: expectedCorrectionHash,
         rubricHash: currentRubricHash, policyHash: currentPolicyHash, contextHash: canonicalEvaluation.hashBuiltInContext(assignment) });
-      const reusableAssessment = Boolean(reusableCorrections && normalizedRubric.status !== 'invalid'
+      const reusableAssessment = Boolean(reusableCorrectionReview && normalizedRubric.status !== 'invalid'
         && previousFeedback?.analysisInputHash === expectedAnalysisHash
         && previousFeedback?.evaluationSourceHash === expectedCorrectionHash
         && previousFeedback?.evaluationStatus === 'completed' && previousFeedback?.detailedFeedback?.status === 'completed'
@@ -608,6 +611,17 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
         existing.writingCorrections = evidenceIdentity.bindCorrections(existing.writingCorrections, reusedCanonical, existing);
         existing.correctionOcrJobId = existing.ocrJobId;
         existing.correctionOcrEvidenceHash = evidenceIdentity.ocrEvidenceHash(reusedCanonical, existing);
+        if (!reusableCorrectionReview) {
+          // Explicit resubmission with changed assessment settings reuses the
+          // proven source read, but must review it again under the new policy.
+          existing.writingCorrections = [];
+          existing.correctionStatistics = undefined;
+          existing.correctionStatus = 'pending';
+          existing.semanticStatus = 'pending';
+          existing.semanticSourceKey = undefined;
+          existing.correctionJobId = undefined;
+          existing.semanticErrorCode = undefined;
+        }
         existing.reusedFromRevisionId = previousRevision._id;
         existing.reusedAssessment = reusableAssessment;
         if (!reusableAssessment) {

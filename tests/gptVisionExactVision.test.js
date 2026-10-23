@@ -39,3 +39,17 @@ test('mismatched Google image dimensions withhold boxes without rejecting or rep
   const r=await vision.extractOcrFromImageFile(filename,{sourceFile:{_id:'f'},hybridIdentity:{submissionId:'s',runId:'j'}});
   expect(r.fullText).toBe(text);expect(r.words.every(w=>w.bbox===null)).toBe(true);expect(mockDetect.mock.calls[0][1].retry).toBeNull();expect(spy).toHaveBeenCalledTimes(1);
 });
+test('Google geometry on the exact oriented GPT bytes reaches canonical GPT IDs in display-image space',async()=>{
+  const activeTranscript='Alpha Beta Gamma';
+  spy.mockResolvedValue({returnedModel:process.env.OCR_GPT_VISION_MODEL,content:JSON.stringify({version:contract.VERSION,
+    activeTranscript,physicalLines:[{segments:[{classification:'STUDENT_ACTIVE_TEXT',text:activeTranscript,confidence:1}]}],uncertainties:[]})});
+  mockDetect.mockResolvedValue([{fullTextAnnotation:{text:'SCRAMBLED GOOGLE DIAGNOSTIC',pages:[{width:80,height:40,blocks:[{paragraphs:[{words:
+    ['Alpha','Beta','Gamma'].map((text,i)=>({symbols:[...text].map(text=>({text})),boundingBox:{vertices:[
+      {x:2+i*22,y:4},{x:18+i*22,y:4},{x:18+i*22,y:9},{x:2+i*22,y:9}]}}))}]}]}]}}]);
+  const r=await vision.extractOcrFromImageFile(filename,{sourceFile:{_id:'f'},hybridIdentity:{submissionId:'s',runId:'j'}});
+  expect(mockDetect.mock.calls[0][0].image.content.equals(normalized)).toBe(true);
+  expect(r.words.map(w=>w.id)).toEqual(['word_f_1_gpt_1','word_f_1_gpt_2','word_f_1_gpt_3']);
+  expect(r.words[0].bbox).toEqual({x:2.5,y:10,w:20,h:12.5});
+  expect(r.words.every(w=>w.bbox)).toBe(true);expect(r.fullText).toBe(activeTranscript);
+  expect(r.pages[0]).toMatchObject({width:80,height:40,coordinateSpace:'display-image',ocrImageWidth:80,ocrImageHeight:40,ocrExifOrientation:6});
+});

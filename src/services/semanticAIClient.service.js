@@ -92,6 +92,8 @@ async function providerAttempt(options) {
 async function runSemanticCompletion({ messages, config = getSemanticAIConfig(), fetchImpl = global.fetch,
   env = process.env, now = Date.now, sleepFn, validate, feature = 'semantic', responseSchema,
   schemaName, metadata, onAttempt, onRetry, deadlineAt = null, onDiagnostic } = {}) {
+  if (Number(deadlineAt) > 0 && Number(deadlineAt) <= now()) throw Object.assign(
+    new Error('Assessment total budget was exhausted.'), { code: 'AI_TOTAL_BUDGET_EXHAUSTED', attemptCount: 0, attempts: [] });
   const chain = config.chain || gateway.getAssessmentAIConfig(env).chain;
   const isRubricAssessment = feature === 'semantic' || feature === 'semantic_rubric_assessment';
   const result = await gateway.generate({ feature, messages, maxOutputTokens: config.maxOutputTokens,
@@ -127,6 +129,7 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
 }
 
 module.exports = { SEMANTIC_TRANSIENT_STATUSES, GOOGLE_SEMANTIC_MODELS, GOOGLE_THINKING_LEVELS,
+  getAssessmentAIConfig: getSemanticAIConfig,
   SEMANTIC_RETRYABLE_OUTPUT_CODES, SEMANTIC_TERMINAL_CODES,
   MAX_SEMANTIC_OUTPUT_TOKENS, ASSESSMENT_TEMPERATURE, ASSESSMENT_RESPONSE_FORMAT,
   ASSESSMENT_THINKING_LEVEL, getSemanticAIConfig, getSemanticAIConfigStatus, credentialFor, endpointFor,

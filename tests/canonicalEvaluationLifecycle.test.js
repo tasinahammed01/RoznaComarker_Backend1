@@ -41,6 +41,38 @@ describe('canonical evaluation write guards', () => {
     mockFindOneAndUpdate.mockResolvedValue({});
     mockFindOne.mockReturnValue({ lean: jest.fn().mockResolvedValue(null) });
   });
+  test('an unattempted rejected prepared placeholder falls through to one real rubric preparation', async () => {
+    const record = submission(true);
+    const policy = require('../src/services/teacherEvaluationPolicy.service');
+    const deadlineAt = Date.now() + 120000;
+    const result = await generate({ submission: record.value, assignment: { title: 'Essay' }, deadlineAt,
+      assessmentPolicy: { policy: policy.normalizeTeacherEvaluationPolicy({}), policyHash: policy.evaluationPolicyHash({}) },
+      preparedRubricRequired: true, preparedRubricAssessment: {
+        error: Object.assign(Error('not prepared'), { code: 'PREPARED_RUBRIC_MISSING', attemptCount: 0 }) } });
+    expect(result.status).toBe('completed'); expect(mockAssess).toHaveBeenCalledTimes(1);
+    expect(mockAssess.mock.calls[0][0].deadlineAt).toBe(deadlineAt);
+  });
+  test('an already attempted rejected rubric does not create a second preparation', async () => {
+    const record = submission(true);
+    await generate({ submission: record.value, assignment: { title: 'Essay' },
+      preparedRubricRequired: true, preparedRubricAttempted: true,
+      preparedRubricAssessment: { error: Object.assign(Error('timeout'), { code: 'AI_ATTEMPT_TIMEOUT', attemptCount: 1 }) } });
+    expect(mockAssess).not.toHaveBeenCalled();
+    expect(mockFindOneAndUpdate.mock.calls.some(([, update]) => update.$set?.detailedFeedback?.status === 'completed')).toBe(false);
+  });
+  test.each([
+    { semanticModel: 'openai/gpt-4.1-mini' },
+    { semanticPromptVersion: 'old-review-contract' },
+    { correctionGenerationConfig: { reviewIdentity: 'different-policy-or-rubric' } }
+  ])('does not combine stale correction authority with a new rubric: %j', stale => {
+    const record = submission(true);
+    Object.assign(record.value, stale);
+    return generate({ submission: record.value, assignment: { title: 'Essay' } }).then(result => {
+      expect(result).toMatchObject({ status: 'blocked', errorCode: 'CORRECTION_REVIEW_OUT_OF_DATE' });
+      expect(mockAssess).not.toHaveBeenCalled();
+      expect(mockFindOneAndUpdate).not.toHaveBeenCalled();
+    });
+  });
   test('guest evaluation checks the assignment credit router without a guest wallet', async () => {
     require('../src/models/user.model').findById.mockReturnValueOnce({ select: () => ({ lean: async () => ({ role: 'teacher' }) }) });
     const router = require('../src/services/assessmentCreditRouter.service');

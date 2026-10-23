@@ -3,6 +3,7 @@
 const coordinator = require('../src/services/semanticCorrectionCoordinator.service');
 const canonical = require('../src/services/correctionCanonical.service');
 const { defaultLegend } = require('../src/services/writingCorrections.service');
+const { reviewedResult } = require('./helpers/astraAssessmentFixtures.cjs');
 
 const semanticResult = (input) => {
   const at = input.transcript.indexOf('badword');
@@ -12,7 +13,7 @@ const semanticResult = (input) => {
     correctionKind: 'localized', severity: 'medium', stylePreference: false,
     startChar: at, endChar: at + 7
   }, input.transcript, input.spans || [], input.legend, 'AI')].filter(Boolean);
-  return { corrections, diagnostics: {}, provider: 'test', model: 'test-model', metrics: { attempts: [] } };
+  return reviewedResult(input, corrections);
 };
 
 describe('semantic correction chunk coordinator', () => {
@@ -51,7 +52,7 @@ describe('semantic correction chunk coordinator', () => {
     expect(semanticService.analyze.mock.calls.some(([input]) => input.analysisMode === 'local_chunk')).toBe(true);
     expect(semanticService.analyze.mock.calls.some(([input]) => input.analysisMode === 'document_structure')).toBe(true);
     expect(result.metrics.providerCallCount).toBe(semanticService.analyze.mock.calls.length);
-    expect(result.metrics.providerCallCount).toBe(7);
+    expect(result.metrics.providerCallCount).toBe(8); // One combined category audit.
   });
 
   test('chunks cover the complete transcript without gaps and respect maxChunks without truncation', () => {
@@ -89,7 +90,7 @@ describe('semantic correction chunk coordinator', () => {
       totalCharacters: transcript.length });
     expect(result.metrics).toMatchObject({ numberOfChunks: expect.any(Number), providerCallCount: expect.any(Number),
       semanticFallbackCalls: 0, timeoutCount: 0, truncationCount: 0, routingReason: 'input_threshold' });
-    expect(result.metrics.providerCallCount).toBe(4);
+    expect(result.metrics.providerCallCount).toBe(5); // One combined category audit.
   });
 
   test('retries only a failed timeout chunk and restores complete coverage', async () => {
@@ -115,7 +116,7 @@ describe('semantic correction chunk coordinator', () => {
     expect(result.diagnostics.chunking.errors).toEqual([]);
   });
 
-  test('splits a repeatedly truncated failed range and merges subchunk results canonically', async () => {
+  test('bounds repeated truncation to one recovery without a split/audit cascade', async () => {
     const transcript = `${'a'.repeat(1580)}badword ${'b'.repeat(2400)}`;
     let failedOriginal = '';
     const calls = [];
@@ -132,10 +133,11 @@ describe('semantic correction chunk coordinator', () => {
       semanticService, settings: { enabled: true, singleRequestThresholdTokens: 1, chunkInputTokens: 3100,
         overlapTokens: 10, chunkMaxOutputTokens: 1000, maxConcurrency: 2, maxChunks: 8,
         totalBudgetMs: 5000, failedChunkRetries: 1 }, config: { maxOutputTokens: 2000 } });
-    expect(result.coverage).toMatchObject({ coverageComplete: true, failedChunks: 0 });
+    expect(result.coverage).toMatchObject({ coverageComplete: false, failedChunks: 1 });
     expect(calls.filter((text) => text === failedOriginal)).toHaveLength(2);
-    expect(calls.some((text) => text.length < failedOriginal.length && failedOriginal.includes(text))).toBe(true);
-    expect(result.corrections).toHaveLength(1);
+    expect(result.metrics.recoveryRequestCount).toBe(1);
+    expect(result.metrics.auditRequestCount).toBe(0);
+    expect(calls.filter((text) => failedOriginal.includes(text) && text.length < failedOriginal.length)).toHaveLength(0);
   });
 
   test('marks structural categories incomplete while retaining complete local-language findings', async () => {
@@ -183,6 +185,6 @@ describe('semantic correction chunk coordinator', () => {
       config: { maxOutputTokens: 2000 } });
     expect(semanticService.analyze).toHaveBeenCalledWith(expect.objectContaining({ analysisMode: 'zero_result_audit' }), expect.anything());
     expect(result).toMatchObject({ status: 'partial', coverage: { coverageComplete: false },
-      diagnostics: { chunking: { zeroResultAudit: { required: true, status: 'suspicious_zero' } } } });
+      diagnostics: { chunking: { zeroResultAudit: { required: true, status: 'review_incomplete' } } } });
   });
 });

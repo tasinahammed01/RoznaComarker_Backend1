@@ -28,7 +28,8 @@ const submission = (overrides = {}) => ({
   _id: 'submission-1', student: 'student-1', class: 'class-1', assignment: 'assignment-1',
   correctionStatus: 'completed', semanticStatus: 'completed', evaluationStatus: 'failed',
   correctionSourceHash: 'correction-hash',
-  correctionVersion: 'canonical-6-category-structured', correctionTranscriptLayoutVersion: 'ocr-layout-v5-native-text',
+  correctionVersion: require('../src/services/correctionCanonical.service').VERSION,
+  correctionTranscriptLayoutVersion: require('../src/utils/ocrTranscriptNormalizer').CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
   writingCorrections: [{ id: 'c1', category: 'GRAMMAR', symbol: 'AGR' }],
   correctionStatistics: { content: 0, grammar: 1, organization: 0, vocabulary: 0, mechanics: 0, total: 1 },
   ...overrides

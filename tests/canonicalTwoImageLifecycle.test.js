@@ -42,7 +42,7 @@ jest.mock('../src/services/visionOcr.service', () => ({
   detectOrientationAnnotation: jest.fn(async () => require('./fixtures/orientationAnnotation').annotation()),
   extractOcrFromImageFile: jest.fn(async () => {
     await mockOcrGate;
-    const text = mockOcrCall++ % 2 === 0
+    const text = mockSemanticMode === 'small' ? require('./fixtures/astraAssessmentSmallEssay.cjs').text : mockOcrCall++ % 2 === 0
       ? 'This is the first test paragraph.'
       : 'This are the second test paragraph. It has vague wording and teh error.';
     lifecycleEvents.push('ocr-completed');
@@ -124,6 +124,11 @@ function lineJson(prompt, prefix) {
 function rubricFixtureFromPrompt(prompt) {
   const sourceHash = String(prompt.match(/^sourceHash=(.+)$/mu)?.[1] || '');
   const transcriptEvidence = lineJson(prompt, 'evidenceCatalog=');
+  if (mockSemanticMode === 'small') return { sourceHash, categories: Object.fromEntries(
+    ['CONTENT', 'ORGANIZATION', 'VOCABULARY', 'GRAMMAR', 'MECHANICS'].map(category => [category, {
+      score: 20, maxScore: 20, comment: 'Exact synthetic source evidence supports this category.',
+      strengthEvidence: [{ evidenceId: transcriptEvidence[0].evidenceId, explanation: 'The response gives an explicit idea.' }], improvementEvidence: []
+    }])) };
   const evidence = Object.fromEntries([
     ['CONTENT', 'first test paragraph'], ['ORGANIZATION', 'second test paragraph'], ['VOCABULARY', 'vague wording'],
     ['GRAMMAR', 'This are'], ['MECHANICS', 'teh error']
@@ -135,7 +140,7 @@ function rubricFixtureFromPrompt(prompt) {
       comment: `${category} evidence is grounded in the submitted transcript.`,
       strengthEvidence: [{ evidenceId: evidence[category].evidenceId, explanation: 'This is exact synthetic transcript evidence.' }],
       improvementEvidence: [{
-        evidenceType: 'transcript',
+        findingScope: 'holistic', evidenceType: 'transcript',
         correctionId: null,
         evidenceId: evidence[category].evidenceId,
         explanation: 'This validated correction identifies a specific improvement.',
@@ -154,6 +159,7 @@ function rubricPromptFromRequest(options) {
 
 function correctionFixtureFromPrompt(prompt) {
   const transcriptHash = String(prompt.match(/^transcriptHash=(.+)$/mu)?.[1] || '');
+  if (mockSemanticMode === 'small') return require('./helpers/astraAssessmentFixtures.cjs').reviewPayload(transcriptHash);
   const corrections = [
     { category: 'CONTENT', symbol: 'DEV', correctionKind: 'global', quotedText: 'first test paragraph', occurrence: 1, message: 'Develop this evidence.', suggestedText: '', confidence: 0.95, severity: 'medium', stylePreference: false },
     { category: 'ORGANIZATION', symbol: 'COH', correctionKind: 'global', quotedText: 'second test paragraph', occurrence: 1, message: 'Improve the transition.', suggestedText: '', confidence: 0.95, severity: 'medium', stylePreference: false },
@@ -205,7 +211,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
       }
       if (String(url).includes('/chat/completions')) {
         const prompt = rubricPromptFromRequest(options);
-        if (prompt.includes('schema=semantic-corrections-v12-code-authoritative')) {
+        if (prompt.includes('schema=semantic-corrections-v13-astra-reviewed')) {
           correctionProviderRequestCount += 1;
           lifecycleEvents.push('correction-started');
           return { ok: true, status: 200, headers: { get: () => 'application/json' },
@@ -288,7 +294,33 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     return request(app).post(`/api/submissions/${id}/ocr-corrections/regenerate`).set('Authorization', `Bearer ${token}`);
   }
 
+  test('729-character one-page source completes with one correction and one rubric call, then read-only reloads', async () => {
+    const currentAssignment = await assignment('Small essay budget regression', 'small');
+    mockSemanticMode = 'small'; mockRubricGate = Promise.resolve(); mockOcrGate = Promise.resolve();
+    const before = { corrections: correctionProviderRequestCount, rubric: rubricProviderRequestCount };
+    const uploaded = await request(app).post(`/api/submissions/${currentAssignment._id}`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .attach('files', png, { filename: 'small-page.png', contentType: 'image/png' });
+    expect(uploaded.status).toBe(200);
+    const id = String(uploaded.body.data._id);
+    const completed = await waitFor(id, doc => doc.evaluationStatus === 'completed' && doc.semanticMetrics?.rubricAttempted === true);
+    expect(completed.semanticStatus).toBe('completed');
+    expect(completed.semanticMetrics).toMatchObject({ mode: 'single', routingReason: 'single_efficient',
+      mainCorrectionRequestCount: 1, structuralRequestCount: 0, recoveryRequestCount: 0, auditRequestCount: 0,
+      correctionCoverageComplete: true, rubricAttempted: true, rubricAttemptCount: 1 });
+    for (let i = 0; i < 3; i++) {
+      const result = await getResult(id, studentToken);
+      expect(result.detailedFeedbackStatus).toBe('completed');
+      expect(result.score).toEqual(expect.any(Number));
+      expect(result.correctionStatistics).not.toBeNull();
+    }
+    expect(correctionProviderRequestCount - before.corrections).toBe(1);
+    expect(rubricProviderRequestCount - before.rubric).toBe(1);
+  }, 20000);
+
   test('success, semantic failure, and manual retry remain canonical across student, teacher, and PDF', async () => {
+    rubricProviderRequestCount = 0; assessmentPrimaryRequestCount = 0; correctionProviderRequestCount = 0;
+    global.fetch.mockClear();
     const firstAssignment = await assignment('Lifecycle success', 'success');
     mockSemanticMode = 'success'; mockOcrCall = 0; lifecycleEvents = []; retryAnalysisRequestCount = 0;
     let releaseRubric; mockRubricGate = new Promise((resolve) => { releaseRubric = resolve; });
@@ -310,9 +342,9 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(processingDoc.writingCorrections).toHaveLength(5);
     await waitForCondition(() => lifecycleEvents.includes('evaluation-started'));
     expect(lifecycleEvents.slice(0, 2)).toEqual(['ocr-completed', 'ocr-completed']);
-    // Rubric preparation and semantic corrections intentionally start in
-    // parallel once OCR is ready, so their relative start order is undefined.
-    expect(lifecycleEvents.slice(2, 4).sort()).toEqual(['correction-started', 'evaluation-started']);
+    // Rubric preparation consumes canonical corrections, so it starts
+    // after correction analysis has finished.
+    expect(lifecycleEvents.slice(2, 4)).toEqual(['correction-started', 'evaluation-started']);
     expect(retryAnalysisRequestCount).toBe(0);
     releaseRubric();
     const completedDoc = await waitFor(successId, (doc) => doc.correctionStatus === 'completed' && doc.evaluationStatus === 'completed');
@@ -413,11 +445,11 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(await SubmissionFeedback.countDocuments({ submissionId: failureId })).toBe(1);
     expect(languageToolRequestCount).toBe(0); // AI-only pipeline does not call LanguageTool
     expect(rubricProviderRequestCount).toBe(3);
-    // Both rubric evaluations succeed on the first GPT-4.1 request; no fallback
+    // Rubric evaluations use Astra; no model fallback
     // or non-OpenRouter assessment request is needed.
     expect(assessmentPrimaryRequestCount).toBe(3);
     expect(rubricProviderRequestCount).toBe(assessmentPrimaryRequestCount);
-    expect(correctionProviderRequestCount).toBe(4);
+    expect(correctionProviderRequestCount).toBe(4); // Includes the single bounded invalid-output recovery.
     expect(global.fetch).toHaveBeenCalledTimes(
       languageToolRequestCount + assessmentPrimaryRequestCount + correctionProviderRequestCount
     );

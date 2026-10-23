@@ -3,10 +3,40 @@
 const crypto = require('crypto');
 const semanticWriting = require('./semanticWritingCorrections.service');
 const canonical = require('./correctionCanonical.service');
-const { getSemanticAIConfig } = require('./semanticAIClient.service');
+const { getAssessmentAIConfig: getSemanticAIConfig } = require('./semanticAIClient.service');
+const teacherPolicy = require('./teacherEvaluationPolicy.service');
+const executionPolicy = require('./assessmentExecutionPolicy.service');
 const { CORRECTION_CATEGORIES } = require('./structuredOutputSchemas.service');
 const logger = require('../utils/logger');
-const VERSION = 'semantic-chunk-coordinator-v3-output-risk';
+const VERSION = 'semantic-chunk-coordinator-v6-hard-vs-quality-review';
+
+function auditPlan(enabledCategories, baseReviewCoverage, suspiciousCategories, recoveryUsed, canRun) {
+  const coverageRepairCategories = enabledCategories.filter(category => !baseReviewCoverage[category]);
+  const qualityAuditCategories = enabledCategories.filter(category => baseReviewCoverage[category] && suspiciousCategories.includes(category));
+  const state = categories => ({ required: categories.length > 0, categories,
+    status: !categories.length ? 'not_required' : recoveryUsed ? 'skipped_recovery_bound' : !canRun ? 'skipped_budget' : 'pending' });
+  return { baseReviewCoverage, coverageRepairCategories, qualityAuditCategories,
+    coverageRepair: state(coverageRepairCategories), qualityAudit: state(qualityAuditCategories) };
+}
+function settleAudit(plan, coverage, error = null) {
+  for (const kind of ['coverageRepair', 'qualityAudit']) {
+    const item = plan[kind];
+    if (item.status !== 'pending') continue;
+    item.status = error ? 'failed' : item.categories.every(category => coverage[category]) ? 'completed' : 'review_incomplete';
+    if (error) item.errorCode = error.code || 'SEMANTIC_CATEGORY_AUDIT_FAILED';
+  }
+}
+
+function categoryReviewCoverage(result, categories) {
+  if (result?.recoverySubchunks) return Object.fromEntries(categories.map(category => [category,
+    result.recoverySubchunks.every(child => categoryReviewCoverage(child, [category])[category])]));
+  const d = result?.diagnostics || {};
+  return Object.fromEntries(categories.map(category => [category, d.schemaValidated === true
+    && d.categoryReviews?.some(review => review.category === category && review.reviewed === true) === true
+    && d.symbolReviewCoverage?.[category]?.complete === true
+    && d.sourceHashMatches !== false && result?.coverage?.sourceHashMatches !== false
+    && d.categoryCoverageComplete?.[category] !== false]));
+}
 
 const integer = (value, fallback, minimum = 1) => {
   const parsed = Number(value);
@@ -110,25 +140,15 @@ function splitChunk(chunk) {
 }
 
 function recoverableFailure(error) {
-  const code = String(error?.code || '');
+  const code = String(error?.finalFailureCode || error?.attempts?.at(-1)?.code || error?.code || '');
   const finishReason = String(error?.finishReason || '');
   return code.includes('TIMEOUT') || code.includes('TRUNCATED')
+    || ['AI_PROVIDER_UNAVAILABLE', 'AI_OUTPUT_VALIDATION_FAILED'].includes(code)
     || ['length', 'max_tokens', 'MAX_TOKENS'].includes(finishReason);
 }
 
 function deterministicLanguageCandidateCount(transcript) {
-  const text = String(transcript || '');
-  if (!text.trim()) return 0;
-  const patterns = [
-    /\s{2,}/g,
-    /\s+[,.!?;:]/g,
-    /[.!?]\s+[a-z]/g,
-    /\b(?:he|she|it)\s+(?:are|were|have|do)\b/gi,
-    /\b(?:they|we|you)\s+(?:is|was|has|does)\b/gi,
-    /\b(?:a)\s+[aeiou]\w*/gi,
-    /\b(?:an)\s+[^aeiou\W]\w*/gi
-  ];
-  return patterns.reduce((count, pattern) => count + (text.match(pattern)?.length || 0), 0);
+  return executionPolicy.languageCandidateCount(transcript);
 }
 
 function assessOutputRisk(input, { requestEstimate, maxOutputTokens, settings }) {
@@ -191,8 +211,18 @@ function aggregateMetrics(results, chunks, startedAt, mode) {
   const truncationCount = attempts.filter((attempt) => ['length', 'max_tokens', 'MAX_TOKENS']
     .includes(attempt.finishReason) || ['AI_OUTPUT_TRUNCATED', 'AI_RESPONSE_TRUNCATED', 'GOOGLE_OUTPUT_TRUNCATED']
     .includes(attempt.code)).length;
+  const providerCallCount = results.reduce((total, result) => {
+    const record = result.status === 'fulfilled' ? result.value.metrics : result.reason;
+    return total + (Number.isInteger(record?.attemptCount) ? record.attemptCount
+      : record?.attempts?.length || 1 + Number(record?.categoryAuditRequestCount || 0));
+  }, 0);
   return { mode, chunkCount: chunks.length, numberOfChunks: chunks.length,
-    requestCount: results.length, providerCallCount: attempts.length || results.length,
+    correctionPrimaryMs: results.filter(r=>r.role==='main').reduce((n,r)=>n+(r.durationMs||0),0),
+    correctionRecoveryMs: results.filter(r=>r.role==='recovery').reduce((n,r)=>n+(r.durationMs||0),0),
+    coverageRepairMs: results.filter(r=>r.role==='coverageRepair').reduce((n,r)=>n+(r.durationMs||0),0),
+    qualityAuditMs: results.filter(r=>r.role==='audit').reduce((n,r)=>n+(r.durationMs||0),0),
+    requestCount: results.length + successful.reduce((n, result) => n + Number(result.value.metrics?.categoryAuditRequestCount || 0), 0),
+    providerCallCount,
     semanticInputTokens: inputTokens || null, semanticOutputTokens: outputTokens || null,
     semanticFallbackCalls: fallbackCalls, timeoutCount, truncationCount,
     successfulRequestCount: successful.length,
@@ -203,7 +233,7 @@ function aggregateMetrics(results, chunks, startedAt, mode) {
       else ranges.push({ start: chunk.startChar, end: chunk.endChar });
       return ranges;
     }, []).reduce((sum, range) => sum + range.end - range.start, 0),
-    attempts, attemptCount: attempts.length, semanticDurationMs: Date.now() - startedAt,
+    attempts, attemptCount: providerCallCount, semanticDurationMs: Date.now() - startedAt,
     totalDurationMs: Date.now() - startedAt };
 }
 
@@ -244,81 +274,164 @@ function coveredCharactersForSuccessfulChunks(results, chunks) {
 }
 
 async function analyze(input, dependencies = {}) {
-  const startedAt = Date.now();
+  input = { ...input, policy: teacherPolicy.normalizeTeacherEvaluationPolicy(input.policy) };
+  const enabledCategories = teacherPolicy.enabledCorrectionCategories(input.policy);
+  const structuralCategories = enabledCategories.filter(category => ['CONTENT', 'ORGANIZATION'].includes(category));
+  const now = dependencies.now || Date.now;
+  const startedAt = now();
   const env = dependencies.env || process.env;
   const settings = { ...config(env), ...(dependencies.settings || {}) };
   const semanticService = dependencies.semanticService || semanticWriting;
   const requestEstimate = typeof semanticService.buildSemanticRequest === 'function'
     ? semanticService.buildSemanticRequest(input).promptInputTokenEstimate
     : Math.ceil(String(input.transcript || '').length / 4);
-  const baseConfig = dependencies.config || getSemanticAIConfig();
+  const baseConfig = dependencies.config || getSemanticAIConfig(env);
+  const deadlineAt = executionPolicy.stageDeadline(startedAt,
+    Math.min(settings.totalBudgetMs, executionPolicy.budgets(env).correctionBudgetMs), input.deadlineAt);
+  input = { ...input, deadlineAt };
+  const capabilities = executionPolicy.modelCapabilities(baseConfig.model, env);
+  const primaryConfig = { ...baseConfig, primaryRetries: 0, fallbackRetries: 0, maxRetries: 0, retriesPerModel: 0,
+    maxOutputTokens: capabilities ? Math.min(Number(baseConfig.maxOutputTokens) || capabilities.safeOutputBudget,
+      capabilities.safeOutputBudget) : baseConfig.maxOutputTokens };
+  // Do not start another full expensive pass with only a token amount of time.
+  const canFundAdditionalRequest = () => deadlineAt - now() >= Math.min(Number(primaryConfig.attemptTimeoutMs) || 1, 30000);
+  const singleBudget = capabilities
+    ? (dependencies.settings?.preferredSingleRequestTokens || capabilities.preferredSingleRequestTokens)
+    : settings.singleRequestThresholdTokens;
   const outputRisk = assessOutputRisk(input, { requestEstimate,
-    maxOutputTokens: baseConfig.maxOutputTokens || settings.chunkMaxOutputTokens, settings });
-  const inputRequiresChunking = requestEstimate > settings.singleRequestThresholdTokens;
+    maxOutputTokens: primaryConfig.maxOutputTokens || settings.chunkMaxOutputTokens,
+    settings: { ...settings, singleRequestThresholdTokens: singleBudget } });
+  const envelopeExceeded = capabilities && (requestEstimate > capabilities.safeInputBudget
+    || requestEstimate + Math.min(outputRisk.estimatedOutputTokens,
+      Number(baseConfig.maxOutputTokens) || capabilities.safeOutputBudget) + capabilities.safetyReserve > capabilities.safeRequestBudget);
+  const inputRequiresChunking = requestEstimate > singleBudget || envelopeExceeded;
   const useChunking = settings.enabled && (inputRequiresChunking || outputRisk.highRisk);
   const routingReason = !settings.enabled ? 'chunking_disabled'
-    : inputRequiresChunking ? 'input_threshold' : outputRisk.highRisk ? 'output_risk' : 'single_efficient';
+    : envelopeExceeded ? 'safe_request_envelope' : inputRequiresChunking ? 'input_threshold' : outputRisk.highRisk ? 'output_risk' : 'single_efficient';
   logger.info({ event: 'semantic_routing_decision', submissionId: input.submissionId || null,
     assessmentRunId: input.assessmentRunId || null, mode: useChunking ? 'chunked' : 'single',
-    routingReason, requestInputTokenEstimate: requestEstimate,
+    routingReason, routingMode: useChunking ? 'chunked' : 'single', requestInputTokenEstimate: requestEstimate,
+    modelCapabilities: capabilities, preferredSingleRequestTokens: singleBudget,
     outputRisk: { ...outputRisk, indicators: outputRisk.indicators } });
   if (!useChunking) {
-    const result = await semanticService.analyze(input, dependencies);
-    const coordinatorMetrics = aggregateMetrics([{ status: 'fulfilled', value: result }],
+    const requests = []; let result;
+    const run = async (request, role) => {
+      executionPolicy.assertRemaining(deadlineAt, now());
+      const requestStarted=now();
+      try {
+        const value = await semanticService.analyze({ ...request, deadlineAt, disableCategoryAudit: true },
+          { ...dependencies, config: primaryConfig });
+        requests.push({ status: 'fulfilled', value, role, durationMs:now()-requestStarted }); return value;
+      } catch (reason) { requests.push({ status: 'rejected', reason, role, durationMs:now()-requestStarted }); throw reason; }
+    };
+    let recoveryUsed = false;
+    try { result = await run({ ...input, categories: enabledCategories }, 'main'); }
+    catch (error) {
+      error.correctionRequestCounts = { mainCorrectionRequestCount: requests.length, recoveryRequestCount: 0,
+        structuralRequestCount: 0, auditRequestCount: 0 };
+      if (!recoverableFailure(error) || !canFundAdditionalRequest()) throw error;
+      recoveryUsed = true;
+      try { result = await run({ ...input, categories: enabledCategories }, 'recovery'); }
+      catch (reason) {
+        const metrics = aggregateMetrics(requests, [], startedAt, 'single');
+        throw Object.assign(reason, { attempts: metrics.attempts, attemptCount: metrics.attemptCount,
+          correctionRequestCounts: { mainCorrectionRequestCount: 1, recoveryRequestCount: 1,
+            structuralRequestCount: 0, auditRequestCount: 0 } });
+      }
+    }
+    const reviewed = categoryReviewCoverage(result, enabledCategories);
+    const suspicious = semanticWriting.suspiciousCoverageCategories(result, input.transcript, env);
+    const plan = auditPlan(enabledCategories, reviewed, suspicious, recoveryUsed, canFundAdditionalRequest());
+    // A complete short whole-document review is authoritative. Repeating its
+    // valid zero cannot repair hard coverage and delays the corrections-aware rubric.
+    const shortDocument = outputRisk.wordCount < 550 && outputRisk.pageCount === 1;
+    if (shortDocument && plan.qualityAudit.status === 'pending') plan.qualityAudit.status = 'skipped_complete_review';
+    const auditCategories = [...plan.coverageRepairCategories,
+      ...(shortDocument ? [] : plan.qualityAuditCategories)];
+    let audit = { required: false, categories: [], status: 'not_required' };
+    let auditCoverage = {};
+    let corrections = result.corrections || [];
+    if (auditCategories.length) {
+      audit = { required: true, categories: auditCategories,
+        status: recoveryUsed ? 'skipped_recovery_bound' : 'skipped_budget' };
+      if (!recoveryUsed && canFundAdditionalRequest()) try {
+        const checked = await run({ ...input, analysisMode: 'zero_result_audit', categories: auditCategories }, plan.coverageRepairCategories.length?'coverageRepair':'audit');
+        auditCoverage = categoryReviewCoverage(checked, auditCategories);
+        corrections = canonical.mergeCanonicalCorrections({ aiCorrections: [...corrections, ...(checked.corrections || [])] }).corrections;
+        settleAudit(plan, auditCoverage);
+        audit.status = auditCategories.every(category => auditCoverage[category]) ? 'completed' : 'review_incomplete';
+      } catch (error) { audit.status = 'audit_failed'; audit.errorCode = error.code; settleAudit(plan, {}, error); }
+    }
+    const coordinatorMetrics = aggregateMetrics(requests,
       [{ text: input.transcript, startChar: 0, endChar: input.transcript.length }], startedAt, 'single');
-    const categoryCoverageComplete = Object.fromEntries(CORRECTION_CATEGORIES.map((category) => [category, true]));
-    return { ...result, status: 'completed', coverage: { complete: true, coverageComplete: true,
+    const categoryCoverageComplete = Object.fromEntries(CORRECTION_CATEGORIES.map(category => [category,
+      enabledCategories.includes(category) && (reviewed[category] === true
+        || plan.coverageRepairCategories.includes(category) && auditCoverage[category] === true)]));
+    const complete = enabledCategories.every(category => categoryCoverageComplete[category]);
+    const categoryReviewStatus = Object.fromEntries(enabledCategories.map(category => [category,
+      !categoryCoverageComplete[category] ? 'CATEGORY_PASS_FAILED'
+        : corrections.some(item => item.category === category) ? 'REVIEWED_WITH_FINDINGS' : 'ZERO_AFTER_REVIEW']));
+    return { ...result, corrections, diagnostics: { ...result.diagnostics,
+      reviewedCategories: enabledCategories.filter(category => categoryCoverageComplete[category]),
+      ...plan, qualityAuditStatus: plan.qualityAudit.status, coverageRepairStatus: plan.coverageRepair.status,
+      categoryCoverageComplete, categoryReviewStatus, categoryAudit: audit, allCategoriesReviewed: complete },
+    status: complete ? 'completed' : 'partial', coverage: { complete, coverageComplete: complete,
       coveredCharacters: input.transcript.length, totalCharacters: input.transcript.length,
       totalChunks: 1, successfulChunks: 1, failedChunks: 0, structuralPassStatus: 'not_required',
       sourceHashMatches: true, expectedTextRangesCovered: true, finalMergeCompleted: true,
       categoryCoverageComplete }, metrics: { ...(result.metrics || {}), ...coordinatorMetrics,
-        routingReason, requestInputTokenEstimate: requestEstimate, outputRisk } };
+        routingReason, requestInputTokenEstimate: requestEstimate, outputRisk, correctionDeadlineAt: deadlineAt,
+        mainCorrectionRequestCount: requests.filter(request => request.role === 'main').length,
+        recoveryRequestCount: requests.filter(request => request.role === 'recovery').length,
+        auditRequestCount: requests.filter(request => ['audit','coverageRepair'].includes(request.role)).length, structuralRequestCount: 0 } };
   }
 
+  const requestHistory = [];
+  const runRequest = async (request, requestConfig, role) => {
+    executionPolicy.assertRemaining(deadlineAt, now());
+    const requestStarted=now();
+    try {
+      const value = await semanticService.analyze(request, { ...dependencies, config: requestConfig });
+      requestHistory.push({ status: 'fulfilled', value, role, durationMs:now()-requestStarted }); return value;
+    } catch (reason) { requestHistory.push({ status: 'rejected', reason, role, durationMs:now()-requestStarted }); throw reason; }
+  };
   const localPromptOverheadTokens = semanticWriting.buildSemanticRequest({ ...input, transcript: '',
-    analysisMode: 'local_chunk', categories: CORRECTION_CATEGORIES }).promptInputTokenEstimate;
+    analysisMode: 'local_chunk', categories: enabledCategories }).promptInputTokenEstimate;
   const chunks = buildChunks(input.transcript, input.pageManifest || [], { ...settings,
     chunkInputTokens: Math.max(400, settings.chunkInputTokens - localPromptOverheadTokens) });
-  const deadlineAt = Math.min(Number(input.deadlineAt) || Infinity, startedAt + settings.totalBudgetMs);
-  const chunkConfig = { ...baseConfig, maxOutputTokens: Math.min(Number(baseConfig.maxOutputTokens) || settings.chunkMaxOutputTokens,
+  const chunkConfig = { ...primaryConfig, maxOutputTokens: Math.min(Number(baseConfig.maxOutputTokens) || settings.chunkMaxOutputTokens,
     settings.chunkMaxOutputTokens) };
   const executeChunk = async (chunk, stage = 'initial') => {
+    executionPolicy.assertRemaining(deadlineAt, now());
     const chunkHash = chunkIdentity(input, chunk, stage === 'initial' ? '' : stage);
-    const result = await semanticService.analyze({ ...input, transcript: chunk.text, transcriptHash: chunkHash,
+    const result = await runRequest({ ...input, transcript: chunk.text, transcriptHash: chunkHash,
       spans: localSpans(input.spans, chunk), pageManifest: localPages(input.pageManifest, chunk),
-      analysisMode: 'local_chunk', categories: CORRECTION_CATEGORIES, disableCategoryAudit: true, deadlineAt },
-    { ...dependencies, config: chunkConfig });
+      analysisMode: 'local_chunk', transcriptComplete: false, categories: enabledCategories, disableCategoryAudit: true, deadlineAt },
+    stage === 'initial' ? chunkConfig : { ...chunkConfig, maxOutputTokens: Math.min(
+      Number(primaryConfig.maxOutputTokens) || settings.chunkMaxOutputTokens, settings.chunkMaxOutputTokens * 2) },
+    stage === 'initial' ? 'main' : 'recovery');
     return { ...result, corrections: remapCorrections(result.corrections, chunk, input), chunk,
       chunkId: chunkIdentity(input, chunk) };
   };
   const tasks = chunks.map((chunk) => async () => executeChunk(chunk));
-  tasks.push(async () => semanticService.analyze({ ...input, analysisMode: 'document_structure',
-    categories: ['CONTENT', 'ORGANIZATION'], disableCategoryAudit: true, deadlineAt },
-  { ...dependencies, config: chunkConfig }));
+  if (structuralCategories.length) tasks.push(async () => {
+    executionPolicy.assertRemaining(deadlineAt, now());
+    return runRequest({ ...input, analysisMode: 'document_structure',
+    categories: structuralCategories, disableCategoryAudit: true, deadlineAt },
+    chunkConfig, 'structural'); });
   const results = await runBounded(tasks, settings.maxConcurrency);
+  let recoveryRequestCount = 0;
   for (let index = 0; index < chunks.length; index += 1) {
     if (results[index]?.status === 'fulfilled') continue;
     const originalFailure = results[index].reason;
     let recovered = null;
-    for (let retry = 1; retry <= settings.failedChunkRetries && !recovered; retry += 1) {
+    for (let retry = 1; retry <= Math.min(1, settings.failedChunkRetries) && !recovered
+      && recoveryRequestCount < 1 && recoverableFailure(originalFailure) && canFundAdditionalRequest(); retry += 1) {
+      recoveryRequestCount += 1;
       try { recovered = await executeChunk(chunks[index], `retry-${retry}`); }
       catch (error) { results[index] = { status: 'rejected', reason: error }; }
     }
-    let splitUsed = false;
-    if (!recovered && recoverableFailure(results[index]?.reason || originalFailure)) {
-      const subchunks = splitChunk(chunks[index]);
-      const subresults = await runBounded(subchunks.map((chunk) => () => executeChunk(chunk, 'split')), settings.maxConcurrency);
-      if (subresults.length === 2 && subresults.every((result) => result.status === 'fulfilled')) {
-        splitUsed = true;
-        const subvalues = subresults.map((result) => result.value);
-        const submerge = canonical.mergeCanonicalCorrections({ aiCorrections: subvalues.flatMap((value) => value.corrections || []) });
-        recovered = { ...subvalues[0], corrections: submerge.corrections, chunk: chunks[index],
-          chunkId: chunkIdentity(input, chunks[index]), recoverySubchunks: subvalues,
-          metrics: { attempts: subvalues.flatMap((value) => value.metrics?.attempts || []) } };
-      } else {
-        results[index] = { status: 'rejected', reason: subresults.find((result) => result.status === 'rejected')?.reason || originalFailure };
-      }
-    }
+    const splitUsed = false;
     if (recovered) {
       recovered.recovery = { retryCount: splitUsed ? settings.failedChunkRetries : 1,
         splitUsed, originalFailureCode: originalFailure?.code || 'SEMANTIC_CHUNK_FAILED' };
@@ -331,49 +444,76 @@ async function analyze(input, dependencies = {}) {
       provider: recovered?.provider || null, model: recovered?.model || null, splitUsed,
       resultingCoverage: recovered ? 'recovered' : 'failed' });
   }
-  const successful = results.filter((result) => result.status === 'fulfilled');
+  let successful = results.filter((result) => result.status === 'fulfilled');
   let merged = canonical.mergeCanonicalCorrections({ aiCorrections: successful.flatMap((result) => result.value.corrections || []) });
   const deterministicCandidates = deterministicLanguageCandidateCount(input.transcript);
-  let zeroResultAudit = { required: false, status: 'not_required', deterministicCandidates };
-  let zeroResultReliable = true;
-  if (!merged.corrections.length && String(input.transcript || '').length >= 400) {
-    zeroResultAudit = { required: true, status: 'processing', deterministicCandidates };
+  const localResults = results.slice(0, chunks.length);
+  const structuralResult = structuralCategories.length ? results[chunks.length] : null;
+  const requiredPassesSucceeded = localResults.every(result => result.status === 'fulfilled')
+    && (!structuralResult || structuralResult.status === 'fulfilled');
+  const initialCoverage = Object.fromEntries(enabledCategories.map(category => [category,
+    localResults.every(result => result.status === 'fulfilled' && categoryReviewCoverage(result.value, [category])[category])
+    && (!structuralCategories.includes(category) || (structuralResult?.status === 'fulfilled'
+      && categoryReviewCoverage(structuralResult.value, [category])[category]))]));
+  const suspicious = enabledCategories.filter(category => String(input.transcript || '').length >= 400
+    && !merged.corrections.some(item => item.category === category));
+  const plan = auditPlan(enabledCategories, initialCoverage, suspicious, recoveryRequestCount > 0,
+    requiredPassesSucceeded && canFundAdditionalRequest());
+  const auditCategories = [...plan.coverageRepairCategories, ...plan.qualityAuditCategories];
+  let zeroResultAudit = { required: false, categories: [], status: 'not_required', deterministicCandidates };
+  let auditCoverage = {};
+  let auditRequestCount = 0;
+  if (auditCategories.length && requiredPassesSucceeded) {
+    zeroResultAudit = { required: true, categories: auditCategories,
+      status: recoveryRequestCount ? 'skipped_recovery_bound' : 'skipped_budget', deterministicCandidates };
+  }
+  if (zeroResultAudit.required && canFundAdditionalRequest() && recoveryRequestCount === 0) {
+    auditRequestCount += 1;
+    zeroResultAudit = { required: true, categories: auditCategories, status: 'processing', deterministicCandidates };
     try {
-      const auditResult = await semanticService.analyze({ ...input, analysisMode: 'zero_result_audit',
-        categories: ['GRAMMAR', 'VOCABULARY', 'MECHANICS'], disableCategoryAudit: true, deadlineAt },
-      { ...dependencies, config: typeof semanticWriting.preferStrongerAuditConfig === 'function'
-        ? semanticWriting.preferStrongerAuditConfig(baseConfig) : baseConfig });
+      const auditResult = await runRequest({ ...input, analysisMode: 'zero_result_audit',
+        categories: auditCategories, disableCategoryAudit: true, deadlineAt },
+      primaryConfig, plan.coverageRepairCategories.length?'coverageRepair':'audit');
+      auditCoverage = categoryReviewCoverage(auditResult, auditCategories);
+      settleAudit(plan, auditCoverage);
       const auditCorrections = Array.isArray(auditResult.corrections) ? auditResult.corrections : [];
       merged = canonical.mergeCanonicalCorrections({ aiCorrections: [...merged.corrections, ...auditCorrections] });
-      zeroResultReliable = Boolean(merged.corrections.length || deterministicCandidates < 3);
-      zeroResultAudit = { required: true, status: merged.corrections.length ? 'findings_recovered'
-        : zeroResultReliable ? 'zero_confirmed' : 'suspicious_zero', deterministicCandidates,
+      results.push({ status: 'fulfilled', value: auditResult });
+      zeroResultAudit = { required: true, categories: auditCategories,
+        status: !auditCategories.every(category => auditCoverage[category]) ? 'review_incomplete'
+          : auditCorrections.length ? 'findings_recovered' : 'zero_confirmed', deterministicCandidates,
         provider: auditResult.provider || null, model: auditResult.model || null };
     } catch (error) {
-      zeroResultReliable = deterministicCandidates < 3;
-      zeroResultAudit = { required: true, status: zeroResultReliable ? 'audit_failed_no_contradiction' : 'audit_failed_suspicious',
+      results.push({ status: 'rejected', reason: error });
+      settleAudit(plan, {}, error);
+      zeroResultAudit = { required: true, categories: auditCategories, status: 'audit_failed',
         deterministicCandidates, errorCode: error?.code || 'SEMANTIC_ZERO_FIND_SUSPICIOUS' };
     }
   }
+  successful = results.filter(result => result.status === 'fulfilled');
   const localSuccessCount = results.slice(0, chunks.length).filter((result) => result.status === 'fulfilled').length;
-  const structuralSucceeded = results[chunks.length]?.status === 'fulfilled';
+  const structuralSucceeded = !structuralCategories.length || structuralResult?.status === 'fulfilled';
   const localCoverageComplete = localSuccessCount === chunks.length;
   const expectedTextRangesCovered = localCoverageComplete && chunks[0]?.startChar === 0
     && chunks[chunks.length - 1]?.endChar === input.transcript.length
     && chunks.every((chunk, index) => index === 0 || chunk.startChar <= chunks[index - 1].endChar);
-  const coverageComplete = localCoverageComplete && structuralSucceeded && expectedTextRangesCovered && zeroResultReliable;
-  const categoryCoverageComplete = {
-    CONTENT: coverageComplete, ORGANIZATION: coverageComplete,
-    VOCABULARY: localCoverageComplete && expectedTextRangesCovered && zeroResultReliable,
-    GRAMMAR: localCoverageComplete && expectedTextRangesCovered && zeroResultReliable,
-    MECHANICS: localCoverageComplete && expectedTextRangesCovered && zeroResultReliable
-  };
+  const categoryCoverageComplete = Object.fromEntries(CORRECTION_CATEGORIES.map(category => [category,
+    expectedTextRangesCovered && (initialCoverage[category] === true
+      || requiredPassesSucceeded && plan.coverageRepairCategories.includes(category) && auditCoverage[category] === true)]));
+  const coverageComplete = enabledCategories.every(category => categoryCoverageComplete[category]);
+  const categoryReviewStatus = Object.fromEntries(CORRECTION_CATEGORIES.map(category => [category,
+    !enabledCategories.includes(category) ? 'DISABLED_BY_POLICY'
+      : !categoryCoverageComplete[category] ? 'CATEGORY_PASS_FAILED'
+        : merged.corrections.some(item => item.category === category) ? 'REVIEWED_WITH_FINDINGS' : 'ZERO_AFTER_REVIEW']));
   const status = coverageComplete ? 'completed'
     : successful.length ? 'partial' : 'failed';
   const errors = results.slice(0, chunks.length).map((result, index) => ({ result, index }))
     .filter(({ result }) => result.status === 'rejected').map(({ result, index }) => ({ index,
       chunkId: chunkIdentity(input, chunks[index]), code: result.reason?.code || 'SEMANTIC_CHUNK_FAILED' }));
-  const metrics = { ...aggregateMetrics(results, chunks, startedAt, 'chunked'),
+  const metrics = { ...aggregateMetrics(requestHistory, chunks, startedAt, 'chunked'),
+    correctionDeadlineAt: deadlineAt, mainCorrectionRequestCount: requestHistory.filter(request => request.role === 'main').length,
+    structuralRequestCount: requestHistory.filter(request => request.role === 'structural').length,
+    auditRequestCount, recoveryRequestCount,
     configuredChunkInputTokens: settings.chunkInputTokens, localPromptOverheadTokens,
     routingReason, requestInputTokenEstimate: requestEstimate, outputRisk };
   const coveredCharacters = coveredCharactersForSuccessfulChunks(results, chunks);
@@ -395,16 +535,21 @@ async function analyze(input, dependencies = {}) {
   });
   return { status, corrections: merged.corrections, provider: successful[0]?.value.provider || null,
     model: successful[0]?.value.model || null, diagnostics: { ...aggregateValidationDiagnostics(successful, merged),
+      reviewedCategories: enabledCategories.filter(category => categoryCoverageComplete[category]),
+      ...plan, qualityAuditStatus: plan.qualityAudit.status, coverageRepairStatus: plan.coverageRepair.status,
+      categoryCoverageComplete, categoryReviewStatus, categoryAudit: zeroResultAudit,
+      allCategoriesReviewed: coverageComplete, policyHash: teacherPolicy.evaluationPolicyHash(input.policy),
       chunking: { localChunkCount: chunks.length, localSuccessCount,
         localFailureCount: chunks.length - localSuccessCount, structuralSucceeded, errors,
         chunks: chunkOutcomes, zeroResultAudit, mergeDiagnostics: merged.diagnostics } }, metrics,
     coverage: { complete: coverageComplete, coverageComplete, coveredCharacters,
       totalCharacters: input.transcript.length, successfulChunks: localSuccessCount, totalChunks: chunks.length,
       failedChunks: chunks.length - localSuccessCount,
-      structuralPassStatus: structuralSucceeded ? 'completed' : 'failed', sourceHashMatches: true,
+      structuralPassStatus: !structuralCategories.length ? 'not_required' : structuralSucceeded ? 'completed' : 'failed', sourceHashMatches: true,
       expectedTextRangesCovered, finalMergeCompleted: true, categoryCoverageComplete } };
 }
 
 module.exports = { VERSION, config, preferredBoundary, buildChunks, localSpans, localPages, remapCorrections,
+  categoryReviewCoverage,
   chunkIdentity, splitChunk, recoverableFailure, deterministicLanguageCandidateCount, runBounded, aggregateMetrics,
   aggregateValidationDiagnostics, coveredCharactersForSuccessfulChunks, assessOutputRisk, analyze };

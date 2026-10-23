@@ -31,7 +31,7 @@ describe('Google adapter isolation from the semantic assessment facade', () => {
     expect(result.content).toBe('{"ok":true}');
     expect(fetchImpl.mock.calls[0][0]).toBe('https://router.test/v1/chat/completions');
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body).toMatchObject({ model: 'openai/gpt-4.1', max_tokens: 1800, response_format: { type: 'json_object' } });
+    expect(body).toMatchObject({ model: 'openai/gpt-6-astra', max_tokens: 1800, response_format: { type: 'json_object' } });
     expect(result.content).not.toContain('private reasoning');
   });
 
@@ -42,7 +42,7 @@ describe('Google adapter isolation from the semantic assessment facade', () => {
     }));
     await client.runSemanticCompletion({ messages: [{ role: 'user', content: 'fixture' }],
       config: client.getSemanticAIConfig(configuredEnv), env: configuredEnv, fetchImpl });
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).model).toBe('openai/gpt-4.1');
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).model).toBe('openai/gpt-6-astra');
   });
 
   test('assessment OpenRouter requests omit Google thinkingConfig', async () => {
@@ -97,7 +97,7 @@ describe('Google adapter isolation from the semantic assessment facade', () => {
 
   test('does not inherit a newly configured global Google model', () => {
     expect(client.getSemanticAIConfig(env({ AI_PRIMARY_MODEL: 'new-google-model' })))
-      .toMatchObject({ provider: 'openrouter', model: 'openai/gpt-4.1' });
+      .toMatchObject({ provider: 'openrouter', model: 'openai/gpt-6-astra' });
   });
 
   test('missing credentials fail deterministically before transport', () => {

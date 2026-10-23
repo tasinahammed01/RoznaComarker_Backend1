@@ -53,10 +53,8 @@ async function generateTeacherCommentDraft(feedback, submissionId) {
     throw error;
   }
   const gateway = require('./aiGateway.service');
-  const config = gateway.getAIConfig({ ...process.env, AI_PRIMARY_PROVIDER: 'openrouter', AI_PRIMARY_MODEL: 'openai/gpt-4.1-mini',
-    AI_FALLBACK_1_PROVIDER: '', AI_FALLBACK_1_MODEL: '', AI_FALLBACK_2_PROVIDER: '', AI_FALLBACK_2_MODEL: '',
-    AI_FALLBACK_3_PROVIDER: '', AI_FALLBACK_3_MODEL: '', AI_ATTEMPT_TIMEOUT_MS: '12000', AI_TOTAL_BUDGET_MS: '25000',
-    AI_RETRIES_PER_MODEL: '1', AI_PRIMARY_RETRIES: '1', AI_FALLBACK_RETRIES: '0', AI_RETRY_DELAY_MS: '250' });
+  const config = { ...gateway.getAssessmentAIConfig(), attemptTimeoutMs: 12000, totalBudgetMs: 25000,
+    primaryRetries: 1, fallbackRetries: 0, retryDelayMs: 250 };
   const result = await gateway.generate({ feature: 'teacher_comment_draft', config,
     metadata: { submissionId: String(submissionId) }, temperature: 0.1, maxOutputTokens: 240,
     responseFormat: 'json', schemaName: 'teacher_comment_draft',

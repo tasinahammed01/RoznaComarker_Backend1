@@ -27,15 +27,15 @@ const valid = { title: 'Writing Rubric', totalPoints: 100, levels: [
 describe('rubric assessment AI configuration and completion', () => {
   test('uses the assessment provider/model and retains the rubric token limit', () => {
     expect(getRubricAiConfig(env())).toMatchObject({
-      provider: 'openrouter', model: 'openai/gpt-4.1',
+      provider: 'openrouter', model: 'openai/gpt-6-astra',
       attemptTimeoutMs: 30000, maxOutputTokens: 4000
     });
     expect(getRubricAiConfig(env({
       RUBRIC_AI_PROVIDER: 'openrouter', RUBRIC_AI_MODEL: 'ignored'
-    }))).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-4.1' });
+    }))).toMatchObject({ provider: 'openrouter', model: 'openai/gpt-6-astra' });
   });
 
-  test('changing the assessment primary model changes rubric transport', async () => {
+  test('deprecated primary model cannot change Astra rubric transport', async () => {
     const fetchImpl = jest.fn(async () => ({ ok: true, status: 200,
       headers: { get: () => null }, text: async () => JSON.stringify({
         choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(valid) } }]
@@ -45,7 +45,7 @@ describe('rubric assessment AI configuration and completion', () => {
       env: env({ ASSESSMENT_AI_PRIMARY_MODEL: 'openai/changed-rubric-model' }), fetchImpl
     })).resolves.toEqual(valid);
     expect(fetchImpl.mock.calls[0][0]).toBe('https://router.test/v1/chat/completions');
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).model).toBe('openai/changed-rubric-model');
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).model).toBe('openai/gpt-6-astra');
   });
 
   test('missing primary credential fails before transport', async () => {

@@ -1,6 +1,6 @@
 'use strict';
 
-const { getSemanticAIConfig } = require('./semanticAIClient.service');
+const { getAssessmentAIConfig: getSemanticAIConfig } = require('./semanticAIClient.service');
 
 function integer(value, fallback, minimum, maximum) {
   const parsed = Number.parseInt(value, 10);

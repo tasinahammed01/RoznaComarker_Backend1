@@ -64,9 +64,24 @@ function buildCanonicalCorrectionRenderModels(corrections, canonical, storedPage
     const spelling = correction.symbol === 'SP';
     const expected = correction.originalText || correction.quotedText || '';
     const allowSubset = !correction.originalText && !spelling;
+    // The response normalizer has already checked run/evidence binding, verified
+    // the exact final source slice and resolved its current occurrence IDs.
+    // A stale model originalText or joined OCR-word spelling is not authority
+    // over that canonical proof (e.g. a TA span containing physical newlines).
+    const finalRangeVerified = semantic && Number.isInteger(correction.startChar) && correction.startChar >= 0
+      && Number.isInteger(correction.endChar) && correction.endChar > correction.startChar
+      && correction.endChar <= String(canonical.text || '').length
+      && typeof correction.quotedText === 'string' && correction.quotedText.length > 0
+      && canonical.text.slice(correction.startChar, correction.endChar) === correction.quotedText
+      && wordIds.length > 0 && wordIds.every(id => {
+        const span = spansById.get(id);
+        return span && normalizedId(span.fileId) === normalizedId(correction.fileId)
+          && Number(span.page || 1) === Number(correction.page || 1)
+          && correction.startChar < span.end && correction.endChar > span.start;
+      });
     const matchesExpected = actual => spelling ? normalizedText(expected) !== '' && normalizedText(expected) === normalizedText(actual)
       : textMatches(expected, actual, allowSubset);
-    let mismatch = wordIds.length > 0 && ((spelling && wordIds.length !== 1)
+    let mismatch = !finalRangeVerified && wordIds.length > 0 && ((spelling && wordIds.length !== 1)
       || !matchesExpected(wordIds.map(id => words.get(id).text).join(' ')));
     if (mismatch) {
       // Only exact offsets in the current canonical text can repair IDs. Proximity
