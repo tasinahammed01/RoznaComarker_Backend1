@@ -58,6 +58,7 @@ jest.mock('../src/modules/submissionFeedbackPdfGenerator', () => {
   const fs = require('fs');
   let captured = null;
   return {
+    PDF_RENDERER_VERSION: 'feedback-pdf-v3', PDF_ANNOTATION_VERSION: 'website-semantic-groups-v1',
     generateSubmissionFeedbackPdf: jest.fn(async (viewModel, outputPath) => {
       captured = JSON.parse(JSON.stringify(viewModel));
       await fs.promises.writeFile(outputPath, Buffer.from('%PDF-1.4\n%synthetic canonical report\n'));

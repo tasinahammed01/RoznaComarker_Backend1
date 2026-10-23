@@ -1,12 +1,7 @@
 "use strict";
 
-const ANNOTATION_COLORS = Object.freeze({
-  CONTENT: "#b9474d",
-  GRAMMAR: "#287a55",
-  ORGANIZATION: "#2f6f9f",
-  VOCABULARY: "#7445a2",
-  MECHANICS: "#946b00",
-});
+const ANNOTATION_COLORS = Object.freeze(Object.fromEntries(require('../services/correctionLegendResolver.service').fallbackLegend().groups.map(g=>[g.key,g.color])));
+const {websiteAnnotationPresentation}=require('./websiteAnnotationPresentation');
 
 const finite = (value) => Number.isFinite(Number(value));
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value)));
@@ -163,6 +158,7 @@ function markerDimensions(diameter = 3.8) {
 }
 
 function markerLabel(correction) {
+  if(correction.displayLabel)return correction.displayLabel;
   if (correction.markerMembers?.length > 1) {
     const full = correction.markerMembers.map((c) => `${c.displayNumber} ${c.symbol}`).join('/');
     return full.length <= 24 ? full : `${correction.displayNumber} ${correction.symbol} +${correction.markerMembers.length - 1}`;
@@ -178,6 +174,7 @@ function anchoredMarkerDimensions(correction, diameter) {
   const label = markerLabel(correction);
   return {
     ...base,
+    fontPt: correction.displayLabel ? 6 : base.fontPt,
     width: round(Math.max(base.width, 2 + label.length * 1.05)),
     label,
   };
@@ -887,40 +884,26 @@ function createSubmittedImageLayout(page, options = {}) {
   );
   const omitted = [];
   const entries = [];
-  const grouped = new Map();
-  for (const correction of allCorrections) {
-    const raw = correction.targetBoxes ?? correction.bboxList ?? [];
-    const key = raw.map((b) => [b.x, b.y, b.w, b.h, Boolean(b.boundary)].join(':')).sort().join('|');
-    const existing = key && grouped.get(key);
-    if (existing) existing.markerMembers.push(correction);
-    else grouped.set(key || `missing:${grouped.size}`, { ...correction, markerMembers: [correction] });
+  const presentation=websiteAnnotationPresentation({...page,imageWidth:geometry.sourceWidth,imageHeight:geometry.sourceHeight,
+    corrections:allCorrections.map(c=>({...c,bboxList:(c.bboxList||c.targetBoxes||[])
+      .map(b=>normalizePercentBox(b,geometry.sourceWidth,geometry.sourceHeight)).filter(Boolean)}))});
+  const mapSegment=s=>({x:geometry.imageXmm+s.left/100*geometry.imageWidthMm,
+    y:geometry.imageYmm+s.top/100*geometry.imageHeightMm,w:s.width/100*geometry.imageWidthMm,
+    h:(s.height||0)/100*geometry.imageHeightMm,boundary:!!s.boundary,semantic:!!s.semantic,
+    correctionIds:s.correctionIds});
+  for(const group of presentation.groups){
+    const correction={...group.members[0],markerMembers:group.members,displayLabel:group.displayLabel,
+      color:group.color,presentationGroup:group};
+    const ownedIds = new Set(group.targetIds.flatMap(target => [...target.wordIds, ...target.anchors.map(anchor => anchor.wordId)]));
+    const wordBoxes = presentation.words.filter(word => ownedIds.has(word.id)).map(word => word.bbox).filter(Boolean);
+    const boxes = wordBoxes.length ? wordBoxes : presentation.annotations
+      .filter(annotation => group.correctionIds.includes(annotation._id))
+      .flatMap(annotation => annotation.renderTarget?.boxes || annotation.bboxList || []).filter(Boolean);
+    const mappedBoxes = boxes.length ? boxes.map(box => mapPercentBoxToStage(box, geometry)).filter(Boolean) : group.segments.map(mapSegment);
+    entries.push({correction,boxes,mappedBoxes,target:mappedBoxes[0]});
   }
-  for (const correction of grouped.values()) {
-    const members = correction.markerMembers.sort((a, b) => Number(a.displayNumber || 0) - Number(b.displayNumber || 0)
-      || String(a.reportId || a.id).localeCompare(String(b.reportId || b.id)));
-    Object.assign(correction, members[0], { markerMembers: members });
-    const boxes = (
-      correction.targetBoxes ?? (Array.isArray(correction?.bboxList) ? correction.bboxList : [])
-    )
-      .map((box) =>
-        normalizePercentBox(box, geometry.sourceWidth, geometry.sourceHeight),
-      )
-      .filter(Boolean);
-    const mappedBoxes = boxes
-      .map((box, index) => ({ ...mapPercentBoxToStage(box, geometry),
-        boundary: Boolean((correction.targetBoxes || [])[index]?.boundary) }))
-      .filter(Boolean);
-    const target = unionBoxes(mappedBoxes);
-    if (!target) {
-      omitted.push({
-        annotationId: String(correction?.reportId || correction?.id || ""),
-        correction,
-        reason: "Missing or invalid annotation bounding box",
-      });
-      continue;
-    }
-    entries.push({ correction, boxes, mappedBoxes, target });
-  }
+  for(const correction of presentation.unmapped)omitted.push({annotationId:String(correction.reportId||correction.id||''),
+    correction,reason:'Missing or invalid annotation bounding box'});
   entries.sort(readingOrder);
   const exactTargetCounts = new Map();
   entries.forEach((entry) => {
@@ -1145,33 +1128,17 @@ for (const entry of entries) {
       { target: unionBoxes(b.boxes), correction: b.correction },
     ),
   );
-  const underlines = entries
-    .flatMap((entry) =>
-      entry.mappedBoxes.map((box) => ({
-        correction: entry.correction,
-        color:
-          entry.correction.color ||
-          ANNOTATION_COLORS[entry.correction.category] ||
-          "#536273",
-        box,
-      })),
-    );
-  const uniqueUnderlines = new Map();
-  for (const line of underlines) {
-    const key = [line.box.x, line.box.y, line.box.w, line.box.h, line.box.boundary].join(':');
-    const members = line.correction.markerMembers || [line.correction];
-    const previous = uniqueUnderlines.get(key);
-    if (previous) previous.corrections.push(...members);
-    else uniqueUnderlines.set(key, { ...line, corrections: [...members] });
-  }
+  const underlines=presentation.strokes.map(s=>{const corrections=[...new Set(s.correctionIds)].map(id=>presentation.byId.get(id));
+    return {box:mapSegment(s),color:s.color,correction:corrections[0],corrections};});
   const overflowMarkers = overflowEntries.map((entry) => ({
     correction: entry.correction,
   }));
   return {
     ...geometry,
     markers,
-    underlines: [...uniqueUnderlines.values()],
-    groupedMarkers: [...grouped.values()].filter((c) => c.markerMembers.length > 1),
+    underlines,
+    semanticGroups:presentation.groups,
+    groupedMarkers: entries.map(e=>e.correction).filter(c=>c.markerMembers.length>1),
     overflowMarkers,
     omitted,
     textObstacles,
@@ -1214,6 +1181,7 @@ function stageStyle(rect, geometry) {
 }
 
 module.exports = {
+  PDF_ANNOTATION_VERSION: require('./websiteAnnotationPresentation').PDF_ANNOTATION_VERSION,
   ANNOTATION_COLORS,
   normalizePercentBox,
   imageGeometry,

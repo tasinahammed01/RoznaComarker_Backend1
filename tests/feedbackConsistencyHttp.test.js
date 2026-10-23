@@ -2,6 +2,7 @@ process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'feedback-consistency-test-secret';
 process.env.ENABLE_TEST_PDF_HTTP = 'true';
 jest.mock('../src/modules/submissionFeedbackPdfGenerator', () => ({
+  PDF_RENDERER_VERSION: 'feedback-pdf-v3', PDF_ANNOTATION_VERSION: 'website-semantic-groups-v1',
   generateSubmissionFeedbackPdf: jest.fn(async (vm, outputPath) => {
     await require('fs').promises.writeFile(outputPath, '%PDF-1.4\n% HTTP authorization fixture');
     return outputPath;

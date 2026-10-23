@@ -9,7 +9,7 @@ const {
 } = require('../../services/rubricLanguageScoring.service');
 
 const CATEGORIES = ['CONTENT', 'GRAMMAR', 'ORGANIZATION', 'VOCABULARY', 'MECHANICS'];
-const COLORS = { CONTENT: '#e89b3c', GRAMMAR: '#39956b', ORGANIZATION: '#3b82a0', VOCABULARY: '#8958b8', MECHANICS: '#c59a15' };
+const COLORS = Object.fromEntries(require('../../services/correctionLegendResolver.service').fallbackLegend().groups.map(group => [group.key, group.color]));
 const AI_FEEDBACK_CATEGORIES = [
   ['GRAMMAR', 'Grammar'],
   ['VOCABULARY', 'Vocabulary'],
@@ -111,36 +111,9 @@ function highlightedSegments(text, pageStart, corrections, numberById) {
   }).concat(anchorSegment(safeText.length));
 }
 
-function targetBoxes(correction, page) {
-  const target = correction.renderTarget;
-  const words = page?.words || [];
-  const index = new Map(words.map((w, i) => [String(w.id), { word: w, order: i }]));
-  const runs = [];
-  for (const id of target.wordIds) {
-    const item = index.get(id); if (!item) continue;
-    const box = item.word.bbox, previous = runs.at(-1);
-    const overlap = previous && Math.min(previous.y + previous.h, box.y + box.h) - Math.max(previous.y, box.y);
-    const gap = previous ? box.x - previous.x - previous.w : Infinity;
-    const aspect = (Number(page?.height || page?.imageHeight) || 1200) / (Number(page?.width || page?.imageWidth) || 900);
-    if (previous && previous.order + 1 === item.order && !item.word.separatorBefore?.includes('\n')
-      && overlap > Math.min(previous.h, box.h) * 0.35 && gap >= 0 && gap <= Math.min(previous.h, box.h) * aspect * 0.85) {
-      const right = Math.max(previous.x + previous.w, box.x + box.w);
-      const bottom = Math.max(previous.y + previous.h, box.y + box.h);
-      previous.y = Math.min(previous.y, box.y); previous.h = bottom - previous.y;
-      previous.w = right - previous.x; previous.order = item.order;
-    } else runs.push({ ...box, order: item.order });
-  }
-  const boxes = target.source === 'bboxList' ? target.boxes : runs.map(({ order, ...box }) => box);
-  return [...boxes, ...target.anchors.flatMap((a) => {
-    const box = index.get(a.wordId)?.word.bbox;
-    return box ? [{ x: Math.min(99.8, a.side === 'before' ? box.x : box.x + box.w),
-      y: Math.min(99.2, box.y + box.h), w: 0.2, h: 0.8, boundary: true }] : [];
-  })];
-}
-
 function flattenLegend(input) {
   const raw = Array.isArray(input) ? input : Array.isArray(input?.groups) ? input.groups.flatMap((group) => (group.symbols || []).map((item) => ({ ...item, category: group.key, color: group.color }))) : [];
-  return raw.map((item) => ({ symbol: String(item.symbol || ''), label: String(item.label || item.symbol || ''), description: String(item.description || ''), category: String(item.category || '').toUpperCase(), color: COLORS[String(item.category || '').toUpperCase()] || item.color || '#64748b' }));
+  return raw.map((item) => ({ symbol: String(item.symbol || ''), label: String(item.label || item.symbol || ''), description: String(item.description || ''), category: String(item.category || '').toUpperCase(), color: item.color || COLORS[String(item.category || '').toUpperCase()] || '#64748b' }));
 }
 
 function buildReportViewModel(input = {}) {
@@ -157,9 +130,7 @@ function buildReportViewModel(input = {}) {
     const sourcePage = pageSource.find((candidate) => id(candidate?.fileId) === fileId
       && Number(candidate?.pageNumber || candidate?.page || 1) === page);
     const imageWidth = Number(sourcePage?.imageWidth || sourcePage?.width || 0);
-    const imageHeight = Number(sourcePage?.imageHeight || sourcePage?.height || 0);
-    item.targetBoxes = targetBoxes(item, sourcePage);
-    return { ...item, reportId: String(item?.id || item?._id || `correction-${index}`), fileId, page, category: CATEGORIES.includes(category) ? category : 'MECHANICS', symbol, symbolLabel: item?.symbolLabel || legendItem?.label || symbol, color: item?.color || legendItem?.color || COLORS[CATEGORIES.includes(category) ? category : 'MECHANICS'], quotedText: String(item?.quotedText || item?.originalText || item?.word || ''), message: String(item?.message || ''), suggestedText: String(item?.suggestedText || ''), startChar: Number(item?.startChar), endChar: Number(item?.endChar), bboxList: normalizeBoxes(item?.bboxList, imageWidth, imageHeight) };
+    const imageHeight = Number(sourcePage?.imageHeight || sourcePage?.height || 0);    return { ...item, reportId: String(item?.id || item?._id || `correction-${index}`), fileId, page, category: CATEGORIES.includes(category) ? category : 'MECHANICS', symbol, symbolLabel: item?.symbolLabel || legendItem?.label || symbol, color: legendItem?.color || item?.color || COLORS[CATEGORIES.includes(category) ? category : 'MECHANICS'], quotedText: String(item?.quotedText || item?.originalText || item?.word || ''), message: String(item?.message || ''), suggestedText: String(item?.suggestedText || ''), startChar: Number(item?.startChar), endChar: Number(item?.endChar), bboxList: normalizeBoxes(item?.bboxList, imageWidth, imageHeight) };
   }).sort((a, b) => {
     const pageOrder = (fileOrder.get(a.fileId) ?? 99999) - (fileOrder.get(b.fileId) ?? 99999) || a.page - b.page;
     if (pageOrder) return pageOrder;
@@ -187,7 +158,7 @@ function buildReportViewModel(input = {}) {
       || (pages.length === 1 && !c.fileId && c.page === pageNumber));
     const assetKey = `${fileId}:${pageNumber}`;
     const imageWidth = Number(page.imageWidth || page.width || 0); const imageHeight = Number(page.imageHeight || page.height || 0);
-    return { fileId, fileIndex: fileOrder.get(fileId) ?? index, fileName: String(page.fileName || ''), fileType: String(page.fileType || ''), pageNumber, displayPageNumber: index + 1, imageDataUrl: submission.imageDataByPageKey?.[assetKey] || submission.imageDataByFileId?.[fileId] || null, imageWidth, imageHeight, annotationObstacles: normalizeBoxes((Array.isArray(page.words) ? page.words : []).map((word) => word?.bbox), imageWidth, imageHeight), transcriptStartChar: startChar, transcriptEndChar: Number(page.endChar ?? startChar + pageText.length), transcriptText: pageText, transcriptParagraphs: Array.isArray(page.paragraphs) ? page.paragraphs : [], corrections: pageCorrections.map((c) => ({ ...c, displayNumber: numberById.get(c.reportId) })), transcript: { text: pageText, startChar, endChar: Number(page.endChar ?? startChar + pageText.length), highlightedSegments: highlightedSegments(pageText, startChar, pageCorrections, numberById) } };
+    return { fileId, fileIndex: fileOrder.get(fileId) ?? index, fileName: String(page.fileName || ''), fileType: String(page.fileType || ''), pageNumber, displayPageNumber: index + 1, imageDataUrl: submission.imageDataByPageKey?.[assetKey] || submission.imageDataByFileId?.[fileId] || null, imageWidth, imageHeight, annotationWords: page.words || [], annotationSourceGeometry: page.annotationSourceGeometry || null, annotationObstacles: normalizeBoxes((Array.isArray(page.words) ? page.words : []).map((word) => word?.bbox), imageWidth, imageHeight), transcriptStartChar: startChar, transcriptEndChar: Number(page.endChar ?? startChar + pageText.length), transcriptText: pageText, transcriptParagraphs: Array.isArray(page.paragraphs) ? page.paragraphs : [], corrections: pageCorrections.map((c) => ({ ...c, displayNumber: numberById.get(c.reportId) })), transcript: { text: pageText, startChar, endChar: Number(page.endChar ?? startChar + pageText.length), highlightedSegments: highlightedSegments(pageText, startChar, pageCorrections, numberById) } };
   });
   const rubric = evaluationCurrent ? evaluation.rubricScores || {} : {};
   const categoryScores = Object.entries(rubric).map(([category, item]) => { const maxScore = Math.max(0, Number(item?.maxScore || 0)); const score = clamp(Number(item?.score || 0), 0, maxScore); return { category, score, maxScore, percentage: maxScore ? Math.round(score / maxScore * 100) : 0, issueCount: CATEGORIES.includes(category) ? statistics[category.toLowerCase()] : null, feedback: String(item?.comment || '') }; });

@@ -70,11 +70,12 @@ async function getSubmissionWithPermissionsOrThrow({ user, submissionId, guestCo
 
 async function downloadSubmissionPdf(req, res, next) {
   const requestStartedAt = Date.now();
-  let outputPath = null;
   try {
     // Lazy-load the read-only browser report pipeline during an authorized download.
     // eslint-disable-next-line global-require
-    const { generateSubmissionFeedbackPdf } = require("../modules/submissionFeedbackPdfGenerator");
+    const renderer = require("../modules/submissionFeedbackPdfGenerator");
+    const { generateSubmissionFeedbackPdf } = renderer;
+    const pdfCache = require("../services/submissionFeedbackPdfCache.service");
     // eslint-disable-next-line global-require
     const { buildPersistedSubmissionFeedbackReport } = require("../services/submissionFeedbackReport.service");
 
@@ -88,6 +89,10 @@ async function downloadSubmissionPdf(req, res, next) {
       submissionId,
       guestContext: req.guestAccessContext,
     });
+
+    if (renderer.PDF_RENDERER_VERSION !== pdfCache.PDF_RENDERER_VERSION || renderer.PDF_ANNOTATION_VERSION !== pdfCache.PDF_ANNOTATION_VERSION) {
+      throw new ApiError(503, "PDF renderer update requires an application restart.");
+    }
 
     const marksVisible = (req.user?.role !== "student" && !submissionAccess.isGuest(req.guestAccessContext)) || showMarksToStudent(submission.assignment);
 
@@ -135,13 +140,6 @@ async function downloadSubmissionPdf(req, res, next) {
       assignmentInstructions: String(submission.assignment?.instructions || submission.assignment?.description || ""),
     };
 
-    const tmpDir = path.join(os.tmpdir(), "rozna-pdf");
-    await fs.promises.mkdir(tmpDir, { recursive: true });
-    outputPath = path.join(
-      tmpDir,
-      `submission-feedback-${String(submission._id)}-${uuidv4()}.pdf`,
-    );
-
     const abortController = new AbortController();
     let requestBudgetExpired = false;
     const requestBudgetMs = (() => {
@@ -160,20 +158,34 @@ async function downloadSubmissionPdf(req, res, next) {
     try {
       logger.info({ message: "Assessment pipeline timing", submissionId: String(submission._id),
         stage: "reportRequestedAt", timestamp: new Date().toISOString() });
-      const memoryBefore = process.memoryUsage().rss;
-      const { viewModel, diagnostics, timings } = await buildPersistedSubmissionFeedbackReport({
-        submission, submissionFeedback, feedback, identity, marksVisible, abortSignal: abortController.signal
+      const resolvedLegend = await require("../services/correctionLegendResolver.service").resolveLegend();
+      const cacheIdentity = pdfCache.cacheIdentity({ submission, submissionFeedback, feedback, identity, marksVisible,
+        audience: submissionAccess.isGuest(req.guestAccessContext) ? "guest" : `${req.user.role}:${req.user._id}`,
+        legendIdentity: resolvedLegend.contentHash, fileIdentity: await pdfCache.sourceFileIdentity(submission) });
+      const cacheResult = await pdfCache.cachedSubmissionPdf({ identity: cacheIdentity, submissionId: submission._id, signal: abortController.signal,
+        generate: async cacheOutputPath => {
+          const memoryBefore = process.memoryUsage().rss;
+          const { viewModel, diagnostics, timings } = await buildPersistedSubmissionFeedbackReport({
+            submission, submissionFeedback, feedback, identity, marksVisible, resolvedLegend, abortSignal: abortController.signal
+          });
+          logger.info(`[PDF MAP] submissionId=${String(submission._id)} diagnostics=${JSON.stringify({
+            ...diagnostics, assetMetrics: undefined
+          })} statisticsMismatch=${viewModel.diagnostics.persistedStatisticsMismatch}`);
+          logger.metric({ event: "pdf_view_model_completed", submissionId: String(submission._id),
+            uploadedFileCount: Array.isArray(submission.files) ? submission.files.length : submission.file ? 1 : 0,
+            ocrPageCount: Array.isArray(submission.ocrPages) ? submission.ocrPages.length : 0,
+            submittedPageCount: viewModel.submittedPages.length, correctionCount: viewModel.statistics.total,
+            missingAssetCount: diagnostics.missingAssetCount, totalEmbeddedAssetBytes: diagnostics.totalEmbeddedAssetBytes,
+            memoryRssDeltaBytes: process.memoryUsage().rss - memoryBefore, ...timings });
+          await generateSubmissionFeedbackPdf(viewModel, cacheOutputPath, { abortSignal: abortController.signal });
+        }
       });
-      logger.info(`[PDF MAP] submissionId=${String(submission._id)} diagnostics=${JSON.stringify({
-        ...diagnostics, assetMetrics: undefined
-      })} statisticsMismatch=${viewModel.diagnostics.persistedStatisticsMismatch}`);
-      logger.metric({ event: "pdf_view_model_completed", submissionId: String(submission._id),
-        uploadedFileCount: Array.isArray(submission.files) ? submission.files.length : submission.file ? 1 : 0,
-        ocrPageCount: Array.isArray(submission.ocrPages) ? submission.ocrPages.length : 0,
-        submittedPageCount: viewModel.submittedPages.length, correctionCount: viewModel.statistics.total,
-        missingAssetCount: diagnostics.missingAssetCount, totalEmbeddedAssetBytes: diagnostics.totalEmbeddedAssetBytes,
-        memoryRssDeltaBytes: process.memoryUsage().rss - memoryBefore, ...timings });
-      savedPath = await generateSubmissionFeedbackPdf(viewModel, outputPath, { abortSignal: abortController.signal });
+      savedPath = cacheResult.path;
+      res.setHeader("X-PDF-Renderer-Version", cacheResult.pdfRendererVersion);
+      res.setHeader("X-PDF-Annotation-Version", cacheResult.pdfAnnotationVersion);
+      res.setHeader("X-PDF-Renderer-Fingerprint", cacheResult.rendererFingerprint);
+      res.setHeader("X-PDF-Cache", cacheResult.pdfCacheHit ? "HIT" : "MISS");
+      res.setHeader("X-PDF-Generated-At", cacheResult.pdfGeneratedAt);
       logger.info({ message: "Assessment pipeline timing", submissionId: String(submission._id),
         stage: "reportReadyAt", timestamp: new Date().toISOString(), durationMs: Date.now() - requestStartedAt });
     } catch (error) {
@@ -198,11 +210,6 @@ async function downloadSubmissionPdf(req, res, next) {
     res.setHeader("X-Content-Type-Options", "nosniff");
 
     return res.download(savedPath, safeFilename, async (err) => {
-      try {
-        await fs.promises.unlink(savedPath);
-      } catch {
-        // ignore
-      }
       if (err) {
         logger.error(
           `[PDF ERROR] Download failed submissionId=${String(submission._id)} message=${err && err.message ? err.message : String(err)}`,
@@ -215,7 +222,6 @@ async function downloadSubmissionPdf(req, res, next) {
       return undefined;
     });
   } catch (err) {
-    if (outputPath) await fs.promises.unlink(outputPath).catch(() => {});
     try {
       const submissionId =
         req.params && req.params.submissionId

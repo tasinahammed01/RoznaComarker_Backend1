@@ -210,7 +210,7 @@ function safeDiagnostics(submission, transcriptPages, corrections, submittedPage
   return { uploadedFileIds: (submission.files || []).map(objectId), transcriptPages: transcriptPages.map((page) => ({ fileId: objectId(page.fileId), pageNumber: Number(page.pageNumber) })), correctionGroups: groups, withWordIds: corrections.filter((c) => Array.isArray(c.wordIds) && c.wordIds.length).length, withBboxList: corrections.filter((c) => Array.isArray(c.bboxList) && c.bboxList.length).length, withGlobalOffsets: corrections.filter((c) => Number.isFinite(Number(c.startChar)) && Number.isFinite(Number(c.endChar))).length, assignedPerPage: submittedPages.map((page) => ({ fileId: page.fileId, pageNumber: page.pageNumber, count: page.corrections.length })) };
 }
 
-async function buildPersistedSubmissionFeedbackReport({ submission, submissionFeedback, feedback, identity, generatedAt, abortSignal, marksVisible = true }) {
+async function buildPersistedSubmissionFeedbackReport({ submission, submissionFeedback, feedback, identity, generatedAt, abortSignal, marksVisible = true, resolvedLegend }) {
   const startedAt = Date.now(); const canonical = buildCanonicalSubmissionTranscript(submission); const normalizedAt = Date.now(); const files = Array.isArray(submission.files) && submission.files.length ? submission.files : submission.file ? [submission.file] : [];
   if (canonical.pages.length > limit('PDF_MAX_UPLOADED_PAGES', 20)) throw new ApiError(413, 'This submission contains too many pages for a single report.');
   if (canonical.text.length > limit('PDF_MAX_TRANSCRIPT_CHARACTERS', 1000000)) throw new ApiError(413, 'The submission transcript is too large for report rendering.');
@@ -232,10 +232,15 @@ async function buildPersistedSubmissionFeedbackReport({ submission, submissionFe
     abortSignal?.removeEventListener('abort', relayAbort);
   }
   const assetsAt = Date.now(); throwIfAborted(abortSignal);
-  const transcriptPages = canonical.pages.map((page) => ({ ...page, ...(assets.metadataByPageKey[`${objectId(page.fileId)}:${Number(page.pageNumber)}`] || {}) }));
+  const transcriptPages = await Promise.all(canonical.pages.map(async (page) => {
+    const persisted = (submission.ocrPages || []).find(item => objectId(item.fileId) === objectId(page.fileId) && Number(item.pageNumber || 1) === Number(page.pageNumber || 1));
+    const annotationSourceGeometry = await require('./annotationImageGeometry.service').annotationImageGeometry(
+      { ...page, ...persisted }, async fileId => files.find(file => objectId(file) === fileId));
+    return { ...page, ...(assets.metadataByPageKey[`${objectId(page.fileId)}:${Number(page.pageNumber)}`] || {}), annotationSourceGeometry };
+  }));
   const feedbackObject = submissionFeedback?.toObject ? submissionFeedback.toObject() : { ...(submissionFeedback || {}) }; const teacherObject = feedback?.toObject ? feedback.toObject() : { ...(feedback || {}) };
   const teacherComments = resolveTeacherComments({ submissionFeedback: feedbackObject, legacyFeedback: teacherObject });
-  const legend = await resolveLegend();
+  const legend = resolvedLegend || await resolveLegend();
   const vm = buildSubmissionFeedbackReportViewModel({ generatedAt, identity, legend, marksVisible,
     canonicalTranscript: { ...canonical, pages: transcriptPages },
     submission: { ...(submission.toObject ? submission.toObject() : submission), files: files.map(objectId), canonicalText: canonical.text, transcriptPages, imageDataByPageKey: assets.byPageKey }, evaluation: { ...feedbackObject, status: submission.evaluationStatus }, feedback: { ...feedbackObject, teacherComments, overrideReason: teacherObject.overrideReason } });

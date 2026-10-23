@@ -106,4 +106,5 @@ async function generateSubmissionFeedbackPdf(viewModel, outputPath, options = {}
   });
 }
 
-module.exports = { A4_PORTRAIT_POINTS, assertUniformA4Portrait, generateSubmissionFeedbackPdf };
+module.exports = { A4_PORTRAIT_POINTS, assertUniformA4Portrait, generateSubmissionFeedbackPdf,
+  PDF_RENDERER_VERSION: 'feedback-pdf-v3', PDF_ANNOTATION_VERSION: require('../pdf/submissionFeedbackReportTemplate').PDF_ANNOTATION_VERSION };

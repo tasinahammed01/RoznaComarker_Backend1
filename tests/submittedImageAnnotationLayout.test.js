@@ -85,7 +85,7 @@ describe('submitted image annotation layout', () => {
     expect(layout.markers[0].color).toBe('#123456'); expect(layout.underlines[0].color).toBe('#123456');
   });
 
-  test('uses high-contrast text and renders the correction number plus symbol', () => {
+  test('uses high-contrast text and renders the website symbol with identity metadata', () => {
     const input = page([correction('c1', 30, 30, {
       color: '#f4d35e', symbol: 'SP', message: 'Do not render this explanation in the image.'
     })]);
@@ -98,7 +98,7 @@ describe('submitted image annotation layout', () => {
     const markerHtml = html.match(/<b class="marker"[^>]*>.*?<\/b>/)[0];
     expect(markerHtml).toContain('background:#f4d35e;color:#17212b');
     expect(markerHtml).toContain('border-radius:50%');
-    expect(markerHtml).toMatch(/>1 SP<\/b>$/);
+    expect(markerHtml).toMatch(/>SP<\/b>$/);
     expect(markerHtml).not.toMatch(/>#[0-9]/);
     expect(markerHtml).not.toContain('Do not render this explanation');
   });
@@ -106,7 +106,7 @@ describe('submitted image annotation layout', () => {
   test('keeps multiple bbox segments but creates only one marker per canonical correction', () => {
     const item = correction('c1', 20, 20, { bboxList: [{ x: 20, y: 20, w: 8, h: 2 }, { x: 29, y: 20, w: 11, h: 2 }] });
     const layout = createSubmittedImageLayout(page([item]));
-    expect(layout.underlines).toHaveLength(2); expect(layout.markers).toHaveLength(1);
+    expect(layout.underlines).toHaveLength(1); expect(layout.markers).toHaveLength(1); // Website joins contiguous boxes on the same line.
   });
 
   test('combines identical targets deterministically while retaining every correction', () => {
@@ -214,7 +214,7 @@ describe('submitted image annotation layout', () => {
     });
     expect((html.match(/class="marker"/g) || [])).toHaveLength(1);
     expect((html.match(/class="underline"/g) || [])).toHaveLength(1);
-    expect(html).toContain('>1 AGR</b>');
+    expect(html).toContain('>AGR</b>');
     expect(html).toContain('#02 &middot; SP');
     expect(html).not.toMatch(/class="marker"[^>]*data-correction-id="c2"/);
     expect(html.match(/style="[^"]*"/g).join('')).not.toMatch(/NaN|undefined/);
@@ -240,9 +240,9 @@ describe('submitted image annotation layout', () => {
   test('resizing the same aspect ratio does not double-scale normalized marker coordinates', () => {
     const box = { x: 25, y: 20, w: 10, h: 5 };
     const source = createSubmittedImageLayout(page([correction('c1', 25, 20, { bboxList: [box] })],
-      { imageWidth: 3000, imageHeight: 4000 }));
+      { imageWidth: 3000, imageHeight: 4000, annotationSourceGeometry: { version:1,fileId:"file-a",pageNumber:1,width:3000,height:4000,orientation:1,coordinateSpace:"display-image" } }));
     const optimized = createSubmittedImageLayout(page([correction('c1', 25, 20, { bboxList: [box] })],
-      { imageWidth: 1800, imageHeight: 2400 }));
+      { imageWidth: 1800, imageHeight: 2400, annotationSourceGeometry: { version:1,fileId:"file-a",pageNumber:1,width:3000,height:4000,orientation:1,coordinateSpace:"display-image" } }));
     expect(optimized.underlines[0].box).toEqual(source.underlines[0].box);
     expect(optimized.markers[0].correction.displayNumber).toBe(source.markers[0].correction.displayNumber);
   });
@@ -253,14 +253,14 @@ describe('submitted image annotation layout', () => {
       content: 0, grammar: 1, organization: 0, vocabulary: 0, mechanics: 0 }, categoryScores: [],
       submittedPages: [page([unsafe])], detailedFeedback: {}, teacherComments: '', activeLegendItems: [], completeLegend: [] };
     const html = renderSubmissionFeedbackReportHtml(vm);
-    expect((html.match(/class="underline"/g) || [])).toHaveLength(2);
+    expect((html.match(/class="underline"/g) || [])).toHaveLength(1);
     expect((html.match(/class="marker"/g) || [])).toHaveLength(1);
-    expect(html).toContain('>1 &lt;AGR&gt;</b>'); expect(html).toContain('#01 &middot; &lt;AGR&gt;'); expect(html).not.toContain('#1 <AGR>');
+    expect(html).toContain('>&lt;AGR&gt;</b>'); expect(html).toContain('#01 &middot; &lt;AGR&gt;'); expect(html).not.toContain('#1 <AGR>');
     expect(html).not.toMatch(/class="underline"[^>]*width:100%/);
     expect(html).not.toContain('<polyline');
     expect(html).not.toContain('<line ');
     expect(html).not.toContain('<circle ');
-    expect(html).toMatch(/class="marker"[^>]*background:#287a55;color:#ffffff[^>]*border-radius:50%[^>]*>1 &lt;AGR&gt;<\/b>/);
+    expect(html).toMatch(/class="marker"[^>]*background:#B7E4C7;color:#17212b[^>]*border-radius:50%[^>]*>&lt;AGR&gt;<\/b>/);
   });
 
   test('keeps image, underlines, and markers inside the full image stage in layer order', () => {
@@ -300,11 +300,11 @@ describe('submitted image annotation layout', () => {
     }
   });
 
-  test('target metadata matches the transformed union-box upper-right anchor without a connector', () => {
+  test('target metadata matches the first physical target upper-right anchor without a connector', () => {
     const bboxList = [{ x: 10, y: 20, w: 8, h: 2 }, { x: 20, y: 22, w: 12, h: 2 }];
     const layout = createSubmittedImageLayout(page([correction('c1', 10, 20, { bboxList })]));
     const mapped = bboxList.map((box) => mapPercentBoxToStage(box, layout));
-    const union = unionBoxes(mapped);
+    const union = mapped[0];
     expect(layout.markers[0].target).toEqual(expect.objectContaining({
       x: roundForTest(union.x + union.w),
       y: roundForTest(union.y + union.h * .08)
@@ -437,7 +437,7 @@ describe('submitted image annotation layout', () => {
       { annotationObstacles }
     ));
     expect(layout.markers).toHaveLength(1);
-    expect(layout.markers[0].label).toBe('1 REP/2 P/3 FRAG');
+    expect(layout.markers[0].label).toBe('REP\u00b7P+1');
     const target = unionBoxes(layout.markers[0].boxes);
     layout.markers.forEach((marker) => {
       const centerX = marker.rect.x + marker.rect.w / 2;
@@ -472,7 +472,7 @@ describe('submitted image annotation layout', () => {
     ], { annotationObstacles }));
     expect(layout.markers).toHaveLength(1);
     expect(layout.markers[0].diameter).toBe(3.6);
-    expect(layout.markers[0].fontPt).toBe(3.8);
+    expect(layout.markers[0].fontPt).toBe(6);
     expect(layout.gutterMm).toBe(0);
     const target = unionBoxes(layout.markers[0].boxes);
     expect(layout.markers[0].rect.y + layout.markers[0].rect.h)
@@ -547,10 +547,10 @@ describe('submitted image annotation layout', () => {
         correction('c19', 45, 55, { displayNumber: 19, symbol: 'SD' }),
         correction('c20', 45, 55, { displayNumber: 20, symbol: 'PREP' })
       ]));
-      expect(layout.markers).toHaveLength(1);
+      expect(layout.markers).toHaveLength(2);
       assertNoMarkerOverlap(layout.markers);
       layout.markers.forEach((marker) => {
-        expect(marker.label).toBe('19 SD/20 PREP');
+        expect(['SD', 'PREP']).toContain(marker.label);
       });
     });
 
@@ -586,14 +586,15 @@ describe('submitted image annotation layout', () => {
       expect(layout.omitted).toHaveLength(0);
     });
 
-    test('identical underlines are drawn once with all member identities', () => {
+    test('semantic rails and local underlines retain separate website identities', () => {
       const input = page([
         correction('c19', 45, 55, { displayNumber: 19, symbol: 'SD' }),
         correction('c20', 45, 55, { displayNumber: 20, symbol: 'PREP' })
       ]);
       const layout = createSubmittedImageLayout(input);
-      expect(layout.underlines).toHaveLength(1);
-      expect(layout.underlines[0].corrections.map((item) => item.id).sort()).toEqual(['c19', 'c20']);
+      expect(layout.underlines).toHaveLength(2);
+      expect(layout.underlines.flatMap(u => u.corrections.map(item => item.id)).sort()).toEqual(['c19', 'c20']);
+      expect(layout.underlines.filter(u => u.box.semantic)).toHaveLength(1);
       layout.underlines.forEach((underline) => {
         expect(underline.box).toEqual(expect.objectContaining({ w: expect.any(Number), h: expect.any(Number) }));
       });
@@ -608,10 +609,11 @@ describe('submitted image annotation layout', () => {
         result: { maximumScore: 100 }, statistics: { content: 0, grammar: 2, organization: 0, vocabulary: 0, mechanics: 0 },
         categoryScores: [], submittedPages: [input], detailedFeedback: {}, teacherComments: '',
         activeLegendItems: [], completeLegend: [] });
-      expect(html).toContain('>19 SD/20 PREP</b>');
-      expect(html).toContain('#19 SD</b>');
-      expect(html).toContain('#20 PREP</b>');
-      expect(html.match(/class="marker"/g) || []).toHaveLength(1);
+      expect(html).toContain('>SD</b>');
+      expect(html).toContain('>PREP</b>');
+      expect(html).toContain('#19 &middot; SD');
+      expect(html).toContain('#20 &middot; PREP');
+      expect(html.match(/class="marker"/g) || []).toHaveLength(2);
       expect(html.match(/class="underline"/g) || []).toHaveLength(1);
     });
   });
