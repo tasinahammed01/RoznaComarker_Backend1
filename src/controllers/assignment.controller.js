@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const guestFeature = require('../config/guestSubmission');
 const { v4: uuidv4 } = require('uuid');
 
 const Assignment = require('../models/assignment.model');
@@ -709,6 +710,7 @@ async function createAssignment(req, res) {
     if (typeof allowGuestSubmission !== 'undefined' && typeof allowGuestSubmission !== 'boolean') {
       return sendError(res, 400, 'allowGuestSubmission must be a boolean');
     }
+    if (allowGuestSubmission === true && !guestFeature.guestSubmissionEnabled()) return sendError(res, 403, guestFeature.message);
     if (typeof showMarksToStudent !== 'undefined' && typeof showMarksToStudent !== 'boolean') {
       return sendError(res, 400, 'showMarksToStudent must be a boolean');
     }
@@ -935,6 +937,7 @@ async function updateAssignment(req, res) {
 
     if (typeof allowGuestSubmission !== 'undefined') {
       if (typeof allowGuestSubmission !== 'boolean') return sendError(res, 400, 'allowGuestSubmission must be a boolean');
+      if (allowGuestSubmission === true && assignment.allowGuestSubmission !== true && !guestFeature.guestSubmissionEnabled()) return sendError(res, 403, guestFeature.message);
       assignment.allowGuestSubmission = (!assignment.resourceType || assignment.resourceType === 'essay') && allowGuestSubmission === true;
     }
     if (typeof showMarksToStudent !== 'undefined') {

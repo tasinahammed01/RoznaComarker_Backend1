@@ -1,6 +1,7 @@
 'use strict';
 process.env.JWT_SECRET = 'guest-submission-test-secret';
 process.env.NODE_ENV = 'test';
+process.env.GUEST_SUBMISSION_ENABLED = 'true';
 process.env.FRONTEND_URL = 'https://school.example';
 process.env.UPLOAD_BASE_PATH = 'uploads/guest-test-' + process.pid;
 jest.setTimeout(60000);
@@ -50,6 +51,7 @@ afterAll(async () => {
   if (fs.existsSync(root)) for (const name of fs.readdirSync(root)) fs.unlinkSync(path.join(root, name));
 });
 beforeEach(async () => {
+  process.env.GUEST_SUBMISSION_ENABLED = 'true';
   jest.restoreAllMocks();
   await clearDatabase(); jest.clearAllMocks(); await seedTestPlans();
   accounting.canRunAssessment.mockResolvedValue({ allowed: true });
@@ -373,4 +375,25 @@ test('unsupported MIME and oversized uploads cannot create an assessment', async
   const tooLarge = Buffer.alloc(10 * 1024 * 1024 + 1); png.copy(tooLarge);
   expect((await send(undefined, { bytes: tooLarge })).status).toBe(413);
   expect(dispatch).not.toHaveBeenCalled(); expect(await Submission.countDocuments()).toBe(0);
+});
+
+test('global disabled state overrides a persisted guest assignment without mutating its guest data', async () => {
+  await send(); const before=await Submission.findOne({submissionMode:'guest'}).select('+guest.accessHash').lean();
+  const assignmentBefore=await Assignment.findById(assignment._id).lean();
+  process.env.GUEST_SUBMISSION_ENABLED='false';jest.clearAllMocks();
+  expect((await request(app).get(url())).status).toBe(403);expect((await send()).status).toBe(403);
+  expect(await Submission.countDocuments()).toBe(1);
+  expect((await Submission.findById(before._id).select('+guest.accessHash').lean()).guest).toEqual(before.guest);
+  expect((await Assignment.findById(assignment._id).lean()).allowGuestSubmission).toBe(assignmentBefore.allowGuestSubmission);
+  expect(email).not.toHaveBeenCalled();expect(dispatch).not.toHaveBeenCalled();
+  process.env.GUEST_SUBMISSION_ENABLED='true';expect((await request(app).get(url())).status).toBe(200);
+});
+
+test('disabled flag rejects new guest opt-in but preserves normal teacher updates and historical opt-in',async()=>{
+  process.env.GUEST_SUBMISSION_ENABLED='false';const auth='Bearer '+signTestJwt(teacher);
+  expect((await request(app).patch(`/api/assignments/${assignment.id}`).set('Authorization',auth).send({title:'Normal teacher edit'})).status).toBe(200);
+  expect((await Assignment.findById(assignment._id)).allowGuestSubmission).toBe(true);
+  await Assignment.updateOne({_id:assignment._id},{$set:{allowGuestSubmission:false}});
+  expect((await request(app).patch(`/api/assignments/${assignment.id}`).set('Authorization',auth).send({allowGuestSubmission:true})).status).toBe(403);
+  expect((await Assignment.findById(assignment._id)).allowGuestSubmission).toBe(false);
 });

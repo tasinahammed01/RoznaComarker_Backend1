@@ -9,6 +9,8 @@ router.use((_req, res, next) => {
   res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow' });
   next();
 });
+router.get('/status', (_req, res) => res.json({ success: true, data: { enabled: require('../config/guestSubmission').guestSubmissionEnabled() } }));
+router.use(require('../config/guestSubmission').requireGuestSubmissionEnabled);
 router.use(createSensitiveRateLimiter({ limit: 60, windowMs: 15 * 60 * 1000, reason: 'guest_access' }));
 router.get('/assignments/:qrToken', controller.entry);
 router.post('/assignments/:qrToken/recover', createSensitiveRateLimiter({ limit: 5, windowMs: 15 * 60 * 1000, reason: 'guest_recovery' }), controller.recover);
