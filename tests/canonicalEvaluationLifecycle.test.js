@@ -61,7 +61,7 @@ describe('canonical evaluation write guards', () => {
     expect(mockFindOneAndUpdate.mock.calls.some(([, update]) => update.$set?.detailedFeedback?.status === 'completed')).toBe(false);
   });
   test.each([
-    { semanticModel: 'openai/gpt-4.1-mini' },
+    { semanticModel: 'openai/unapproved-correction-model' },
     { semanticPromptVersion: 'old-review-contract' },
     { correctionGenerationConfig: { reviewIdentity: 'different-policy-or-rubric' } }
   ])('does not combine stale correction authority with a new rubric: %j', stale => {
@@ -72,6 +72,15 @@ describe('canonical evaluation write guards', () => {
       expect(mockAssess).not.toHaveBeenCalled();
       expect(mockFindOneAndUpdate).not.toHaveBeenCalled();
     });
+  });
+  test.each(['anthropic/claude-haiku-5.5','openai/gpt-6-astra','google/gemini-3.8-flash','openai/gpt-5.4-mini','openai/gpt-4.1-mini'])('accepts %s correction provenance without relabeling history or changing rubric authority',async model=>{
+    const record=submission(true),assignment={title:'Essay'};
+    record.value.semanticModel=model;
+    record.value.semanticPromptVersion=require('../src/services/semanticWritingCorrections.service').SEMANTIC_PROMPT_VERSION;
+    record.value.correctionGenerationConfig={model,reviewIdentity:require('../src/services/canonicalCorrectionsPipeline.service').buildCorrectionReviewIdentity({assignment,policy:{},model})};
+    const result=await generate({submission:record.value,assignment});
+    expect(result.status).toBe('completed');expect(mockAssess).toHaveBeenCalledTimes(1);expect(record.value.semanticModel).toBe(model);
+    expect(require('../src/services/aiGateway.service').getAssessmentAIConfig({OPENROUTER_API_KEY:'mock-only'}).chain[0].model).toBe('openai/gpt-6-astra');
   });
   test('guest evaluation checks the assignment credit router without a guest wallet', async () => {
     require('../src/models/user.model').findById.mockReturnValueOnce({ select: () => ({ lean: async () => ({ role: 'teacher' }) }) });

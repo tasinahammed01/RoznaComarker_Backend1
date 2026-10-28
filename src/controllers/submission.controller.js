@@ -474,10 +474,53 @@ async function cleanupUnpersistedRequestFiles(req) {
   await Promise.all(files.map((file) => file?.path ? fs.promises.unlink(file.path).catch(() => {}) : Promise.resolve()));
 }
 
-async function upsertSubmission({ req, res, assignment, qrToken }) {
+async function upsertSubmission(args) {
+  const {req,res,assignment}=args;
+  if(submissionAccess.isGuest(req.guestAccessContext))return upsertSubmissionLocked(args);
+  if(!req.user?._id)return sendError(res,401,'Unauthorized');
+  if(!await Class.exists({_id:assignment.class,isActive:true})||!await assertStudentMembership(req.user._id,assignment.class)) {await cleanupUnpersistedRequestFiles(req);return sendError(res,403,'Not class member');}
+  const Lease=require('../models/SubmissionUploadLease'),id=String(req.user._id)+':'+assignment._id,owner=crypto.randomUUID();
+  try{await Lease.updateOne({_id:id},{$setOnInsert:{until:new Date(0)}},{upsert:true});}catch(e){if(e.code!==11000)throw e;}
+  const locked=await Lease.findOneAndUpdate({_id:id,until:{$lte:new Date()}},{$set:{owner,until:new Date(Date.now()+900000)}},{returnDocument:'after'});
+  if(!locked){await cleanupUnpersistedRequestFiles(req);return sendError(res,409,'An upload is already being saved. Please retry shortly.');}
+  try{
+    const contentIdentity=await fileContentIdentity(req);
+    const existing=await Submission.findOne({student:req.user._id,assignment:assignment._id}).select('+registeredRequestKey');
+    const key=req.get?.('Idempotency-Key');
+    if(key&&!/^[\w-]{32,128}$/.test(key)){await cleanupUnpersistedRequestFiles(req);return sendError(res,400,'Invalid submission reference');}
+    req.registeredRequestKey=key?crypto.createHash('sha256').update(key).digest('hex'):undefined;
+    const Request=require('../models/RegisteredSubmissionRequest');
+    const receiptId=req.registeredRequestKey?`${id}:${req.registeredRequestKey}`:null;
+    if(receiptId){
+      const receipt=await Request.findOneAndUpdate({_id:receiptId},{$setOnInsert:{contentHash:contentIdentity}},{upsert:true,returnDocument:'after'});
+      if(receipt.contentHash!==contentIdentity){await cleanupUnpersistedRequestFiles(req);return sendError(res,409,'Submission reference was used for different content');}
+      if(receipt.status==='complete'&&existing){await cleanupUnpersistedRequestFiles(req);return sendSuccess(res,existing);}
+      // The submission marker bridges a crash between its commit and receipt completion.
+      if(existing?.registeredRequestKey===req.registeredRequestKey){
+        await Request.updateOne({_id:receiptId},{$set:{status:'complete',submissionId:existing._id}});
+        await cleanupUnpersistedRequestFiles(req);return sendSuccess(res,existing);
+      }
+      const json=res.json.bind(res);
+      res.json=async body=>{
+        res.json=json;
+        if(body.success&&body.data?._id)await Request.updateOne({_id:receiptId},{$set:{status:'complete',submissionId:body.data._id}});
+        return json(body);
+      };
+    }
+    if(existing?.registeredRequestKey&&existing.registeredRequestKey===req.registeredRequestKey&&existing.fileContentIdentity!==contentIdentity){await cleanupUnpersistedRequestFiles(req);return sendError(res,409,'Submission reference was used for different content');}
+    // Exact retries return the already committed source, even after a lost response.
+    if(existing?.fileContentIdentity===contentIdentity&&(existing.registeredRequestKey&&existing.registeredRequestKey===req.registeredRequestKey)){await cleanupUnpersistedRequestFiles(req);return sendSuccess(res,existing);}
+    if(existing&&['pending','processing'].includes(existing.ocrStatus)){
+      await cleanupUnpersistedRequestFiles(req);return sendError(res,409,'Your upload is saved and is still being processed.');
+    }
+    return await upsertSubmissionLocked(args);
+  }finally{await Lease.updateOne({_id:id,owner},{$set:{until:new Date(0)},$unset:{owner:1}});}
+}
+async function upsertSubmissionLocked({ req, res, assignment, qrToken }) {
   const submissionStartedAt = Date.now();
+  const guestRevision = submissionAccess.isGuest(req.guestAccessContext);
   const studentId = req.user && req.user._id;
-  if (!studentId) {
+  if (!studentId && !guestRevision) {
     return sendError(res, 401, 'Unauthorized');
   }
 
@@ -490,22 +533,24 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
     return sendError(res, 404, 'Class not found');
   }
 
-  const isMember = await assertStudentMembership(studentId, classDoc._id);
+  const isMember = guestRevision || await assertStudentMembership(studentId, classDoc._id);
   if (!isMember) {
     return sendError(res, 403, 'Not class member');
   }
 
-  const existing = await Submission.findOne({
+  const existing = guestRevision ? req.guestSubmission : await Submission.findOne({
     student: studentId,
     assignment: assignment._id
   });
+  if (guestRevision && (!existing || !submissionAccess.ownsSubmission(existing, req.guestAccessContext)
+    || String(existing.assignment) !== String(assignment._id))) return sendError(res, 403, 'No permission');
 
   if (existing && assignment.allowResubmission !== true) {
     await cleanupUnpersistedRequestFiles(req);
     return sendError(res, 403, 'Another draft is not allowed for this assignment', 'RESUBMISSION_NOT_ALLOWED');
   }
   if (existing && assignment.requireAdaptiveBeforeResubmission === true) {
-    const completion = await getAdaptiveCompletionForResubmission(existing._id, studentId);
+    const completion = await getAdaptiveCompletionForResubmission(existing._id, guestRevision ? req.guestAccessContext : studentId);
     if (!completion.completed) {
       await cleanupUnpersistedRequestFiles(req);
       return sendError(res, 403, ADAPTIVE_RESUBMISSION_MESSAGE, 'ADAPTIVE_PRACTICE_REQUIRED');
@@ -533,7 +578,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
   }
 
   const contentIdentity = await fileContentIdentity(req);
-  const persistedMulti = await persistUploadedFiles(req, 'submissions');
+  const persistedMulti = await persistUploadedFiles(req, 'submissions', guestRevision ? file => req.guestPersistedFiles.push(file) : undefined);
   if (persistedMulti.error) {
     return sendError(res, persistedMulti.error.statusCode, persistedMulti.error.message);
   }
@@ -648,7 +693,15 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
         existing.analysisErrorCode = undefined;
       }
 
+      if (guestRevision) {
+        existing.guestAcceptedRevisionKey = req.guestRevisionKey;
+        existing.guest.resultEmailSentAt = undefined;
+        existing.guest.resultEmailLeaseUntil = undefined;
+        existing.guest.resultEmailNextAttemptAt = undefined;
+      }
+      if(!guestRevision)existing.registeredRequestKey=req.registeredRequestKey;
       const saved = await existing.save();
+      if (guestRevision) req.guestCommitted = true;
       if (reusableCorrections && previousFeedback) {
         const mapped = remapDraftFileReferences(previousFeedback, previousFileIds, persistedFiles.map(file => String(file._id)));
         await SubmissionFeedback.updateOne({ _id: previousFeedback._id }, { $set: {
@@ -663,7 +716,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
         { returnDocument: 'before' }
       ).select('teacherReviewedAt').lean();
 
-      await incrementUsage(studentId, { storageMB: uploadedMB });
+      if (!guestRevision) await incrementUsage(studentId, { storageMB: uploadedMB });
 
       if (!reusableAssessment) {
         if (correctionShadowStagingHook.enabled()) correctionShadowStagingHook.trackResponse(saved._id, saved.ocrJobId, res);
@@ -686,7 +739,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
           const teacherId = populated?.assignment?.teacher?._id;
           const studentDisplay = populated?.student
             ? String(populated.student.displayName || 'Student')
-            : 'Student';
+            : populated?.guest?.displayName ? `${populated.guest.displayName} (Guest)` : 'Student';
           const assignmentTitle = populated?.assignment
             ? String(populated.assignment.title || 'Assignment')
             : 'Assignment';
@@ -708,7 +761,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
                 waitingReviewAdded: Boolean(priorReview?.teacherReviewedAt),
                 route: {
                   path: '/teacher/my-classes/detail/student-submissions',
-                  params: [String(populated?.student?._id || '')],
+                  params: [guestRevision ? 'guest' : String(populated?.student?._id || '')],
                   queryParams: {
                     classId: String(populated?.class?._id || ''),
                     assignmentId: String(populated?.assignment?._id || ''),
@@ -731,6 +784,7 @@ async function upsertSubmission({ req, res, assignment, qrToken }) {
 
     const created = await Submission.create({
       student: studentId,
+      registeredRequestKey: req.registeredRequestKey,
       assignment: assignment._id,
       class: classDoc._id,
       file: firstFile ? firstFile._id : undefined,
@@ -1185,7 +1239,7 @@ async function getOcrCorrections(req, res) {
     logger.debug({ event: 'correction_word_mapping', submissionId: String(doc._id),
       correctionCount: corrections.length, correctionsWithWordIds, correctionsMappedToCurrentWords,
       unmappedCorrectionCount: corrections.length - correctionsMappedToCurrentWords });
-    const statistics = resultState.statistics || (hasCanonicalCorrections ? require('../services/correctionCanonical.service').statistics(allCorrections) : null);
+    const statistics = resultState.statistics || (resultState.correctionsAvailable && hasCanonicalCorrections ? require('../services/correctionCanonical.service').statistics(allCorrections) : null);
     const evaluationCurrent = resultState.evaluationCurrent;
     res.set('Cache-Control', 'private, no-store');
     res.set('Pragma', 'no-cache');
@@ -1241,7 +1295,7 @@ async function getOcrCorrections(req, res) {
       detailedFeedbackStatus: resultState.detailedFeedbackStatus,
       detailedFeedbackSourceHash: resultState.detailedFeedbackCurrent ? (evaluationDoc?.detailedFeedbackSourceHash || null) : null,
       detailedFeedbackVersion: resultState.detailedFeedbackCurrent ? (evaluationDoc?.detailedFeedbackVersion || null) : null,
-      detailedFeedback: resultState.detailedFeedbackCurrent ? (evaluationDoc?.detailedFeedback || null) : null,
+      detailedFeedback: resultState.detailedFeedbackCurrent ? require('../services/canonicalResultState.service').detailedFeedbackForResult(evaluationDoc?.detailedFeedback, resultState) : null,
       overriddenByTeacher: Boolean(evaluationDoc?.overriddenByTeacher),
       evaluationSourceHash: evaluationCurrent ? (evaluationDoc?.evaluationSourceHash || doc.correctionSourceHash || null) : null,
       evaluation: evaluationCurrent ? { categoryScores: evaluationDoc.rubricScores || {}, overallScore: resultState.score, grade: resultState.grade,
@@ -1399,6 +1453,7 @@ async function getDraftComparison(req, res) {
 }
 
 module.exports = {
+  upsertSubmission,
   persistUploadedFiles,
   fileContentIdentity,
   enforceResubmissionPermission,

@@ -27,6 +27,7 @@ describe('canonical teacher comments', () => {
     const post = (token = teacherToken, id = submission._id, body = {}) => request(app)
       .post(`/api/feedback/${id}/teacher-comments/ai-draft`).set('Authorization', `Bearer ${token}`).send(body);
     const response = content => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({
+      model: 'anthropic/claude-haiku-5.5',
       choices: [{ finish_reason: 'stop', message: { content } }], usage: { prompt_tokens: 100, completion_tokens: 70 } }) });
     beforeEach(async () => {
       originalKey = process.env.OPENROUTER_API_KEY;
@@ -57,7 +58,9 @@ describe('canonical teacher comments', () => {
       expect(result.headers['cache-control']).toBe('no-store');
       expect(provider).toHaveBeenCalledTimes(1);
       const [url, options] = provider.mock.calls[0]; const body = JSON.parse(options.body);
-      expect(url).toContain('/chat/completions'); expect(body.model).toBe('openai/gpt-6-astra');
+      expect(url).toContain('/chat/completions'); expect(body.model).toBe('anthropic/claude-haiku-5.5');
+      expect(body.reasoning).toEqual({ effort: 'none' });
+      expect(body.provider).toEqual({ require_parameters: true, allow_fallbacks: false });
       expect(body.max_tokens).toBe(240); expect(body.response_format.json_schema.name).toBe('teacher_comment_draft');
       const input = JSON.stringify(body.messages);
       expect(input).toContain('main idea'); expect(input).not.toContain('Keep my saved comment');

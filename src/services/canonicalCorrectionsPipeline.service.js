@@ -8,15 +8,16 @@ const SubmissionFeedback = require('../models/SubmissionFeedback');
 const canonicalEvaluation = require('./canonicalEvaluation.service');
 const semanticRubricAssessment = require('./semanticRubricAssessment.service');
 const { safeErrorCode } = require('./canonicalResultState.service');
-const { getAssessmentAIConfig: getSemanticAIConfig, getSemanticAIConfigStatus } = require('./semanticAIClient.service');
+const { getCorrectionAIConfig: getSemanticAIConfig, getSemanticAIConfigStatus } = require('./semanticAIClient.service');
 const semanticMetrics = require('./semanticMetrics.service');
 const { resolveLegend } = require('./correctionLegendResolver.service');
 const inputIdentity = require('../utils/assessmentInputIdentity');
 const correctionPolicy = require('./aiCorrectionPolicy.service');
 const evidenceIdentity = require('./correctionEvidenceIdentity.service');
 const teacherPolicy = require('./teacherEvaluationPolicy.service');
-const { ASSESSMENT_MODEL } = require('./aiGateway.service');
+const { CORRECTION_MODELS } = require('./aiGateway.service');
 const executionPolicy = require('./assessmentExecutionPolicy.service');
+const correctionContract = model => semantic.contractVersions?.(model) || { promptVersion: semantic.SEMANTIC_PROMPT_VERSION, schemaVersion: semantic.SEMANTIC_SCHEMA_VERSION };
 
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -65,7 +66,7 @@ function orderedPageIdentity(pages = []) {
 function buildCorrectionSourceHash({ transcript, pages = [], assignment = {},
   transcriptLayoutVersion = CANONICAL_TRANSCRIPT_LAYOUT_VERSION, fileContentIdentity = null, legend = {} }) {
   return inputIdentity.correctionInputHash({ transcript, pages, assignment, fileContentIdentity, legend, versions: { version: canonical.VERSION,
-    promptVersion: semantic.SEMANTIC_PROMPT_VERSION, schemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
+    promptVersion: correctionContract().promptVersion, schemaVersion: correctionContract().schemaVersion,
     chunkCoordinatorVersion: semanticCoordinator.VERSION,
     deductionPolicyVersion: canonical.DEDUCTION_POLICY_VERSION,
     correctionPolicyVersion: correctionPolicy.POLICY_VERSION,
@@ -79,10 +80,11 @@ function plannedSemanticAttempts(config = {}) {
     + Math.max(0, modelCount - 1) * (1 + Number(config.fallbackRetries || 0));
 }
 
-function buildCorrectionReviewIdentity({ assignment = {}, policy } = {}) {
+function buildCorrectionReviewIdentity({ assignment = {}, policy, model = require('./aiGateway.service').correctionModel() } = {}) {
+  if(!CORRECTION_MODELS.includes(model))throw new Error('Unsupported correction review model');
   const context = typeof assignment?.toObject === 'function' ? assignment.toObject() : assignment;
-  return inputIdentity.hash({ assessmentModel: ASSESSMENT_MODEL,
-    promptVersion: semantic.SEMANTIC_PROMPT_VERSION, schemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
+  return inputIdentity.hash({ assessmentModel: model,
+    promptVersion: correctionContract(model).promptVersion, schemaVersion: correctionContract(model).schemaVersion,
     policyHash: teacherPolicy.evaluationPolicyHash(policy), assignment: semantic.compactAssignment(context) });
 }
 
@@ -149,7 +151,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     semanticStatus: 'processing', semanticAttempt: 0, semanticMaxAttempts,
     semanticNextRetryAt: null, semanticErrorCode: null,
     semanticSourceKey, semanticProvider: semanticConfig.provider, semanticModel: semanticConfig.model,
-    semanticPromptVersion: semantic.SEMANTIC_PROMPT_VERSION,
+    semanticPromptVersion: correctionContract().promptVersion,
     evaluationStatus: 'processing', evaluationJobId: jobId, evaluationError: null, evaluationErrorCode: null } });
   if (!locked.modifiedCount) {
     semanticMetrics.increment('semanticJobsRejectedAsDuplicate');
@@ -340,7 +342,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     correctionCoverageComplete: semanticRun?.coverage?.coverageComplete === true,
     canonicalCorrectionStageSucceeded: !semanticError && semanticRun?.status === 'completed',
     assessmentModel: semanticConfig.model, policyHash: assessmentPolicy.policyHash,
-    correctionPromptVersion: semantic.SEMANTIC_PROMPT_VERSION, correctionSchemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
+    correctionPromptVersion: correctionContract().promptVersion, correctionSchemaVersion: correctionContract().schemaVersion,
     rubricPromptVersion: semanticRubricAssessment.PROMPT_VERSION, rubricSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
     reviewedCategories: terminalValidation.reviewedCategories || [],
     baseReviewCoverage: terminalValidation.baseReviewCoverage || {},
@@ -380,10 +382,12 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     correctionGenerationConfig: { provider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
       model: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
       chain: (semanticConfig.chain || []).map(entry => ({ provider: entry.provider, model: entry.model })),
-      temperature: 0, topP: null, seed: null, responseFormat: semanticConfig.responseFormat,
-      promptVersion: semantic.SEMANTIC_PROMPT_VERSION, schemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
+      temperature: require('./aiGateway.service').isStrictCorrectionModel(semanticConfig.model) ? null : 0,
+      reasoningEffort: semanticConfig.thinkingLevel, topP: null, seed: null, responseFormat: semanticConfig.responseFormat,
+      promptVersion: correctionContract().promptVersion, schemaVersion: correctionContract().schemaVersion,
       coordinatorVersion: semanticCoordinator.VERSION, policyHash: assessmentPolicy.policyHash,
-      reviewIdentity: buildCorrectionReviewIdentity({ assignment, policy: assessmentPolicy.policy }) },
+      reviewIdentity: buildCorrectionReviewIdentity({ assignment, policy: assessmentPolicy.policy,
+        model: semanticRun?.model || terminalAttempt?.model || semanticConfig.model }) },
     correctionVersion: canonical.VERSION, correctionTranscriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
     correctionStatus: failedStage || semanticRun?.status === 'partial' ? 'partial' : 'completed',
     correctionError: failedStage || (semanticRun?.status === 'partial' ? 'SEMANTIC_CHUNK_PARTIAL' : null),
@@ -391,7 +395,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     semanticNextRetryAt: null, semanticErrorCode: safeErrorCode(semanticError) || null,
     semanticProvider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
     semanticModel: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
-    semanticPromptVersion: semantic.SEMANTIC_PROMPT_VERSION,
+    semanticPromptVersion: correctionContract().promptVersion,
     correctionLegendSource: legend.source,
     correctionLegendVersion: legend.version, correctionLegendContentHash: legend.contentHash,
     deductionPolicyVersion: canonical.DEDUCTION_POLICY_VERSION,
@@ -417,8 +421,8 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     semanticModel: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
     fallbackIndex: Number.isInteger(terminalAttempt?.fallbackIndex) ? terminalAttempt.fallbackIndex : null,
     attemptCount: gatewayMetrics.attemptCount || 0, timeoutCount: gatewayMetrics.timeoutCount || 0,
-    temperature: semanticConfig.temperature, promptVersion: semantic.SEMANTIC_PROMPT_VERSION,
-    schemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
+    temperature: semanticConfig.temperature, promptVersion: correctionContract().promptVersion,
+    schemaVersion: correctionContract().schemaVersion,
     promptInputTokenEstimate: semanticRun?.metrics?.promptInputTokenEstimate || null,
     outputTokenCount: semanticRun?.metrics?.outputTokenCount || null,
     semanticReturnedCount, semanticAcceptedCount: persistedSemanticMetrics.acceptedCorrectionCount,
@@ -578,7 +582,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     rubricRemainingBudgetAtStart });
   if (process.env.NODE_ENV !== 'production') logger.info({ event: 'assessment_review_summary',
     assessmentModel: semanticConfig.model, policyHash: assessmentPolicy.policyHash,
-    correctionPromptVersion: semantic.SEMANTIC_PROMPT_VERSION, correctionSchemaVersion: semantic.SEMANTIC_SCHEMA_VERSION,
+    correctionPromptVersion: correctionContract().promptVersion, correctionSchemaVersion: correctionContract().schemaVersion,
     rubricPromptVersion: semanticRubricAssessment.PROMPT_VERSION, rubricSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
     reviewedCategories: persistedSemanticMetrics.reviewedCategories, returnedByCategory,
     acceptedByCategory: retainedAfterMergeByCategory, rejectedByCategory,
@@ -593,7 +597,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
 function buildSemanticSourceKey(baseSourceKey, env = process.env) {
   return crypto.createHash('sha256').update(JSON.stringify({ baseSourceKey,
     coordinatorVersion: semanticCoordinator.VERSION, chunking: semanticCoordinator.config(env),
-    capabilities: executionPolicy.modelCapabilities(ASSESSMENT_MODEL, env) })).digest('hex');
+    capabilities: executionPolicy.modelCapabilities(require('./aiGateway.service').correctionModel(env), env) })).digest('hex');
 }
 
 module.exports = { wordsFromSubmission, orderedPageIdentity, buildCorrectionSourceHash, plannedSemanticAttempts,

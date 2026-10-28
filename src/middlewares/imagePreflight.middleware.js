@@ -38,7 +38,13 @@ async function cleanup(files) {
 }
 
 async function preflightImage(req, res) {
+  const requestId=require('crypto').randomUUID(),started=Date.now();
+  res.set('X-Request-ID',requestId);
   const files = requestFiles(req);
+  const controller=new AbortController();
+  const cancelled=()=>{if(!res.writableEnded)controller.abort('source_user_cancelled');};
+  req.on('aborted',cancelled);res.on('close',cancelled);
+  const deadline=setTimeout(()=>controller.abort('source_preflight_deadline'),require('../services/gptVisionExact/contract').PREFLIGHT_TIMEOUT_MS);
   try {
     const file = files[0];
     if (files.length !== 1 || !(file?.detectedMime?.startsWith('image/')||file?.detectedMime==='application/pdf')) {
@@ -49,13 +55,18 @@ async function preflightImage(req, res) {
     if(!required||!basic.result.ready)return res.json({success:true,data:withPreflightProgress({...basic.result,...(required?{basicChecksPassed:basic.result.ready,sourceReadRequired:true,canSubmit:false}:{})})});
     const source=require('../services/gptVisionExact/preflight');let state;
     if(req.body?.phase==='basic')state=source.ui({code:'OCR_GPT_SOURCE_CHECKING'});
-    else try{await source.checkPages(basic.pages||await source.pagesFor(file),context,{run:true});state=source.ui();}catch(error){state=source.ui(error);}
+    else try{await source.checkPages(basic.pages||await source.pagesFor(file),context,{run:true,signal:controller.signal,
+      deadlineAt:started+require('../services/gptVisionExact/contract').PREFLIGHT_TIMEOUT_MS});state=source.ui();}catch(error){state=source.ui(error);}
+    if(controller.signal.reason==='source_user_cancelled'||res.destroyed)return;
     return res.json({success:true,data:withPreflightProgress(source.withSourceCheck(basic.result,state))});
   } catch(error){
     if(error.status===403)return res.status(403).json({success:false,code:error.code,message:'Assignment access is required for handwriting verification.'});
     const source=require('../services/gptVisionExact/preflight');
     return res.json({success:true,data:withPreflightProgress(source.withSourceCheck({ready:false,checks:[]},source.ui(error)))});
   } finally {
+    clearTimeout(deadline);req.removeListener('aborted',cancelled);res.removeListener('close',cancelled);
+    require('../utils/logger').info({event:'source_preflight_request',requestId,phase:req.body?.phase==='basic'?'basic':'source',
+      route:req.guestContext?'anonymous':'authenticated',httpStatus:res.statusCode,latencyMs:Date.now()-started});
     await cleanup(files);
   }
 }

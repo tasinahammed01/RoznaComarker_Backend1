@@ -15,7 +15,7 @@ async function captureCurrentRevision(submission) {
   return SubmissionRevision.findOneAndUpdate(
     { sourceSubmissionId: submission._id, draftNumber },
     { $setOnInsert: {
-      sourceSubmissionId: submission._id, student: submission.student, assignment: submission.assignment,
+      sourceSubmissionId: submission._id, submissionMode: submission.submissionMode || 'registered', student: submission.student, assignment: submission.assignment,
       class: submission.class, draftNumber, submittedAt: submission.submittedAt,
       fileContentIdentity: submission.fileContentIdentity,
       ...(require('../utils/sourceFidelity').isExact(submission)?Object.fromEntries(['sourceTranscriptExact','sourceTranscriptSha256',

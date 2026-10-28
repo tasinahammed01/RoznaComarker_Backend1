@@ -16,7 +16,7 @@ function delay(ms,signal){return new Promise((resolve,reject)=>{
 describe('production-shaped bounded Astra correction requests',()=>{
   const oldEnv={...process.env};let oldFetch;
   beforeEach(()=>{jest.useFakeTimers({now:1000});oldFetch=global.fetch;
-    Object.assign(process.env,{OPENROUTER_API_KEY:'offline-key',ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS:'90000',
+    Object.assign(process.env,{OPENROUTER_API_KEY:'offline-key',CORRECTION_DETECTION_MODEL:'openai/gpt-6-astra',ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS:'90000',
       ASSESSMENT_AI_TOTAL_BUDGET_MS:'300000',ASSESSMENT_CORRECTION_BUDGET_MS:'180000',ASSESSMENT_RUBRIC_RESERVED_BUDGET_MS:'90000',
       ASSESSMENT_AI_PRIMARY_RETRIES:'0'});});
   afterEach(()=>{global.fetch=oldFetch;jest.useRealTimers();for(const k of Object.keys(process.env))if(!(k in oldEnv))delete process.env[k];Object.assign(process.env,oldEnv);});
@@ -42,7 +42,7 @@ describe('production-shaped bounded Astra correction requests',()=>{
         payload=reviewPayload(prompt.match(/^transcriptHash=(.+)$/mu)[1],undefined,[finding('MECHANICS','SP','mispell',{suggestedText:'misspell'})]);
         payload={reviewContract:require('../src/services/compactCorrectionWire.service').VERSION,transcriptHash:payload.transcriptHash,
           categories:Object.fromEntries(Object.entries(payload.categories).map(([category,r])=>[category,{reviewed:r.reviewed,
-            reviewedSymbols:r.reviewedSymbols,corrections:r.corrections.map(({message,stylePreference,...item})=>item)}]))};
+            reviewedSymbols:Object.fromEntries(r.reviewedSymbols.map(symbol=>[symbol,true])),corrections:r.corrections.map(({message,stylePreference,...item})=>item)}]))};
       }else{
         rubricCalls++;await delay(44000,options.signal);
         const catalog=JSON.parse(prompt.split('\n').find(l=>l.startsWith('evidenceCatalog=')).slice('evidenceCatalog='.length));
@@ -123,7 +123,7 @@ describe('safe output and configuration envelopes',()=>{
     const main=semantic.buildSemanticRequest(input),compact=semantic.buildSemanticRequest({...input,analysisMode:'compact_recovery'});
     expect(compact.promptCharacters).toBeLessThan(main.promptCharacters*.85);
     for(const value of [transcript,'teacherEvaluationPolicy','reviewedSymbols','COH','CONC','PU','TS'])expect(compact.messages[1].content).toContain(value);
-    expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-astra-v12-compact-organization-closure');
+    expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-v14-symbol-review-map');
     expect(main.tokenProfile).toMatchObject({estimation:'characters_divided_by_four',responseSchemaTokens:expect.any(Number)});
   });
 });

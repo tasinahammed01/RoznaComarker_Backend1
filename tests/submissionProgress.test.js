@@ -44,7 +44,7 @@ test('source terminal failure stops progress',()=>{
     .toMatchObject({status:'failed',active:false,completed:false,failed:true});
 });
 test('preflight transitions are server evidence only, with no fake successful failure',()=>{
-  expect(preflightProgress({sourceReadStatus:'CHECKING'})).toMatchObject({stage:'source',percent:60,active:true});
+  expect(preflightProgress({sourceReadStatus:'CHECKING'})).toMatchObject({stage:'source',percent:0,indeterminate:true,active:true});
   expect(preflightProgress({sourceReadStatus:'PASSED',ready:true,canSubmit:true})).toMatchObject({percent:100,completed:true});
   expect(preflightProgress({ready:true,canSubmit:false,basicChecksPassed:true})).toMatchObject({percent:60,failed:true,completed:false});
   expect(preflightProgress({ready:false,message:'Please replace this image.'})).toMatchObject({failed:true,message:'Please replace this image.'});

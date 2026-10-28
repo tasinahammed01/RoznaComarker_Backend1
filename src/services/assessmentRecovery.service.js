@@ -208,6 +208,7 @@ function startAssessmentRecoveryWorker(config = workerConfig()) {
       const candidates = await Submission.find(dueWorkQuery(new Date(), config.maxAttempts, config.leaseMs))
         .sort({ updatedAt: 1 }).limit(config.batchSize).select('_id ocrJobId').lean();
       for (const candidate of candidates) await processSubmission(candidate._id, candidate.ocrJobId, config);
+      await require('./guestResultNotification.service').run();
       return { claimed: candidates.length };
     } catch (error) {
       logger.error({ event: 'assessment_recovery_worker_failed', errorCode: error?.code || 'RECOVERY_SCAN_FAILED' });

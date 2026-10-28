@@ -212,11 +212,11 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
       }
       if (String(url).includes('/chat/completions')) {
         const prompt = rubricPromptFromRequest(options);
-        if (prompt.includes('reviewContract=astra-compact-review-v1') || prompt.includes('schema=semantic-corrections-v14-compact-reviewed')) {
+        if (prompt.includes(`reviewContract=${require('../src/services/compactCorrectionWire.service').VERSION}`)) {
           correctionProviderRequestCount += 1;
           lifecycleEvents.push('correction-started');
           return { ok: true, status: 200, headers: { get: () => 'application/json' },
-            text: async () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: {
+            text: async () => JSON.stringify({ model: JSON.parse(options.body).model, choices: [{ finish_reason: 'stop', message: {
               content: JSON.stringify(correctionFixtureFromPrompt(prompt)) } }],
             usage: { prompt_tokens: 100, completion_tokens: 100, total_tokens: 200 } }) };
         }
@@ -414,7 +414,11 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
     expect(failedStudent).toMatchObject({ submissionId: failureId, score: expect.any(Number),
       rubricScores: expect.any(Object), evaluationStatus: 'completed', detailedFeedbackStatus: 'completed',
       statisticsCompleteness: 'none', manualRetryAllowed: true, automaticPollingAllowed: false });
-    expect(failedStudent.correctionStatistics).toMatchObject({ grammar: 0, mechanics: 0 });
+    expect(failedStudent.correctionStatistics).toBeNull();
+    expect(failedStudent.correctionStats).toBeNull();
+    expect(failedStudent.correctionsAvailable).toBe(false);
+    expect(failedStudent.categoryAvailability.grammar).toBe('failed');
+    for(const area of failedStudent.detailedFeedback?.areasForImprovement || [])expect(area.issueCount).toBeNull();
     expect(failedStudent.score).not.toBe(77);
     expect(failedStudent.overallScore).not.toBe(77);
     expect(failedStudent.score).not.toBe(successStudent.score);

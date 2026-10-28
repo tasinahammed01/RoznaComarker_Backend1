@@ -40,7 +40,7 @@ describe('Astra assessment authority and closed transport', () => {
     const fetchImpl = jest.fn();
     await expect(gateway.generate({ feature, messages: [], env, fetchImpl,
       config: { ...gateway.getAssessmentAIConfig(env), chain: [{ provider: 'openrouter', model: 'openai/gpt-4.1', fallbackIndex: 0 }] }
-    })).rejects.toMatchObject({ code: 'AI_ASSESSMENT_AUTHORITY_INVALID' });
+    })).rejects.toMatchObject({ code: gateway.isCorrectionFeature(feature) ? 'AI_CORRECTION_AUTHORITY_INVALID' : 'AI_ASSESSMENT_AUTHORITY_INVALID' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
   test.each(['semantic_corrections', 'semantic_corrections_category_audit', 'semantic_rubric_assessment',

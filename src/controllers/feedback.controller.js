@@ -846,8 +846,10 @@ async function getSubmissionFeedback(req, res) {
     logger.debug(`Checking dynamic fields for submission ${submissionId}`);
 
     const userId = req.user && req.user._id;
-    const role = req.user && req.user.role;
-    if (!userId || !role) {
+    const guestAccess = require('../services/submissionAccessContext.service');
+    const isGuest = guestAccess.isGuest(req.guestAccessContext);
+    const role = isGuest ? 'student' : req.user && req.user.role;
+    if ((!userId && !isGuest) || !role) {
       return sendError(res, 401, "Unauthorized");
     }
 
@@ -857,7 +859,7 @@ async function getSubmissionFeedback(req, res) {
     }
 
     if (role === "student") {
-      if (String(submission.student) !== String(userId)) {
+      if (isGuest ? !guestAccess.ownsSubmission(submission, req.guestAccessContext) : String(submission.student) !== String(userId)) {
         return sendError(res, 403, "No permission");
       }
     } else if (role === "teacher") {
@@ -926,7 +928,7 @@ async function getSubmissionFeedback(req, res) {
         submissionId: String(submission._id),
         teacherComments,
         ...resultState, overallScore: null, grade: null, rubricScores: null, detailedFeedback: null,
-        correctionStats: correctionStatistics, correctionStatistics,
+        correctionStats: resultState.correctionsAvailable ? correctionStatistics : null, correctionStatistics: resultState.correctionsAvailable ? correctionStatistics : null,
         evaluationSourceHash: null, correctionSourceHash: submission.correctionSourceHash || null,
         marksVisible
       };
@@ -946,8 +948,8 @@ async function getSubmissionFeedback(req, res) {
       teacherReviewedBy: currentFeedback.teacherReviewedBy ? String(currentFeedback.teacherReviewedBy) : null,
       overallScore: resultState.score, grade: resultState.grade,
       rubricScores: resultState.evaluationCurrent ? currentFeedback.rubricScores : null,
-      detailedFeedback: resultState.detailedFeedbackCurrent ? currentFeedback.detailedFeedback : null,
-      correctionStats: correctionStatistics, correctionStatistics,
+      detailedFeedback: resultState.detailedFeedbackCurrent ? require('../services/canonicalResultState.service').detailedFeedbackForResult(currentFeedback.detailedFeedback, resultState) : null,
+      correctionStats: resultState.correctionsAvailable ? correctionStatistics : null, correctionStatistics: resultState.correctionsAvailable ? correctionStatistics : null,
       evaluationSourceHash: resultState.evaluationCurrent ? (currentFeedback.evaluationSourceHash || submission.correctionSourceHash) : null,
       correctionSourceHash: submission.correctionSourceHash || null,
       marksVisible

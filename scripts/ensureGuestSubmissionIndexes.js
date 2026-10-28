@@ -23,6 +23,8 @@ async function main() {
     partialFilterExpression: { guestRequestKey: { $type: 'string' } } });
   await Submission.collection.createIndex({ assignment: 1, 'guest.normalizedEmail': 1, submittedAt: -1 },
     { name: 'guest_recovery_lookup_v1', partialFilterExpression: { submissionMode: 'guest' } });
+  await Submission.collection.createIndex({ submissionMode: 1, assessmentStatus: 1, 'guest.resultEmailSentAt': 1, 'guest.resultEmailNextAttemptAt': 1 },
+    { name: 'guest_result_email_queue_v1' });
   console.log(JSON.stringify({ ok: true }));
 }
 if (require.main === module) main().catch(() => {

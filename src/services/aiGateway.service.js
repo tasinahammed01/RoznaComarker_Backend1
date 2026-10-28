@@ -6,16 +6,46 @@ const requestDiagnostics = require('./aiRequestDiagnostics.service');
 const SUPPORTED_PROVIDERS = new Set(['google', 'openrouter']);
 const ASSESSMENT_MODEL = 'openai/gpt-6-astra';
 const ASSESSMENT_AUTHORITY_VERSION = 'astra-assessment-authority-v1';
+const CORRECTION_MODEL = 'openai/gpt-4.1-mini';
+const DEEPSEEK_CORRECTION_MODEL = 'deepseek/deepseek-v4.1-flash';
+const GPT54_MINI_CORRECTION_MODEL = 'openai/gpt-5.4-mini';
+const GEMINI_CORRECTION_MODEL = 'google/gemini-3.8-flash';
+const CLAUDE_CORRECTION_MODEL = 'anthropic/claude-haiku-5.5';
+const CORRECTION_MODELS = Object.freeze([CORRECTION_MODEL, DEEPSEEK_CORRECTION_MODEL, GPT54_MINI_CORRECTION_MODEL, GEMINI_CORRECTION_MODEL, CLAUDE_CORRECTION_MODEL, ASSESSMENT_MODEL]);
+const isStrictCorrectionModel = model => [CORRECTION_MODEL, DEEPSEEK_CORRECTION_MODEL, GPT54_MINI_CORRECTION_MODEL, GEMINI_CORRECTION_MODEL, CLAUDE_CORRECTION_MODEL].includes(model);
+const isCorrectionFeature = feature => /^(?:semantic_corrections(?:_category_audit)?|teacher_comment_draft)$/u.test(feature);
 const ASTRA_CORRECTION_FEATURES = new Set(['semantic_corrections', 'semantic_corrections_category_audit']);
-function correctionRequestPolicy({provider,model,feature,responseFormat='json',responseSchema}={}) {
+function correctionReasoningEffort(env=process.env) {
+  const effort=env.CORRECTION_REASONING_EFFORT || 'low';
+  if(!['low','medium'].includes(effort)) throw Object.assign(new Error('Unsupported correction reasoning effort.'),{code:'AI_CORRECTION_CONFIG_INVALID'});
+  return effort;
+}
+function geminiCorrectionReasoningEffort(env=process.env) {
+  const effort=env.GEMINI_CORRECTION_REASONING_EFFORT || 'low';
+  if(!['low','medium','high'].includes(effort)) throw Object.assign(new Error('Unsupported Gemini correction reasoning effort.'),{code:'AI_CORRECTION_CONFIG_INVALID'});
+  return effort;
+}
+function gpt54MiniCorrectionReasoningEffort(env=process.env) {
+  const effort=env.GPT54_MINI_CORRECTION_REASONING_EFFORT || 'medium';
+  if(!['none','low','medium','high','xhigh'].includes(effort)) throw Object.assign(new Error('Unsupported GPT-5.4 Mini correction reasoning effort.'),{code:'AI_CORRECTION_CONFIG_INVALID'});
+  return effort;
+}
+function correctionRequestPolicy({provider,model,feature,responseFormat='json',responseSchema,env=process.env}={}) {
   const configured=provider==='openrouter' && model===ASSESSMENT_MODEL && ASTRA_CORRECTION_FEATURES.has(feature);
-  return {reasoning:configured?{effort:'minimal'}:null,
-    diagnostics:{correctionReasoningEffort:configured?'minimal':null,correctionReasoningConfigured:configured,
+  const claude=provider==='openrouter' && model===CLAUDE_CORRECTION_MODEL && isCorrectionFeature(feature);
+  const gemini=provider==='openrouter' && model===GEMINI_CORRECTION_MODEL && ASTRA_CORRECTION_FEATURES.has(feature);
+  const mini=provider==='openrouter' && model===GPT54_MINI_CORRECTION_MODEL && ASTRA_CORRECTION_FEATURES.has(feature);
+  const deepseek=provider==='openrouter' && model===DEEPSEEK_CORRECTION_MODEL && ASTRA_CORRECTION_FEATURES.has(feature);
+  // OpenRouter model metadata: optional reasoning, supports "none", defaults to high.
+  // require_parameters below rejects routes that cannot honor this required control.
+  const effort=deepseek?'none':mini?gpt54MiniCorrectionReasoningEffort(env):gemini?geminiCorrectionReasoningEffort(env):claude?(feature==='teacher_comment_draft'?'none':correctionReasoningEffort(env)):configured?'minimal':null;
+  return {reasoning:effort?{effort}:null,
+    diagnostics:{correctionReasoningEffort:effort,correctionReasoningConfigured:configured||claude||gemini||mini||deepseek,
       // Route only: never log a configured URL, query string or credentials.
       correctionRequestEndpoint:provider==='openrouter'?'/chat/completions':null,
       correctionResponseFormat:responseFormat==='json'?(responseSchema?'json_schema_strict':'json_object'):null}};
 }
-const isAssessmentFeature = feature => /^(?:semantic_corrections(?:_category_audit)?|semantic_rubric_assessment|rubric_completion(?:_repair)?|rubric_from_file|submission_feedback|teacher_comment_draft)$/u.test(feature);
+const isAssessmentFeature = feature => /^(?:semantic_rubric_assessment|rubric_completion(?:_repair)?|rubric_from_file|submission_feedback)$/u.test(feature);
 const RETRYABLE_HTTP = new Set([408, 429, 500, 502, 503, 504]);
 const DEFAULTS = Object.freeze({
   attemptTimeoutMs: 30000,
@@ -129,6 +159,20 @@ function getAssessmentAIConfig(env = process.env, options = {}) {
     throw configurationError(['Assessment AI permits at most one primary retry and no fallback retries.']);
   }
   return { ...config, authorityVersion: ASSESSMENT_AUTHORITY_VERSION };
+}
+
+function getCorrectionAIConfig(env = process.env, options = {}) {
+  const model=correctionModel(env);
+  const config=getAssessmentAIConfig(env,options);
+  return {...config,chain:[{provider:'openrouter',model,fallbackIndex:0}],authorityVersion:'correction-authority-v1'};
+}
+function getTeacherCommentAIConfig(env = process.env, options = {}) {
+  return getCorrectionAIConfig({...env,CORRECTION_DETECTION_MODEL:CLAUDE_CORRECTION_MODEL},options);
+}
+function correctionModel(env = process.env) {
+  const model=text(env.CORRECTION_DETECTION_MODEL)||CORRECTION_MODEL;
+  if(!CORRECTION_MODELS.includes(model))throw configurationError(['Unsupported correction model.']);
+  return model;
 }
 
 function getWorksheetExtractionAIConfig(env = process.env, options = {}) {
@@ -332,7 +376,7 @@ function abortable(promise,signal){
     if(signal.aborted)abort();
   });
 }
-async function providerAttempt({ entry, messages, maxOutputTokens, temperature, responseFormat,
+async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temperature, responseFormat,
   responseSchema, schemaName, attemptTimeoutMs, fetchImpl, env, now, googleThinkingLevel, feature, onDiagnostic,
   requestProfile, signal, timeoutScope='local_attempt_timeout' }) {
   const controller = new AbortController();
@@ -342,7 +386,8 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
   const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
   const started = now();
   let failureStage = 'REQUEST_BUILD_FAILURE', responseReceived = false, bodyRead = false, httpStatus = null;
-  let finishAccounting=()=>{},accountingOutcome='failed',headersMs=null,bodyMs=null;
+  let finishAccounting=()=>{},accountingOutcome='failed',headersMs=null,bodyMs=null,diagnosticUsage=null;
+  const timeoutOrigin=()=>signal?.aborted?(signal.reason==='source_preflight_deadline'?'source_preflight_deadline':'caller_cancelled'):timeoutScope;
   try {
     const google = entry.provider === 'google';
     const base = endpointFor(entry.provider, env).replace(/\/$/u, '');
@@ -357,17 +402,34 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
           schema: responseSchema }
       } } : responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {})
     };
-    const correctionPolicy=correctionRequestPolicy({provider:entry.provider,model:entry.model,feature,responseFormat,responseSchema});
+    const correctionPolicy=correctionRequestPolicy({provider:entry.provider,model:entry.model,feature,responseFormat,responseSchema,env});
     if(correctionPolicy.reasoning) body.reasoning=correctionPolicy.reasoning;
+    if(isCorrectionFeature(feature)&&isStrictCorrectionModel(entry.model)){
+      if(entry.model!==CLAUDE_CORRECTION_MODEL&&feature==='teacher_comment_draft')
+        throw attemptError('AI_CORRECTION_AUTHORITY_INVALID','Model is not approved for teacher-comment drafting.');
+      if(google||base!=='https://openrouter.ai/api/v1'||!responseSchema||responseFormat!=='json')
+        throw attemptError('AI_CORRECTION_AUTHORITY_INVALID','Invalid correction request profile.');
+      delete body.temperature;
+      body.provider={require_parameters:true,allow_fallbacks:false};
+    }
     if (requestProfile) {
       const profileModelAllowed=requestProfile==='gpt_vision_exact_v1'
-        ? [require('./hybridSource/contract').MODEL,'openai/gpt-6-astra'].includes(entry.model)
+        ? require('./gptVisionExact/contract').models().includes(entry.model)
         : requestProfile==='source_fidelity_v1'&&['openai/gpt-6-astra','anthropic/claude-fable-5.1'].includes(entry.model);
       if (!profileModelAllowed || google
         || base !== 'https://openrouter.ai/api/v1') throw attemptError('OCR_SOURCE_PROFILE_INVALID', 'Invalid source reader profile.');
       delete body.temperature; delete body.max_tokens;
-      body.max_completion_tokens = requestProfile==='gpt_vision_exact_v1'?16000:12000;
+      // DeepSeek and Qwen approved routes advertise max_tokens. Keep legacy request
+      // profiles unchanged and never send both token-limit aliases.
+      if (requestProfile==='gpt_vision_exact_v1' && [require('./gptVisionExact/contract').DEEPSEEK_MODEL,require('./gptVisionExact/contract').QWEN_MODEL].includes(entry.model))
+        body.max_tokens = 16000;
+      else body.max_completion_tokens = requestProfile==='gpt_vision_exact_v1'?16000:12000;
       body.provider = { require_parameters: true, allow_fallbacks: false };
+      if(requestProfile==='gpt_vision_exact_v1'&&entry.model===require('./gptVisionExact/contract').QWEN_MODEL){
+        body.reasoning={effort:'none'};
+        // Supported-parameter/schema filtering remains mandatory; never pin a provider blindly.
+        body.provider.sort='latency';
+      }
     }
     const options = {
       method: 'POST',
@@ -402,8 +464,6 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
         'AI provider request failed.', { status: response.status, retryAfterMs: retryAfterMs(response, now()) });
       throw attemptError('AI_RESPONSE_INVALID', 'AI provider returned invalid JSON transport.');
     }
-    if (requestProfile && response.ok && payload?.model !== entry.model)
-      throw attemptError('OCR_SOURCE_MODEL_IDENTITY', 'Source reader model identity mismatch.');
     const payloadError = payload && typeof payload.error === 'object' ? payload.error : null;
     if (!response.ok || payloadError) {
       failureStage = 'HTTP_ERROR_RESPONSE';
@@ -423,6 +483,16 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
         schemaPath: status === 400 ? providerDetails.path : null
       });
     }
+    if (requestProfile && payload?.model !== entry.model){
+      failureStage='MODEL_IDENTITY_VALIDATION';
+      throw attemptError('OCR_SOURCE_MODEL_IDENTITY', 'Source reader model identity mismatch.');
+    }
+    if(isCorrectionFeature(feature)&&isStrictCorrectionModel(entry.model)&&payload.model!==entry.model){
+      failureStage='MODEL_IDENTITY_VALIDATION';
+      throw attemptError('AI_CORRECTION_MODEL_MISMATCH','Correction model identity mismatch.');
+    }
+    if(isCorrectionFeature(feature)&&entry.model===ASSESSMENT_MODEL&&typeof payload.model==='string'&&payload.model!==entry.model)
+      throw attemptError('AI_ASSESSMENT_MODEL_MISMATCH','Correction rollback model identity mismatch.');
     if (isAssessmentFeature(feature) && typeof payload.model === 'string' && payload.model !== ASSESSMENT_MODEL) {
       failureStage = 'MODEL_IDENTITY_VALIDATION';
       throw attemptError('AI_ASSESSMENT_MODEL_MISMATCH', 'Assessment model identity mismatch.', {
@@ -430,6 +500,8 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
       });
     }
     failureStage = 'PROVIDER_RESPONSE_SHAPE_INVALID';
+    if(payload.usage)diagnosticUsage={prompt_tokens:payload.usage.prompt_tokens,completion_tokens:payload.usage.completion_tokens,
+      total_tokens:payload.usage.total_tokens,cost:payload.usage.cost,thoughts_tokens:payload.usage.completion_tokens_details?.reasoning_tokens};
     const extracted = google ? extractGoogle(payload, { maxOutputTokens })
       : extractOpenRouter(payload, { maxOutputTokens });
     const usage = google ? extracted.usage : (payload.usage ? {
@@ -438,20 +510,33 @@ async function providerAttempt({ entry, messages, maxOutputTokens, temperature, 
     } : null);
     accountingOutcome='completed';
     return { ...extracted, usage, durationMs: now() - started,transportTimings:{requestToHeadersMs:headersMs,responseBodyMs:bodyMs},
-      ...(requestProfile ? { returnedModel: payload.model } : {}) };
+      ...(requestProfile || isCorrectionFeature(feature) ? { returnedModel: payload.model } : {}) };
   } catch (error) {
     accountingOutcome=controller.signal.aborted?'AI_ATTEMPT_TIMEOUT':safeCode(error);
     requestDiagnostics.notify(onDiagnostic, { failureStage: controller.signal.aborted || error?.name === 'AbortError'
       ? 'REQUEST_ABORTED' : failureStage, error, safeCode: controller.signal.aborted ? 'AI_ATTEMPT_TIMEOUT' : safeCode(error),
-    httpStatus, responseReceived, bodyRead,timeoutOrigin:controller.signal.aborted?(signal?.aborted?'caller_cancelled':timeoutScope):null });
+    httpStatus, responseReceived, bodyRead,timeoutOrigin:controller.signal.aborted?timeoutOrigin():null,
+    transportPhase:failureStage,requestToHeadersMs:headersMs,responseBodyMs:headersMs===null?null:bodyMs??now()-started-headersMs,
+    elapsedMs:now()-started,attemptTimeoutMs,usage:diagnosticUsage });
     if (controller.signal.aborted) throw attemptError('AI_ATTEMPT_TIMEOUT', 'AI provider attempt timed out.',{
-      timeoutOrigin:signal?.aborted?'caller_cancelled':timeoutScope,responseReceived,bodyRead,httpStatus});
+      timeoutOrigin:timeoutOrigin(),responseReceived,bodyRead,httpStatus});
     throw error;
   } finally {
     finishAccounting(accountingOutcome);
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
   }
+}
+
+async function providerAttempt(options) {
+  if(!isCorrectionFeature(options.feature)||!isStrictCorrectionModel(options.entry?.model))return unboundedProviderAttempt(options);
+  const started=Date.now(),budget=Math.max(1,Number(options.attemptTimeoutMs)||30000);
+  const release=await require('./correctionAdmission.service').shared.acquire(budget,options.signal);
+  try {
+    const remaining=budget-(Date.now()-started);
+    if(remaining<=0)throw attemptError('AI_ATTEMPT_TIMEOUT','Correction admission deadline exceeded.');
+    return await unboundedProviderAttempt({...options,attemptTimeoutMs:remaining});
+  } finally {release();}
 }
 
 async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4000, temperature = 0.1,
@@ -466,6 +551,10 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
   if (isAssessmentFeature(feature) && (config.chain?.length !== 1
     || config.chain[0].provider !== 'openrouter' || config.chain[0].model !== ASSESSMENT_MODEL))
     throw attemptError('AI_ASSESSMENT_AUTHORITY_INVALID', 'Assessment requires the sole Astra authority.');
+  if(isCorrectionFeature(feature)&&(config.chain?.length!==1||config.chain[0].provider!=='openrouter'||!CORRECTION_MODELS.includes(config.chain[0].model)))
+    throw attemptError('AI_CORRECTION_AUTHORITY_INVALID','Correction requires one approved model.');
+  if(feature==='teacher_comment_draft'&&[CORRECTION_MODEL,DEEPSEEK_CORRECTION_MODEL,GPT54_MINI_CORRECTION_MODEL,GEMINI_CORRECTION_MODEL].includes(config.chain?.[0]?.model))
+    throw attemptError('AI_CORRECTION_AUTHORITY_INVALID','Model is not approved for teacher-comment drafting.');
   const started = now();
   const requestMetadata = metadata && typeof metadata === 'object'
     ? Object.fromEntries(Object.entries(metadata).filter(([key]) =>
@@ -535,6 +624,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
           candidateTokenCount: result.usage?.completion_tokens ?? null,
           thoughtsTokenCount: result.usage?.thoughts_tokens ?? null,
           totalTokenCount: result.usage?.total_tokens ?? null,
+          providerCostUSD: typeof result.usage?.cost === 'number' && Number.isFinite(result.usage.cost) && result.usage.cost >= 0 ? result.usage.cost : null,
           responseTextLength: result.responseTextLength ?? result.content.length,
           validationCode: null, retryDelayMs: null });
         const gatewayMetadata = { provider: entry.provider, model: entry.model, attemptCount,
@@ -639,7 +729,9 @@ function validateAIConfig(env = process.env) {
 }
 
 module.exports = {
-  ASSESSMENT_MODEL, ASSESSMENT_AUTHORITY_VERSION, isAssessmentFeature, correctionRequestPolicy,
+  CLAUDE_CORRECTION_MODEL, GEMINI_CORRECTION_MODEL, GPT54_MINI_CORRECTION_MODEL, isStrictCorrectionModel, geminiCorrectionReasoningEffort, gpt54MiniCorrectionReasoningEffort, getTeacherCommentAIConfig,
+  correctionReasoningEffort,
+  CORRECTION_MODEL, DEEPSEEK_CORRECTION_MODEL, CORRECTION_MODELS, correctionModel, isCorrectionFeature, getCorrectionAIConfig, ASSESSMENT_MODEL, ASSESSMENT_AUTHORITY_VERSION, isAssessmentFeature, correctionRequestPolicy,
   SUPPORTED_PROVIDERS, DEFAULTS, MAX_RETRIES, MAX_RETRY_DELAY_MS, credentialFor, endpointFor,
   getAIConfig, getAssessmentAIConfig, getWorksheetExtractionAIConfig, sanitizedAssessmentChain, validateAIConfig,
   retryAfterMs, safeCode, extractGoogle, extractOpenRouter, googleUsage, safeFailureMetadata,

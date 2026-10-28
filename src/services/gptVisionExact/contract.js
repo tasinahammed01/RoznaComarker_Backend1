@@ -8,12 +8,24 @@ const NON_ACTIVE_ROLES={NON_ACTIVE_DELETED_UNCERTAIN:['STUDENT_CROSSED_OUT'],NON
   NON_ACTIVE_MARK_UNCERTAIN:['HEADER_OR_TEMPLATE','TEACHER_MARK','WATERMARK_OR_CAMERA_BRANDING','PAGE_ARTIFACT']};
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const fail=code=>Object.assign(Error(code),{code,retryable:false,safeMessage:code==='OCR_GPT_SOURCE_UNCERTAIN'?'Some handwriting could not be read confidently. Please upload a clearer image.':'The handwriting source could not be read. Please contact your teacher.'});
-// Only vision readers already named by this repository are admitted. Availability
-// is not inferred from a model name and is never probed by an extra live request.
-const models=()=>[require('../hybridSource/contract').MODEL,'openai/gpt-6-astra'];
+// Explicit capability-approved source readers only; never infer vision/schema
+// support from a vendor prefix. DeepSeek and Qwen metadata verified 2026-10-26.
+const DEEPSEEK_MODEL='deepseek/deepseek-v4.1-flash-1017';
+const QWEN_MODEL='qwen/qwen3.8-27b';
+// Leave room above the observed valid 90-second reads; operators may restore 180s.
+const PREFLIGHT_TIMEOUT_MS=210000; // Browser source timeout is 240s, leaving 30s for transport/cleanup.
+function requestPolicy(env=process.env){
+  const raw=env.OCR_GPT_VISION_ATTEMPT_TIMEOUT_MS;
+  const attemptTimeoutMs=raw===undefined||raw===''?120000:Number(raw);
+  if(!Number.isInteger(attemptTimeoutMs)||attemptTimeoutMs<100000||attemptTimeoutMs>180000)
+    throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
+  return {attemptTimeoutMs,maxOutputTokens:16000};
+}
+const models=()=>[require('../hybridSource/contract').MODEL,'openai/gpt-6-astra',DEEPSEEK_MODEL,QWEN_MODEL];
 function config(env=process.env){
   const model=env.OCR_GPT_VISION_MODEL||require('../hybridSource/contract').MODEL;
   if(!models().includes(model)||!env.OPENROUTER_API_KEY)throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
+  if(model===QWEN_MODEL)requestPolicy(env);
   return {model};
 }
 const closed=properties=>({type:'object',additionalProperties:false,required:Object.keys(properties),properties});
@@ -39,17 +51,22 @@ Inside this SAME request, perform an internal visual self-check before emitting 
 Return ONLY the strict JSON contract. No corrections, suggestions, explanations outside the schema, grades, coordinates, or IDs.
 Each physical line has ordered segments; active segment text includes literal inter-word spaces. Concatenate active segments on each line WITHOUT adding spaces; omit lines with no active text; join remaining active line texts with exactly one newline. activeTranscript MUST equal that reconstruction. Preserve physical newlines. Return version gpt-vision-exact-v2. Bound text to the schema; if active writing is unreadable, use UNCERTAIN rather than fabricating it.`;
 const keys=(v,list)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).length===list.length&&list.every(k=>Object.hasOwn(v,k));
-function validate(content){
-  if(typeof content!=='string'||Buffer.byteLength(content)>250000)throw fail('OCR_GPT_SOURCE_SCHEMA');
-  let v;try{v=JSON.parse(content);}catch{throw fail('OCR_GPT_SOURCE_SCHEMA');}
+function schemaFailure(content){
+  const error=fail('OCR_GPT_SOURCE_SCHEMA');
+  try{error.sourceDiagnostic=require('./schemaDiagnostic').diagnose(content,{schema,nonActiveRoles:NON_ACTIVE_ROLES});}catch{/* Diagnostic failure cannot change source rejection. */}
+  return error;
+}
+function validate(content,{onDiagnostic}={}){
+  if(typeof content!=='string'||Buffer.byteLength(content)>250000)throw schemaFailure(content);
+  let v;try{v=JSON.parse(content);}catch{throw schemaFailure(content);}
   if(!keys(v,['version','activeTranscript','physicalLines','uncertainties'])||v.version!==VERSION||typeof v.activeTranscript!=='string'||v.activeTranscript.length>60000||!v.activeTranscript.isWellFormed()
-    ||!Array.isArray(v.physicalLines)||v.physicalLines.length>300||!Array.isArray(v.uncertainties)||v.uncertainties.length>300)throw fail('OCR_GPT_SOURCE_SCHEMA');
+    ||!Array.isArray(v.physicalLines)||v.physicalLines.length>300||!Array.isArray(v.uncertainties)||v.uncertainties.length>300)throw schemaFailure(content);
   let count=0;const active=[];
   for(const line of v.physicalLines){
-    if(!keys(line,['segments'])||!Array.isArray(line.segments)||!line.segments.length||line.segments.length>100)throw fail('OCR_GPT_SOURCE_SCHEMA');
+    if(!keys(line,['segments'])||!Array.isArray(line.segments)||!line.segments.length||line.segments.length>100)throw schemaFailure(content);
     let text='';for(const s of line.segments){
       if(++count>3000||!keys(s,['classification','text','confidence'])||!CLASSES.includes(s.classification)||!(s.text===null||typeof s.text==='string'&&s.text.length<=2000&&s.text.isWellFormed()&&!/[\r\n\f\u0000]/u.test(s.text))
-        ||!Number.isFinite(s.confidence)||s.confidence<0||s.confidence>1||s.classification==='STUDENT_ACTIVE_TEXT'&&(typeof s.text!=='string'||!s.text.length))throw fail('OCR_GPT_SOURCE_SCHEMA');
+        ||!Number.isFinite(s.confidence)||s.confidence<0||s.confidence>1||s.classification==='STUDENT_ACTIVE_TEXT'&&(typeof s.text!=='string'||!s.text.length))throw schemaFailure(content);
       if(s.classification==='STUDENT_ACTIVE_TEXT')text+=s.text;
     }if(text.length)active.push(text);
   }
@@ -57,12 +74,19 @@ function validate(content){
     const target=v.physicalLines[u?.lineIndex]?.segments[u?.segmentIndex];
     if(!keys(u,['lineIndex','segmentIndex','kind','reason'])||!Number.isInteger(u.lineIndex)||!Number.isInteger(u.segmentIndex)||!target
       ||!UNCERTAINTY_KINDS.includes(u.kind)||typeof u.reason!=='string'||u.reason.length>2000
-      ||NON_ACTIVE_ROLES[u.kind]&&!NON_ACTIVE_ROLES[u.kind].includes(target.classification))throw fail('OCR_GPT_SOURCE_SCHEMA');
+      ||NON_ACTIVE_ROLES[u.kind]&&!NON_ACTIVE_ROLES[u.kind].includes(target.classification))throw schemaFailure(content);
   }
   const sourceDiagnostic=diagnostics(v);
-  const derived=active.join('\n');if(v.activeTranscript!==derived)throw Object.assign(fail('OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH'),{sourceDiagnostic:{...sourceDiagnostic,sourceAmbiguityReason:'TRANSCRIPT_RECONSTRUCTION_MISMATCH'}});
+  const derived=active.join('\n'),comparison=require('./transcriptDiagnostic');
+  const transcriptDiagnostic=v.activeTranscript===derived
+    ? {transcriptComparison:'EXACT',transcriptReconciled:false,transcriptReconciledBoundaries:0,transcriptSeparatorLFCount:Math.max(0,active.length-1),transcriptSeparatorCRLFCount:0,transcriptSeparatorSpaceCount:0}
+    : comparison.matchActiveLines(v.activeTranscript,active);
+  if(transcriptDiagnostic.transcriptComparison==='MISMATCH')throw Object.assign(fail('OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH'),{sourceDiagnostic:{...sourceDiagnostic,
+    ...comparison.compare(v,derived),sourceAmbiguityReason:'TRANSCRIPT_RECONSTRUCTION_MISMATCH'}});
   if(sourceDiagnostic.blockingUncertaintyCount)throw Object.assign(fail('OCR_GPT_SOURCE_UNCERTAIN'),{sourceDiagnostic});
   if(!derived.trim())throw fail('OCR_GPT_SOURCE_EMPTY');
+  // Observation cannot change source acceptance or introduce fields into the wire schema.
+  if(typeof onDiagnostic==='function')try{onDiagnostic({...transcriptDiagnostic});}catch{/* Content-free observer only. */}
   return {...v,activeTranscript:derived};
 }
 // Called only on fully structure-validated values. Roles, not a free-form model
@@ -88,4 +112,4 @@ function diagnostics(v){
     activeUncertainCount:active.size,nonActiveUncertainCount:nonActive.size,deletedUnreadableCount:deleted.size,promptUnreadableCount:prompt.size,
     blockingUncertaintyCount:active.size,sourceAmbiguityReason};
 }
-module.exports={VERSION,CLASSES,UNCERTAINTY_KINDS,sha,fail,config,schema,PROMPT,validate,diagnostics};
+module.exports={VERSION,CLASSES,UNCERTAINTY_KINDS,DEEPSEEK_MODEL,QWEN_MODEL,models,sha,fail,config,requestPolicy,PREFLIGHT_TIMEOUT_MS,schema,PROMPT,validate,diagnostics};

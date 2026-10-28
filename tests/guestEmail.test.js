@@ -14,6 +14,17 @@ beforeEach(() => {
   delete process.env.MAIL_FROM_EMAIL; delete process.env.MAIL_FROM_NAME; delete process.env.SMTP_PORT;
 });
 
+test('teacher submission email uses escaped guest identity and no private guest token', async () => {
+  await expect(email.sendTeacherSubmissionEmail({ to: 'teacher@example.com',
+    assignmentTitle: '<script>Essay</script>', studentName: '<b>Guest</b>' })).resolves.toEqual({ success: true });
+  const message = transport.sendMail.mock.calls[0][0];
+  expect(message.to).toBe('teacher@example.com');
+  expect(message.html).toContain('&lt;b&gt;Guest&lt;/b&gt;');
+  expect(message.html).not.toContain('<script>');
+  expect(message.text).toContain('(Guest)');
+  expect(message.text).not.toContain('/guest/results/');
+});
+
 test('guest email uses the existing transporter, escapes content and keeps the private-link note', async () => {
   const pending = email.sendGuestSubmissionEmail({ to: 'guest@example.com', assignmentTitle: '<script>Title</script>\r\nInjected',
     returnUrl: 'https://school.example/guest/results/id#private-token' });

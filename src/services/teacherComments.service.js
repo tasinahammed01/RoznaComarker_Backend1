@@ -53,7 +53,7 @@ async function generateTeacherCommentDraft(feedback, submissionId) {
     throw error;
   }
   const gateway = require('./aiGateway.service');
-  const config = { ...gateway.getAssessmentAIConfig(), attemptTimeoutMs: 12000, totalBudgetMs: 25000,
+  const config = { ...gateway.getTeacherCommentAIConfig(), attemptTimeoutMs: 12000, totalBudgetMs: 25000,
     primaryRetries: 1, fallbackRetries: 0, retryDelayMs: 250 };
   const result = await gateway.generate({ feature: 'teacher_comment_draft', config,
     metadata: { submissionId: String(submissionId) }, temperature: 0.1, maxOutputTokens: 240,

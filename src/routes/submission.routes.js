@@ -113,7 +113,6 @@ router.post(
   uploadUserLimiter,
   param('qrToken').isString().trim().notEmpty().withMessage('Invalid QR'),
   handleValidationResult,
-  submissionController.enforceResubmissionPermission,
   setUploadType('submissions'),
   upload.fields([
     { name: 'files', maxCount: 20 },
@@ -211,7 +210,6 @@ router.post(
   uploadUserLimiter,
   param('assignmentId').isMongoId().withMessage('Invalid assignment id'),
   handleValidationResult,
-  submissionController.enforceResubmissionPermission,
   setUploadType('submissions'),
   upload.fields([
     { name: 'files', maxCount: 20 },

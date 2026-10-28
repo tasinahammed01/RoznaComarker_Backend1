@@ -11,14 +11,14 @@ const { reviewPayload, finding } = require('./helpers/astraAssessmentFixtures.cj
 const env = { OPENROUTER_API_KEY: 'offline-only', ASSESSMENT_AI_PRIMARY_RETRIES: '0' };
 const compact = payload => ({ reviewContract: wire.VERSION, transcriptHash: payload.transcriptHash,
   categories: Object.fromEntries(Object.entries(payload.categories).map(([category, r]) => [category,
-    { reviewed: r.reviewed, reviewedSymbols: r.reviewedSymbols,
+    { reviewed: r.reviewed, reviewedSymbols: Object.fromEntries(r.reviewedSymbols.map(symbol=>[symbol,true])),
       corrections: r.corrections.map(({ message, stylePreference, ...item }) => item) }])) });
 const source = (transcript, teacher = {}) => ({ transcript, transcriptHash: crypto.createHash('sha256').update(transcript).digest('hex'),
   transcriptComplete: true, legend: defaultLegend(), spans: [], assignment: { instructions: 'Explain the claim with support.' },
   policy: policy.normalizeTeacherEvaluationPolicy(teacher), pageManifest: [{ startChar: 0, endChar: transcript.length }] });
 const completion = payload => jest.fn(async request => ({ value: request.validate(JSON.stringify(payload)),
   provider: 'openrouter', model: 'openai/gpt-6-astra', usage: { prompt_tokens: 100, completion_tokens: 200, thoughts_tokens: 20, total_tokens: 300 },
-  metrics: { attempts: [{ finishReason: 'stop' }], attemptCount: 1 }));
+  metrics: { attempts: [{ finishReason: 'stop' }], attemptCount: 1 } }));
 
 describe('compact Astra wire preserves canonical contracts', () => {
   test('dense ~100-word essay: five-category coverage, many findings, literal source and bounded output', async () => {
@@ -68,7 +68,7 @@ describe('compact Astra wire preserves canonical contracts', () => {
     const payload = compact(reviewPayload(input.transcriptHash, undefined, [finding('MECHANICS', 'SP', 'mispell', { suggestedText: 'misspell' })]));
     if (mode === 'missing') delete payload.categories.CONTENT;
     if (mode === 'invalid') payload.categories.CONTENT.extra = 'unexpected';
-    if (mode === 'symbols') payload.categories.CONTENT.reviewedSymbols.pop();
+    if (mode === 'symbols') delete payload.categories.CONTENT.reviewedSymbols.REL;
     if (mode === 'reviewed-false') payload.categories.CONTENT.reviewed = false;
     const runCompletion = completion(payload);
     const dependencies = { env, config: client.getAssessmentAIConfig(env), runCompletion };

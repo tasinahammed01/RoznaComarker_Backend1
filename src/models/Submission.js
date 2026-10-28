@@ -27,11 +27,19 @@ const submissionSchema = new Schema(
       normalizedEmail: { type: String, maxlength: 254, select: false },
       requestHash: { type: String, select: false },
       accessHash: { type: String, select: false },
+      resultAccessHash: { type: String, select: false },
+      resultExpiresAt: Date,
+      resultEmailSentAt: Date,
+      resultEmailLeaseUntil: Date,
+      resultEmailNextAttemptAt: Date,
       expiresAt: Date,
       revokedAt: Date,
       recoveredAt: Date
     },
     guestRequestKey: { type: String, select: false },
+    registeredRequestKey: { type: String, select: false },
+    guestRevisionLease: { owner: String, until: Date },
+    guestAcceptedRevisionKey: { type: String, select: false },
     assignment: {
       type: Schema.Types.ObjectId,
       ref: 'Assignment',
@@ -283,6 +291,7 @@ submissionSchema.index({ assignment: 1, guestRequestKey: 1 }, { unique: true,
 submissionSchema.index({ assignment: 1, 'guest.normalizedEmail': 1, submittedAt: -1 },
   { name: 'guest_recovery_lookup_v1', partialFilterExpression: { submissionMode: 'guest' } });
 submissionSchema.index({ assignment: 1 });
+submissionSchema.index({ submissionMode: 1, assessmentStatus: 1, 'guest.resultEmailSentAt': 1, 'guest.resultEmailNextAttemptAt': 1 }, { name: 'guest_result_email_queue_v1' });
 submissionSchema.index({ class: 1 });
 submissionSchema.index({ class: 1, student: 1, submittedAt: 1 });
 submissionSchema.index({ class: 1, assignment: 1, submittedAt: 1, draftNumber: 1 });
@@ -292,6 +301,7 @@ submissionSchema.index({ ocrStatus: 1, analysisNextRetryAt: 1, analysisLeaseExpi
 
 require('../services/sourceFidelity/immutability').install(submissionSchema);
 submissionSchema.set('toJSON',{transform(_doc,ret){
+  delete ret.registeredRequestKey;
   for(const page of ret.ocrPages||[])delete page.studentSourceEvidence;
   const source=require('../utils/sourceFidelity').payload(ret);if(source)ret.sourceFidelity=source;return ret;
 }});

@@ -90,17 +90,35 @@ async function testEmailConfig() {
 }
 
 module.exports = {
-  async sendGuestSubmissionEmail({ to, assignmentTitle, returnUrl }) {
+  async sendTeacherSubmissionEmail({ to, assignmentTitle, studentName }) {
+    try {
+      const readiness = emailReadiness();
+      if (!readiness.ready) return { success: false, code: readiness.code };
+      const result = await getTransporter().sendMail({
+        from: `"${process.env.MAIL_FROM_NAME || 'CoMarker'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
+        to, subject: 'Co-Marker: assignment submitted',
+        text: `${studentName} (Guest) submitted ${assignmentTitle}. Open the assignment submissions in Co-Marker to review it.`,
+        html: `<p>${escapeHtml(studentName)} (Guest) submitted <strong>${escapeHtml(assignmentTitle)}</strong>.</p><p>Open the assignment submissions in Co-Marker to review it.</p>`
+      });
+      if (result?.rejected?.length && !result?.accepted?.length) return { success: false, code: 'PROVIDER_REJECTED' };
+      return { success: true };
+    } catch (error) {
+      logger.warn({ event: 'teacher_submission_email_failed', code: safeEmailFailure(error) });
+      return { success: false };
+    }
+  },
+  async sendGuestSubmissionEmail({ to, assignmentTitle, returnUrl, resultReady = false }) {
     try {
       const readiness = emailReadiness();
       if (!readiness.ready) throw Object.assign(new Error('Email configuration unavailable'), { code: readiness.code });
+      const status = resultReady ? 'feedback is ready' : 'submission was received';
       let message;
       try { message = {
         from: `"${process.env.MAIL_FROM_NAME || 'CoMarker'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
         to,
-        subject: `Your Co-Marker assignment submission: ${String(assignmentTitle).replace(/[\r\n]/g, ' ').slice(0, 150)}`,
-        text: `Rozna Co-Marker\n\nYour submission for ${assignmentTitle} was received.\nUse this private link to access your feedback without logging in:\n${returnUrl}\nKeep this link private. Do not share it. It expires; request a new link from the assignment page if needed.`,
-        html: `<h2>Rozna Co-Marker</h2><p>Your submission for <strong>${escapeHtml(assignmentTitle)}</strong> was received.</p><p>Use this private link to access your feedback without logging in:</p><p><a href="${escapeHtml(returnUrl)}">Return to your results</a></p><p>Keep this link private. Do not share it. It expires; request a new link from the assignment page if needed.</p>`
+        subject: `Your Co-Marker ${resultReady ? 'feedback is ready' : 'assignment submission'}: ${String(assignmentTitle).replace(/[\r\n]/g, ' ').slice(0, 150)}`,
+        text: `Rozna Co-Marker\n\nYour ${status} for ${assignmentTitle}.\nUse this private link to access your feedback without logging in:\n${returnUrl}\nKeep this link private. Do not share it. It expires; request a new link from the assignment page if needed.`,
+        html: `<h2>Rozna Co-Marker</h2><p>Your ${status} for <strong>${escapeHtml(assignmentTitle)}</strong>.</p><p>Use this private link to access your feedback without logging in:</p><p><a href="${escapeHtml(returnUrl)}">Return to your results</a></p><p>Keep this link private. Do not share it. It expires; request a new link from the assignment page if needed.</p>`
       }; } catch { throw Object.assign(new Error('Email template unavailable'), { code: 'TEMPLATE_FAILURE' }); }
       const result = await getTransporter().sendMail(message);
       if (result?.rejected?.length && !result?.accepted?.length) {

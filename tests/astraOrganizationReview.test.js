@@ -50,7 +50,7 @@ describe('primary Organization review prompt contract',()=>{
     expect(prompt).toContain('CONC (closure)');expect(prompt).toContain('Zero findings is valid after all five checks');
   });
   test('prompt/review identities advance while JSON response shape stays unchanged',()=>{
-    expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-astra-v12-compact-organization-closure');
+    expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-v13-distinct-symbols');
     expect(semantic.CATEGORY_REVIEW_POLICY_VERSION).toBe('astra-category-review-v7-organization-checklist');
     expect(semantic.SEMANTIC_SCHEMA_VERSION).toBe('semantic-corrections-v14-compact-reviewed');
   });

@@ -1,0 +1,411 @@
+'use strict';
+jest.setTimeout(90000);
+process.env.GUEST_SUBMISSION_ENABLED='true';process.env.NODE_ENV='test';process.env.JWT_SECRET='preflight-offline';process.env.UPLOAD_USER_RATE_LIMIT_MAX='500';
+process.env.UPLOAD_BASE_PATH='uploads/gpt-preflight-test-'+process.pid;
+jest.mock('../src/services/assessmentRecovery.service',()=>({scheduleSubmissionAnalysis:jest.fn()}));
+jest.mock('../src/services/canonicalCorrectionsPipeline.service',()=>({generateAndPersist:jest.fn(async()=>{})}));
+jest.mock('../src/services/imagePreflight.service',()=>({evaluateImage:jest.fn(async()=>({ready:true,checks:[]}))}));
+jest.mock('../src/services/aiGateway.service',()=>({providerAttempt:jest.fn()}));
+jest.mock('../src/services/email.service',()=>({sendGuestSubmissionEmail:jest.fn(async()=>({success:true}))}));
+jest.mock('../src/services/notification.service',()=>({createNotification:jest.fn(async()=>null)}));
+const mockGoogleGeometry=jest.fn(async()=>[{fullTextAnnotation:{pages:[]}}]);
+jest.mock('@google-cloud/vision',()=>({ImageAnnotatorClient:jest.fn(()=>({documentTextDetection:mockGoogleGeometry}))}));
+const sharp=require('sharp'),request=require('supertest'),fs=require('fs'),path=require('path');
+const app=require('../src/app'),mongoose=require('mongoose');
+const {connectInMemoryMongo,disconnectInMemoryMongo}=require('./helpers/testServer'),{seedTestPlans}=require('./helpers/seedTestPlans'),{signTestJwt}=require('./helpers/auth');
+const User=require('../src/models/user.model'),Class=require('../src/models/class.model'),Assignment=require('../src/models/assignment.model'),Membership=require('../src/models/membership.model');
+const Submission=require('../src/models/Submission'),File=require('../src/models/File'),Evidence=require('../src/models/SourceFidelityEvidence');
+const gateway=require('../src/services/aiGateway.service'),basic=require('../src/services/imagePreflight.service'),scheduled=require('../src/services/assessmentRecovery.service').scheduleSubmissionAnalysis;
+const corrections=require('../src/services/canonicalCorrectionsPipeline.service'),c=require('../src/services/gptVisionExact/contract'),source=require('../src/services/gptVisionExact/preflight');
+let token,student,teacher,cls,a,bytes,serial=0;
+const value=()=>({version:c.VERSION,activeTranscript:'Society always expect\npowerfull Say',physicalLines:['Society always expect','powerfull Say'].map(text=>({segments:[{classification:'STUDENT_ACTIVE_TEXT',text,confidence:1}]})),uncertainties:[]});
+const check=(image=bytes,assignment=a,phase)=>request(app).post('/api/submissions/image-preflight').set('Authorization','Bearer '+token).field('assignmentId',String(assignment._id)).field('phase',phase||'source').attach('file',image,{filename:'same-name.png',contentType:'image/png'});
+const submit=(images=[bytes],assignment=a)=>{let r=request(app).post('/api/submissions/'+assignment._id).set('Authorization','Bearer '+token).field('canSubmit','true');for(const image of images)r=r.attach('files',image,{filename:'same-name.png',contentType:'image/png'});return r;};
+beforeAll(async()=>{await connectInMemoryMongo();await seedTestPlans();
+  [student,teacher]=await User.create(['student','teacher'].map(role=>({role,firebaseUid:'gpt-pre-'+role,email:role+'@gpt-pre.invalid'})));
+  token=signTestJwt({id:student._id,role:'student',firebaseUid:student.firebaseUid});cls=await Class.create({name:'Preflight',teacher:teacher._id,joinCode:'PRE',qrCodeUrl:'data:,'});await Membership.create({student:student._id,class:cls._id});
+});
+beforeEach(async()=>{await require('../src/models/SourceVerificationCircuit').deleteMany({});process.env.OCR_SOURCE_MODE='gpt_vision_exact';process.env.OCR_GPT_VISION_MODEL=process.env.TEST_EXACT_SOURCE_MODEL||'openai/gpt-6-astra';process.env.OPENROUTER_API_KEY='mock-only';
+  mockGoogleGeometry.mockReset().mockResolvedValue([{fullTextAnnotation:{pages:[]}}]);
+  a=await Assignment.create({title:'Reference '+(++serial),class:cls._id,teacher:teacher._id,qrToken:'pre-'+serial});
+  bytes=await sharp({create:{width:800,height:1000,channels:3,background:{r:220,g:30+serial,b:90}}}).png().toBuffer();
+  basic.evaluateImage.mockReset().mockResolvedValue({ready:true,checks:[]});gateway.providerAttempt.mockReset().mockImplementation(async o=>({returnedModel:o.entry.model,content:JSON.stringify(value())}));scheduled.mockClear();corrections.generateAndPersist.mockClear();
+  require('../src/services/notification.service').createNotification.mockClear();require('../src/services/email.service').sendGuestSubmissionEmail.mockClear();
+});
+afterAll(async()=>{delete process.env.OCR_SOURCE_MODE;const dir=path.resolve(__dirname,'..',process.env.UPLOAD_BASE_PATH,'submissions');if(fs.existsSync(dir))for(const name of fs.readdirSync(dir))if(/^[a-f\d-]+\.png$/i.test(name))fs.unlinkSync(path.join(dir,name));await disconnectInMemoryMongo();});
+test('basic failure never buys source; basic phase reports checking with no paid request',async()=>{
+  basic.evaluateImage.mockResolvedValueOnce({ready:false,checks:[{id:'resolution',required:true,status:'fail'}]});expect((await check()).body.data.ready).toBe(false);expect(gateway.providerAttempt).not.toHaveBeenCalled();
+  const r=await check(bytes,a,'basic');expect(r.body.data).toMatchObject({ready:false,basicChecksPassed:true,sourceReadStatus:'CHECKING',canSubmit:false});expect(gateway.providerAttempt).not.toHaveBeenCalled();
+});
+test('real worker persistence and result API preserve 110 GPT tokens with 95 mapped and 15 null boxes',async()=>{
+  const tokens=Array.from({length:110},(_,i)=>'token'+String(i).padStart(3,'0'));
+  const lines=Array.from({length:11},(_,i)=>tokens.slice(i*10,i*10+10).join(' '));
+  const primary={version:c.VERSION,activeTranscript:lines.join('\n'),physicalLines:lines.map(text=>({segments:[{text,classification:'STUDENT_ACTIVE_TEXT',confidence:1}]})),uncertainties:[]};
+  gateway.providerAttempt.mockImplementation(async o=>({returnedModel:o.entry.model,content:JSON.stringify(primary)}));
+  mockGoogleGeometry.mockResolvedValue([{fullTextAnnotation:{text:'Not source authority',pages:[{width:800,height:1000,blocks:[{paragraphs:[{words:
+    tokens.slice(0,95).map((text,i)=>({symbols:[...text].map(text=>({text})),boundingBox:{vertices:[
+      {x:20+i%10*70,y:40+Math.floor(i/10)*70},{x:70+i%10*70,y:40+Math.floor(i/10)*70},
+      {x:70+i%10*70,y:80+Math.floor(i/10)*70},{x:20+i%10*70,y:80+Math.floor(i/10)*70}]}}))}]}]}]}}]);
+  expect((await check()).body.data.ready).toBe(true);expect((await submit()).status).toBe(200);
+  const doc=await Submission.findOne({assignment:a._id});
+  await require('../src/services/ocrPipeline.service').runOcrAndPersistForFiles({fileIds:doc.files,targetDoc:doc,jobId:doc.ocrJobId});
+  const r=await request(app).get('/api/submissions/'+doc._id+'/ocr-corrections').set('Authorization','Bearer '+token);
+  expect(r.status).toBe(200);expect(r.body.data.transcript).toBe(primary.activeTranscript);
+  const words=r.body.data.ocr[0].words;expect(words).toHaveLength(110);
+  expect(words.filter(w=>w.bbox)).toHaveLength(95);expect(words.filter(w=>w.bbox===null)).toHaveLength(15);
+  expect(words.map(w=>w.text)).toEqual(tokens);expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);
+  expect(mockGoogleGeometry).toHaveBeenCalledTimes(1);
+});
+test('accepted private preflight then submission and worker use exactly one paid source request',async()=>{
+  const usage=(await User.findById(student._id)).usage;
+  const r=await check();expect(r.body.data).toMatchObject({sourceReadStatus:'PASSED',ready:true,canSubmit:true});
+  expect(JSON.stringify(r.body)).not.toMatch(/powerfull|physicalLines|mock-only|sourceSha256/);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);expect((await User.findById(student._id)).usage).toEqual(usage);
+  const accepted=await submit();expect(accepted.status).toBe(200);const doc=await Submission.findOne({assignment:a._id});
+  await require('../src/services/ocrPipeline.service').runOcrAndPersistForFiles({fileIds:doc.files,targetDoc:doc,jobId:doc.ocrJobId});
+  expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);expect(corrections.generateAndPersist).toHaveBeenCalledTimes(1);
+  expect((await Submission.findById(doc._id)).sourceTranscriptExact).toBe(value().activeTranscript);
+  expect((await Submission.findById(doc._id)).ocrPages[0].sourceVerificationSummary.performance).toMatchObject({
+    sourceReused:true,sourceProviderCallCount:0,geometryProviderCallCount:1});
+  const privateFile=await File.findById(doc.files[0]).select('+gptSourcePreflight');expect(privateFile.gptSourcePreflight).toBeTruthy();expect(privateFile.toJSON().gptSourcePreflight).toBeUndefined();
+  const evidence=await Evidence.findById(privateFile.gptSourcePreflight.bindings[0].key).select('+payload');expect(evidence.payload.claims).toHaveLength(1);
+});
+test('uncertain input remains blocked and cached, with no submission, assessment, notification, or repeated source charge',async()=>{
+  const v=value();v.physicalLines[0].segments.push({classification:'UNCERTAIN',text:null,confidence:.3});gateway.providerAttempt.mockImplementation(async o=>({returnedModel:o.entry.model,content:JSON.stringify(v)}));
+  for(let i=0;i<2;i++){const r=await check();expect(r.body.data).toMatchObject({sourceReadStatus:'FAILED_IMAGE',ready:false,sourceReadErrorCode:'OCR_GPT_SOURCE_UNCERTAIN'});}
+  const r=await submit();expect(r.status).toBe(422);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);expect(scheduled).not.toHaveBeenCalled();expect(corrections.generateAndPersist).not.toHaveBeenCalled();expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);
+  expect(require('../src/services/notification.service').createNotification).not.toHaveBeenCalled();expect(require('../src/services/email.service').sendGuestSubmissionEmail).not.toHaveBeenCalled();
+  const e=await Evidence.findOne({'identity.assignmentId':String(a._id)}).select('+payload');expect(e.payload).toMatchObject({sourceAmbiguityReason:'ACTIVE_TEXT_UNREADABLE',uncertainSegmentCount:1,activeLineCount:2});
+  expect(JSON.stringify(e.payload)).not.toMatch(/powerfull|Society|mock-only/);
+});
+test.each(['AI_PROVIDER_PAYMENT_REQUIRED','AI_PROVIDER_AUTH_ERROR','AI_PROVIDER_PERMISSION_DENIED','AI_PROVIDER_RATE_LIMIT','AI_PROVIDER_UNAVAILABLE','AI_ATTEMPT_TIMEOUT'])('provider %s is service failure, cached and never blames image',async code=>{
+  gateway.providerAttempt.mockRejectedValue(Object.assign(Error('PRIVATE secret body'),{code}));for(let i=0;i<2;i++){const r=await check();expect(r.body.data).toMatchObject({sourceReadStatus:'FAILED_SERVICE',canSubmit:false});expect(r.body.data.message).toMatch(/temporarily unavailable/);expect(r.body.data.message).not.toMatch(/clearer image/);}
+  expect((await submit()).status).toBe(503);expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);
+});
+test('forged client pass without evidence never buys GPT or creates a submission',async()=>{expect((await submit()).status).toBe(503);expect(gateway.providerAttempt).not.toHaveBeenCalled();expect(await Submission.countDocuments({assignment:a._id})).toBe(0);});
+test.each(['image','reference','model','contract','ownership'])('changed %s cannot reuse previous accepted source',async change=>{
+  expect((await check()).body.data.ready).toBe(true);
+  let image=bytes;
+  if(change==='image')image=await sharp(bytes).linear(.9).png().toBuffer();
+  if(change==='reference')await Assignment.updateOne({_id:a._id},{$set:{instructions:'Changed actual question'}});
+  if(change==='model')process.env.OCR_GPT_VISION_MODEL='openai/gpt-5.6-sol';
+  if(change==='contract')await Evidence.updateOne({'identity.assignmentId':String(a._id)},{$set:{'payload.primary.version':'obsolete-contract'}});
+  if(change==='ownership'){const other=await User.create({role:'student',firebaseUid:'other-'+serial,email:'other'+serial+'@gpt-pre.invalid'});await Membership.create({student:other._id,class:cls._id});const old=token;token=signTestJwt({id:other._id,role:'student',firebaseUid:other.firebaseUid});const r=await submit();token=old;expect(r.status).toBe(503);return;}
+  expect((await submit([image])).status).toBe(503);expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);
+  if(change==='image'){expect((await check(image)).body.data.ready).toBe(true);expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);}
+});
+test('multi-file submission requires all pages and then reuses every accepted page',async()=>{
+  const second=await sharp(bytes).linear(.8).png().toBuffer();expect((await check()).body.data.ready).toBe(true);
+  expect((await submit([bytes,second])).status).toBe(503);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);
+  expect((await check(second)).body.data.ready).toBe(true);expect((await submit([bytes,second])).status).toBe(200);
+  const doc=await Submission.findOne({assignment:a._id});await require('../src/services/ocrPipeline.service').runOcrAndPersistForFiles({fileIds:doc.files,targetDoc:doc,jobId:doc.ocrJobId});expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);expect(doc.ocrPages).toHaveLength(2);
+});
+test('concurrent duplicate checks reserve once and return checking safely',async()=>{
+  let release;const wait=new Promise(resolve=>{release=resolve;});gateway.providerAttempt.mockImplementation(async o=>{await wait;return {returnedModel:o.entry.model,content:JSON.stringify(value())};});
+  const p=check().then(r=>r);while(!gateway.providerAttempt.mock.calls.length)await new Promise(resolve=>setTimeout(resolve,10));
+  const duplicate=await check();expect(duplicate.body.data.sourceReadStatus).toBe('CHECKING');expect(duplicate.body.data.ready).toBe(false);release();expect((await p).body.data.ready).toBe(true);expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);
+});
+test('lost accepted evidence after submit fails the worker safely without purchasing a replacement read',async()=>{
+  expect((await check()).body.data.ready).toBe(true);expect((await submit()).status).toBe(200);
+  const doc=await Submission.findOne({assignment:a._id});await Evidence.deleteMany({'identity.assignmentId':String(a._id)});
+  await require('../src/services/ocrPipeline.service').runOcrAndPersistForFiles({fileIds:doc.files,targetDoc:doc,jobId:doc.ocrJobId});
+  expect(doc.ocrStatus).toBe('failed');expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);expect(corrections.generateAndPersist).not.toHaveBeenCalled();
+});
+test('lost file proof after submit cannot fall through to the historical paid reader',async()=>{
+  expect((await check()).body.data.ready).toBe(true);expect((await submit()).status).toBe(200);
+  const doc=await Submission.findOne({assignment:a._id});await File.updateMany({_id:{$in:doc.files}},{$unset:{gptSourcePreflight:1}});
+  await require('../src/services/ocrPipeline.service').runOcrAndPersistForFiles({fileIds:doc.files,targetDoc:doc,jobId:doc.ocrJobId});
+  expect(doc.ocrStatus).toBe('failed');expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);expect(corrections.generateAndPersist).not.toHaveBeenCalled();
+});
+test('uncertainty list predicate reports safe reason/counts without logging handwriting or uncertainty prose',async()=>{
+  const spy=jest.spyOn(require('../src/utils/logger'),'info').mockImplementation(()=>{});
+  try{const v=value();v.uncertainties=[{lineIndex:0,segmentIndex:0,kind:'ACTIVE_TEXT_UNCERTAIN',reason:'PRIVATE source prose'}];gateway.providerAttempt.mockImplementation(async o=>({returnedModel:o.entry.model,content:JSON.stringify(v)}));
+    expect((await check()).body.data.sourceReadStatus).toBe('FAILED_IMAGE');
+    const log=spy.mock.calls.map(([v])=>v).find(v=>v.event==='gpt_vision_source_reader');expect(log).toMatchObject({sourceAmbiguityReason:'ACTIVE_TEXT_UNREADABLE',uncertaintyCount:1,uncertainSegmentCount:0,activeLineCount:2});
+    expect(log.activeCharacterCount).toBe(value().activeTranscript.length);expect(JSON.stringify(log)).not.toMatch(/PRIVATE|Society|powerfull|mock-only|base64/);
+  }finally{spy.mockRestore();}
+});
+test('PDF preflight checks every rasterized page and reuses each private accepted result',async()=>{
+  const jpeg=await sharp(bytes).jpeg().toBuffer(),pdf=require('../src/services/pdfSubmissionPages.service');
+  const raster=jest.spyOn(pdf,'rasterize').mockResolvedValue([{buffer:jpeg,pageNumber:1},{buffer:jpeg,pageNumber:2}]);
+  try{const pages=await source.pagesFor({buffer:Buffer.from('%PDF-1.4 offline'),detectedMime:'application/pdf'}),context={assignment:a,ownerId:String(student._id),uploaderId:String(student._id)};
+    const proof=await source.checkPages(pages,context,{run:true});expect(proof.bindings).toHaveLength(2);expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);
+    await source.checkPages(pages,context,{run:true});expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);
+  }finally{raster.mockRestore();}
+});
+test('guest server-side source check precedes creation and binds reusable evidence to normalized guest ownership',async()=>{
+  await Submission.createIndexes();await Assignment.updateOne({_id:a._id},{$set:{allowGuestSubmission:true}});
+  const send=(key=true)=>{let r=request(app).post('/api/guest/assignments/'+a.qrToken+'/submit').field('name','Guest writer').field('email','Reader@guest.invalid');
+    if(key)r=r.set('Idempotency-Key','guest-preflight-idempotency-key-12345678');return r.attach('files',bytes,{filename:'guest.png',contentType:'image/png'});};
+  expect((await send(false)).status).toBe(400);expect(gateway.providerAttempt).not.toHaveBeenCalled();
+  expect((await send()).status).toBe(200);const doc=await Submission.findOne({assignment:a._id});
+  const file=await File.findById(doc.files[0]).select('+gptSourcePreflight');expect(file.gptSourcePreflight.ownerId).toBe('guest:'+c.sha('reader@guest.invalid'));
+  await require('../src/services/ocrPipeline.service').runOcrAndPersistForFiles({fileIds:doc.files,targetDoc:doc,jobId:doc.ocrJobId});
+  expect(doc.ocrStatus).toBe('completed');expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);
+});
+test('v2 non-active uncertainties pass preflight, stay private, reuse source after submit and keep every active token',async()=>{
+  const v=value();v.physicalLines[0].segments.push({classification:'STUDENT_CROSSED_OUT',text:null,confidence:.99});
+  v.physicalLines.unshift({segments:[{classification:'PROMPT_OR_INSTRUCTION',text:'Prompt glyph uncertain',confidence:.99}]});
+  v.uncertainties=[{lineIndex:0,segmentIndex:0,kind:'NON_ACTIVE_PROMPT_UNCERTAIN',reason:'PRIVATE punctuation'},
+    {lineIndex:1,segmentIndex:1,kind:'NON_ACTIVE_DELETED_UNCERTAIN',reason:'PRIVATE deletion'}];
+  gateway.providerAttempt.mockImplementation(async o=>({returnedModel:o.entry.model,content:JSON.stringify(v)}));
+  for(let i=0;i<2;i++){const r=await check();expect(r.body.data).toMatchObject({sourceReadStatus:'PASSED',ready:true,canSubmit:true});expect(JSON.stringify(r.body)).not.toMatch(/PRIVATE|nonActiveUncertainCount|blockingUncertaintyCount|Prompt glyph/);}
+  expect((await submit()).status).toBe(200);const doc=await Submission.findOne({assignment:a._id});
+  await require('../src/services/ocrPipeline.service').runOcrAndPersistForFiles({fileIds:doc.files,targetDoc:doc,jobId:doc.ocrJobId});
+  expect(doc.sourceFidelityVersion).toBe('gpt-vision-exact-v2');expect(doc.sourceTranscriptExact).toBe(v.activeTranscript);expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);
+  const r=await request(app).get('/api/submissions/'+doc._id+'/ocr-corrections').set('Authorization','Bearer '+token);
+  expect(r.status).toBe(200);expect(r.body.data.transcript).toBe(v.activeTranscript);expect(r.body.data.ocr[0].words.length).toBe(v.activeTranscript.split(/\s+/u).length);
+  expect(r.body.data.ocr[0].words.every(w=>w.bbox===null)).toBe(true);
+  for(let poll=0;poll<2;poll++)expect((await request(app).get('/api/submissions/'+doc._id+'/ocr-corrections').set('Authorization','Bearer '+token)).status).toBe(200);
+  expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);
+  const saved=await Evidence.findOne({'identity.assignmentId':String(a._id)}).select('+payload');expect(saved.payload).toMatchObject({nonActiveUncertainCount:2,blockingUncertaintyCount:0});
+});
+test.each(['ACTIVE_TEXT_UNCERTAIN','ACTIVE_ROLE_AMBIGUOUS','ACTIVE_REPLACEMENT_AMBIGUOUS','ACTIVE_PUNCTUATION'])('v2 %s still blocks preflight/upload and terminal repeats cost nothing',async kind=>{
+  const v=value();v.uncertainties=[{lineIndex:0,segmentIndex:0,kind,reason:'PRIVATE active ambiguity'}];gateway.providerAttempt.mockImplementation(async o=>({returnedModel:o.entry.model,content:JSON.stringify(v)}));
+  for(let i=0;i<2;i++){const r=await check();expect(r.body.data).toMatchObject({sourceReadStatus:'FAILED_IMAGE',ready:false,canSubmit:false,sourceReadErrorCode:'OCR_GPT_SOURCE_UNCERTAIN'});}
+  expect((await submit()).status).toBe(422);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);expect(corrections.generateAndPersist).not.toHaveBeenCalled();
+});
+test('old v1 terminal evidence remains unchanged while the same pixels receive one fresh v2 identity/read',async()=>{
+  const page=(await source.pagesFor({buffer:bytes,detectedMime:'image/png'}))[0],context={assignment:a,ownerId:String(student._id),uploaderId:String(student._id)};
+  const current=source.binding(context,page),{key:unused,...legacy}=current;
+  legacy.version='gpt-vision-exact-v1';legacy.promptSha256=c.sha('frozen v1 test prompt');
+  const oldKey=c.sha(JSON.stringify(legacy)).slice(0,24);legacy.key=oldKey;
+  const old=await Evidence.create({_id:oldKey,identity:legacy,status:'GPT_SOURCE_FAILED',expiresAt:null,payload:{safeFailureCode:'OCR_GPT_SOURCE_UNCERTAIN',sourceAmbiguityReason:'UNCERTAIN_SEGMENT_PRESENT'}});
+  const before=await Evidence.findById(old._id).select('+payload').lean();expect(current.key).not.toBe(oldKey);
+  for(let i=0;i<2;i++)expect((await check()).body.data.ready).toBe(true);
+  expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);expect(await Evidence.findById(old._id).select('+payload').lean()).toEqual(before);
+  const fresh=await Evidence.findById(current.key).select('+payload');expect(fresh.identity.version).toBe('gpt-vision-exact-v2');expect(fresh.payload.primary.version).toBe('gpt-vision-exact-v2');
+});
+
+test('shared circuit bounds concurrency, opens after outage, admits one probe and closes on recovery',async()=>{
+  const circuit=require('../src/services/sourceVerificationCircuit.service'),Circuit=require('../src/models/SourceVerificationCircuit');
+  const tickets=await Promise.all(Array.from({length:4},()=>circuit.enter()));
+  await expect(circuit.enter()).rejects.toMatchObject({code:'OCR_GPT_SOURCE_CHECKING'});
+  for(const ticket of tickets)await circuit.finish(ticket,'OCR_GPT_PROVIDER_NETWORK',503);
+  await expect(circuit.enter()).rejects.toMatchObject({code:'OCR_GPT_CIRCUIT_OPEN'});
+  await Circuit.updateOne({_id:circuit.keyFor(process.env.OCR_GPT_VISION_MODEL)},{$set:{openUntil:new Date(0)}});
+  const probe=await circuit.enter();await expect(circuit.enter()).rejects.toMatchObject({code:'OCR_GPT_CIRCUIT_OPEN'});
+  await circuit.finish(probe);const recovered=await circuit.enter();await circuit.finish(recovered);
+});
+const paymentError=()=>Object.assign(Error('private billing body'),{code:'AI_PROVIDER_PAYMENT_REQUIRED'});
+async function paymentCooldownElapsed(){
+  await Evidence.updateMany({'identity.assignmentId':String(a._id),status:'GPT_SOURCE_FAILED'},{$set:{nextAttemptAt:new Date(0)}});
+  const circuit=require('../src/services/sourceVerificationCircuit.service');
+  await require('../src/models/SourceVerificationCircuit').updateOne({_id:circuit.keyFor(process.env.OCR_GPT_VISION_MODEL)},{$set:{openUntil:new Date(0)}});
+}
+test('402 recovery retries identical crop only after cooldown, validates and persists fresh evidence',async()=>{
+  process.env.OCR_GPT_VISION_MODEL='deepseek/deepseek-v4.1-flash-1017';
+  const filesBefore=await File.countDocuments(),usage=(await User.findById(student._id)).usage;
+  gateway.providerAttempt.mockRejectedValueOnce(paymentError());
+  expect((await check()).body.data).toMatchObject({sourceReadStatus:'FAILED_SERVICE',canSubmit:false});
+  expect((await submit()).status).toBe(503);expect(await File.countDocuments()).toBe(filesBefore);
+  expect(await Submission.countDocuments({assignment:a._id})).toBe(0);expect(scheduled).not.toHaveBeenCalled();
+  expect((await check()).body.data.canSubmit).toBe(false);expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);
+  await paymentCooldownElapsed();
+  expect((await check()).body.data).toMatchObject({sourceReadStatus:'PASSED',canSubmit:true});
+  expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);
+  const calls=gateway.providerAttempt.mock.calls.map(([v])=>v);expect(calls[1].entry.model).toBe('deepseek/deepseek-v4.1-flash-1017');
+  expect(calls[1].messages).toEqual(calls[0].messages);
+  const saved=await Evidence.findOne({'identity.assignmentId':String(a._id)}).select('+payload');
+  expect(saved.status).toBe('GPT_SOURCE_ACCEPTED');expect(saved.attempts).toBe(2);expect(saved.payload.primary).toEqual(value());
+  expect(saved.payload.paymentFailureHistory).toHaveLength(1);expect((await User.findById(student._id)).usage).toEqual(usage);
+  const circuit=require('../src/services/sourceVerificationCircuit.service');
+  expect(await require('../src/models/SourceVerificationCircuit').findById(circuit.keyFor(process.env.OCR_GPT_VISION_MODEL)).lean()).toMatchObject({blocked:false,openUntil:null,probeOwner:null});
+});
+test('repeated 402 is bounded by model cooldown, including different sources',async()=>{
+  gateway.providerAttempt.mockRejectedValue(paymentError());await check();await paymentCooldownElapsed();await check();
+  const other=await sharp(bytes).linear(.8).png().toBuffer();
+  const responses=await Promise.all([check(),check()]);responses.push(await check(other));
+  expect(responses.every(r=>r.body.data.canSubmit===false)).toBe(true);expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);
+  expect((await submit()).status).toBe(503);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);
+});
+test('concurrent payment recovery requests admit one provider call',async()=>{
+  gateway.providerAttempt.mockRejectedValueOnce(paymentError());await check();await paymentCooldownElapsed();
+  let release,started;const begin=new Promise(r=>{started=r;});
+  gateway.providerAttempt.mockImplementationOnce(o=>new Promise(resolve=>{release=()=>resolve({returnedModel:o.entry.model,content:JSON.stringify(value())});started();}));
+  const first=check().then(r=>r);await begin;
+  try{const duplicate=await check();expect(duplicate.body.data.canSubmit).toBe(false);expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);}
+  finally{release();}
+  expect((await first).body.data.canSubmit).toBe(true);
+});
+test.each(['wrong-model','malformed','uncertain'])('recovery %s response cannot accept source',async failure=>{
+  gateway.providerAttempt.mockRejectedValueOnce(paymentError());await check();await paymentCooldownElapsed();
+  gateway.providerAttempt.mockImplementationOnce(async o=>{const v=value();if(failure==='uncertain')v.physicalLines[0].segments.push({classification:'UNCERTAIN',text:null,confidence:0});return {returnedModel:failure==='wrong-model'?'unexpected/model':o.entry.model,content:failure==='malformed'?'{':JSON.stringify(v)};});
+  expect((await check()).body.data.canSubmit).toBe(false);expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);
+  expect(await Evidence.countDocuments({'identity.assignmentId':String(a._id),status:'GPT_SOURCE_ACCEPTED'})).toBe(0);
+  expect((await submit()).status).not.toBe(200);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);
+});
+test('legacy global Astra latch does not block DeepSeek; old payment evidence above retry cap can recover',async()=>{
+  const Circuit=require('../src/models/SourceVerificationCircuit'),circuit=require('../src/services/sourceVerificationCircuit.service');
+  await Circuit.create({_id:'exact-source-v1',blocked:true,openUntil:new Date(0)});
+  await Circuit.create({_id:circuit.keyFor('openai/gpt-6-astra'),blocked:true});
+  process.env.OCR_GPT_VISION_MODEL='deepseek/deepseek-v4.1-flash-1017';
+  const page=(await source.pagesFor({buffer:bytes,mimetype:'image/png'}))[0];
+  const bound=source.binding({assignment:a,ownerId:String(student._id)},page);
+  await Evidence.create({_id:bound.key,identity:bound,status:'GPT_SOURCE_FAILED',attempts:8,payload:{safeFailureCode:'OCR_GPT_PROVIDER_PAYMENT_REQUIRED',httpStatus:402}});
+  await Evidence.collection.updateOne({_id:new mongoose.Types.ObjectId(bound.key)},{$set:{updatedAt:new Date(Date.now()-120000)}});
+  expect((await check()).body.data.canSubmit).toBe(true);expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);
+  expect((await Circuit.findById('exact-source-v1')).blocked).toBe(true);
+});
+test('payment retry keeps passed pages cached and changed crop requires distinct evidence',async()=>{
+  const second=await sharp(bytes).linear(.8).png().toBuffer(),third=await sharp(bytes).linear(.6).png().toBuffer();
+  await check();await check(third);gateway.providerAttempt.mockRejectedValueOnce(paymentError());await check(second);
+  expect((await submit([bytes,second,third])).status).toBe(503);await paymentCooldownElapsed();
+  await check(second);await check();await check(third);expect(gateway.providerAttempt).toHaveBeenCalledTimes(4);
+  const changed=await sharp(second).extract({left:0,top:0,width:700,height:900}).png().toBuffer();
+  expect((await submit([bytes,changed,third])).status).toBe(503);await check(changed);expect(gateway.providerAttempt).toHaveBeenCalledTimes(5);
+});
+test.each(['OCR_GPT_PROVIDER_AUTH','OCR_GPT_PROVIDER_ACCESS','OCR_GPT_SOURCE_CONFIGURATION_INVALID','OCR_SOURCE_MODEL_IDENTITY'])('%s remains hard blocked after cooldown',async code=>{
+  const circuit=require('../src/services/sourceVerificationCircuit.service'),Circuit=require('../src/models/SourceVerificationCircuit');
+  const ticket=await circuit.enter();await circuit.finish(ticket,code);
+  await Circuit.updateOne({_id:circuit.keyFor(process.env.OCR_GPT_VISION_MODEL)},{$set:{openUntil:new Date(0)}});
+  await expect(circuit.enter()).rejects.toMatchObject({code:'OCR_GPT_PROVIDER_CONFIGURATION_BLOCKED'});
+});
+
+test('guest payment recovery uses the same bounded source path and never persists on failure',async()=>{
+  await Assignment.updateOne({_id:a._id},{$set:{allowGuestSubmission:true}});
+  const send=()=>request(app).post('/api/guest/assignments/'+a.qrToken+'/image-preflight')
+    .set('Idempotency-Key','guest-payment-recovery-12345678901234567890').field('name','Guest writer').field('email','payment@guest.invalid')
+    .field('phase','source').attach('file',bytes,{filename:'crop.png',contentType:'image/png'});
+  gateway.providerAttempt.mockRejectedValueOnce(paymentError());
+  expect((await send()).body.data).toMatchObject({sourceReadStatus:'FAILED_SERVICE',canSubmit:false});
+  expect(await Submission.countDocuments({assignment:a._id})).toBe(0);expect(scheduled).not.toHaveBeenCalled();
+  await paymentCooldownElapsed();expect((await send()).body.data).toMatchObject({sourceReadStatus:'PASSED',canSubmit:true});
+  expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);
+});
+test('one transcript mismatch blocks its page but cannot poison unrelated pages; only fresh consistent retry passes',async()=>{
+  const second=await sharp(bytes).linear(.8).png().toBuffer(),third=await sharp(bytes).linear(.6).png().toBuffer();
+  expect((await check()).body.data.ready).toBe(true);
+  gateway.providerAttempt.mockImplementationOnce(async o=>({returnedModel:o.entry.model,content:JSON.stringify({...value(),activeTranscript:'Contradictory source.'})}));
+  expect((await check(second)).body.data).toMatchObject({sourceReadStatus:'FAILED_SERVICE',canSubmit:false,sourceReadErrorCode:'OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH'});
+  expect((await check(third)).body.data.ready).toBe(true);
+  expect((await submit([bytes,second,third])).status).toBe(503);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);
+  expect((await check(second)).body.data.canSubmit).toBe(false);expect(gateway.providerAttempt).toHaveBeenCalledTimes(3);
+  await Evidence.updateOne({'identity.assignmentId':String(a._id),status:'GPT_SOURCE_FAILED'},{$set:{nextAttemptAt:new Date(0)}});
+  expect((await check(second)).body.data.ready).toBe(true);await check();await check(third);
+  expect(gateway.providerAttempt).toHaveBeenCalledTimes(4);expect((await submit([bytes,second,third])).status).toBe(200);
+});
+test('schema-invalid source responses fail closed, have bounded retries and cannot permanently poison a different image',async()=>{
+  gateway.providerAttempt.mockImplementation(async o=>({returnedModel:o.entry.model,content:'{invalid'}));
+  const circuit=require('../src/services/sourceVerificationCircuit.service'),Circuit=require('../src/models/SourceVerificationCircuit');
+  const filesBefore=await File.countDocuments();
+  for(let attempt=1;attempt<=5;attempt++){
+    const response=await check();expect(response.body.data).toMatchObject({sourceReadStatus:'FAILED_SERVICE',canSubmit:false,sourceReadErrorCode:'OCR_GPT_SOURCE_SCHEMA'});
+    expect(gateway.providerAttempt).toHaveBeenCalledTimes(attempt);
+    expect((await check()).body.data.canSubmit).toBe(false);expect(gateway.providerAttempt).toHaveBeenCalledTimes(attempt);
+    const saved=await Evidence.findOne({'identity.assignmentId':String(a._id)}).select('+payload');
+    expect(saved.status).toBe('GPT_SOURCE_FAILED');expect(saved.payload).toMatchObject({schemaErrorKeyword:'jsonParse',instancePath:'',schemaPath:'#/semantic/jsonParse'});
+    expect(await Evidence.countDocuments({'identity.assignmentId':String(a._id),status:'GPT_SOURCE_ACCEPTED'})).toBe(0);
+    await Evidence.updateOne({_id:saved._id},{$set:{nextAttemptAt:new Date(0)}});
+    await Circuit.updateOne({_id:circuit.keyFor(process.env.OCR_GPT_VISION_MODEL),openUntil:{$ne:null}},{$set:{openUntil:new Date(0)}});
+  }
+  expect((await check()).body.data.canSubmit).toBe(false);expect(gateway.providerAttempt).toHaveBeenCalledTimes(5);
+  expect((await submit()).status).toBe(503);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);
+  expect(await File.countDocuments()).toBe(filesBefore);expect(scheduled).not.toHaveBeenCalled();
+  expect((await Circuit.findById(circuit.keyFor(process.env.OCR_GPT_VISION_MODEL))).blocked).not.toBe(true);
+  const other=await sharp(bytes).linear(.8).png().toBuffer();
+  gateway.providerAttempt.mockImplementation(async o=>({returnedModel:o.entry.model,content:JSON.stringify(value())}));
+  expect((await check(other)).body.data).toMatchObject({sourceReadStatus:'PASSED',canSubmit:true});expect(gateway.providerAttempt).toHaveBeenCalledTimes(6);
+});
+test('automatic retry policy bounds invalid responses and never retries auth/payment or image decisions',()=>{
+  const policy=require('../src/services/sourceVerificationPolicy');
+  expect(policy.classify('OCR_GPT_PROVIDER_FAILED',503)).toBe('retryable');expect(policy.classify('OCR_GPT_PROVIDER_FAILED',429)).toBe('retryable');
+  expect(policy.classify('OCR_GPT_SOURCE_SCHEMA')).toBe('retryable');
+  for(const code of ['OCR_GPT_SOURCE_CONFIGURATION_INVALID','OCR_GPT_PROVIDER_AUTH','OCR_GPT_PROVIDER_PAYMENT_REQUIRED'])expect(policy.classify(code)).toBe('operator');
+  expect(policy.classify('OCR_GPT_SOURCE_UNCERTAIN')).toBe('image');expect(policy.delay(1,()=>0)).toBe(11250);expect(policy.delay(50,()=>1)).toBeLessThanOrEqual(1125000);
+});
+
+
+test('temporary source failure blocks persistence and assessment; retrying identical pixels succeeds after backoff',async()=>{
+  const filesBefore=await File.countDocuments();
+  gateway.providerAttempt.mockRejectedValueOnce(Object.assign(Error('private'),{code:'AI_ATTEMPT_TIMEOUT'}));
+  expect((await check()).body.data).toMatchObject({sourceReadStatus:'FAILED_SERVICE',ready:false,canSubmit:false});
+  expect((await submit()).status).toBe(503);
+  expect(await Submission.countDocuments({assignment:a._id})).toBe(0);
+  expect(await File.countDocuments()).toBe(filesBefore);
+  expect(scheduled).not.toHaveBeenCalled();expect(corrections.generateAndPersist).not.toHaveBeenCalled();
+  expect((await check()).body.data.sourceReadStatus).toBe('FAILED_SERVICE');expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);
+  await Evidence.updateOne({'identity.assignmentId':String(a._id)},{$set:{nextAttemptAt:new Date(0)}});
+  expect((await check()).body.data).toMatchObject({sourceReadStatus:'PASSED',ready:true,canSubmit:true});
+  expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);expect(await File.countDocuments()).toBe(filesBefore);
+  expect((await submit()).status).toBe(200);expect(scheduled).toHaveBeenCalledTimes(1);
+  expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);
+});
+test('guest provider failure cannot create normal files or a submission or start assessment',async()=>{
+  await Submission.createIndexes();await Assignment.updateOne({_id:a._id},{$set:{allowGuestSubmission:true}});const count=await File.countDocuments();
+  gateway.providerAttempt.mockRejectedValue(Object.assign(Error('private'),{code:'AI_ATTEMPT_TIMEOUT'}));
+  const response=await request(app).post('/api/guest/assignments/'+a.qrToken+'/submit').set('Idempotency-Key','strict-guest-failure-12345678901234567890').field('name','Guest').field('email','strict@example.invalid').attach('files',bytes,{filename:'page.png',contentType:'image/png'});
+  expect(response.status).toBe(503);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);expect(await File.countDocuments()).toBe(count);expect(scheduled).not.toHaveBeenCalled();
+});
+
+test('crash with unknown provider outcome never blindly purchases another source read',async()=>{
+  const page=(await source.pagesFor({buffer:bytes,detectedMime:'image/png'}))[0];
+  const context={assignment:a,ownerId:String(student._id),uploaderId:String(student._id)},bound=source.binding(context,page);
+  await Evidence.create({_id:bound.key,identity:bound,status:'GPT_SOURCE_RESERVED',providerStartedAt:new Date(Date.now()-300000),leaseUntil:new Date(0),attempts:1,expiresAt:null});
+  expect((await check()).body.data.sourceReadStatus).toBe('FAILED_SERVICE');
+  expect((await submit()).status).toBe(503);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);
+  expect(gateway.providerAttempt).not.toHaveBeenCalled();expect(scheduled).not.toHaveBeenCalled();
+});
+
+test('registered request key survives verified completion and rejects different content reuse',async()=>{
+  const key='registered-upload-idempotency-key-12345678';
+  const send=image=>request(app).post('/api/submissions/'+a._id).set('Authorization','Bearer '+token).set('Idempotency-Key',key).attach('files',image,{filename:'idempotent.png',contentType:'image/png'});
+  expect((await check()).body.data.ready).toBe(true);
+  expect((await send(bytes)).status).toBe(200);const doc=await Submission.findOne({assignment:a._id});
+  await Submission.updateOne({_id:doc._id},{$set:{ocrStatus:'completed',assessmentStatus:'complete'}});
+  expect((await send(bytes)).status).toBe(200);expect(await Submission.countDocuments({assignment:a._id})).toBe(1);
+  const different=await sharp(bytes).linear(.8).png().toBuffer();await check(different);expect((await send(different)).status).toBe(409);
+  await Submission.updateOne({_id:doc._id},{$set:{registeredRequestKey:'later-draft-key',fileContentIdentity:'later-draft-content'}});
+  expect((await send(bytes)).status).toBe(200);
+  expect(scheduled).toHaveBeenCalledTimes(1);
+});
+
+
+test('lost guest database commit acknowledgement retains accepted source and recovers the receipt',async()=>{
+  await Submission.createIndexes();await Assignment.updateOne({_id:a._id},{$set:{allowGuestSubmission:true}});
+  const create=Submission.create.bind(Submission);
+  const spy=jest.spyOn(Submission,'create').mockImplementationOnce(async(...args)=>{
+    await create(...args);throw Object.assign(Error('simulated lost acknowledgement'),{code:'NETWORK_ACK_LOST'});
+  });
+  try{
+    const response=await request(app).post('/api/guest/assignments/'+a.qrToken+'/submit')
+      .set('Idempotency-Key','guest-ambiguous-database-commit-12345678').field('name','Guest writer').field('email','reader@guest.invalid')
+      .attach('files',bytes,{filename:'guest.png',contentType:'image/png'});
+    expect(response.status).toBe(200);expect(response.body.data.received).toBe(true);
+    const doc=await Submission.findOne({assignment:a._id});const file=await File.findById(doc.files[0]);
+    expect(fs.existsSync(path.resolve(__dirname,'..',file.path))).toBe(true);
+    expect(doc.sourceVerification).toBeUndefined();expect(gateway.providerAttempt).toHaveBeenCalledTimes(1);expect(scheduled).toHaveBeenCalledTimes(1);
+  }finally{spy.mockRestore();}
+});
+
+test('crop bytes require new evidence; persisted crop and OCR geometry share the crop coordinate space',async()=>{
+  const fixture=require('./fixtures/cropSource.json');const original=Buffer.from(fixture.original,'base64'),crop=Buffer.from(fixture.cropped,'base64');
+  const cropB=await sharp(original).extract({left:200,top:100,width:800,height:600}).png().toBuffer();
+  const before=await File.countDocuments();
+  expect((await check(original)).body.data.ready).toBe(true);
+  expect((await submit([crop])).status).toBe(503);expect(await File.countDocuments()).toBe(before);expect(scheduled).not.toHaveBeenCalled();
+  const primary={version:c.VERSION,activeTranscript:'target',physicalLines:[{segments:[{classification:'STUDENT_ACTIVE_TEXT',text:'target',confidence:1}]}],uncertainties:[]};
+  gateway.providerAttempt.mockImplementation(async o=>({returnedModel:o.entry.model,content:JSON.stringify(primary)}));
+  expect((await check(crop)).body.data.ready).toBe(true);
+  expect((await submit([cropB])).status).toBe(503);expect(await File.countDocuments()).toBe(before);
+  mockGoogleGeometry.mockResolvedValue([{fullTextAnnotation:{pages:[{width:800,height:600,blocks:[{paragraphs:[{words:[{symbols:[...'target'].map(text=>({text})),boundingBox:{vertices:[{x:200,y:200},{x:300,y:200},{x:300,y:300},{x:200,y:300}]}}]}]}]}]}}]);
+  expect((await submit([crop])).status).toBe(200);const doc=await Submission.findOne({assignment:a._id});
+  const file=await File.findById(doc.files[0]).select('+gptSourcePreflight');const persisted=fs.readFileSync(path.resolve(__dirname,'..',file.path));
+  expect(persisted.equals(crop)).toBe(true);expect(await sharp(persisted).metadata()).toMatchObject({width:800,height:600,format:'png'});
+  expect(file.gptSourcePreflight.bindings[0].sourceSha256).toBe(c.sha(crop));expect(c.sha(crop)).not.toBe(c.sha(original));
+  await require('../src/services/ocrPipeline.service').runOcrAndPersistForFiles({fileIds:doc.files,targetDoc:doc,jobId:doc.ocrJobId});
+  const response=await request(app).get('/api/submissions/'+doc._id+'/ocr-corrections').set('Authorization','Bearer '+token);
+  expect(response.body.data.transcript).toBe('target');const word=response.body.data.ocr[0].words[0];
+  expect(word.bbox.x).toBeCloseTo(25);expect(word.bbox.y).toBeCloseTo(100/3);expect(word.bbox.w).toBeCloseTo(12.5);expect(word.bbox.h).toBeCloseTo(100/6);
+  expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);expect(scheduled).toHaveBeenCalledTimes(1);
+});
+
+test('Astra accepted evidence cannot authorize DeepSeek and historical proof is never rewritten',async()=>{
+  process.env.OCR_GPT_VISION_MODEL='openai/gpt-6-astra';expect((await check()).body.data.ready).toBe(true);
+  const before=await Evidence.findOne({'identity.assignmentId':String(a._id)}).select('+payload').lean();
+  process.env.OCR_GPT_VISION_MODEL='deepseek/deepseek-v4.1-flash-1017';
+  expect((await submit()).status).toBe(503);expect(await Submission.countDocuments({assignment:a._id})).toBe(0);expect(scheduled).not.toHaveBeenCalled();
+  expect((await check()).body.data.ready).toBe(true);expect((await submit()).status).toBe(200);expect(gateway.providerAttempt).toHaveBeenCalledTimes(2);
+  const old=await Evidence.findById(before._id).select('+payload').lean();expect(old.identity).toEqual(before.identity);expect(old.payload).toEqual(before.payload);
+  const current=await Evidence.findOne({'identity.assignmentId':String(a._id),'identity.model':'deepseek/deepseek-v4.1-flash-1017'}).lean();
+  expect(String(current._id)).not.toBe(String(old._id));expect(current.identity.sourceSha256).toBe(old.identity.sourceSha256);
+});

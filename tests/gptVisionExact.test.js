@@ -95,6 +95,25 @@ test('exact canonical offsets preserve repeated words, null boxes, hash source a
   const again=sf.canonical({...d,ocrPages:[{...p,privateExcludedEvidence:'different prompt/deletion'}]});
   expect(buildCorrectionSourceHash({transcript:again.text,pages:again.pages})).toBe(sourceHash);
 });
+
+test('reconciliation preserves canonical hashes, UTF-16 word identities, bytes and accepted-source reuse',async()=>{
+  const lines=['  naïve 😀 wrong wrong,','powerfull Say unfinished'],primary=simple(lines.join('\n'));
+  primary.activeTranscript=lines.join(' ');const original=structuredClone(primary.physicalLines),o=options(),bytes=Buffer.from(o.bytes);
+  o.env={...o.env,OCR_GPT_VISION_MODEL:c.QWEN_MODEL};o.google=undefined;
+  o.read.mockResolvedValue({content:JSON.stringify(primary),returnedModel:c.QWEN_MODEL});
+  const r=await service.readPage(o),saved=o.reservation.complete.mock.calls[0][1].payload;
+  expect(r.fullText).toBe(lines.join('\n'));expect(r.source.sourceTextSha256).toBe(c.sha(lines.join('\n')));
+  expect(r.source.sourceInputSha256).toBe(c.sha(bytes));expect(o.bytes.equals(bytes)).toBe(true);
+  expect(saved.primary.physicalLines).toEqual(original);expect(saved).toMatchObject({transcriptComparison:'SEPARATOR_ONLY',transcriptReconciled:true,transcriptReconciledBoundaries:1,transcriptSeparatorSpaceCount:1});
+  expect(saved.primary.activeTranscript).toBe(r.fullText);expect(o.read).toHaveBeenCalledTimes(1);
+  const expected=alignGeometry(r.fullText,null,identity).words;expect(r.words).toEqual(expected);
+  for(const w of r.words){expect(r.fullText.slice(w.sourceStart,w.sourceEnd)).toBe(w.text);expect(w.id).toMatch(/^word_f_1_gpt_\d+$/);}
+  const doc={files:['f'],sourceFidelityMode:'gpt_vision_exact',ocrPages:[{...r.pages[0],fileId:'f',fileOrder:0,pageIndex:0}]};Object.assign(doc,sf.aggregate(doc));
+  const canonical=sf.canonical(doc);expect(canonical.text).toBe(r.fullText);
+  for(const span of canonical.wordSpans)expect(canonical.text.slice(span.start,span.end)).toBe(span.word.text);
+  const cached=options();cached.env=o.env;cached.google=undefined;cached.reservation.acquire.mockResolvedValue({_id:'r',cached:true,evidence:{payload:saved}});
+  expect((await service.readPage(cached)).words).toEqual(r.words);expect(cached.read).not.toHaveBeenCalled();expect(cached.reservation.complete).not.toHaveBeenCalled();
+});
 test('configuration reuses repository reader model, rejects unknown/non-GPT and requires credentials',()=>{
   expect(c.config({...env,OCR_GPT_VISION_MODEL:undefined}).model).toBe(require('../src/services/hybridSource/contract').MODEL);
   for(const model of ['anthropic/claude-fable-5.1','openai/not-verified','google/gemini'])expect(()=>c.config({...env,OCR_GPT_VISION_MODEL:model})).toThrow();

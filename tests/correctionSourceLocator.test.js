@@ -144,7 +144,7 @@ test('one-generation entry uses explicit adapter once without audit/fallback/ret
 });
 test('old v9/v13 outputs cannot be upgraded by silently deriving new locator',()=>{
  const i=input();expect(()=>next.parse(JSON.stringify({transcriptHash:i.transcriptHash,reviews:{},corrections:[{quotedText:'speling',occurrence:7}]}),i)).toThrow();
- expect(prior.SCHEMA_VERSION).toBe('semantic-corrections-v13-single-list');expect(legacy.SEMANTIC_SCHEMA_VERSION).toBe('semantic-corrections-v14-compact-reviewed');expect(typeof legacy.analyzeSourceLocated).toBe('function');
+ expect(prior.SCHEMA_VERSION).toBe('semantic-corrections-v13-single-list');expect(legacy.SEMANTIC_SCHEMA_VERSION).toBe('semantic-corrections-v15-compact-symbol-map');expect(typeof legacy.analyzeSourceLocated).toBe('function');
 });
 test('pathological source/assignment metadata is bounded offline',()=>{
  expect(()=>next.sourceDocument('\n'.repeat(2001))).toThrow('LIMIT');const a={};a.rubric=a;expect(()=>next.assignmentCriteria(a)).toThrow('CYCLE');

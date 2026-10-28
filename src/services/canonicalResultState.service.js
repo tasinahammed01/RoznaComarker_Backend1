@@ -60,11 +60,12 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
   const correctionStatus = ocrFailed ? 'failed' : (layoutCurrent ? storedCorrectionStatus : 'stale');
   const corrections = layoutCurrent && Array.isArray(submission.writingCorrections) ? submission.writingCorrections : [];
   const sourceCounts = countSources(corrections);
-  const semanticComplete = layoutCurrent && (submission.semanticStatus === 'completed' || (!submission.semanticStatus && correctionStatus === 'completed'));
+  const rejectedCoverage = submission.semanticStatus === 'completed' && submission.semanticMetrics?.coverage?.coverageComplete === false;
+  const semanticComplete = layoutCurrent && !rejectedCoverage && (submission.semanticStatus === 'completed' || (!submission.semanticStatus && correctionStatus === 'completed'));
   const semanticPartial = layoutCurrent && submission.semanticStatus === 'partial';
-  const semanticFailed = ocrFailed || !layoutCurrent || submission.semanticStatus === 'failed'
+  const semanticFailed = ocrFailed || !layoutCurrent || rejectedCoverage || submission.semanticStatus === 'failed'
     || (!submission.semanticStatus && ['partial', 'failed', 'stale'].includes(correctionStatus));
-  const statistics = layoutCurrent ? (submission.correctionStatistics || null) : null;
+  const statistics = layoutCurrent && (semanticComplete || semanticPartial) ? (submission.correctionStatistics || null) : null;
   const semanticCoverage = submission.semanticMetrics?.coverage || null;
   const categoryCoverage = semanticCoverage?.categoryCoverageComplete || null;
   const categoryAvailability = {};
@@ -84,7 +85,7 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
   const correctionProcessing = correctionStatus === 'processing';
   const correctionPending = ['pending', 'processing'].includes(correctionStatus);
   const persistedEvaluationStatus = String(submission.evaluationStatus || 'pending');
-  const semanticStatus = ocrFailed ? 'failed' : layoutCurrent
+  const semanticStatus = ocrFailed || rejectedCoverage ? 'failed' : layoutCurrent
     ? submission.semanticStatus || (correctionProcessing ? 'processing' : semanticComplete ? 'completed' : semanticFailed ? 'failed' : 'pending')
     : 'failed';
   const semanticProcessing = ['pending', 'processing', 'retry_wait'].includes(semanticStatus);
@@ -184,7 +185,7 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
     ocrStatus: submission.ocrStatus || null,
     ocrErrorCode: submission.ocrErrorCode || null,
     ocrFailureMessage: ocrFailed ? OCR_MESSAGES[submission.ocrErrorCode] || null : null,
-    correctionStatus,
+    correctionStatus: rejectedCoverage ? 'failed' : correctionStatus,
     correctionCurrent: layoutCurrent,
     transcriptLayoutVersion: CANONICAL_TRANSCRIPT_LAYOUT_VERSION,
     correctionStage: correctionStatus === 'completed' ? 'complete' : semanticFailed ? 'ai_only_failed' : 'ai_only',
@@ -259,4 +260,10 @@ function buildPreviousEvaluation(feedback, resultState) {
   };
 }
 
-module.exports = { buildCanonicalResultState, buildPreviousEvaluation, countSources, safeErrorCode };
+function detailedFeedbackForResult(feedback, state) {
+  if (!feedback || !Array.isArray(feedback.areasForImprovement)) return feedback || null;
+  return { ...feedback, areasForImprovement: feedback.areasForImprovement.map(area =>
+    state.categoryAvailability?.[String(area.category).toLowerCase()] === 'available' ? area
+      : { ...area, issueCount: null, examples: [], dominantSymbols: [] }) };
+}
+module.exports = { buildCanonicalResultState, buildPreviousEvaluation, countSources, safeErrorCode, detailedFeedbackForResult };

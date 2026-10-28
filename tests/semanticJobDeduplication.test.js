@@ -6,7 +6,8 @@ jest.mock('../src/models/SubmissionFeedback', () => ({ updateOne: jest.fn().mock
 jest.mock('../src/services/semanticAIClient.service', () => ({ getSemanticAIConfig: () => ({ provider: 'openrouter', model: 'openai/gpt-6-astra',
   maxRetries: 1, fallback: null }), getAssessmentAIConfig: () => ({ provider: 'openrouter', model: 'openai/gpt-6-astra',
   chain: [{ provider: 'openrouter', model: 'openai/gpt-6-astra', fallbackIndex: 0 }],
-  maxRetries: 1, fallback: null, totalBudgetMs: 120000 }), getSemanticAIConfigStatus: () => ({ credentialConfigured: true }) }));
+  maxRetries: 1, fallback: null, totalBudgetMs: 120000 }), getCorrectionAIConfig: () => ({ provider: 'openrouter', model: 'openai/gpt-6-astra',
+  chain: [{provider:'openrouter',model:'openai/gpt-6-astra',fallbackIndex:0}],maxRetries:1,fallback:null,totalBudgetMs:120000 }), getSemanticAIConfigStatus: () => ({ credentialConfigured: true }) }));
 jest.mock('../src/services/semanticWritingCorrections.service', () => ({ SEMANTIC_PROMPT_VERSION: 'semantic-compact-v2',
   buildSemanticRequest: (...args) => jest.requireActual('../src/services/semanticWritingCorrections.service').buildSemanticRequest(...args),
   compactAssignment: (...args) => jest.requireActual('../src/services/semanticWritingCorrections.service').compactAssignment(...args),

@@ -19,7 +19,7 @@ test('actual coordinator -> facade -> gateway payload has minimal Astra reasonin
   const verbose=reviewPayload(input.transcriptHash,undefined,[finding('MECHANICS','SP','mispell',{suggestedText:'misspell'}),
     finding('GRAMMAR','AGR','he go',{occurrence:1,suggestedText:'he goes'})]);
   const payload={reviewContract:wire.VERSION,transcriptHash:verbose.transcriptHash,categories:Object.fromEntries(
-    Object.entries(verbose.categories).map(([category,r])=>[category,{reviewed:r.reviewed,reviewedSymbols:r.reviewedSymbols,
+    Object.entries(verbose.categories).map(([category,r])=>[category,{reviewed:r.reviewed,reviewedSymbols:Object.fromEntries(r.reviewedSymbols.map(symbol=>[symbol,true])),
       corrections:r.corrections.map(({message,stylePreference,...item})=>item)}]))};
   const fetchImpl=jest.fn(async()=>response(JSON.stringify(payload))),logs=jest.spyOn(logger,'info').mockImplementation(()=>{});
   try{

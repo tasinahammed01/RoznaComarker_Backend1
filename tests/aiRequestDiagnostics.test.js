@@ -5,8 +5,8 @@ const { REQUIRED, fallbackLegend } = require('../src/services/correctionLegendRe
 const { createBudgetFetch } = require('../src/services/aiRequestDiagnostics.service');
 const config = { provider: 'openrouter', model: 'openai/gpt-4.1-mini', chain: [{ provider: 'openrouter', model: 'openai/gpt-4.1-mini', fallbackIndex: 0 }],
   attemptTimeoutMs: 1000, totalBudgetMs: 2000, primaryRetries: 0, fallbackRetries: 0, retriesPerModel: 0, retryDelayMs: 0, maxOutputTokens: 4500 };
-const env = { OPENROUTER_API_KEY: 'secret-do-not-log', OPENROUTER_BASE_URL: 'https://router.invalid/v1' };
-const response = (payload, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers(), text: async () => JSON.stringify(payload) });
+const env = { OPENROUTER_API_KEY: 'secret-do-not-log', OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1', CORRECTION_DETECTION_MODEL:'openai/gpt-4.1-mini' };
+const response = (payload, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: new Headers(), text: async () => JSON.stringify({model:'openai/gpt-4.1-mini',...payload}) });
 const router = content => response({ choices: [{ message: { content }, finish_reason: 'stop' }] });
 const input = { transcript: 'relize', transcriptHash: 'h', legend: fallbackLegend(), disableCategoryAudit: true };
 function valid() {

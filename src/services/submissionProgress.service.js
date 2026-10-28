@@ -20,7 +20,7 @@ function resultProgress(state={}) {
   return progress('processing','preparing',10,'Submission saved. Waiting for analysis');
 }
 function preflightProgress(result={}) {
-  if(result.sourceReadStatus==='CHECKING')return progress('processing','source',60,'Reading handwriting and verifying readability');
+  if(result.sourceReadStatus==='CHECKING')return {...progress('processing','source',0,'Reading handwriting and verifying readability'),indeterminate:true};
   if(result.ready && result.canSubmit!==false && !/^FAILED_/u.test(result.sourceReadStatus||''))return progress('completed','completed',100,'Ready to submit');
   return progress('failed','failed',result.basicChecksPassed?60:25,
     result.message||'Image checks need attention. Review the checks below.');

@@ -33,6 +33,11 @@ const completedSubmission = (overrides = {}) => ({
 });
 
 describe('canonical result state contract', () => {
+  test('an explicit incomplete review overrides a misleading completed flag',()=>{
+    const state=buildCanonicalResultState({submission:completedSubmission({semanticMetrics:{coverage:{coverageComplete:false}},correctionStatistics:{grammar:0,total:0}})});
+    expect(state.semanticStatus).toBe('failed');expect(state.correctionsAvailable).toBe(false);
+    expect(state.statistics).toBeNull();expect(state.categoryAvailability.grammar).toBe('failed');
+  });
   test('degraded corrections do not block a current completed score', () => {
     const submission = completedSubmission({ correctionStatus: 'partial', semanticStatus: 'failed',
       semanticErrorCode: 'AI_ATTEMPT_TIMEOUT' });
@@ -41,6 +46,11 @@ describe('canonical result state contract', () => {
     expect(state).toMatchObject({ semanticStatus: 'failed', semanticSucceeded: false, correctionsAvailable: false,
       correctionStatus: 'partial', evaluationStatus: 'completed', score: 72, processingActive: false,
       terminal: true, evaluationBlockedReason: null });
+    expect(state.statistics).toBeNull();
+    expect(state.categoryAvailability.grammar).toBe('failed');
+    const input={areasForImprovement:[{category:'GRAMMAR',evidenceKind:'holistic',issueCount:0,examples:[],dominantSymbols:[]}]};
+    const exposed=require('../src/services/canonicalResultState.service').detailedFeedbackForResult(input,state);
+    expect(exposed.areasForImprovement[0].issueCount).toBeNull();expect(input.areasForImprovement[0].issueCount).toBe(0);
   });
   test('preserves configured-chain exhaustion instead of labeling it missing configuration', () => {
     expect(safeErrorCode({ code: 'AI_CHAIN_EXHAUSTED', attempts: [{ code: 'AI_ATTEMPT_TIMEOUT' }] }))

@@ -39,7 +39,8 @@ async function authorize(submissionId, token) {
     throw fail(410, 'This link is invalid or has expired. Request a new link from your assignment page.', 'GUEST_LINK_EXPIRED');
   }
   const doc = await Submission.findOne({ _id: submissionId, submissionMode: 'guest',
-    'guest.accessHash': hash(token), 'guest.expiresAt': { $gt: new Date() }, 'guest.revokedAt': null });
+    $or: [{ 'guest.accessHash': hash(token), 'guest.expiresAt': { $gt: new Date() } },
+      { 'guest.resultAccessHash': hash(token), 'guest.resultExpiresAt': { $gt: new Date() } }], 'guest.revokedAt': null });
   if (!doc) {
     // Diagnostics never authorize access and never include identifiers, tokens or hashes.
     try {
@@ -57,8 +58,13 @@ async function authorize(submissionId, token) {
 async function requireGuestAccess(req, res, next) {
   try {
     req.guestSubmission = await authorize(req.params.submissionId, req.get('X-Guest-Token'));
-    const assignment = await require('../models/assignment.model').findOne({ _id: req.guestSubmission.assignment, isActive: true }).select('_id');
+    const assignment = await require('../models/assignment.model').findOne({ _id: req.guestSubmission.assignment, isActive: true, allowGuestSubmission: true });
     if (!assignment) throw fail(404, 'Results unavailable.');
+    const classDoc = await require('../models/class.model').findOne(
+      require('./classLifecycle.service').withActiveStatus({ _id: assignment.class, teacher: assignment.teacher, isActive: true }));
+    if (!classDoc) throw fail(404, 'Results unavailable.');
+    req.guestAssignment = assignment;
+    req.guestClass = classDoc;
     req.guestAccessContext = require('./submissionAccessContext.service').guestContext(req.guestSubmission);
     next();
   } catch (error) { res.status(error.statusCode || 503).json({ success: false,

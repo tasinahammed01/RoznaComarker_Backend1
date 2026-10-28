@@ -317,10 +317,13 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
   const correctionConfig = submission.correctionGenerationConfig;
   const correctionPrompt = submission.semanticPromptVersion || correctionConfig?.promptVersion;
   const correctionModel = submission.semanticModel || correctionConfig?.model;
-  const correctionReviewStale = (correctionPrompt && correctionPrompt !== require('./semanticWritingCorrections.service').SEMANTIC_PROMPT_VERSION)
-    || (correctionModel && correctionModel !== ASSESSMENT_MODEL)
+  const correctionService = require('./semanticWritingCorrections.service');
+  const correctionContract = correctionService.contractVersions?.(correctionModel || require('./aiGateway.service').CORRECTION_MODEL)
+    || { promptVersion: correctionService.SEMANTIC_PROMPT_VERSION, schemaVersion: correctionService.SEMANTIC_SCHEMA_VERSION };
+  const correctionReviewStale = (correctionPrompt && correctionPrompt !== correctionContract.promptVersion)
+    || (correctionModel && !require('./aiGateway.service').CORRECTION_MODELS.includes(correctionModel))
     || (correctionConfig?.reviewIdentity && correctionConfig.reviewIdentity !== require('./canonicalCorrectionsPipeline.service')
-      .buildCorrectionReviewIdentity({ assignment, policy }));
+      .buildCorrectionReviewIdentity({ assignment, policy, model: correctionModel || ASSESSMENT_MODEL }));
   if (correctionReviewStale) {
     await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash,
       ...(submission.evaluationJobId ? { evaluationJobId: submission.evaluationJobId } : { evaluationStatus: { $ne: 'processing' } }) },
@@ -475,8 +478,8 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
     const evaluationDiagnostics = { ...(semantic.diagnostics || {}), ...coverageDiagnostics,
       assessmentModel: semantic.model, correctionFingerprint: require('./correctionCanonical.service').canonicalFingerprint(
         submission.writingCorrections || [], sourceHash), policyHash,
-      correctionPromptVersion: require('./semanticWritingCorrections.service').SEMANTIC_PROMPT_VERSION,
-      correctionSchemaVersion: require('./semanticWritingCorrections.service').SEMANTIC_SCHEMA_VERSION,
+      correctionPromptVersion: correctionContract.promptVersion,
+      correctionSchemaVersion: correctionContract.schemaVersion,
       rubricPromptVersion: semanticRubricAssessment.PROMPT_VERSION, rubricSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION };
     console.info('[canonical-evaluation] semantic rubric assessment completed', { submissionId: String(submission._id),
       provider: semantic.provider, model: semantic.model, sourceHashMatch: semantic.sourceHash === sourceHash,

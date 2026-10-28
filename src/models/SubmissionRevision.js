@@ -4,7 +4,8 @@ const { Schema } = mongoose;
 
 const submissionRevisionSchema = new Schema({
   sourceSubmissionId: { type: Schema.Types.ObjectId, ref: 'Submission', required: true, index: true },
-  student: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  submissionMode: { type: String, enum: ['registered', 'guest'], default: 'registered' },
+  student: { type: Schema.Types.ObjectId, ref: 'User', required: function () { return this.submissionMode !== 'guest'; }, index: true },
   assignment: { type: Schema.Types.ObjectId, ref: 'Assignment', required: true, index: true },
   class: { type: Schema.Types.ObjectId, ref: 'Class', required: true, index: true },
   draftNumber: { type: Number, required: true, min: 1 },

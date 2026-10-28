@@ -11,13 +11,27 @@ router.use((_req, res, next) => {
 });
 router.get('/status', (_req, res) => res.json({ success: true, data: { enabled: require('../config/guestSubmission').guestSubmissionEnabled() } }));
 router.use(require('../config/guestSubmission').requireGuestSubmissionEnabled);
-router.use(createSensitiveRateLimiter({ limit: 60, windowMs: 15 * 60 * 1000, reason: 'guest_access' }));
+router.use(createSensitiveRateLimiter({ limit: 300, windowMs: 15 * 60 * 1000, reason: 'guest_access' }));
 router.get('/assignments/:qrToken', controller.entry);
+router.post('/assignments/:qrToken/image-preflight', createSensitiveRateLimiter({ limit: 40, windowMs: 15 * 60 * 1000, reason: 'guest_preflight' }),
+  controller.prepare, setUploadType('submissions'), upload.single('file'), handleUploadError,
+  validateUploadedFileSignature, require('../middlewares/imagePreflight.middleware').preflightImage);
 router.post('/assignments/:qrToken/recover', createSensitiveRateLimiter({ limit: 5, windowMs: 15 * 60 * 1000, reason: 'guest_recovery' }), controller.recover);
+router.post('/submissions/:submissionId/recover', createSensitiveRateLimiter({ limit: 5, windowMs: 15 * 60 * 1000, reason: 'guest_recovery' }), controller.recover);
 router.post('/assignments/:qrToken/submit', createSensitiveRateLimiter({ limit: 10, windowMs: 15 * 60 * 1000, reason: 'guest_upload' }),
   controller.prepare, setUploadType('submissions'), upload.array('files', 20), handleUploadError,
   validateUploadedFileSignature, enforceImagePreflight, controller.submit);
 router.get('/submissions/:submissionId', requireGuestAccess, controller.results);
+router.post('/submissions/:submissionId/image-preflight', createSensitiveRateLimiter({ limit: 40, windowMs: 15 * 60 * 1000, reason: 'guest_revision_preflight' }),
+  requireGuestAccess, controller.prepareRevisionPreview, setUploadType('submissions'), upload.single('file'), handleUploadError,
+  validateUploadedFileSignature, controller.bindRevisionIdentity, require('../middlewares/imagePreflight.middleware').preflightImage);
+router.post('/submissions/:submissionId/revise', createSensitiveRateLimiter({ limit: 10, windowMs: 15 * 60 * 1000, reason: 'guest_revision_upload' }),
+  requireGuestAccess, controller.prepareRevision, setUploadType('submissions'), upload.array('files', 20), handleUploadError,
+  validateUploadedFileSignature, controller.bindRevisionIdentity, enforceImagePreflight, controller.revise);
+router.get('/submissions/:submissionId/presentation', requireGuestAccess, controller.presentation);
+router.get('/submissions/:submissionId/feedback', requireGuestAccess, require('../controllers/feedback.controller').getSubmissionFeedback);
+router.get('/submissions/:submissionId/media/:fileId/:filename', requireGuestAccess, controller.media);
+router.get('/submissions/:submissionId/practice/:sessionId/attempts', requireGuestAccess, controller.attempts);
 router.get('/submissions/:submissionId/practice', requireGuestAccess, controller.practice);
 router.post('/submissions/:submissionId/practice', createSensitiveRateLimiter({ limit: 5, reason: 'guest_practice' }), requireGuestAccess, controller.practice);
 router.post('/submissions/:submissionId/practice/:sessionId/:activityId', createSensitiveRateLimiter({ limit: 20, reason: 'guest_practice_check' }), requireGuestAccess, controller.attempt);

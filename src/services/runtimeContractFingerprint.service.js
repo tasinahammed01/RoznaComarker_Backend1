@@ -13,9 +13,10 @@ const safeRevision = (value) => {
 };
 
 function runtimeContractFingerprint(env = process.env) {
+  const contract = semanticCorrections.contractVersions(require('./aiGateway.service').correctionModel(env));
   const contracts = Object.freeze({
-    correctionPrompt: semanticCorrections.SEMANTIC_PROMPT_VERSION,
-    correctionSchema: semanticCorrections.SEMANTIC_SCHEMA_VERSION,
+    correctionPrompt: contract.promptVersion,
+    correctionSchema: contract.schemaVersion,
     rubricPrompt: semanticRubric.PROMPT_VERSION,
     rubricSchema: semanticRubric.SCHEMA_VERSION,
     canonicalCorrection: canonicalCorrections.VERSION,

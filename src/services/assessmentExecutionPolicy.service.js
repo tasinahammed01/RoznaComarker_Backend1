@@ -29,7 +29,7 @@ function assertRemaining(deadlineAt, now, code = 'ASSESSMENT_CORRECTION_STAGE_BU
     { code, attemptCount: 0, attempts: [] });
 }
 function modelCapabilities(model, env = process.env) {
-  if (model !== 'openai/gpt-6-astra') return null;
+  if (!['openai/gpt-6-astra','anthropic/claude-haiku-5.5','google/gemini-3.8-flash','openai/gpt-5.4-mini','openai/gpt-4.1-mini','deepseek/deepseek-v4.1-flash'].includes(model)) return null;
   return {
     model, safeRequestBudget: positive(env.ASSESSMENT_AI_SAFE_REQUEST_TOKENS, 32000),
     safeInputBudget: positive(env.ASSESSMENT_AI_SAFE_INPUT_TOKENS, 24000),
@@ -44,14 +44,15 @@ function languageCandidateCount(transcript) {
     /\b(?:a)\s+[aeiou]\w*/gi, /\b(?:an)\s+[^aeiou\W]\w*/gi];
   return patterns.reduce((count, pattern) => count + (String(transcript || '').match(pattern)?.length || 0), 0);
 }
-function correctionOutputBudget({transcript='',pageCount=1,categoryCount=5,symbolCount=28,ceiling=8000}={}) {
+function correctionOutputBudget({transcript='',pageCount=1,categoryCount=5,symbolCount=28,ceiling=8000,model}={}) {
   const wordCount=String(transcript).match(/\S+/gu)?.length||0;
   const sentenceCount=String(transcript).match(/[.!?]+(?=\s|$)/gu)?.length||1;
   // Compact findings contain only seven decision fields; messages and review
   // prose are server-owned. Keep dense-error capacity, not the sparse routing estimate.
   const reviewOverhead=192+categoryCount*24+symbolCount*3;
   const estimatedCorrectionCount=Math.min(80,Math.ceil(wordCount/3)+sentenceCount*2);
-  const estimatedRequiredOutputTokens=reviewOverhead+estimatedCorrectionCount*56;
+  const explanationTokens=['deepseek/deepseek-v4.1-flash','google/gemini-3.8-flash'].includes(model)?64:0;
+  const estimatedRequiredOutputTokens=reviewOverhead+estimatedCorrectionCount*(56+explanationTokens);
   const short=pageCount===1&&wordCount<=250;
   const requestedOutputTokenBudget=short?Math.min(ceiling,Math.max(1536,Math.ceil((estimatedRequiredOutputTokens
     +Math.max(256,estimatedRequiredOutputTokens*.20))/256)*256)):ceiling;

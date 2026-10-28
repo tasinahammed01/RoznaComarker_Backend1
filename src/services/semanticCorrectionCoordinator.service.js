@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 const semanticWriting = require('./semanticWritingCorrections.service');
 const canonical = require('./correctionCanonical.service');
-const { getAssessmentAIConfig: getSemanticAIConfig } = require('./semanticAIClient.service');
+const { getCorrectionAIConfig: getSemanticAIConfig } = require('./semanticAIClient.service');
 const teacherPolicy = require('./teacherEvaluationPolicy.service');
 const executionPolicy = require('./assessmentExecutionPolicy.service');
 const { CORRECTION_CATEGORIES } = require('./structuredOutputSchemas.service');
@@ -124,8 +124,9 @@ function remapCorrections(items, chunk, input) {
 }
 
 function chunkIdentity(input, chunk, suffix = '') {
+  const contract = semanticWriting.contractVersions?.(input.correctionModel);
   return hash([input.transcriptHash, chunk.startChar, chunk.endChar,
-    semanticWriting.SEMANTIC_PROMPT_VERSION, semanticWriting.SEMANTIC_SCHEMA_VERSION, suffix].join('|'));
+    contract?.promptVersion || semanticWriting.SEMANTIC_PROMPT_VERSION, contract?.schemaVersion || semanticWriting.SEMANTIC_SCHEMA_VERSION, suffix].join('|'));
 }
 
 function splitChunk(chunk) {
@@ -162,7 +163,7 @@ function assessOutputRisk(input, { requestEstimate, maxOutputTokens, settings })
   // it never creates, removes, or scores a correction.
   const estimatedCorrections = deterministicCandidates
     + Math.floor(wordCount / 35) + Math.floor(sentenceCount / 4);
-  const estimatedOutputTokens = 250 + estimatedCorrections * 55;
+  const estimatedOutputTokens = 250 + estimatedCorrections * (['deepseek/deepseek-v4.1-flash','google/gemini-3.8-flash'].includes(input.correctionModel) ? 119 : 55);
   const outputBudget = Math.max(256, Number(maxOutputTokens) || 2500);
   const budgetPercent = Math.min(95, Math.max(25, Number(settings.outputRiskOutputBudgetPercent) || 72));
   const indicators = {
@@ -217,6 +218,8 @@ function aggregateMetrics(results, chunks, startedAt, mode) {
       : record?.attempts?.length || 1 + Number(record?.categoryAuditRequestCount || 0));
   }, 0);
   return { mode, chunkCount: chunks.length, numberOfChunks: chunks.length,
+    providerCostUSD: attempts.some(a => Number.isFinite(a.providerCostUSD))
+      ? attempts.reduce((sum, a) => sum + (Number.isFinite(a.providerCostUSD) ? a.providerCostUSD : 0), 0) : null,
     correctionValidationMs: successful.reduce((n,r)=>n+Number(r.value.metrics?.semanticValidationMs||0),0),
     correctionGroundingMs: successful.reduce((n,r)=>n+Number(r.value.metrics?.semanticGroundingMs||0),0),
     correctionPrimaryMs: results.filter(r=>r.role==='main').reduce((n,r)=>n+(r.durationMs||0),0),
@@ -256,6 +259,17 @@ function aggregateValidationDiagnostics(successful, merged) {
     categoryRemapCount: categoryRemaps.length,
     categoryRemaps,
     rejectionReasons: addCounts('rejectionReasons'),
+    rawSymbolCounts: addCounts('rawSymbolCounts'),
+    acceptedSymbolCounts: merged.corrections.reduce((counts, item) => {
+      counts[item.symbol] = (counts[item.symbol] || 0) + 1; return counts;
+    }, {}),
+    rejectionReasonsBySymbol: diagnostics.reduce((out, item) => {
+      for (const [symbol, reasons] of Object.entries(item.rejectionReasonsBySymbol || {})) {
+        if (!out[symbol]) out[symbol] = {};
+        for (const [reason, count] of Object.entries(reasons)) out[symbol][reason] = (out[symbol][reason] || 0) + count;
+      }
+      return out;
+    }, {}),
     returnedByCategory: addCategoryCounts('returnedByCategory'),
     acceptedByCategory: addCategoryCounts('acceptedByCategory'),
     rejectedByCategory: addCategoryCounts('rejectedByCategory'),
@@ -284,9 +298,10 @@ async function analyze(input, dependencies = {}) {
   const env = dependencies.env || process.env;
   const settings = { ...config(env), ...(dependencies.settings || {}) };
   const semanticService = dependencies.semanticService || semanticWriting;
+  const baseConfig = dependencies.config || getSemanticAIConfig(env);
+  input = { ...input, correctionModel: baseConfig.model };
   const profiledRequest = typeof semanticService.buildSemanticRequest === 'function'?semanticService.buildSemanticRequest(input):null;
   const requestEstimate = profiledRequest?.promptInputTokenEstimate||Math.ceil(String(input.transcript || '').length / 4);
-  const baseConfig = dependencies.config || getSemanticAIConfig(env);
   const deadlineAt = executionPolicy.stageDeadline(startedAt,
     Math.min(settings.totalBudgetMs, executionPolicy.budgets(env).correctionBudgetMs), input.deadlineAt);
   input = { ...input, deadlineAt };
@@ -296,7 +311,7 @@ async function analyze(input, dependencies = {}) {
       capabilities.safeOutputBudget) : baseConfig.maxOutputTokens };
   const outputBudget=executionPolicy.correctionOutputBudget({transcript:input.transcript,pageCount:Math.max(1,input.pageManifest?.length||0),
     categoryCount:enabledCategories.length,symbolCount:(input.legend?.groups||[]).filter(g=>enabledCategories.includes(g.key)).reduce((n,g)=>n+g.symbols.length,0)||28,
-    ceiling:primaryConfig.maxOutputTokens||8000});
+    ceiling:primaryConfig.maxOutputTokens||8000,model:baseConfig.model});
   if(capabilities)primaryConfig.maxOutputTokens=outputBudget.requestedOutputTokenBudget;
   // Do not start another full expensive pass with only a token amount of time.
   const canFundAdditionalRequest = () => deadlineAt - now() >= Math.min(Number(primaryConfig.attemptTimeoutMs) || 1, 30000);
@@ -329,7 +344,7 @@ async function analyze(input, dependencies = {}) {
       const requestStarted=now();
       const actualProfile=semanticWriting.buildSemanticRequest(request);
       const requestPolicy=require('./aiGateway.service').correctionRequestPolicy({provider:requestConfig.provider,
-        model:requestConfig.model,feature:'semantic_corrections',responseFormat:'json',responseSchema:true}).diagnostics;
+        model:requestConfig.model,feature:'semantic_corrections',responseFormat:'json',responseSchema:true,env}).diagnostics;
       try {
         const value = await require('./providerAttemptAccounting.service').withRole(role,()=>semanticService.analyze({ ...request, deadlineAt, disableCategoryAudit: true },
           { ...dependencies, config: requestConfig }));
@@ -398,7 +413,8 @@ async function analyze(input, dependencies = {}) {
       }
     }
     const reviewed = categoryReviewCoverage(result, enabledCategories);
-    const suspicious = semanticWriting.suspiciousCoverageCategories(result, input.transcript, env);
+    const suspicious = require('./aiGateway.service').isStrictCorrectionModel(baseConfig.model) ? []
+      : semanticWriting.suspiciousCoverageCategories(result, input.transcript, env);
     const plan = auditPlan(enabledCategories, reviewed, suspicious, recoveryUsed, canFundAdditionalRequest());
     // A complete short whole-document review is authoritative. Repeating its
     // valid zero cannot repair hard coverage and delays the corrections-aware rubric.
@@ -518,7 +534,7 @@ async function analyze(input, dependencies = {}) {
     localResults.every(result => result.status === 'fulfilled' && categoryReviewCoverage(result.value, [category])[category])
     && (!structuralCategories.includes(category) || (structuralResult?.status === 'fulfilled'
       && categoryReviewCoverage(structuralResult.value, [category])[category]))]));
-  const suspicious = enabledCategories.filter(category => String(input.transcript || '').length >= 400
+  const suspicious = require('./aiGateway.service').isStrictCorrectionModel(baseConfig.model) ? [] : enabledCategories.filter(category => String(input.transcript || '').length >= 400
     && !merged.corrections.some(item => item.category === category));
   const plan = auditPlan(enabledCategories, initialCoverage, suspicious, recoveryRequestCount > 0,
     requiredPassesSucceeded && canFundAdditionalRequest());

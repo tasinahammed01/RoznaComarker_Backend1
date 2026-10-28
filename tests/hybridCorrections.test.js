@@ -530,7 +530,7 @@ describe('safe hybrid correction policy', () => {
     expect(result.diagnostics.categoryAudit).toEqual({ requested: false, categories: [] });
   });
 
-  test('allows the stronger audit to confirm legitimate zero findings without fabricating corrections', async () => {
+  test('legacy Astra audit confirms legitimate zero findings without fabricating corrections', async () => {
     const transcript = `students is present mispell vagueword ${'substantial context '.repeat(300)}`.trim();
     const primary = structuredFor([
       finding({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'students is', suggestedText: 'students are' }),
@@ -551,7 +551,7 @@ describe('safe hybrid correction policy', () => {
     });
     const result = await semantic.analyze({ transcript, transcriptHash: 'audit-zero-hash' }, {
       runCompletion, env: { OPENROUTER_API_KEY: 'test-only', SEMANTIC_AUDIT_ATTEMPT_TIMEOUT_MS: '7000' },
-      config: { provider: 'openrouter', model: 'openai/gpt-4.1-mini', attemptTimeoutMs: 30000, fallback: [] }
+      config: { provider: 'openrouter', model: 'openai/gpt-6-astra', attemptTimeoutMs: 30000, fallback: [] }
     });
     expect(runCompletion).toHaveBeenCalledTimes(2);
     expect(result.corrections).toHaveLength(3);
@@ -562,7 +562,7 @@ describe('safe hybrid correction policy', () => {
     expect(configs[1]).toMatchObject({ attemptTimeoutMs: 7000, primaryRetries: 0, fallbackRetries: 0 });
   });
 
-  test('keeps existing quote validation on the category audit and preserves valid primary corrections', async () => {
+  test('legacy Astra category audit keeps quote validation and valid primary corrections', async () => {
     const transcript = `students is unclear ${'supporting context '.repeat(300)}`.trim();
     const primary = structuredFor([finding({ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'students is',
       suggestedText: 'students are' })], { transcriptHash: 'audit-invalid-hash' });
@@ -584,7 +584,7 @@ describe('safe hybrid correction policy', () => {
     const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
     const result = await semantic.analyze({ transcript, transcriptHash: 'audit-invalid-hash', submissionId: 'submission-audit-failure' }, {
       runCompletion, env: { OPENROUTER_API_KEY: 'test-only', SEMANTIC_AUDIT_ATTEMPT_TIMEOUT_MS: 'garbage' },
-      config: { provider: 'openrouter', model: 'openai/gpt-4.1-mini', attemptTimeoutMs: 30000, fallback: [] }
+      config: { provider: 'openrouter', model: 'openai/gpt-6-astra', attemptTimeoutMs: 30000, fallback: [] }
     });
     expect(result.corrections).toHaveLength(1);
     expect(result.corrections[0]).toMatchObject({ category: 'GRAMMAR', quotedText: 'students is' });

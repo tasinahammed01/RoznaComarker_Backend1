@@ -30,8 +30,8 @@ const integer = (value, fallback, minimum = 0, maximum = Number.MAX_SAFE_INTEGER
   return Number.isFinite(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
 };
 
-function getSemanticAIConfig(env = process.env) {
-  const global = gateway.getAssessmentAIConfig(env);
+function getSemanticAIConfig(env = process.env, correction = false) {
+  const global = correction ? gateway.getCorrectionAIConfig(env) : gateway.getAssessmentAIConfig(env);
   const primary = global.chain[0];
   return {
     provider: primary.provider,
@@ -47,7 +47,11 @@ function getSemanticAIConfig(env = process.env) {
     minAttemptBudgetMs: 1,
     temperature: ASSESSMENT_TEMPERATURE,
     responseFormat: ASSESSMENT_RESPONSE_FORMAT,
-    thinkingLevel: ASSESSMENT_THINKING_LEVEL,
+    thinkingLevel: correction && primary.model === gateway.DEEPSEEK_CORRECTION_MODEL ? 'none'
+      : correction && primary.model === gateway.CORRECTION_MODEL ? null
+      : correction && primary.model === gateway.GPT54_MINI_CORRECTION_MODEL ? gateway.gpt54MiniCorrectionReasoningEffort(env)
+      : correction && primary.model === gateway.GEMINI_CORRECTION_MODEL ? gateway.geminiCorrectionReasoningEffort(env)
+      : correction && primary.model === gateway.CLAUDE_CORRECTION_MODEL ? gateway.correctionReasoningEffort(env) : ASSESSMENT_THINKING_LEVEL,
     maxOutputTokens: integer(env.SEMANTIC_AI_MAX_OUTPUT_TOKENS, 8000, 256, MAX_SEMANTIC_OUTPUT_TOKENS),
     fallback: global.chain[1] || null,
     approvedModels: global.chain.map((entry) => entry.model)
@@ -125,10 +129,12 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
       promptTokenCount: result.usage?.prompt_tokens ?? null,
       outputTokenCount: result.usage?.completion_tokens ?? null,
       totalTokenCount: result.usage?.total_tokens ?? null,
+      providerCostUSD: typeof result.usage?.cost === 'number' && Number.isFinite(result.usage.cost) && result.usage.cost >= 0 ? result.usage.cost : null,
       thoughtsTokenCount: result.usage?.thoughts_tokens ?? null } };
 }
 
 module.exports = { SEMANTIC_TRANSIENT_STATUSES, GOOGLE_SEMANTIC_MODELS, GOOGLE_THINKING_LEVELS,
+  getCorrectionAIConfig: (env = process.env) => getSemanticAIConfig(env, true),
   getAssessmentAIConfig: getSemanticAIConfig,
   SEMANTIC_RETRYABLE_OUTPUT_CODES, SEMANTIC_TERMINAL_CODES,
   MAX_SEMANTIC_OUTPUT_TOKENS, ASSESSMENT_TEMPERATURE, ASSESSMENT_RESPONSE_FORMAT,

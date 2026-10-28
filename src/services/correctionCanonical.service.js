@@ -34,6 +34,9 @@ function mapOffsetsToWords(correction, spans) {
   if (!matches.length) return null;
   const fileIds = new Set(matches.map((span) => String(span.fileId || '')));
   if (fileIds.size !== 1) return null;
+  // PDF pages share a file ID. A highlight must not bind to the first page
+  // when its evidence actually crosses a physical page boundary.
+  if (new Set(matches.map(span => span.page)).size !== 1) return null;
   const confidences = matches.map((span) => span.word?.confidence)
     .filter((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1);
   return { fileId: matches[0].fileId || null, page: matches[0].page,
