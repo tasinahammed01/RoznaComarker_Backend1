@@ -68,7 +68,7 @@ test('safe startup diagnostics resolve explicit DeepSeek without changing assess
   const startup=require('../src/config/ocr').validateOcrConfiguration(env);
   expect(startup).toMatchObject({mode:'gpt_vision_exact',gptVisionModel:model,openrouterConfigured:true,sourceCallsPerPage:1});
   expect(JSON.stringify(startup)).not.toContain('mock-only');
-  expect(gateway.getAssessmentAIConfig(env).chain.map(v=>v.model)).toEqual(['openai/gpt-6-astra']);
+  expect(gateway.getAssessmentAIConfig(env).chain.map(v=>v.model)).toEqual(['google/gemini-3.8-flash']);
   expect(gateway.getAIConfig(env).chain.map(v=>v.model)).toEqual(['openai/gpt-4.1-mini','openai/gpt-6-astra']);
 });
 test('usage stays provider-reported; exact accepted source is reused without a second request',async()=>{

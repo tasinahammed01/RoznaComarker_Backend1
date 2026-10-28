@@ -16,14 +16,16 @@ const { normalizeAssignmentRubric, hashNormalizedRubric, calculateCustomRubricSc
   require('./assignmentRubric.service');
 const CreditService = require('./credit.service');
 const assessmentCompletion = require('./assessmentCompletion.service');
-const { ASSESSMENT_MODEL, ASSESSMENT_AUTHORITY_VERSION } = require('./aiGateway.service');
+const { ASSESSMENT_MODEL, assessmentModel, assessmentAuthority, rubricReasoningEffort, GEMINI_RUBRIC_MODEL } = require('./aiGateway.service');
 
 const VERSION = EVALUATION_VERSION;
 const analysisInputHash = ({ sourceHash, rubricHash, policyHash, contextHash }) => require('../utils/assessmentInputIdentity').evaluationInputHash({
   sourceHash, rubricHash, policyHash, contextHash, versions: { evaluation: VERSION, scoring: ASSESSMENT_VERSION,
-    prompt: semanticRubricAssessment.PROMPT_VERSION, schema: semanticRubricAssessment.SCHEMA_VERSION,
+    prompt: semanticRubricAssessment.contractVersions().promptVersion, schema: semanticRubricAssessment.SCHEMA_VERSION,
     detailedFeedback: detailedFeedbackService.VERSION, scoringPolicy: SCORING_POLICY_VERSION,
-    assessmentModel: ASSESSMENT_MODEL, assessmentAuthority: ASSESSMENT_AUTHORITY_VERSION } });
+    assessmentModel: assessmentModel(), assessmentAuthority: assessmentAuthority(assessmentModel()),
+    ...(assessmentModel()===GEMINI_RUBRIC_MODEL?{rubricReasoningEffort:rubricReasoningEffort(),
+      rubricWireVersion:semanticRubricAssessment.contractVersions().wireVersion}: {}) } });
 const stable = (value) => value == null ? null : Array.isArray(value) ? value.map(stable) : typeof value === 'object'
   ? Object.keys(value).sort().reduce((out, key) => { if (!['createdAt', 'updatedAt', '__v', '_id'].includes(key)) out[key] = stable(value[key]); return out; }, {}) : value;
 const hashRubric = (assignment) => crypto.createHash('sha256').update(JSON.stringify(stable({
@@ -133,7 +135,7 @@ function preparedRubricDiagnostics(prepared, { sourceHash, policyHash, rubricHas
     preparedRubricRubricHash: prepared?.rubricHash || null,
     expectedRubricHash: rubricHash || null,
     preparedRubricPromptVersion: prepared?.promptVersion || null,
-    expectedPromptVersion: semanticRubricAssessment.PROMPT_VERSION || null,
+    expectedPromptVersion: semanticRubricAssessment.contractVersions().promptVersion,
     preparedRubricSchemaVersion: prepared?.schemaVersion || null,
     expectedSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION || null,
     preparedCustomRubricStatus: prepared?.customRubricStatus ?? null,
@@ -154,8 +156,8 @@ function validatePreparedRubric(prepared, expected) {
     || (prepared.semantic?.sourceHash && prepared.semantic.sourceHash !== expected.sourceHash);
   if (hashMismatch) throw preparedRubricError(
     'PREPARED_RUBRIC_HASH_MISMATCH', 'Prepared rubric evidence does not match the current evaluation inputs', diagnostics);
-  const versionMismatch = (semanticRubricAssessment.PROMPT_VERSION
-      && prepared.promptVersion !== semanticRubricAssessment.PROMPT_VERSION)
+  const versionMismatch = (prepared.semantic?.model && prepared.semantic.model !== assessmentModel())
+    || prepared.promptVersion !== semanticRubricAssessment.contractVersions().promptVersion
     || (semanticRubricAssessment.SCHEMA_VERSION
       && prepared.schemaVersion !== semanticRubricAssessment.SCHEMA_VERSION);
   if (versionMismatch) throw preparedRubricError(
@@ -209,7 +211,7 @@ async function prepareRubricAssessment({ submission, assignment, sourceHash, dea
     timestamp: new Date(rubricEndedAt).toISOString(), sourceHash, durationMs: rubricEndedAt - rubricStartedAt,
     provider: semantic.provider || null, model: semantic.model || null });
   return { semantic, sourceHash, policyHash, rubricHash, authoritativeCorrections, customRubricStatus: customRubricResult.status,
-    promptVersion: semanticRubricAssessment.PROMPT_VERSION, schemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
+    promptVersion: semanticRubricAssessment.contractVersions(semantic.model).promptVersion, schemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
     rubricStartedAt, rubricEndedAt };
 }
 
@@ -480,7 +482,7 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
         submission.writingCorrections || [], sourceHash), policyHash,
       correctionPromptVersion: correctionContract.promptVersion,
       correctionSchemaVersion: correctionContract.schemaVersion,
-      rubricPromptVersion: semanticRubricAssessment.PROMPT_VERSION, rubricSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION };
+      rubricPromptVersion: semanticRubricAssessment.contractVersions(semantic.model).promptVersion, rubricSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION };
     console.info('[canonical-evaluation] semantic rubric assessment completed', { submissionId: String(submission._id),
       provider: semantic.provider, model: semantic.model, sourceHashMatch: semantic.sourceHash === sourceHash,
       categoryScores: Object.fromEntries(Object.entries(semantic.categories).map(([key, value]) => [key, value.score])),

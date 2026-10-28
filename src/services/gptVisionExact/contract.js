@@ -51,22 +51,41 @@ Inside this SAME request, perform an internal visual self-check before emitting 
 Return ONLY the strict JSON contract. No corrections, suggestions, explanations outside the schema, grades, coordinates, or IDs.
 Each physical line has ordered segments; active segment text includes literal inter-word spaces. Concatenate active segments on each line WITHOUT adding spaces; omit lines with no active text; join remaining active line texts with exactly one newline. activeTranscript MUST equal that reconstruction. Preserve physical newlines. Return version gpt-vision-exact-v2. Bound text to the schema; if active writing is unreadable, use UNCERTAIN rather than fabricating it.`;
 const keys=(v,list)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).length===list.length&&list.every(k=>Object.hasOwn(v,k));
-function schemaFailure(content){
+const QWEN_WIRE_VERSION='qwen-physical-source-v1';
+const qwenSchema=closed({version:{type:'string',enum:[QWEN_WIRE_VERSION]},physicalLines:schema.properties.physicalLines,
+  uncertainties:schema.properties.uncertainties});
+const PREVIOUS_QWEN_PROMPT=PROMPT.slice(0,PROMPT.indexOf('Each physical line has ordered segments;'))+
+  `Each physical line has ordered contiguous segments in visual reading order. Include every visible region, including excluded regions, in physicalLines. Active segment text includes literal spaces: never insert or remove spaces at segment boundaries. Do not put newlines inside segment text. Never omit unclear active regions; mark them UNCERTAIN with the applicable uncertainty reference. The server alone derives activeTranscript by concatenating active segments per line and joining nonempty active lines with one LF. Do not emit activeTranscript or another full-page transcription. Return version ${QWEN_WIRE_VERSION}. Bound text to the schema; if active writing is unreadable, use UNCERTAIN rather than fabricating it.`;
+const QWEN_PROMPT_VERSION='qwen-physical-prompt-v2-precise-uncertainty';
+const QWEN_PROMPT=PREVIOUS_QWEN_PROMPT+`
+Never emit an empty STUDENT_ACTIVE_TEXT string. If only a small active region has genuinely unresolved visual strokes, split it into a separate UNCERTAIN segment with the precise ACTIVE_TEXT_UNCERTAIN reference; retain the surrounding readable segments and physical line. Do not mark a confidently transcribed region unreadable unless a specific visual detail remains unresolved. Never guess missing letters or claim certainty for unreadable active strokes.`;
+function sameSourcePrompt(previous,current){
+  return Boolean(previous&&current&&previous.model===current.model&&typeof previous.promptSha256==='string'&&previous.promptSha256.length
+    &&(previous.promptSha256===current.promptSha256
+    ||current.model===QWEN_MODEL&&(!previous.wireVersion&&Boolean(current.legacyPromptSha256)&&previous.promptSha256===current.legacyPromptSha256
+      ||previous.wireVersion===QWEN_WIRE_VERSION&&Boolean(current.previousPromptSha256)&&previous.promptSha256===current.previousPromptSha256)));
+}
+function wireContract(model){return model===QWEN_MODEL?{version:QWEN_WIRE_VERSION,promptVersion:QWEN_PROMPT_VERSION,prompt:QWEN_PROMPT,schema:qwenSchema,name:'qwen_physical_source_v1'}
+  :{version:VERSION,prompt:PROMPT,schema,name:'gpt_vision_exact_v2'};}
+function schemaFailure(content,selectedSchema=schema){
   const error=fail('OCR_GPT_SOURCE_SCHEMA');
-  try{error.sourceDiagnostic=require('./schemaDiagnostic').diagnose(content,{schema,nonActiveRoles:NON_ACTIVE_ROLES});}catch{/* Diagnostic failure cannot change source rejection. */}
+  try{error.sourceDiagnostic=require('./schemaDiagnostic').diagnose(content,{schema:selectedSchema,nonActiveRoles:NON_ACTIVE_ROLES});}catch{/* Diagnostic failure cannot change source rejection. */}
   return error;
 }
-function validate(content,{onDiagnostic}={}){
-  if(typeof content!=='string'||Buffer.byteLength(content)>250000)throw schemaFailure(content);
-  let v;try{v=JSON.parse(content);}catch{throw schemaFailure(content);}
-  if(!keys(v,['version','activeTranscript','physicalLines','uncertainties'])||v.version!==VERSION||typeof v.activeTranscript!=='string'||v.activeTranscript.length>60000||!v.activeTranscript.isWellFormed()
-    ||!Array.isArray(v.physicalLines)||v.physicalLines.length>300||!Array.isArray(v.uncertainties)||v.uncertainties.length>300)throw schemaFailure(content);
+function validate(content,{onDiagnostic,providerWire=false,strictTranscript=false}={}){
+  const invalid=()=>schemaFailure(content,providerWire?qwenSchema:schema);
+  if(typeof content!=='string'||Buffer.byteLength(content)>250000)throw invalid();
+  let v;try{v=JSON.parse(content);}catch{throw invalid();}
+  if(!keys(v,providerWire?['version','physicalLines','uncertainties']:['version','activeTranscript','physicalLines','uncertainties'])
+    ||v.version!==(providerWire?QWEN_WIRE_VERSION:VERSION)
+    ||!providerWire&&(typeof v.activeTranscript!=='string'||v.activeTranscript.length>60000||!v.activeTranscript.isWellFormed())
+    ||!Array.isArray(v.physicalLines)||v.physicalLines.length>300||!Array.isArray(v.uncertainties)||v.uncertainties.length>300)throw invalid();
   let count=0;const active=[];
   for(const line of v.physicalLines){
-    if(!keys(line,['segments'])||!Array.isArray(line.segments)||!line.segments.length||line.segments.length>100)throw schemaFailure(content);
+    if(!keys(line,['segments'])||!Array.isArray(line.segments)||!line.segments.length||line.segments.length>100)throw invalid();
     let text='';for(const s of line.segments){
       if(++count>3000||!keys(s,['classification','text','confidence'])||!CLASSES.includes(s.classification)||!(s.text===null||typeof s.text==='string'&&s.text.length<=2000&&s.text.isWellFormed()&&!/[\r\n\f\u0000]/u.test(s.text))
-        ||!Number.isFinite(s.confidence)||s.confidence<0||s.confidence>1||s.classification==='STUDENT_ACTIVE_TEXT'&&(typeof s.text!=='string'||!s.text.length))throw schemaFailure(content);
+        ||!Number.isFinite(s.confidence)||s.confidence<0||s.confidence>1||s.classification==='STUDENT_ACTIVE_TEXT'&&(typeof s.text!=='string'||!s.text.length))throw invalid();
       if(s.classification==='STUDENT_ACTIVE_TEXT')text+=s.text;
     }if(text.length)active.push(text);
   }
@@ -74,10 +93,13 @@ function validate(content,{onDiagnostic}={}){
     const target=v.physicalLines[u?.lineIndex]?.segments[u?.segmentIndex];
     if(!keys(u,['lineIndex','segmentIndex','kind','reason'])||!Number.isInteger(u.lineIndex)||!Number.isInteger(u.segmentIndex)||!target
       ||!UNCERTAINTY_KINDS.includes(u.kind)||typeof u.reason!=='string'||u.reason.length>2000
-      ||NON_ACTIVE_ROLES[u.kind]&&!NON_ACTIVE_ROLES[u.kind].includes(target.classification))throw schemaFailure(content);
+      ||NON_ACTIVE_ROLES[u.kind]&&!NON_ACTIVE_ROLES[u.kind].includes(target.classification))throw invalid();
   }
   const sourceDiagnostic=diagnostics(v);
   const derived=active.join('\n'),comparison=require('./transcriptDiagnostic');
+  if(derived.length>60000)throw invalid();
+  if(providerWire)v={...v,version:VERSION,activeTranscript:derived};
+  if(strictTranscript&&v.activeTranscript!==derived)throw fail('OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH');
   const transcriptDiagnostic=v.activeTranscript===derived
     ? {transcriptComparison:'EXACT',transcriptReconciled:false,transcriptReconciledBoundaries:0,transcriptSeparatorLFCount:Math.max(0,active.length-1),transcriptSeparatorCRLFCount:0,transcriptSeparatorSpaceCount:0}
     : comparison.matchActiveLines(v.activeTranscript,active);
@@ -86,7 +108,8 @@ function validate(content,{onDiagnostic}={}){
   if(sourceDiagnostic.blockingUncertaintyCount)throw Object.assign(fail('OCR_GPT_SOURCE_UNCERTAIN'),{sourceDiagnostic});
   if(!derived.trim())throw fail('OCR_GPT_SOURCE_EMPTY');
   // Observation cannot change source acceptance or introduce fields into the wire schema.
-  if(typeof onDiagnostic==='function')try{onDiagnostic({...transcriptDiagnostic});}catch{/* Content-free observer only. */}
+  if(typeof onDiagnostic==='function')try{onDiagnostic({...transcriptDiagnostic,
+    ...(providerWire?{transcriptComparison:'SERVER_DERIVED'}:{})});}catch{/* Content-free observer only. */}
   return {...v,activeTranscript:derived};
 }
 // Called only on fully structure-validated values. Roles, not a free-form model
@@ -110,6 +133,42 @@ function diagnostics(v){
     ||(active.size?'ACTIVE_TEXT_UNREADABLE':null);
   return {activeCharacterCount,activeLineCount,uncertainSegmentCount,uncertaintyCount:v.uncertainties.length,
     activeUncertainCount:active.size,nonActiveUncertainCount:nonActive.size,deletedUnreadableCount:deleted.size,promptUnreadableCount:prompt.size,
-    blockingUncertaintyCount:active.size,sourceAmbiguityReason};
+    blockingUncertaintyCount:active.size,sourceAmbiguityReason,...blockingUncertaintyDetails(v)};
 }
-module.exports={VERSION,CLASSES,UNCERTAINTY_KINDS,DEEPSEEK_MODEL,QWEN_MODEL,models,sha,fail,config,requestPolicy,PREFLIGHT_TIMEOUT_MS,schema,PROMPT,validate,diagnostics};
+const ACTIVE_KINDS=UNCERTAINTY_KINDS.filter(kind=>!NON_ACTIVE_ROLES[kind]);
+const DETAIL_KINDS=[...ACTIVE_KINDS,'UNCERTAIN_SEGMENT_UNLISTED'];
+const MAX_UNCERTAINTY_DETAILS=20;
+// Diagnostics only. Confidence bands never override an active uncertainty.
+function blockingUncertaintyDetails(v){
+  const details=[],referenced=new Set();let total=0;
+  const add=(kind,li,si)=>{
+    const target=v.physicalLines[li].segments[si];total++;
+    if(details.length>=MAX_UNCERTAINTY_DETAILS)return;
+    details.push({uncertaintyKind:kind,physicalLineIndex:li,segmentIndex:si,
+      referencedSegmentClassification:target.classification,
+      referencedTextPresent:typeof target.text==='string'&&target.text.length>0,
+      referencedTextLength:typeof target.text==='string'?target.text.length:0,
+      confidenceBand:target.confidence<.5?'LOW':target.confidence<.9?'MEDIUM':'HIGH'});
+  };
+  for(const u of v.uncertainties)if(ACTIVE_KINDS.includes(u.kind)){
+    referenced.add(`${u.lineIndex}:${u.segmentIndex}`);add(u.kind,u.lineIndex,u.segmentIndex);
+  }
+  v.physicalLines.forEach((line,li)=>line.segments.forEach((s,si)=>{
+    if(s.classification==='UNCERTAIN'&&!referenced.has(`${li}:${si}`))add('UNCERTAIN_SEGMENT_UNLISTED',li,si);
+  }));
+  return {blockingUncertaintyDetails:details,blockingUncertaintyDetailsOmitted:Math.max(0,total-details.length)};
+}
+function safeUncertaintyDetails(value){
+  if(!Array.isArray(value))return [];
+  return value.slice(0,MAX_UNCERTAINTY_DETAILS).filter(d=>d&&DETAIL_KINDS.includes(d.uncertaintyKind)
+    &&Number.isInteger(d.physicalLineIndex)&&d.physicalLineIndex>=0&&d.physicalLineIndex<300
+    &&Number.isInteger(d.segmentIndex)&&d.segmentIndex>=0&&d.segmentIndex<100
+    &&CLASSES.includes(d.referencedSegmentClassification)&&typeof d.referencedTextPresent==='boolean'
+    &&Number.isInteger(d.referencedTextLength)&&d.referencedTextLength>=0&&d.referencedTextLength<=2000
+    &&['LOW','MEDIUM','HIGH'].includes(d.confidenceBand)).map(d=>Object.fromEntries([
+      'uncertaintyKind','physicalLineIndex','segmentIndex','referencedSegmentClassification',
+      'referencedTextPresent','referencedTextLength','confidenceBand'].map(key=>[key,d[key]])));
+}
+module.exports={VERSION,CLASSES,UNCERTAINTY_KINDS,DEEPSEEK_MODEL,QWEN_MODEL,models,sha,fail,config,requestPolicy,PREFLIGHT_TIMEOUT_MS,schema,PROMPT,validate,diagnostics,
+  QWEN_WIRE_VERSION,QWEN_PROMPT_VERSION,PREVIOUS_QWEN_PROMPT,sameSourcePrompt,wireContract,safeUncertaintyDetails,validateWire:(content,options={})=>validate(content,{...options,providerWire:true}),
+  validateCanonical:content=>validate(content,{strictTranscript:true})};

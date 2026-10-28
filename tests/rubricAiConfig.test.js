@@ -8,6 +8,7 @@ const { completeRubric, validateRubric } = require('../src/services/rubricComple
 const logger = require('../src/utils/logger');
 
 const env = (overrides = {}) => ({
+  ASSESSMENT_AI_MODEL:'openai/gpt-6-astra',
   ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1',
   ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter', ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini',
   ASSESSMENT_AI_PRIMARY_RETRIES: '1', ASSESSMENT_AI_FALLBACK_RETRIES: '0',
@@ -38,7 +39,7 @@ describe('rubric assessment AI configuration and completion', () => {
   test('deprecated primary model cannot change Astra rubric transport', async () => {
     const fetchImpl = jest.fn(async () => ({ ok: true, status: 200,
       headers: { get: () => null }, text: async () => JSON.stringify({
-        choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(valid) } }]
+        model:'openai/gpt-6-astra',choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(valid) } }]
       }) }));
     await expect(completeRubric({ systemInstruction: 'system', userPrompt: 'prompt' }, {
       config: getRubricAiConfig(env({ ASSESSMENT_AI_PRIMARY_MODEL: 'openai/changed-rubric-model' })),

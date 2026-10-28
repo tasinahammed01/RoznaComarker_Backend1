@@ -1,4 +1,5 @@
 'use strict';
+if(require.main===module)require('dotenv').config({quiet:true});
 
 const { runtimeContractFingerprint } = require('../src/services/runtimeContractFingerprint.service');
 

@@ -3,7 +3,7 @@ const c=require('../src/services/gptVisionExact/contract');
 const source=require('../src/services/gptVisionExact.service');
 const model=c.QWEN_MODEL,env={NODE_ENV:'test',OCR_GPT_VISION_MODEL:model,OPENROUTER_API_KEY:'offline-only'};
 const value={version:c.VERSION,activeTranscript:'wrong wrong ,\nunfinished',physicalLines:['wrong wrong ,','unfinished'].map(text=>({segments:[{classification:'STUDENT_ACTIVE_TEXT',text,confidence:1}]})),uncertainties:[]};
-const payload={model,choices:[{finish_reason:'stop',message:{content:JSON.stringify(value)}}],usage:{prompt_tokens:100,completion_tokens:50,total_tokens:150,completion_tokens_details:{reasoning_tokens:0}}};
+const payload={model,choices:[{finish_reason:'stop',message:{content:JSON.stringify({version:c.QWEN_WIRE_VERSION,physicalLines:value.physicalLines,uncertainties:value.uncertainties})}}],usage:{prompt_tokens:100,completion_tokens:50,total_tokens:150,completion_tokens_details:{reasoning_tokens:0}}};
 const response=()=>({ok:true,status:200,text:async()=>JSON.stringify(payload)});
 function options(fetchImpl){return {model,bytes:Buffer.from([255,216,255]),mimeType:'image/jpeg',prompt:c.PROMPT,assignmentReference:{},env,fetchImpl,onDiagnostic:jest.fn()};}
 beforeEach(()=>jest.useFakeTimers());
@@ -15,7 +15,7 @@ test('bounded configuration retains full-page output and permits valid 90-second
   for(const ms of ['NaN','99999','180001','Infinity','120000.5'])expect(()=>c.config({...env,OCR_GPT_VISION_ATTEMPT_TIMEOUT_MS:ms})).toThrow('CONFIGURATION_INVALID');
   const fetchImpl=jest.fn(()=>new Promise(resolve=>setTimeout(()=>resolve(response()),90000))),o=options(fetchImpl);
   const pending=source.reader(o);await jest.advanceTimersByTimeAsync(90000);
-  const result=await pending;expect(c.validate(result.content)).toEqual(value);
+  const result=await pending;expect(c.validateWire(result.content)).toEqual(value);
   expect(result.transportTimings).toEqual({requestToHeadersMs:90000,responseBodyMs:0});
   expect(result.usage.thoughts_tokens).toBe(0);expect(fetchImpl).toHaveBeenCalledTimes(1);expect(jest.getTimerCount()).toBe(0);
 });
@@ -56,7 +56,7 @@ test('unsupported reasoning/schema capability fails closed on HTTP 400 without m
   await expect(source.reader(o)).rejects.toMatchObject({status:400});
   expect(fetchImpl).toHaveBeenCalledTimes(1);expect(o.onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({transportPhase:'HTTP_ERROR_RESPONSE',httpStatus:400}));
   const body=JSON.parse(fetchImpl.mock.calls[0][1].body);expect(body.reasoning.effort).toBe('none');expect(body.provider).toEqual({require_parameters:true,allow_fallbacks:false,sort:'latency'});
-  expect(body.response_format.json_schema).toMatchObject({strict:true,schema:c.schema});
+  expect(body.response_format.json_schema).toMatchObject({strict:true,schema:c.wireContract(model).schema});
 });
 
 test('HTTP 200 provider error is classified before identity validation',async()=>{

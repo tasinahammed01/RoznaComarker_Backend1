@@ -343,7 +343,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     canonicalCorrectionStageSucceeded: !semanticError && semanticRun?.status === 'completed',
     assessmentModel: semanticConfig.model, policyHash: assessmentPolicy.policyHash,
     correctionPromptVersion: correctionContract().promptVersion, correctionSchemaVersion: correctionContract().schemaVersion,
-    rubricPromptVersion: semanticRubricAssessment.PROMPT_VERSION, rubricSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
+    rubricPromptVersion: semanticRubricAssessment.contractVersions().promptVersion, rubricSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
     reviewedCategories: terminalValidation.reviewedCategories || [],
     baseReviewCoverage: terminalValidation.baseReviewCoverage || {},
     coverageRepairCategories: terminalValidation.coverageRepairCategories || [],
@@ -500,7 +500,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
       categoryScores: evaluationResult?.categoryScores
         ? Object.fromEntries(Object.entries(evaluationResult.categoryScores).map(([key, value]) => [key, value.score])) : null,
       overallScore: evaluationResult?.overallScore ?? null,
-      promptVersion: semanticRubricAssessment.PROMPT_VERSION,
+      promptVersion: semanticRubricAssessment.contractVersions().promptVersion,
       schemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
       errorCode: evaluationResult?.errorCode || null });
   }
@@ -583,7 +583,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   if (process.env.NODE_ENV !== 'production') logger.info({ event: 'assessment_review_summary',
     assessmentModel: semanticConfig.model, policyHash: assessmentPolicy.policyHash,
     correctionPromptVersion: correctionContract().promptVersion, correctionSchemaVersion: correctionContract().schemaVersion,
-    rubricPromptVersion: semanticRubricAssessment.PROMPT_VERSION, rubricSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
+    rubricPromptVersion: semanticRubricAssessment.contractVersions().promptVersion, rubricSchemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
     reviewedCategories: persistedSemanticMetrics.reviewedCategories, returnedByCategory,
     acceptedByCategory: retainedAfterMergeByCategory, rejectedByCategory,
     categoryCoverageComplete: persistedSemanticMetrics.coverage.categoryCoverageComplete,

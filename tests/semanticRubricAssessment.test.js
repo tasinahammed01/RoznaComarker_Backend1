@@ -473,7 +473,7 @@ describe('semantic rubric assessment validation', () => {
   });
 
   test('rejects invented primary evidence, then normalizes a valid zero-count same-Astra retry comment', async () => {
-    const configuredEnv = {
+    const configuredEnv = { ASSESSMENT_AI_MODEL:'openai/gpt-6-astra',
       ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1',
       ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter', ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini',
       ASSESSMENT_AI_PRIMARY_RETRIES: '1', ASSESSMENT_AI_FALLBACK_RETRIES: '0',
@@ -490,7 +490,7 @@ describe('semantic rubric assessment validation', () => {
     invalidPrimary.categories.VOCABULARY = JSON.parse(JSON.stringify(validFallback.categories.VOCABULARY));
     const payloads = [invalidPrimary, validFallback];
     const fetchImpl = jest.fn(async () => ({ ok: true, status: 200, headers: { get: () => 'application/json' },
-      text: async () => JSON.stringify({ choices: [{ finish_reason: 'stop',
+      text: async () => JSON.stringify({ model:'openai/gpt-6-astra',choices: [{ finish_reason: 'stop',
         message: { content: JSON.stringify(payloads.shift()) } }] }) }));
     const result = await assess({ transcript, sourceHash: 'hash', assignment: { title: 'Essay' },
       corrections: corrections.filter((item) => item.category !== 'VOCABULARY'), statistics: { vocabulary: 0 },

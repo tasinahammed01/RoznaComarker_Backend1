@@ -11,7 +11,8 @@ describe('runtime contract fingerprint', () => {
     expect(first).toEqual(runtimeContractFingerprint(env));
     expect(first).toMatchObject({ applicationVersion: '1.0.0', environment: 'test', deploymentRevision: 'release-123',
       contracts: { correctionPrompt: 'semantic-corrections-v14-symbol-review-map', correctionSchema: 'semantic-corrections-v15-compact-symbol-map',
-        rubricPrompt: 'semantic-rubric-assessment-v11-server-evidence', rubricSchema: 'semantic-rubric-assessment-json-v7-server-evidence',
+        rubricPrompt: 'gemini-rubric-v2-deduction-evidence', rubricSchema: 'semantic-rubric-assessment-json-v7-server-evidence',
+        rubricModel:'google/gemini-3.8-flash',rubricReasoningEffort:'low',rubricWire:'gemini-rubric-wire-v2-structural',qwenSourceWire:'qwen-physical-source-v1',qwenSourcePrompt:'qwen-physical-prompt-v2-precise-uncertainty',
         canonicalCorrection: 'canonical-8-source-grounded', canonicalEvaluation: 'canonical-evaluation-9-fixed-skill-isolation' },
       contractHash: expect.stringMatching(/^[a-f0-9]{16}$/) });
     expect(Object.isFrozen(first)).toBe(true);
@@ -20,7 +21,7 @@ describe('runtime contract fingerprint', () => {
     expect(safeRevision('unsafe revision with spaces')).toBe('local');
   });
 
-  test.each([['correctionSchema', 'old-correction'], ['rubricSchema', 'old-rubric'],
+  test.each([['correctionSchema', 'old-correction'], ['rubricSchema', 'old-rubric'], ['rubricWire','old-wire'], ['qwenSourceWire','old-source-wire'], ['qwenSourcePrompt','old-source-prompt'],
     ['canonicalEvaluation', 'old-evaluation']])('rejects stale %s', (field, value) => {
     const expected = runtimeContractFingerprint({ NODE_ENV: 'test' });
     const running = JSON.parse(JSON.stringify(expected)); running.contracts[field] = value;

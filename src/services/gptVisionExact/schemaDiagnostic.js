@@ -67,7 +67,7 @@ function diagnose(content, policy) {
     return null;
   }
   const found=walk(value,policy.schema);if(found)return found;
-  if(!value.activeTranscript.isWellFormed())return issue('wellFormedUnicode','/activeTranscript','#/semantic/activeTranscript/wellFormedUnicode');
+  if(typeof value.activeTranscript==='string'&&!value.activeTranscript.isWellFormed())return issue('wellFormedUnicode','/activeTranscript','#/semantic/activeTranscript/wellFormedUnicode');
   let count=0;
   for(let li=0;li<value.physicalLines.length;li++)for(let si=0;si<value.physicalLines[li].segments.length;si++){
     const s=value.physicalLines[li].segments[si],p=`/physicalLines/${li}/segments/${si}`;

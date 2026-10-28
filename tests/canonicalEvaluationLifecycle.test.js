@@ -1,7 +1,7 @@
 const mockFindOneAndUpdate = jest.fn();
 const mockFindOne = jest.fn();
 const mockClassLean = jest.fn().mockResolvedValue({ teacher: 'teacher-1' });
-const mockAssess = jest.fn().mockResolvedValue({ sourceHash: 'hash', status: 'completed', provider: 'test', model: 'rubric',
+const mockAssess = jest.fn().mockResolvedValue({ sourceHash: 'hash', status: 'completed', provider: 'openrouter', model: 'google/gemini-3.8-flash',
   categories: {
     CONTENT: { score: 18, maxScore: 20, comment: 'Supported ideas.', issueCount: 0, strengthEvidence: [{ quotedText: 'Essay text.', explanation: 'Clear idea.' }], improvementEvidence: [] },
     ORGANIZATION: { score: 18, maxScore: 20, comment: 'Logical structure.', issueCount: 0, strengthEvidence: [{ quotedText: 'Essay text.', explanation: 'Clear structure.' }], improvementEvidence: [] },
@@ -12,6 +12,7 @@ jest.mock('../src/models/SubmissionFeedback', () => ({ findOneAndUpdate: mockFin
 jest.mock('../src/models/class.model', () => ({ findById: jest.fn(() => ({ select: () => ({ lean: mockClassLean }) })) }));
 jest.mock('../src/models/user.model', () => ({ findById: jest.fn(() => ({ select: () => ({ lean: jest.fn().mockResolvedValue(null) }) })) }));
 jest.mock('../src/services/semanticRubricAssessment.service', () => ({
+  contractVersions:()=>({promptVersion:'semantic-rubric-assessment-v8-neutral-level-boundary-evidence',schemaVersion:'semantic-rubric-assessment-json-v5'}),
   PROMPT_VERSION: 'semantic-rubric-assessment-v8-neutral-level-boundary-evidence',
   SCHEMA_VERSION: 'semantic-rubric-assessment-json-v5',
   assess: mockAssess
@@ -76,11 +77,11 @@ describe('canonical evaluation write guards', () => {
   test.each(['anthropic/claude-haiku-5.5','openai/gpt-6-astra','google/gemini-3.8-flash','openai/gpt-5.4-mini','openai/gpt-4.1-mini'])('accepts %s correction provenance without relabeling history or changing rubric authority',async model=>{
     const record=submission(true),assignment={title:'Essay'};
     record.value.semanticModel=model;
-    record.value.semanticPromptVersion=require('../src/services/semanticWritingCorrections.service').SEMANTIC_PROMPT_VERSION;
+    record.value.semanticPromptVersion=require('../src/services/semanticWritingCorrections.service').contractVersions(model).promptVersion;
     record.value.correctionGenerationConfig={model,reviewIdentity:require('../src/services/canonicalCorrectionsPipeline.service').buildCorrectionReviewIdentity({assignment,policy:{},model})};
     const result=await generate({submission:record.value,assignment});
     expect(result.status).toBe('completed');expect(mockAssess).toHaveBeenCalledTimes(1);expect(record.value.semanticModel).toBe(model);
-    expect(require('../src/services/aiGateway.service').getAssessmentAIConfig({OPENROUTER_API_KEY:'mock-only'}).chain[0].model).toBe('openai/gpt-6-astra');
+    expect(require('../src/services/aiGateway.service').getAssessmentAIConfig({OPENROUTER_API_KEY:'mock-only'}).chain[0].model).toBe('google/gemini-3.8-flash');
   });
   test('guest evaluation checks the assignment credit router without a guest wallet', async () => {
     require('../src/models/user.model').findById.mockReturnValueOnce({ select: () => ({ lean: async () => ({ role: 'teacher' }) }) });
@@ -115,15 +116,15 @@ describe('canonical evaluation write guards', () => {
 
   test('a current job writes feedback only through its reserved job id', async () => {
     const record = submission(true);
-    mockAssess.mockResolvedValueOnce({ ...await mockAssess(), provider: 'openrouter', model: 'openai/gpt-oss-20b',
+    mockAssess.mockResolvedValueOnce({ ...await mockAssess(), provider: 'openrouter', model: 'google/gemini-3.8-flash',
       metrics: { attempts: [{ attempt: 1, provider: 'google', model: 'gemini-3.6-flash', status: 'provider_refusal', code: 'HTTP_402' },
-        { attempt: 2, provider: 'openrouter', model: 'openai/gpt-oss-20b', status: 'completed' }] } });
+        { attempt: 2, provider: 'openrouter', model: 'google/gemini-3.8-flash', status: 'completed' }] } });
     const result = await generate({ submission: record.value, assignment: { title: 'Essay' } });
-    expect(result).toMatchObject({ status: 'completed', provider: 'openrouter', model: 'openai/gpt-oss-20b', errorCode: null });
+    expect(result).toMatchObject({ status: 'completed', provider: 'openrouter', model: 'google/gemini-3.8-flash', errorCode: null });
     expect(mockFindOneAndUpdate).toHaveBeenCalledTimes(2);
     expect(mockFindOneAndUpdate.mock.calls[1][0]).toMatchObject({ submissionId: 'submission-1', evaluationJobId: expect.any(String) });
     expect(mockFindOneAndUpdate.mock.calls[1][1].$set).toMatchObject({ detailedFeedbackSourceHash: 'hash',
-      detailedFeedbackVersion: 'canonical-detailed-feedback-2', evaluationProvider: 'openrouter', evaluationModel: 'openai/gpt-oss-20b' });
+      detailedFeedbackVersion: 'canonical-detailed-feedback-2', evaluationProvider: 'openrouter', evaluationModel: 'google/gemini-3.8-flash' });
     expect(mockFindOneAndUpdate.mock.calls[1][1].$set.scoringAudit).toMatchObject({
       version: 'canonical-scoring-audit-v1',
       overallMethod: 'fixed_six_category_sum',
@@ -153,7 +154,7 @@ describe('canonical evaluation write guards', () => {
     expect(mockAssess).toHaveBeenCalledTimes(1);
     expect(mockFindOneAndUpdate.mock.calls.at(-1)[1].$set).toMatchObject({
       overallScore: expect.any(Number), detailedFeedback: expect.any(Object),
-      evaluationProvider: 'test', evaluationModel: 'rubric',
+      evaluationProvider: 'openrouter', evaluationModel: 'google/gemini-3.8-flash',
       correctionStats: expect.objectContaining({ total: 46, grammar: 29, mechanics: 4 })
     });
   });
@@ -228,7 +229,7 @@ describe('canonical evaluation write guards', () => {
   test('complete Run 1 counts are authoritative while partial Run 2 counts use prepared rubric fallback', async () => {
     const assignment = { title: 'Essay' };
     const rubricAssessment = {
-      sourceHash: 'hash', status: 'completed', provider: 'test', model: 'rubric', metrics: {},
+      sourceHash: 'hash', status: 'completed', provider: 'test', model: 'google/gemini-3.8-flash', metrics: {},
       categories: {
         CONTENT: { score: 16, maxScore: 20, comment: 'Prepared content.', strengthEvidence: [], improvementEvidence: [] },
         ORGANIZATION: { score: 15, maxScore: 20, comment: 'Prepared organization.', strengthEvidence: [], improvementEvidence: [] },

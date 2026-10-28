@@ -77,3 +77,22 @@ test('calibrated prompt performs its self-check within the same request and prio
   for(const phrase of ['Low contrast is NOT by itself uncertainty','Do NOT classify it as UNCERTAIN merely because','self-nigleacting','interupt','PASS 1','PASS 2','Do not output internal reasoning','ACTIVE_PUNCTUATION'])expect(c.PROMPT).toContain(phrase);
   expect(c.schema.properties.version.enum).toEqual(['gpt-vision-exact-v2']);
 });
+
+test('Qwen rejection persists only safe blocking metadata and emits no source or reason prose',async()=>{
+  const v={version:c.QWEN_WIRE_VERSION,physicalLines:[{segments:[seg('PRIVATE student text')]}],
+    uncertainties:[{lineIndex:0,segmentIndex:0,kind:'ACTIVE_TEXT_UNCERTAIN',reason:'PRIVATE reason prose'}]};
+  const read=jest.fn(async()=>({returnedModel:c.QWEN_MODEL,content:JSON.stringify(v)}));
+  const reservation={acquire:jest.fn(async()=>({_id:'test',cached:false})),complete:jest.fn(async()=>{})};
+  const spy=jest.spyOn(require('../src/utils/logger'),'info').mockImplementation(()=>{});
+  try{
+    await expect(service.readPage({bytes:Buffer.from([255,216,255]),mimeType:'image/jpeg',identity:{pageNumber:1,fileId:'f',sourceSha256:c.sha('pixels')},read,reservation,
+      env:{NODE_ENV:'test',OCR_GPT_VISION_MODEL:c.QWEN_MODEL,OPENROUTER_API_KEY:'mock-only'}})).rejects.toMatchObject({code:'OCR_GPT_SOURCE_UNCERTAIN'});
+    expect(read).toHaveBeenCalledTimes(1);
+    const saved=reservation.complete.mock.calls[0][1];expect(saved.status).toBe('GPT_SOURCE_FAILED');
+    expect(saved.payload).toMatchObject({activeUncertainCount:1,uncertainSegmentCount:0,blockingUncertaintyDetails:[{
+      uncertaintyKind:'ACTIVE_TEXT_UNCERTAIN',referencedSegmentClassification:'STUDENT_ACTIVE_TEXT',confidenceBand:'HIGH'}]});
+    const logs=spy.mock.calls.map(([value])=>value);expect(logs.find(x=>x.event==='gpt_vision_source_reader').blockingUncertaintyDetails).toEqual(saved.payload.blockingUncertaintyDetails);
+    expect(JSON.stringify({logs,saved})).not.toMatch(/PRIVATE|student text|reason prose|mock-only|base64|Authorization/);
+    expect(require('../src/services/gptVisionExact/preflight').ui({code:'OCR_GPT_SOURCE_UNCERTAIN'})).toMatchObject({sourceReadStatus:'FAILED_IMAGE',canSubmit:false});
+  }finally{spy.mockRestore();}
+});

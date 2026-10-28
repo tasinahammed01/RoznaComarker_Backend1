@@ -17,15 +17,25 @@ function runtimeContractFingerprint(env = process.env) {
   const contracts = Object.freeze({
     correctionPrompt: contract.promptVersion,
     correctionSchema: contract.schemaVersion,
-    rubricPrompt: semanticRubric.PROMPT_VERSION,
+    rubricPrompt: semanticRubric.contractVersions(require('./aiGateway.service').assessmentModel(env)).promptVersion,
     rubricSchema: semanticRubric.SCHEMA_VERSION,
+    ...(semanticRubric.contractVersions(require('./aiGateway.service').assessmentModel(env)).wireVersion
+      ? {rubricWire:semanticRubric.contractVersions(require('./aiGateway.service').assessmentModel(env)).wireVersion}:{}),
+    rubricModel: require('./aiGateway.service').assessmentModel(env),
+    rubricReasoningEffort: require('./aiGateway.service').assessmentModel(env)===require('./aiGateway.service').GEMINI_RUBRIC_MODEL
+      ? require('./aiGateway.service').rubricReasoningEffort(env) : 'provider_default',
     canonicalCorrection: canonicalCorrections.VERSION,
-    canonicalEvaluation: canonicalEvaluation.VERSION
+    canonicalEvaluation: canonicalEvaluation.VERSION,
+    qwenSourceWire:require('./gptVisionExact/contract').QWEN_WIRE_VERSION,
+    qwenSourcePrompt:require('./gptVisionExact/contract').QWEN_PROMPT_VERSION
   });
   const orderedContractValues = [
     contracts.correctionPrompt, contracts.correctionSchema, contracts.rubricPrompt,
-    contracts.rubricSchema, contracts.canonicalCorrection, contracts.canonicalEvaluation
+    contracts.rubricSchema, contracts.canonicalCorrection, contracts.canonicalEvaluation, contracts.rubricModel, contracts.rubricReasoningEffort
   ];
+  if(contracts.rubricWire)orderedContractValues.push(contracts.rubricWire);
+  orderedContractValues.push(contracts.qwenSourceWire);
+  orderedContractValues.push(contracts.qwenSourcePrompt);
   const contractHash = crypto.createHash('sha256').update(JSON.stringify(orderedContractValues)).digest('hex').slice(0, 16);
   return Object.freeze({
     applicationVersion: String(packageJson.version || 'unknown'),

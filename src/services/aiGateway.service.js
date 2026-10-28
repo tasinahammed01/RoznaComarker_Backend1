@@ -6,6 +6,19 @@ const requestDiagnostics = require('./aiRequestDiagnostics.service');
 const SUPPORTED_PROVIDERS = new Set(['google', 'openrouter']);
 const ASSESSMENT_MODEL = 'openai/gpt-6-astra';
 const ASSESSMENT_AUTHORITY_VERSION = 'astra-assessment-authority-v1';
+const GEMINI_RUBRIC_MODEL = 'google/gemini-3.8-flash';
+const ASSESSMENT_MODELS = Object.freeze([GEMINI_RUBRIC_MODEL, ASSESSMENT_MODEL]);
+function assessmentModel(env = process.env) {
+  const model = text(env.ASSESSMENT_AI_MODEL) || GEMINI_RUBRIC_MODEL;
+  if (!ASSESSMENT_MODELS.includes(model)) throw configurationError(['Unsupported ASSESSMENT_AI_MODEL.']);
+  return model;
+}
+function rubricReasoningEffort(env = process.env) {
+  const effort = text(env.GEMINI_RUBRIC_REASONING_EFFORT) || 'low';
+  if (!['low', 'medium', 'high'].includes(effort)) throw configurationError(['GEMINI_RUBRIC_REASONING_EFFORT must be low, medium or high.']);
+  return effort;
+}
+const assessmentAuthority = model => model === GEMINI_RUBRIC_MODEL ? 'gemini-rubric-authority-v1' : ASSESSMENT_AUTHORITY_VERSION;
 const CORRECTION_MODEL = 'openai/gpt-4.1-mini';
 const DEEPSEEK_CORRECTION_MODEL = 'deepseek/deepseek-v4.1-flash';
 const GPT54_MINI_CORRECTION_MODEL = 'openai/gpt-5.4-mini';
@@ -134,14 +147,14 @@ function getAIConfig(env = process.env, { requireCredentials = true } = {}) {
 }
 
 function getAssessmentAIConfig(env = process.env, options = {}) {
-  if (text(env.ASSESSMENT_AI_MODEL) && text(env.ASSESSMENT_AI_MODEL) !== ASSESSMENT_MODEL)
-    throw configurationError(['ASSESSMENT_AI_MODEL must be openai/gpt-6-astra.']);
+  const model = assessmentModel(env);
+  if (model === GEMINI_RUBRIC_MODEL) rubricReasoningEffort(env);
   const assessmentOrGlobal = (assessmentKey, globalKey) =>
     text(env[assessmentKey]) ? env[assessmentKey] : env[globalKey];
   const assessmentEnv = { ...env,
     // Deprecated primary/fallback model keys cannot override assessment truth.
     AI_PRIMARY_PROVIDER: 'openrouter',
-    AI_PRIMARY_MODEL: ASSESSMENT_MODEL,
+    AI_PRIMARY_MODEL: model,
     AI_FALLBACK_1_PROVIDER: '',
     AI_FALLBACK_1_MODEL: '',
     AI_FALLBACK_2_PROVIDER: '',
@@ -158,12 +171,13 @@ function getAssessmentAIConfig(env = process.env, options = {}) {
   if (config.primaryRetries > 1 || config.fallbackRetries !== 0) {
     throw configurationError(['Assessment AI permits at most one primary retry and no fallback retries.']);
   }
-  return { ...config, authorityVersion: ASSESSMENT_AUTHORITY_VERSION };
+  return { ...config, authorityVersion: assessmentAuthority(model) };
 }
 
 function getCorrectionAIConfig(env = process.env, options = {}) {
   const model=correctionModel(env);
-  const config=getAssessmentAIConfig(env,options);
+  // Reuse timing policy without coupling correction selection to rubric settings.
+  const config=getAssessmentAIConfig({...env,ASSESSMENT_AI_MODEL:ASSESSMENT_MODEL},options);
   return {...config,chain:[{provider:'openrouter',model,fallbackIndex:0}],authorityVersion:'correction-authority-v1'};
 }
 function getTeacherCommentAIConfig(env = process.env, options = {}) {
@@ -250,7 +264,7 @@ function googleUsage(payload) {
 
 function safeFailureMetadata(error) {
   const allowed = ['httpStatus', 'finishReason', 'promptTokenCount', 'candidateTokenCount',
-    'candidatesTokenCount', 'thoughtsTokenCount', 'totalTokenCount', 'maxOutputTokens',
+    'candidatesTokenCount', 'thoughtsTokenCount', 'totalTokenCount', 'maxOutputTokens', 'providerCostUSD',
     'responseTextLength', 'candidateCount', 'validationCode', 'validationStage', 'jsonPath',
     'expected', 'actualType', 'category', 'symbol', 'candidateIndex', 'transcriptHashMatch',
     'requiredPropertyMissing', 'unexpectedPropertyPresent', 'expectedSymbolCount',
@@ -259,6 +273,13 @@ function safeFailureMetadata(error) {
     'schemaName', 'schemaPath'];
   return Object.fromEntries(allowed.filter((key) => error?.[key] !== undefined && error?.[key] !== null)
     .map((key) => [key, error[key]]));
+}
+function rubricUsage(usage) {
+  const values={promptTokenCount:usage?.prompt_tokens,candidateTokenCount:usage?.completion_tokens,
+    thoughtsTokenCount:usage?.thoughts_tokens??usage?.completion_tokens_details?.reasoning_tokens,totalTokenCount:usage?.total_tokens};
+  const safe=Object.fromEntries(Object.entries(values).filter(([,v])=>Number.isInteger(v)&&v>=0));
+  if(Number.isFinite(usage?.cost)&&usage.cost>=0)safe.providerCostUSD=usage.cost;
+  return safe;
 }
 
 function extractGoogle(payload, { maxOutputTokens } = {}) {
@@ -404,6 +425,17 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
     };
     const correctionPolicy=correctionRequestPolicy({provider:entry.provider,model:entry.model,feature,responseFormat,responseSchema,env});
     if(correctionPolicy.reasoning) body.reasoning=correctionPolicy.reasoning;
+    if(isAssessmentFeature(feature)) {
+      if(google || !ASSESSMENT_MODELS.includes(entry.model))
+        throw attemptError('AI_ASSESSMENT_AUTHORITY_INVALID','Assessment requires one approved OpenRouter model.');
+      if(entry.model===GEMINI_RUBRIC_MODEL) {
+        if(base!=='https://openrouter.ai/api/v1'||responseFormat!=='json'||!responseSchema)
+          throw attemptError('AI_ASSESSMENT_AUTHORITY_INVALID','Gemini rubric assessment requires the strict schema profile.');
+        body.reasoning={effort:rubricReasoningEffort(env)};
+        delete body.temperature;
+      }
+      body.provider={require_parameters:true,allow_fallbacks:false};
+    }
     if(isCorrectionFeature(feature)&&isStrictCorrectionModel(entry.model)){
       if(entry.model!==CLAUDE_CORRECTION_MODEL&&feature==='teacher_comment_draft')
         throw attemptError('AI_CORRECTION_AUTHORITY_INVALID','Model is not approved for teacher-comment drafting.');
@@ -493,7 +525,7 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
     }
     if(isCorrectionFeature(feature)&&entry.model===ASSESSMENT_MODEL&&typeof payload.model==='string'&&payload.model!==entry.model)
       throw attemptError('AI_ASSESSMENT_MODEL_MISMATCH','Correction rollback model identity mismatch.');
-    if (isAssessmentFeature(feature) && typeof payload.model === 'string' && payload.model !== ASSESSMENT_MODEL) {
+    if (isAssessmentFeature(feature) && payload.model !== entry.model) {
       failureStage = 'MODEL_IDENTITY_VALIDATION';
       throw attemptError('AI_ASSESSMENT_MODEL_MISMATCH', 'Assessment model identity mismatch.', {
         status: response.status, requestedModel: entry.model, returnedModel: String(payload.model).slice(0, 120)
@@ -510,8 +542,9 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
     } : null);
     accountingOutcome='completed';
     return { ...extracted, usage, durationMs: now() - started,transportTimings:{requestToHeadersMs:headersMs,responseBodyMs:bodyMs},
-      ...(requestProfile || isCorrectionFeature(feature) ? { returnedModel: payload.model } : {}) };
+      ...(requestProfile || isCorrectionFeature(feature) || isAssessmentFeature(feature) ? { returnedModel: payload.model, httpStatus: response.status } : {}) };
   } catch (error) {
+    if(isAssessmentFeature(feature)&&diagnosticUsage)Object.assign(error,rubricUsage(diagnosticUsage));
     accountingOutcome=controller.signal.aborted?'AI_ATTEMPT_TIMEOUT':safeCode(error);
     requestDiagnostics.notify(onDiagnostic, { failureStage: controller.signal.aborted || error?.name === 'AbortError'
       ? 'REQUEST_ABORTED' : failureStage, error, safeCode: controller.signal.aborted ? 'AI_ATTEMPT_TIMEOUT' : safeCode(error),
@@ -549,8 +582,8 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
     throw new TypeError('AI gateway requires messages and fetch.');
   }
   if (isAssessmentFeature(feature) && (config.chain?.length !== 1
-    || config.chain[0].provider !== 'openrouter' || config.chain[0].model !== ASSESSMENT_MODEL))
-    throw attemptError('AI_ASSESSMENT_AUTHORITY_INVALID', 'Assessment requires the sole Astra authority.');
+    || config.chain[0].provider !== 'openrouter' || config.chain[0].model !== assessmentModel(env)))
+    throw attemptError('AI_ASSESSMENT_AUTHORITY_INVALID', 'Assessment requires the configured approved authority.');
   if(isCorrectionFeature(feature)&&(config.chain?.length!==1||config.chain[0].provider!=='openrouter'||!CORRECTION_MODELS.includes(config.chain[0].model)))
     throw attemptError('AI_CORRECTION_AUTHORITY_INVALID','Correction requires one approved model.');
   if(feature==='teacher_comment_draft'&&[CORRECTION_MODEL,DEEPSEEK_CORRECTION_MODEL,GPT54_MINI_CORRECTION_MODEL,GEMINI_CORRECTION_MODEL].includes(config.chain?.[0]?.model))
@@ -611,7 +644,8 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
             requestDiagnostics.notify(onDiagnostic, { failureStage: requestDiagnostics.validationStage(error),
               error, safeCode: 'AI_OUTPUT_VALIDATION_FAILED', httpStatus: 200, responseReceived: true, bodyRead: true });
             throw attemptError('AI_OUTPUT_VALIDATION_FAILED', 'AI output failed feature validation.', {
-              validationCode: error?.code || null, ...safeFailureMetadata(error), cause: error
+              validationCode: error?.code || null, ...safeFailureMetadata(error),
+              ...(isAssessmentFeature(feature)?{...rubricUsage(result.usage),finishReason:result.finishReason}:{}),cause: error
             });
           }
         }
@@ -632,7 +666,8 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
           durationMs: now() - started, usage: result.usage || null, attempts };
         logger.info({ message: 'AI gateway generation completed', feature, ...requestMetadata, ...gatewayMetadata,
           usage: undefined, attempts: attempts.map((a) => ({ ...a })) });
-        return { value, content: result.content, ...gatewayMetadata, metadata: gatewayMetadata };
+        return { value, content: result.content, ...gatewayMetadata, metadata: gatewayMetadata,
+          returnedModel: result.returnedModel, httpStatus: result.httpStatus, finishReason: result.finishReason };
       } catch (error) {
         lastError = error;
         const code = safeCode(error);
@@ -729,6 +764,7 @@ function validateAIConfig(env = process.env) {
 }
 
 module.exports = {
+  GEMINI_RUBRIC_MODEL, ASSESSMENT_MODELS, assessmentModel, assessmentAuthority, rubricReasoningEffort,
   CLAUDE_CORRECTION_MODEL, GEMINI_CORRECTION_MODEL, GPT54_MINI_CORRECTION_MODEL, isStrictCorrectionModel, geminiCorrectionReasoningEffort, gpt54MiniCorrectionReasoningEffort, getTeacherCommentAIConfig,
   correctionReasoningEffort,
   CORRECTION_MODEL, DEEPSEEK_CORRECTION_MODEL, CORRECTION_MODELS, correctionModel, isCorrectionFeature, getCorrectionAIConfig, ASSESSMENT_MODEL, ASSESSMENT_AUTHORITY_VERSION, isAssessmentFeature, correctionRequestPolicy,

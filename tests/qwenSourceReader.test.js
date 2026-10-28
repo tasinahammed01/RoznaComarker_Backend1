@@ -10,7 +10,8 @@ const fixture=()=>({version:c.VERSION,activeTranscript:'Society always expect po
   physicalLines:[{segments:[segment('Question?','PROMPT_OR_INSTRUCTION')]},
     {segments:[segment('Society always expect '),segment(null,'STUDENT_CROSSED_OUT'),segment('powerfull wrong wrong ,')]},
     {segments:[segment('Say naïve — বাংলা  unfinished')]}],uncertainties:[]});
-function response(content=JSON.stringify(fixture()),returnedModel=model){return {ok:true,status:200,text:async()=>JSON.stringify({model:returnedModel,
+const wireFixture=()=>{const {activeTranscript,...v}=fixture();return {...v,version:c.QWEN_WIRE_VERSION};};
+function response(content=JSON.stringify(wireFixture()),returnedModel=model){return {ok:true,status:200,text:async()=>JSON.stringify({model:returnedModel,
   choices:[{finish_reason:'stop',message:{content}}],usage:{prompt_tokens:123,completion_tokens:45,cost:.0001}})};}
 function options(fetchImpl=jest.fn(async()=>response())){
   const reservation={acquire:jest.fn(async()=>({_id:'source',cached:false})),complete:jest.fn(async()=>{})};
@@ -32,8 +33,8 @@ test('Qwen uses the existing private endpoint, closed schema and one supported t
   expect(body.model).toBe(model);expect(body.max_tokens).toBe(16000);expect(body).not.toHaveProperty('max_completion_tokens');
   expect(body.provider).toEqual({require_parameters:true,allow_fallbacks:false,sort:'latency'});
   expect(body.reasoning).toEqual({effort:'none'});
-  expect(body.response_format).toEqual({type:'json_schema',json_schema:{name:'gpt_vision_exact_v2',strict:true,schema:c.schema}});
-  expect(body.messages[0].content).toBe(c.PROMPT);expect(body.messages[1].content[1].image_url.url).toBe('data:image/jpeg;base64,/9j/');
+  expect(body.response_format).toEqual({type:'json_schema',json_schema:{name:'qwen_physical_source_v1',strict:true,schema:c.wireContract(model).schema}});
+  expect(body.messages[0].content).toBe(c.wireContract(model).prompt);expect(body.messages[1].content[1].image_url.url).toBe('data:image/jpeg;base64,/9j/');
   for(const key of ['temperature','top_p','seed','models','transforms'])expect(body).not.toHaveProperty(key);
   expect(result.fullText).toBe(fixture().activeTranscript);expect(result.source.sourcePrimaryModel).toBe(model);
   expect(result.source.sourcePrimaryProvider).toBe('openrouter');expect(o.reservation.complete).toHaveBeenCalledTimes(1);
@@ -48,10 +49,10 @@ test.each([
   ['missing',v=>{delete v.physicalLines;return JSON.stringify(v);},'OCR_GPT_SOURCE_SCHEMA'],
   ['extra',v=>JSON.stringify({...v,grade:100}),'OCR_GPT_SOURCE_SCHEMA'],
   ['enum',v=>{v.physicalLines[1].segments[0].classification='FIXED_TEXT';return JSON.stringify(v);},'OCR_GPT_SOURCE_SCHEMA'],
-  ['rewrite',v=>JSON.stringify({...v,activeTranscript:'Society always expects powerful words.'}),'OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH'],
+  ['rewrite',v=>JSON.stringify({...v,activeTranscript:'Society always expects powerful words.'}),'OCR_GPT_SOURCE_SCHEMA'],
   ['uncertain',v=>{v.physicalLines[1].segments.push(segment(null,'UNCERTAIN'));return JSON.stringify(v);},'OCR_GPT_SOURCE_UNCERTAIN']
 ])('HTTP 200 with %s source fails the unchanged validator',async(_name,content,code)=>{
-  const o=options(jest.fn(async()=>response(content(fixture()))));await expect(source.readPage(o)).rejects.toMatchObject({code});
+  const o=options(jest.fn(async()=>response(content(wireFixture()))));await expect(source.readPage(o)).rejects.toMatchObject({code});
   expect(o.fetchImpl).toHaveBeenCalledTimes(1);expect(o.reservation.complete.mock.calls[0][1].status).toBe('GPT_SOURCE_FAILED');
 });
 test.each([[401,'OCR_GPT_PROVIDER_AUTH'],[402,'OCR_GPT_PROVIDER_PAYMENT_REQUIRED'],[403,'OCR_GPT_PROVIDER_ACCESS'],
@@ -69,7 +70,7 @@ test('safe startup diagnostics resolve explicit Qwen without changing assessment
   const startup=require('../src/config/ocr').validateOcrConfiguration(env);
   expect(startup).toMatchObject({mode:'gpt_vision_exact',gptVisionModel:model,openrouterConfigured:true,sourceCallsPerPage:1});
   expect(JSON.stringify(startup)).not.toContain('mock-only');
-  expect(gateway.getAssessmentAIConfig(env).chain.map(v=>v.model)).toEqual(['openai/gpt-6-astra']);
+  expect(gateway.getAssessmentAIConfig(env).chain.map(v=>v.model)).toEqual(['google/gemini-3.8-flash']);
   expect(gateway.getAIConfig(env).chain.map(v=>v.model)).toEqual(['openai/gpt-4.1-mini','openai/gpt-6-astra']);
 });
 test('usage stays provider-reported; exact accepted source is reused without a second request',async()=>{
@@ -99,7 +100,7 @@ test.each([
   v=>{v.physicalLines[1].segments[0].confidence='1';},
   v=>{v.uncertainties=[{lineIndex:299,segmentIndex:0,kind:'NON_ACTIVE_DELETED_UNCERTAIN',reason:'synthetic'}];}
 ])('invalid type/reference remains blocking with safe schema diagnostics',async mutate=>{
-  const value=fixture();mutate(value);const o=options(jest.fn(async()=>response(JSON.stringify(value))));
+  const value=wireFixture();mutate(value);const o=options(jest.fn(async()=>response(JSON.stringify(value))));
   await expect(source.readPage(o)).rejects.toMatchObject({code:'OCR_GPT_SOURCE_SCHEMA',sourceDiagnostic:{schemaErrorKeyword:expect.any(String)}});
   expect(o.reservation.complete.mock.calls[0][1].status).toBe('GPT_SOURCE_FAILED');
 });

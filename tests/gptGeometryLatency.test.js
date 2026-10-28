@@ -69,5 +69,5 @@ test('assessment prompt transmits each legend definition once without reducing a
   const prompt=request.messages[1].content;
   for(const required of ['reviewedSymbols','including zero findings','teacherEvaluationPolicy=','transcript=Exact literal source.'])expect(prompt).toContain(required);
   expect(prompt).not.toContain('noFindingReason'); // Server derives prose only after explicit reviewed-symbol evidence.
-  expect(require('../src/services/semanticAIClient.service').getAssessmentAIConfig({OPENROUTER_API_KEY:'mock-only'})).toMatchObject({model:'openai/gpt-6-astra',maxOutputTokens:8000});
+  expect(require('../src/services/semanticAIClient.service').getAssessmentAIConfig({OPENROUTER_API_KEY:'mock-only'})).toMatchObject({model:'google/gemini-3.8-flash',maxOutputTokens:8000});
 });

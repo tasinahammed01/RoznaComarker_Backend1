@@ -47,12 +47,15 @@ function getSemanticAIConfig(env = process.env, correction = false) {
     minAttemptBudgetMs: 1,
     temperature: ASSESSMENT_TEMPERATURE,
     responseFormat: ASSESSMENT_RESPONSE_FORMAT,
-    thinkingLevel: correction && primary.model === gateway.DEEPSEEK_CORRECTION_MODEL ? 'none'
+    thinkingLevel: !correction && primary.model === gateway.GEMINI_RUBRIC_MODEL ? gateway.rubricReasoningEffort(env)
+      : correction && primary.model === gateway.DEEPSEEK_CORRECTION_MODEL ? 'none'
       : correction && primary.model === gateway.CORRECTION_MODEL ? null
       : correction && primary.model === gateway.GPT54_MINI_CORRECTION_MODEL ? gateway.gpt54MiniCorrectionReasoningEffort(env)
       : correction && primary.model === gateway.GEMINI_CORRECTION_MODEL ? gateway.geminiCorrectionReasoningEffort(env)
       : correction && primary.model === gateway.CLAUDE_CORRECTION_MODEL ? gateway.correctionReasoningEffort(env) : ASSESSMENT_THINKING_LEVEL,
-    maxOutputTokens: integer(env.SEMANTIC_AI_MAX_OUTPUT_TOKENS, 8000, 256, MAX_SEMANTIC_OUTPUT_TOKENS),
+    maxOutputTokens: !correction && primary.model===gateway.GEMINI_RUBRIC_MODEL
+      ? Math.min(8000, integer(env.SEMANTIC_AI_MAX_OUTPUT_TOKENS, 8000, 256, MAX_SEMANTIC_OUTPUT_TOKENS))
+      : integer(env.SEMANTIC_AI_MAX_OUTPUT_TOKENS, 8000, 256, MAX_SEMANTIC_OUTPUT_TOKENS),
     fallback: global.chain[1] || null,
     approvedModels: global.chain.map((entry) => entry.model)
   };
@@ -119,6 +122,7 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
       retryDelayMs: config.retryDelayMs
     } });
   return { content: result.content, value: result.value, usage: result.usage,
+    returnedModel: result.returnedModel, httpStatus: result.httpStatus, finishReason: result.finishReason,
     provider: result.provider, model: result.model, metadata: result.metadata,
     timings: { semanticProviderMs: result.durationMs, semanticTimeToFirstByteMs: null,
       semanticProviderConnectMs: null },
@@ -128,6 +132,8 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
       maxOutputTokens: config.maxOutputTokens,
       promptTokenCount: result.usage?.prompt_tokens ?? null,
       outputTokenCount: result.usage?.completion_tokens ?? null,
+      visibleOutputTokenCount: Number.isInteger(result.usage?.completion_tokens)&&Number.isInteger(result.usage?.thoughts_tokens)
+        &&result.usage.completion_tokens>=result.usage.thoughts_tokens?result.usage.completion_tokens-result.usage.thoughts_tokens:null,
       totalTokenCount: result.usage?.total_tokens ?? null,
       providerCostUSD: typeof result.usage?.cost === 'number' && Number.isFinite(result.usage.cost) && result.usage.cost >= 0 ? result.usage.cost : null,
       thoughtsTokenCount: result.usage?.thoughts_tokens ?? null } };

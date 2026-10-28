@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('fs/promises');
 const Evidence=require('../../models/SourceFidelityEvidence');
-const {VERSION,PROMPT,sha,config,validate,fail}=require('./contract');
+const {VERSION,PROMPT,sha,config,validateCanonical:validate,fail,QWEN_MODEL,wireContract,PREVIOUS_QWEN_PROMPT,sameSourcePrompt}=require('./contract');
 const {orientImage}=require('./imageInput');
 const IMAGE_MESSAGE='Some handwriting could not be read confidently. Please upload a clearer image.';
 const SERVICE_MESSAGE='Handwriting verification is temporarily unavailable. Please try again later.';
@@ -10,7 +10,14 @@ function binding(context,page,env=process.env){
   const promptSha256=sha(PROMPT+JSON.stringify(require('../gptVisionExact.service').reference(context.assignment)));
   const identity={preSubmission:true,ownerId,assignmentId,sourceMode:'gpt_vision_exact',version:VERSION,model,promptSha256,
     sourceSha256:page.sourceSha256,inputSha256:sha(page.bytes),pageNumber:page.pageNumber,pageIndex:page.pageNumber-1};
-  return {...identity,key:sha(JSON.stringify(identity)).slice(0,24)};
+  // Keep the durable reservation key across this wire migration: changing it
+  // would reset failed-source attempts/cooldowns and permit duplicate paid reads.
+  const key=sha(JSON.stringify(identity)).slice(0,24);
+  return {...identity,...(model===QWEN_MODEL?{legacyPromptSha256:promptSha256,
+    previousPromptSha256:sha(PREVIOUS_QWEN_PROMPT+JSON.stringify(require('../gptVisionExact.service').reference(context.assignment))),
+    qwenPromptVersion:wireContract(model).promptVersion,
+    promptSha256:sha(wireContract(model).prompt+JSON.stringify(require('../gptVisionExact.service').reference(context.assignment))),
+    wireVersion:wireContract(model).version}:{}),key};
 }
 async function pagesFor(file){
   const started=Date.now();
@@ -25,7 +32,9 @@ async function pagesFor(file){
     width:normalized.info.width,height:normalized.info.height,sourceImagePrepareMs:Date.now()-started}];
 }
 async function find(key){return Evidence.findById(key).select('+payload').lean();}
-const sameBinding=(a,b)=>a&&b&&Object.keys(b).every(k=>a[k]===b[k]);
+const sameBinding=(a,b)=>a&&b&&(Object.keys(b).every(k=>a[k]===b[k])
+  ||b.model===QWEN_MODEL&&sameSourcePrompt(a,b)&&(!a.wireVersion||a.wireVersion===b.wireVersion)
+    &&Object.keys(b).filter(k=>!['promptSha256','legacyPromptSha256','wireVersion','previousPromptSha256','qwenPromptVersion'].includes(k)).every(k=>a[k]===b[k]));
 function reservationFor(bound){
 const owner=require('crypto').randomUUID(),policy=require('../sourceVerificationPolicy');let probe;
 return {
@@ -47,7 +56,7 @@ return {
       ...(payment?[paymentRetry]:[
       {status:'GPT_SOURCE_FAILED',nextAttemptAt:{$lte:new Date()},attempts:{$lt:policy.MAX_ATTEMPTS}},
       {status:'GPT_SOURCE_FAILED',nextAttemptAt:null,updatedAt:{$lte:new Date(Date.now()-15000)},$or:[{attempts:{$exists:false}},{attempts:{$lt:policy.MAX_ATTEMPTS}}]}])
-    ]},{$set:{status:'GPT_SOURCE_RESERVED',leaseOwner:owner,leaseUntil:new Date(Date.now()+240000)},$unset:{providerStartedAt:1},$inc:{attempts:1}},{returnDocument:'after'});
+    ]},{$set:{identity:bound,status:'GPT_SOURCE_RESERVED',leaseOwner:owner,leaseUntil:new Date(Date.now()+240000)},$unset:{providerStartedAt:1},$inc:{attempts:1}},{returnDocument:'after'});
     if(!reclaimed)throw fail(old?.status==='GPT_SOURCE_FAILED' ? old.payload?.safeFailureCode||'OCR_GPT_PROVIDER_FAILED' : 'OCR_GPT_SOURCE_CHECKING');
     }
     try{probe=await require('../sourceVerificationCircuit.service').enter(bound.model);}
@@ -112,7 +121,8 @@ function claimReservation(file,identity){return {
     const proof=file.gptSourcePreflight,claim=proof?.bindings?.find(p=>p.pageNumber===bound.pageNumber);
     if(!claim||String(file.uploadedBy)!==proof.uploaderId||String(identity.assignmentId)!==proof.assignmentId
       ||identity.studentId&&String(identity.studentId)!==proof.ownerId
-      ||claim.sourceMode!=='gpt_vision_exact'||claim.version!==VERSION||claim.model!==bound.model||claim.promptSha256!==bound.promptSha256
+      ||claim.sourceMode!=='gpt_vision_exact'||claim.version!==VERSION||claim.model!==bound.model
+      ||!sameSourcePrompt(claim,bound)
       ||claim.sourceSha256!==bound.sourceSha256||claim.inputSha256!==bound.inputSha256)throw fail('OCR_GPT_SOURCE_PREFLIGHT_REQUIRED');
     const old=await find(claim.key);
     if(old?.status!=='GPT_SOURCE_ACCEPTED'||!old.payload?.primary||!sameBinding(old.identity,claim)||old.identity.ownerId!==proof.ownerId||old.identity.assignmentId!==proof.assignmentId)throw fail('OCR_GPT_SOURCE_PREFLIGHT_REQUIRED');

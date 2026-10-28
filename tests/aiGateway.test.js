@@ -5,6 +5,7 @@ const { semanticRubricAssessmentSchema, NO_TRANSCRIPT_EVIDENCE_SENTINEL } =
   require('../src/services/structuredOutputSchemas.service');
 
 const env = (overrides = {}) => ({
+  ASSESSMENT_AI_MODEL: 'openai/gpt-6-astra',
   AI_PRIMARY_PROVIDER: 'google',
   AI_PRIMARY_MODEL: 'primary-model',
   AI_FALLBACK_1_PROVIDER: 'openrouter',

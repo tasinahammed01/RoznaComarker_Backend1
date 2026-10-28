@@ -8,7 +8,9 @@ const { getAssessmentAIConfig } = require('../src/services/semanticAIClient.serv
 const { statistics } = require('../src/services/correctionCanonical.service');
 const feedback = require('../src/models/SubmissionFeedback');
 const evaluation = require('../src/services/canonicalEvaluation.service');
-const env = { OPENROUTER_API_KEY: 'offline-key', ASSESSMENT_AI_PRIMARY_RETRIES: '1' };
+const env = { OPENROUTER_API_KEY: 'offline-key', ASSESSMENT_AI_MODEL:'openai/gpt-6-astra', ASSESSMENT_AI_PRIMARY_RETRIES: '1' };
+beforeEach(()=>{process.env.ASSESSMENT_AI_MODEL='openai/gpt-6-astra';});
+afterAll(()=>{delete process.env.ASSESSMENT_AI_MODEL;});
 const clone = object => JSON.parse(JSON.stringify(object));
 const input = data => ({ transcript: data.transcript, sourceHash: data.payload.sourceHash,
   corrections: data.corrections, assignment: { title: 'Essay', instructions: 'Explain the idea with examples.' },

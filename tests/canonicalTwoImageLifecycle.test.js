@@ -226,7 +226,7 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
           lifecycleEvents.push('evaluation-started');
           await mockRubricGate;
           return { ok: true, status: 200, headers: { get: () => 'application/json' },
-            text: async () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: {
+            text: async () => JSON.stringify({ model: JSON.parse(options.body).model, choices: [{ finish_reason: 'stop', message: {
               content: JSON.stringify(rubricFixtureFromPrompt(prompt)) } }],
             usage: { prompt_tokens: 100, completion_tokens: 100, total_tokens: 200 } }) };
         }

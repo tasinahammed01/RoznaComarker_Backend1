@@ -23,7 +23,8 @@ test('exact dedicated model, low effort, closed schema, private route and usage;
   expect(body.response_format).toMatchObject({type:'json_schema',json_schema:{strict:true}});expect(body.max_tokens).toBe(8000);
   expect(body).not.toHaveProperty('temperature');expect(body).not.toHaveProperty('models');expect(body).not.toHaveProperty('max_completion_tokens');
   expect(result.model).toBe(model);expect(result.usage).toMatchObject({prompt_tokens:100,completion_tokens:50});expect(fetchImpl).toHaveBeenCalledTimes(1);
-  expect(client.getAssessmentAIConfig(env).model).toBe('openai/gpt-6-astra');
+  expect(client.getAssessmentAIConfig(env).model).toBe('google/gemini-3.8-flash');
+  expect(client.getAssessmentAIConfig({...env,ASSESSMENT_AI_MODEL:'openai/gpt-6-astra'}).model).toBe('openai/gpt-6-astra');
   expect(require('../src/services/gptVisionExact/contract').config({...env,OCR_GPT_VISION_MODEL:'qwen/qwen3.8-27b'}).model).toBe('qwen/qwen3.8-27b');
 });
 test.each(cases)('$category/$symbol: exact span, suggestion, explanation and category survive strict Gemini contract',async f=>{

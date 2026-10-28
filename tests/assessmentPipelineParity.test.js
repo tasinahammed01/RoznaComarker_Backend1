@@ -13,7 +13,7 @@ const { normalizeTeacherEvaluationPolicy } = require('../src/services/teacherEva
 const transcript = 'This essay has a clear idea. The ending repeats the same point.';
 const assignment = { title: 'Fixed essay', instructions: 'Explain the claim with evidence.', rubric: null };
 const policy = normalizeTeacherEvaluationPolicy(null);
-const env = {
+const env = { ASSESSMENT_AI_MODEL: 'openai/gpt-6-astra',
   ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1-mini',
   ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter', ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1',
   ASSESSMENT_AI_PRIMARY_RETRIES: '0', ASSESSMENT_AI_FALLBACK_RETRIES: '0',

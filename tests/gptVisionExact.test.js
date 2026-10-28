@@ -99,8 +99,8 @@ test('exact canonical offsets preserve repeated words, null boxes, hash source a
 test('reconciliation preserves canonical hashes, UTF-16 word identities, bytes and accepted-source reuse',async()=>{
   const lines=['  naïve 😀 wrong wrong,','powerfull Say unfinished'],primary=simple(lines.join('\n'));
   primary.activeTranscript=lines.join(' ');const original=structuredClone(primary.physicalLines),o=options(),bytes=Buffer.from(o.bytes);
-  o.env={...o.env,OCR_GPT_VISION_MODEL:c.QWEN_MODEL};o.google=undefined;
-  o.read.mockResolvedValue({content:JSON.stringify(primary),returnedModel:c.QWEN_MODEL});
+  o.google=undefined;
+  o.read.mockResolvedValue({content:JSON.stringify(primary),returnedModel:env.OCR_GPT_VISION_MODEL});
   const r=await service.readPage(o),saved=o.reservation.complete.mock.calls[0][1].payload;
   expect(r.fullText).toBe(lines.join('\n'));expect(r.source.sourceTextSha256).toBe(c.sha(lines.join('\n')));
   expect(r.source.sourceInputSha256).toBe(c.sha(bytes));expect(o.bytes.equals(bytes)).toBe(true);

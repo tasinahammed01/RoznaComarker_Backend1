@@ -4,6 +4,7 @@ const { getSemanticAIConfig, runSemanticCompletion } =
   require('../src/services/semanticAIClient.service');
 
 const env = (overrides = {}) => ({
+  ASSESSMENT_AI_MODEL: 'openai/gpt-6-astra',
   ASSESSMENT_AI_PRIMARY_PROVIDER: 'openrouter', ASSESSMENT_AI_PRIMARY_MODEL: 'openai/gpt-4.1',
   ASSESSMENT_AI_FALLBACK_1_PROVIDER: 'openrouter', ASSESSMENT_AI_FALLBACK_1_MODEL: 'openai/gpt-4.1-mini',
   ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS: '30000', ASSESSMENT_AI_TOTAL_BUDGET_MS: '120000',
