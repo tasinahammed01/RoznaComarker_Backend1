@@ -35,7 +35,8 @@ async function find(key){return Evidence.findById(key).select('+payload').lean()
 const sameBinding=(a,b)=>a&&b&&(Object.keys(b).every(k=>a[k]===b[k])
   ||b.model===QWEN_MODEL&&sameSourcePrompt(a,b)&&(!a.wireVersion||a.wireVersion===b.wireVersion)
     &&Object.keys(b).filter(k=>!['promptSha256','legacyPromptSha256','wireVersion','previousPromptSha256','qwenPromptVersion'].includes(k)).every(k=>a[k]===b[k]));
-function reservationFor(bound){
+function reservationFor(bound,onObservation){
+const observe=value=>{if(typeof onObservation==='function')try{onObservation(value);}catch{/* Observation only. */}};
 const owner=require('crypto').randomUUID(),policy=require('../sourceVerificationPolicy');let probe;
 return {
   async acquire(){
@@ -46,7 +47,10 @@ return {
     if(old?.status==='GPT_SOURCE_ACCEPTED'&&sameBinding(old.identity,bound)&&old.payload?.primary)return {_id:bound.key,cached:true,evidence:old};
     if(old?.status==='GPT_SOURCE_RESERVED'&&(old.providerStartedAt&&(!old.leaseUntil||old.leaseUntil<=new Date())||!old.leaseUntil&&old.updatedAt<=new Date(Date.now()-240000)))throw fail('OCR_GPT_SOURCE_ATTEMPT_UNKNOWN');
     const payment=old?.status==='GPT_SOURCE_FAILED'&&policy.isPaymentFailure(old.payload?.safeFailureCode);
-    if(old?.status==='GPT_SOURCE_FAILED'&&!payment&&(policy.classify(old.payload?.safeFailureCode,old.payload?.httpStatus)!=='retryable'||(old.attempts||1)>=policy.MAX_ATTEMPTS))throw Object.assign(fail(old.payload?.safeFailureCode||'OCR_GPT_PROVIDER_FAILED'),{sourceDiagnostic:require('../gptVisionExact.service').safeSourceDiagnostic(old.payload)});
+    if(old?.status==='GPT_SOURCE_FAILED'&&!payment&&(policy.classify(old.payload?.safeFailureCode,old.payload?.httpStatus)!=='retryable'||(old.attempts||1)>=policy.MAX_ATTEMPTS)){
+      observe({cacheUsed:true});
+      throw Object.assign(fail(old.payload?.safeFailureCode||'OCR_GPT_PROVIDER_FAILED'),{sourceDiagnostic:require('../gptVisionExact.service').safeSourceDiagnostic(old.payload)});
+    }
     // Historical payment evidence has no nextAttemptAt. Its timestamp supplies
     // the same cooldown; lifetime attempt count never permanently latches billing.
     const paymentRetry={status:'GPT_SOURCE_FAILED','payload.safeFailureCode':'OCR_GPT_PROVIDER_PAYMENT_REQUIRED',
@@ -57,7 +61,7 @@ return {
       {status:'GPT_SOURCE_FAILED',nextAttemptAt:{$lte:new Date()},attempts:{$lt:policy.MAX_ATTEMPTS}},
       {status:'GPT_SOURCE_FAILED',nextAttemptAt:null,updatedAt:{$lte:new Date(Date.now()-15000)},$or:[{attempts:{$exists:false}},{attempts:{$lt:policy.MAX_ATTEMPTS}}]}])
     ]},{$set:{identity:bound,status:'GPT_SOURCE_RESERVED',leaseOwner:owner,leaseUntil:new Date(Date.now()+240000)},$unset:{providerStartedAt:1},$inc:{attempts:1}},{returnDocument:'after'});
-    if(!reclaimed)throw fail(old?.status==='GPT_SOURCE_FAILED' ? old.payload?.safeFailureCode||'OCR_GPT_PROVIDER_FAILED' : 'OCR_GPT_SOURCE_CHECKING');
+    if(!reclaimed){if(old?.status==='GPT_SOURCE_FAILED')observe({cacheUsed:true});throw fail(old?.status==='GPT_SOURCE_FAILED' ? old.payload?.safeFailureCode||'OCR_GPT_PROVIDER_FAILED' : 'OCR_GPT_SOURCE_CHECKING');}
     }
     try{probe=await require('../sourceVerificationCircuit.service').enter(bound.model);}
     catch(error){await Evidence.updateOne({_id:bound.key,leaseOwner:owner},{$set:{leaseUntil:new Date(0)},$inc:{attempts:-1}});require('../../utils/logger').info({event:'source_verification_admission_blocked',model:bound.model,errorCode:error.code,providerCallCount:0});throw error;}
@@ -93,7 +97,7 @@ function ui(error){
 function withSourceCheck(basic,state){return {...basic,basicChecksPassed:basic.ready,sourceReadRequired:true,...state,ready:basic.ready&&state.canSubmit,
   checks:[...basic.checks,{id:'handwritingReadability',label:'Handwriting readability',required:true,
     status:state.sourceReadStatus==='PASSED'?'pass':state.sourceReadStatus==='CHECKING'?'checking':state.sourceReadStatus==='FAILED_IMAGE'?'fail':'unavailable',message:state.message}]};}
-async function checkPages(pages,context,{run=false,env=process.env,signal,deadlineAt}={}){
+async function checkPages(pages,context,{run=false,env=process.env,signal,deadlineAt,onObservation}={}){
   const bindings=[];
   for(const page of pages){
     if(signal?.aborted)throw fail(signal.reason==='source_user_cancelled'?'OCR_GPT_SOURCE_CANCELLED':'OCR_GPT_PROVIDER_NETWORK');
@@ -106,7 +110,7 @@ async function checkPages(pages,context,{run=false,env=process.env,signal,deadli
     }
     if(run)await require('../gptVisionExact.service').readPage({bytes:page.bytes,mimeType:page.mimeType,assignment:context.assignment,
       identity:{submissionId:'preflight',fileId:page.sourceSha256,pageNumber:page.pageNumber,sourceSha256:page.sourceSha256,
-        width:page.width,height:page.height,sourceImagePrepareMs:page.sourceImagePrepareMs},env,signal,reservation:reservationFor(bound)});
+        width:page.width,height:page.height,sourceImagePrepareMs:page.sourceImagePrepareMs},env,signal,onObservation,reservation:reservationFor(bound,onObservation)});
     const saved=await find(bound.key);
     if(saved?.status!=='GPT_SOURCE_ACCEPTED'||!sameBinding(saved.identity,bound)||!saved.payload?.primary){
       if(saved?.status==='GPT_SOURCE_FAILED')throw fail(saved.payload?.safeFailureCode||'OCR_GPT_PROVIDER_FAILED');

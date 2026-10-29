@@ -96,6 +96,28 @@ test('original and two crops have isolated Qwen evidence identities',()=>{
   const keys=['original','crop A','crop B'].map(text=>preflight.binding(context,{bytes:Buffer.from(text),sourceSha256:c.sha(text),pageNumber:1},env).key);
   expect(new Set(keys).size).toBe(3);
 });
+
+test('request observation marks actual Qwen fetch and cache reuse separately, without affecting calls',async()=>{
+  const o=options(),events=[];await source.readPage({...o,onObservation:value=>events.push(value)});
+  expect(o.fetchImpl).toHaveBeenCalledTimes(1);expect(events).toContainEqual({qwenInvoked:true});
+  expect(events).toContainEqual({cacheUsed:false,stage:'provider_request'});
+  events.length=0;o.fetchImpl.mockClear();o.reservation.acquire.mockResolvedValue({_id:'source',cached:true,evidence:{payload:{primary:fixture()}}});
+  await source.readPage({...o,onObservation:value=>events.push(value)});
+  expect(o.fetchImpl).not.toHaveBeenCalled();expect(events).toContainEqual({cacheUsed:true,stage:'cache_validation'});
+  expect(events.some(e=>e.qwenInvoked===true)).toBe(false);
+});
+test('throwing request observer cannot change source acceptance or buy another call',async()=>{
+  const o=options();expect((await source.readPage({...o,onObservation:()=>{throw Error('observer');}})).fullText).toBe(fixture().activeTranscript);
+  expect(o.fetchImpl).toHaveBeenCalledTimes(1);
+});
+test('invalid cached source is diagnosed as cache validation without invoking Qwen',async()=>{
+  const o=options(),events=[];
+  o.reservation.acquire.mockResolvedValue({_id:'source',cached:true,evidence:{payload:{primary:{...fixture(),activeTranscript:'invalid'}}}});
+  await expect(source.readPage({...o,onObservation:value=>events.push(value)})).rejects.toMatchObject({code:'OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH'});
+  expect(o.fetchImpl).not.toHaveBeenCalled();expect(o.reservation.complete).not.toHaveBeenCalled();
+  expect(events).toContainEqual(expect.objectContaining({validationStage:'CACHE_VALIDATION'}));
+  expect(events.some(e=>e.qwenInvoked===true)).toBe(false);
+});
 test.each([
   v=>{v.physicalLines[1].segments[0].confidence='1';},
   v=>{v.uncertainties=[{lineIndex:299,segmentIndex:0,kind:'NON_ACTIVE_DELETED_UNCERTAIN',reason:'synthetic'}];}
