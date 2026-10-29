@@ -45,6 +45,29 @@ test('provider exceptions return safe delivery failure without logging the recip
   expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('guest@example.com');
 });
 
+test.each([false, true])('guest email card preserves canonical links and text fallback (resultReady=%s)', async resultReady => {
+  transport.sendMail.mockResolvedValueOnce({ accepted: ['guest@example.com'], rejected: [] });
+  const returnUrl = 'https://school.example/guest/results/507f1f77bcf86cd799439011#private-token';
+  const assignmentTitle = '<Essay> & "Writing"';
+  await email.sendGuestSubmissionEmail({ to: 'guest@example.com', assignmentTitle, returnUrl, resultReady });
+  const message = transport.sendMail.mock.calls[0][0];
+  expect(message.html).toContain('role="presentation"');
+  expect(message.html).toContain('max-width:640px');
+  expect(message.html).toContain('max-width:480px');
+  expect(message.html).toContain('RoznaHub');
+  expect(message.html).toContain('Guest Submission');
+  expect(message.html).toContain(resultReady ? 'Your Feedback Is Ready' : 'Assignment Submitted Successfully');
+  expect(message.html).toContain('&lt;Essay&gt; &amp; &quot;Writing&quot;');
+  expect(message.html).toContain(`href="${returnUrl}"`);
+  expect(message.html).toContain('href="https://school.example/guest/results/507f1f77bcf86cd799439011"');
+  expect(message.html.match(/private-token/g)?.length).toBe(1);
+  expect(message.html).toContain('Recover Link');
+  expect(message.html).toContain('mailto:support@roznahub.com');
+  expect(message.html).not.toMatch(/<script|<form|<iframe|<img/i);
+  const status = resultReady ? 'feedback is ready' : 'submission was received';
+  expect(message.text).toBe(`Rozna Co-Marker\n\nYour ${status} for ${assignmentTitle}.\nUse this private link to access your feedback without logging in:\n${returnUrl}\nKeep this link private. Do not share it. It expires; request a new link from the assignment page if needed.`);
+});
+
 test('missing config fails safely before touching the transport', async () => {
   delete process.env.SMTP_PASS;
   expect(email.emailReadiness()).toEqual({ ready: false, code: 'EMAIL_PROVIDER_NOT_CONFIGURED', missing: ['SMTP_PASS'] });

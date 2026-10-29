@@ -8,10 +8,11 @@ function secureValue(env) {
 }
 function emailReadiness(env = process.env) {
   const resend = value(env, 'SMTP_HOST').toLowerCase() === 'smtp.resend.com' || value(env, 'SMTP_USER') === 'resend';
+  const hostinger = value(env, 'SMTP_HOST').toLowerCase() === 'smtp.hostinger.com';
   // Retain legacy SMTP defaults, but never infer a sender from Resend's fixed username.
-  const required = resend ? ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'MAIL_FROM_EMAIL'] : ['SMTP_USER', 'SMTP_PASS'];
+  const required = resend || hostinger ? ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASS', 'MAIL_FROM_EMAIL'] : ['SMTP_USER', 'SMTP_PASS'];
   const missing = required.filter(key => !value(env, key));
-  if (/^(?:YOUR_RESEND_API_KEY|YOUR_API_KEY|replace[_-].*)$/i.test(value(env, 'SMTP_PASS')) && !missing.includes('SMTP_PASS')) missing.push('SMTP_PASS');
+  if (/^(?:YOUR_HOSTINGER_MAILBOX_PASSWORD|YOUR_RESEND_API_KEY|YOUR_API_KEY|replace[_-].*)$/i.test(value(env, 'SMTP_PASS')) && !missing.includes('SMTP_PASS')) missing.push('SMTP_PASS');
   if (missing.length) return { ready: false, code: 'EMAIL_PROVIDER_NOT_CONFIGURED', missing };
   const from = env.MAIL_FROM_EMAIL || env.SMTP_USER;
   if (!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i.test(from || '')
@@ -32,6 +33,10 @@ function emailReadiness(env = process.env) {
       || ![25, 465, 587, 2465, 2587].includes(port))) {
     return { ready: false, code: 'EMAIL_PROVIDER_NOT_CONFIGURED', missing: ['VALID_RESEND_SMTP_SETTINGS'] };
   }
+  if (hostinger && (!((port === 465 && secure) || (port === 587 && !secure))
+      || String(from).toLowerCase() !== String(env.SMTP_USER).toLowerCase())) {
+    return { ready: false, code: 'EMAIL_PROVIDER_NOT_CONFIGURED', missing: ['VALID_HOSTINGER_SMTP_SETTINGS'] };
+  }
   return { ready: true, code: 'EMAIL_CONFIG_READY', missing: [] };
 }
 
@@ -41,7 +46,7 @@ function smtpTransportOptions(env = process.env) {
   if (!readiness.ready) throw Object.assign(new Error('Email configuration unavailable'), { code: readiness.code });
   const resend = value(env, 'SMTP_HOST').toLowerCase() === 'smtp.resend.com';
   return { host: value(env, 'SMTP_HOST') || 'smtp.gmail.com', port: Number(value(env, 'SMTP_PORT') || 587),
-    secure: secureValue(env), ...(resend ? { requireTLS: true } : {}),
+    secure: secureValue(env), ...(resend || value(env, 'SMTP_HOST').toLowerCase() === 'smtp.hostinger.com' ? { requireTLS: true } : {}),
     auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
     connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 10000,
     logger: false, debug: false };
