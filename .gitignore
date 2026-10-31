@@ -59,6 +59,8 @@ tmp/targeted-v4-live-smoke/
 tmp/ocr-benchmark-inputs/
 tmp/ocr-benchmark-results/
 tmp/benchmark003-gold-preparation/
+# OCR evaluation harness output (contains student text; set OCR_EVAL_OUT to a folder outside the repo instead)
+tmp/ocr-eval-results/
 
 # google/firebase service accounts and downloaded keys
 *.json
