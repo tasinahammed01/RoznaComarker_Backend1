@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('fs/promises');
 const Evidence=require('../../models/SourceFidelityEvidence');
-const {VERSION,PROMPT,sha,config,validateCanonical:validate,fail,QWEN_MODEL,wireContract,PREVIOUS_QWEN_PROMPT,sameSourcePrompt}=require('./contract');
+const {VERSION,PROMPT,sha,config,validateCanonical:validate,fail,QWEN_MODEL,qwenPromptBinding,sameSourcePrompt}=require('./contract');
 const {orientImage}=require('./imageInput');
 const IMAGE_MESSAGE='Some handwriting could not be read confidently. Please upload a clearer image.';
 const SERVICE_MESSAGE='Handwriting verification is temporarily unavailable. Please try again later.';
@@ -10,14 +10,10 @@ function binding(context,page,env=process.env){
   const promptSha256=sha(PROMPT+JSON.stringify(require('../gptVisionExact.service').reference(context.assignment)));
   const identity={preSubmission:true,ownerId,assignmentId,sourceMode:'gpt_vision_exact',version:VERSION,model,promptSha256,
     sourceSha256:page.sourceSha256,inputSha256:sha(page.bytes),pageNumber:page.pageNumber,pageIndex:page.pageNumber-1};
-  // Keep the durable reservation key across this wire migration: changing it
+  // Keep the durable reservation key across this wire migration and across readers: changing it
   // would reset failed-source attempts/cooldowns and permit duplicate paid reads.
   const key=sha(JSON.stringify(identity)).slice(0,24);
-  return {...identity,...(model===QWEN_MODEL?{legacyPromptSha256:promptSha256,
-    previousPromptSha256:sha(PREVIOUS_QWEN_PROMPT+JSON.stringify(require('../gptVisionExact.service').reference(context.assignment))),
-    qwenPromptVersion:wireContract(model).promptVersion,
-    promptSha256:sha(wireContract(model).prompt+JSON.stringify(require('../gptVisionExact.service').reference(context.assignment))),
-    wireVersion:wireContract(model).version}:{}),key};
+  return {...identity,...(model===QWEN_MODEL?qwenPromptBinding(require('../gptVisionExact.service').reference(context.assignment),env):{}),key};
 }
 async function pagesFor(file){
   const started=Date.now();
@@ -34,7 +30,8 @@ async function pagesFor(file){
 async function find(key){return Evidence.findById(key).select('+payload').lean();}
 const sameBinding=(a,b)=>a&&b&&(Object.keys(b).every(k=>a[k]===b[k])
   ||b.model===QWEN_MODEL&&sameSourcePrompt(a,b)&&(!a.wireVersion||a.wireVersion===b.wireVersion)
-    &&Object.keys(b).filter(k=>!['promptSha256','legacyPromptSha256','wireVersion','previousPromptSha256','qwenPromptVersion'].includes(k)).every(k=>a[k]===b[k]));
+    &&Object.keys(b).filter(k=>!['promptSha256','legacyPromptSha256','wireVersion','previousPromptSha256','qwenPromptVersion',
+      'readerMode','readerVersion','jsonPromptSha256','plainPromptSha256'].includes(k)).every(k=>a[k]===b[k]));
 function reservationFor(bound,onObservation){
 const observe=value=>{if(typeof onObservation==='function')try{onObservation(value);}catch{/* Observation only. */}};
 const owner=require('crypto').randomUUID(),policy=require('../sourceVerificationPolicy');let probe;

@@ -445,23 +445,27 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
       body.provider={require_parameters:true,allow_fallbacks:false};
     }
     if (requestProfile) {
+      // Plain-first Qwen reader: plain-text output at temperature 0, otherwise the Qwen JSON profile's routing.
+      const plainSource=requestProfile==='gpt_vision_exact_plain_v1';
       const profileModelAllowed=requestProfile==='gpt_vision_exact_v1'
         ? require('./gptVisionExact/contract').models().includes(entry.model)
+        : plainSource ? entry.model===require('./gptVisionExact/contract').QWEN_MODEL&&responseFormat!=='json'&&temperature===0
         : requestProfile==='source_fidelity_v1'&&['openai/gpt-6-astra','anthropic/claude-fable-5.1'].includes(entry.model);
       if (!profileModelAllowed || google
         || base !== 'https://openrouter.ai/api/v1') throw attemptError('OCR_SOURCE_PROFILE_INVALID', 'Invalid source reader profile.');
       delete body.temperature; delete body.max_tokens;
       // DeepSeek and Qwen approved routes advertise max_tokens. Keep legacy request
       // profiles unchanged and never send both token-limit aliases.
-      if (requestProfile==='gpt_vision_exact_v1' && [require('./gptVisionExact/contract').DEEPSEEK_MODEL,require('./gptVisionExact/contract').QWEN_MODEL].includes(entry.model))
+      if (plainSource || requestProfile==='gpt_vision_exact_v1' && [require('./gptVisionExact/contract').DEEPSEEK_MODEL,require('./gptVisionExact/contract').QWEN_MODEL].includes(entry.model))
         body.max_tokens = 16000;
       else body.max_completion_tokens = requestProfile==='gpt_vision_exact_v1'?16000:12000;
       body.provider = { require_parameters: true, allow_fallbacks: false };
-      if(requestProfile==='gpt_vision_exact_v1'&&entry.model===require('./gptVisionExact/contract').QWEN_MODEL){
+      if(plainSource||requestProfile==='gpt_vision_exact_v1'&&entry.model===require('./gptVisionExact/contract').QWEN_MODEL){
         body.reasoning={effort:'none'};
         // Supported-parameter/schema filtering remains mandatory; never pin a provider blindly.
         body.provider.sort='latency';
       }
+      if(plainSource)body.temperature=0;
     }
     const options = {
       method: 'POST',

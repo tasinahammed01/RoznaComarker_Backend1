@@ -23,7 +23,7 @@ const corrections=require('../src/services/canonicalCorrectionsPipeline.service'
 let token,student,teacher,cls,a,bytes,serial=0;
 const value=()=>({version:c.VERSION,activeTranscript:'Society always expect\npowerfull Say',physicalLines:['Society always expect','powerfull Say'].map(text=>({segments:[{classification:'STUDENT_ACTIVE_TEXT',text,confidence:1}]})),uncertainties:[]});
 const providerValue=v=>process.env.OCR_GPT_VISION_MODEL===c.QWEN_MODEL?{version:c.QWEN_WIRE_VERSION,physicalLines:v.physicalLines,uncertainties:v.uncertainties}:v;
-function previousQwenBinding(bound){const {legacyPromptSha256,wireVersion,previousPromptSha256,qwenPromptVersion,...old}=bound;old.promptSha256=legacyPromptSha256;return old;}
+function previousQwenBinding(bound){const {legacyPromptSha256,wireVersion,previousPromptSha256,qwenPromptVersion,readerMode,readerVersion,jsonPromptSha256,plainPromptSha256,...old}=bound;old.promptSha256=legacyPromptSha256;return old;}
 const check=(image=bytes,assignment=a,phase)=>request(app).post('/api/submissions/image-preflight').set('Authorization','Bearer '+token).field('assignmentId',String(assignment._id)).field('phase',phase||'source').attach('file',image,{filename:'same-name.png',contentType:'image/png'});
 const submit=(images=[bytes],assignment=a)=>{let r=request(app).post('/api/submissions/'+assignment._id).set('Authorization','Bearer '+token).field('canSubmit','true');for(const image of images)r=r.attach('files',image,{filename:'same-name.png',contentType:'image/png'});return r;};
 beforeAll(async()=>{await connectInMemoryMongo();await seedTestPlans();

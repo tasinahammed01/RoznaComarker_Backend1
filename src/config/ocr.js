@@ -6,8 +6,8 @@ const {mode}=require('../services/hybridSource/contract');
 function validateOcrConfiguration(environment=process.env) {
   const selected=mode(environment);
   if(selected==='gpt_vision_exact'){
-    const {model}=require('../services/gptVisionExact/contract').config(environment);
-    return {mode:selected,gptVisionModel:model,openrouterConfigured:true,teacherConfirmationRequired:false,sourceCallsPerPage:1};
+    const contract=require('../services/gptVisionExact/contract'),{model}=contract.config(environment);
+    return {mode:selected,gptVisionModel:model,gptVisionReader:contract.readerMode(environment),openrouterConfigured:true,teacherConfirmationRequired:false,sourceCallsPerPage:1};
   }
   if(selected==='astra_human_confirm'){
     if(environment.OCR_SOURCE_VERIFICATION_MODE&&!['first_pass'].includes(environment.OCR_SOURCE_VERIFICATION_MODE))throw Object.assign(Error('OCR_SOURCE_VERIFICATION_MODE_INVALID'),{code:'OCR_SOURCE_VERIFICATION_MODE_INVALID'});

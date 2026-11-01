@@ -1,9 +1,11 @@
 'use strict';
-const {VERSION,sha,fail,config,PROMPT,validate,diagnostics}=require('./gptVisionExact/contract');
+const {VERSION,sha,fail,config,validate,diagnostics}=require('./gptVisionExact/contract');
 const attempts=require('./gptVisionExact/attempt');
 const {alignGeometry}=require('./gptVisionExact/alignment');
 function reference(assignment={}){return Object.fromEntries(['title','prompt','question','instructions','description'].filter(k=>typeof assignment[k]==='string').map(k=>[k,assignment[k].slice(0,10000)]));}
-async function reader({model,bytes,mimeType,prompt,assignmentReference,env,signal,onDiagnostic,onObservation,fetchImpl=global.fetch}){
+async function reader({model,bytes,mimeType,prompt,assignmentReference,env,signal,onDiagnostic,onObservation,fetchImpl=global.fetch,readerMode}){
+  if(readerMode===require('./gptVisionExact/plainReader').PLAIN_READER)
+    return require('./gptVisionExact/plainReader').read({model,bytes,mimeType,env,signal,onDiagnostic,onObservation,fetchImpl});
   const wire=require('./gptVisionExact/contract').wireContract(model);
   const policy=model===require('./gptVisionExact/contract').QWEN_MODEL?require('./gptVisionExact/contract').requestPolicy(env):{maxOutputTokens:16000,attemptTimeoutMs:180000};
   return require('./aiGateway.service').providerAttempt({entry:{provider:'openrouter',model},messages:[{role:'system',content:model===require('./gptVisionExact/contract').QWEN_MODEL?wire.prompt:prompt},
@@ -29,25 +31,26 @@ async function readPage({bytes,mimeType,identity,assignment,google,isCurrentJob=
   const actualMime=bytes?.[0]===255&&bytes?.[1]===216&&bytes?.[2]===255?'image/jpeg':Buffer.isBuffer(bytes)&&bytes.subarray(0,8).equals(Buffer.from('89504e470d0a1a0a','hex'))?'image/png':Buffer.isBuffer(bytes)&&bytes.toString('ascii',0,4)==='RIFF'&&bytes.toString('ascii',8,12)==='WEBP'?'image/webp':null;
   if(!Buffer.isBuffer(bytes)||!bytes.length||bytes.length>20*1024*1024||actualMime!==mimeType)throw fail('OCR_GPT_SOURCE_IMAGE_INVALID');
   if(signal?.aborted||!await isCurrentJob())throw fail('OCR_JOB_SUPERSEDED');
-  const wire=require('./gptVisionExact/contract').wireContract(model);
+  const wire=require('./gptVisionExact/contract').wireContract(model),plainReader=require('./gptVisionExact/plainReader');
+  const readerMode=model===require('./gptVisionExact/contract').QWEN_MODEL?require('./gptVisionExact/contract').readerMode(env):null;
+  const plain=readerMode===plainReader.PLAIN_READER;
   const assignmentReference=reference(assignment),bound={...identity,inputSha256:sha(bytes),model,promptSha256:sha(wire.prompt+JSON.stringify(assignmentReference)),mimeType,
-    ...(model===require('./gptVisionExact/contract').QWEN_MODEL?{legacyPromptSha256:sha(PROMPT+JSON.stringify(assignmentReference)),
-      previousPromptSha256:sha(require('./gptVisionExact/contract').PREVIOUS_QWEN_PROMPT+JSON.stringify(assignmentReference)),
-      qwenPromptVersion:wire.promptVersion,wireVersion:wire.version}:{})};
+    ...(readerMode?require('./gptVisionExact/contract').qwenPromptBinding(assignmentReference,env):{})};
   const attempt=await reservation.acquire(bound);
   observe({cacheUsed:attempt.cached===true,stage:attempt.cached?'cache_validation':'provider_request'});
   let result,value,diagnostic,rejectionDiagnostic,alignment={coverage:0,words:[]},validationStage='PROVIDER_REQUEST',code=null;
   let geometryMs=0,sourceReuseMs=0,preflightSourceMs=0;
   let sourceValidationMs=0,sourcePersistMs=0,sourceProviderMs=0;
   let transcriptDiagnostic={};
-  const validateSource=content=>(model===require('./gptVisionExact/contract').QWEN_MODEL?require('./gptVisionExact/contract').validateWire:validate)(content,{onDiagnostic:d=>{transcriptDiagnostic=safeSourceDiagnostic(d);}});
+  const validateSource=content=>(model===require('./gptVisionExact/contract').QWEN_MODEL?require('./gptVisionExact/contract').validateWire:validate)(
+    plain?plainReader.toWire(content,assignmentReference):content,{onDiagnostic:d=>{transcriptDiagnostic=safeSourceDiagnostic(d);}});
   try{
     if(attempt.cached){const validationStarted=Date.now();value=require('./gptVisionExact/contract').validateCanonical(JSON.stringify(attempt.evidence.payload.primary));sourceValidationMs=Date.now()-validationStarted;result={returnedModel:model};
       sourceReuseMs=Date.now()-started;preflightSourceMs=Number(attempt.evidence.payload.sourceReadMs
         ??attempt.evidence.payload.readers?.[0]?.durationMs)||0;}
     else{
       const providerStarted=Date.now();
-      result=await read({model,bytes,mimeType,prompt:wire.prompt,assignmentReference,env,signal,onObservation:typeof onObservation==='function'?observe:undefined,onDiagnostic:d=>{diagnostic=d;
+      result=await read({model,bytes,mimeType,prompt:wire.prompt,assignmentReference,env,signal,readerMode,onObservation:typeof onObservation==='function'?observe:undefined,onDiagnostic:d=>{diagnostic=d;
         observe({validationStage:d.failureStage,providerHttpStatus:d.httpStatus,timeoutOrigin:d.timeoutOrigin});}});
       sourceProviderMs=Date.now()-providerStarted;
       validationStage='MODEL_IDENTITY_VALIDATION';if(result.returnedModel!==model)throw fail('OCR_SOURCE_MODEL_IDENTITY');
@@ -61,9 +64,11 @@ async function readPage({bytes,mimeType,identity,assignment,google,isCurrentJob=
     geometryMs=Date.now()-geometryStarted;
     if(signal?.aborted||!await isCurrentJob())throw fail('OCR_JOB_SUPERSEDED');
     validationStage='ACCEPTED';
-    const sourceProfile={...transcriptDiagnostic,wireVersion:wire.version,...(wire.promptVersion?{qwenPromptVersion:wire.promptVersion}:{}),sourceImagePrepareMs:Number(identity.sourceImagePrepareMs)||0,sourceProviderMs,sourceValidationMs,
+    const sourceProfile={...transcriptDiagnostic,wireVersion:wire.version,...(wire.promptVersion&&!plain?{qwenPromptVersion:wire.promptVersion}:{}),
+      ...(readerMode?{readerMode,readerVersion:bound.readerVersion}:{}),sourceImagePrepareMs:Number(identity.sourceImagePrepareMs)||0,sourceProviderMs,sourceValidationMs,
       imageWidth:identity.width||null,imageHeight:identity.height||null,encodedImageBytes:bytes.length,imageDetail:'provider_default',reasoningControl:model===require('./gptVisionExact/contract').QWEN_MODEL?'none':'not_set',
-      promptTokenEstimate:Math.ceil((wire.prompt.length+JSON.stringify(assignmentReference).length)/4),responseSchemaTokenEstimate:Math.ceil(JSON.stringify(wire.schema).length/4),
+      promptTokenEstimate:Math.ceil((plain?plainReader.PROMPT.length+plainReader.USER_TEXT.length:wire.prompt.length+JSON.stringify(assignmentReference).length)/4),
+      responseSchemaTokenEstimate:plain?0:Math.ceil(JSON.stringify(wire.schema).length/4),
       requestedOutputTokens:16000,attemptTimeoutMs:model===require('./gptVisionExact/contract').QWEN_MODEL?require('./gptVisionExact/contract').requestPolicy(env).attemptTimeoutMs:180000,
       usage:require('./sourceFidelityOcr.service').safeUsage(result.usage),
       requestToHeadersMs:result.transportTimings?.requestToHeadersMs??null,responseBodyMs:result.transportTimings?.responseBodyMs??null};

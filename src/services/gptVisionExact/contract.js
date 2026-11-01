@@ -22,9 +22,16 @@ function requestPolicy(env=process.env){
   return {attemptTimeoutMs,maxOutputTokens:16000};
 }
 const models=()=>[require('../hybridSource/contract').MODEL,'openai/gpt-6-astra',DEEPSEEK_MODEL,QWEN_MODEL];
+// OCR_GPT_VISION_READER: json_contract (default, today's reader) or plain_text (measured plain-first reader, Qwen only).
+function readerMode(env=process.env){
+  const raw=env.OCR_GPT_VISION_READER,mode=raw===undefined||raw===''?'json_contract':raw;
+  if(!require('./plainReader').READER_MODES.includes(mode))throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
+  return mode;
+}
 function config(env=process.env){
   const model=env.OCR_GPT_VISION_MODEL||require('../hybridSource/contract').MODEL;
   if(!models().includes(model)||!env.OPENROUTER_API_KEY)throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
+  if(readerMode(env)==='plain_text'&&model!==QWEN_MODEL)throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
   if(model===QWEN_MODEL)requestPolicy(env);
   return {model};
 }
@@ -59,11 +66,25 @@ const PREVIOUS_QWEN_PROMPT=PROMPT.slice(0,PROMPT.indexOf('Each physical line has
 const QWEN_PROMPT_VERSION='qwen-physical-prompt-v2-precise-uncertainty';
 const QWEN_PROMPT=PREVIOUS_QWEN_PROMPT+`
 Never emit an empty STUDENT_ACTIVE_TEXT string. If only a small active region has genuinely unresolved visual strokes, split it into a separate UNCERTAIN segment with the precise ACTIVE_TEXT_UNCERTAIN reference; retain the surrounding readable segments and physical line. Do not mark a confidently transcribed region unreadable unless a specific visual detail remains unresolved. Never guess missing letters or claim certainty for unreadable active strokes.`;
+// Both readers persist the same canonical evidence, so evidence from either stays reusable when the flag changes;
+// the reader label must agree with the prompt hash it was read under.
 function sameSourcePrompt(previous,current){
+  const plain=require('./plainReader').PLAIN_READER;
   return Boolean(previous&&current&&previous.model===current.model&&typeof previous.promptSha256==='string'&&previous.promptSha256.length
-    &&(previous.promptSha256===current.promptSha256
+    &&(previous.promptSha256===current.promptSha256&&(previous.readerMode===plain)===(current.readerMode===plain)
     ||current.model===QWEN_MODEL&&(!previous.wireVersion&&Boolean(current.legacyPromptSha256)&&previous.promptSha256===current.legacyPromptSha256
-      ||previous.wireVersion===QWEN_WIRE_VERSION&&Boolean(current.previousPromptSha256)&&previous.promptSha256===current.previousPromptSha256)));
+      ||previous.wireVersion===QWEN_WIRE_VERSION&&Boolean(current.previousPromptSha256)&&previous.promptSha256===current.previousPromptSha256
+      ||previous.wireVersion===QWEN_WIRE_VERSION&&previous.readerMode!==plain&&Boolean(current.jsonPromptSha256)&&previous.promptSha256===current.jsonPromptSha256
+      ||previous.wireVersion===QWEN_WIRE_VERSION&&previous.readerMode===plain&&Boolean(current.plainPromptSha256)&&previous.promptSha256===current.plainPromptSha256)));
+}
+// Qwen prompt identity fields of a cache binding. Not part of the durable reservation key.
+function qwenPromptBinding(assignmentReference,env=process.env){
+  const plainReader=require('./plainReader'),wire=wireContract(QWEN_MODEL),reference=JSON.stringify(assignmentReference);
+  const jsonPromptSha256=sha(wire.prompt+reference),plainPromptSha256=plainReader.promptSha256(assignmentReference);
+  const plain=readerMode(env)===plainReader.PLAIN_READER;
+  return {legacyPromptSha256:sha(PROMPT+reference),previousPromptSha256:sha(PREVIOUS_QWEN_PROMPT+reference),qwenPromptVersion:wire.promptVersion,
+    promptSha256:plain?plainPromptSha256:jsonPromptSha256,wireVersion:wire.version,readerMode:readerMode(env),
+    readerVersion:plain?plainReader.VERSION:wire.promptVersion,jsonPromptSha256,plainPromptSha256};
 }
 function wireContract(model){return model===QWEN_MODEL?{version:QWEN_WIRE_VERSION,promptVersion:QWEN_PROMPT_VERSION,prompt:QWEN_PROMPT,schema:qwenSchema,name:'qwen_physical_source_v1'}
   :{version:VERSION,prompt:PROMPT,schema,name:'gpt_vision_exact_v2'};}
@@ -169,6 +190,6 @@ function safeUncertaintyDetails(value){
       'uncertaintyKind','physicalLineIndex','segmentIndex','referencedSegmentClassification',
       'referencedTextPresent','referencedTextLength','confidenceBand'].map(key=>[key,d[key]])));
 }
-module.exports={VERSION,CLASSES,UNCERTAINTY_KINDS,DEEPSEEK_MODEL,QWEN_MODEL,models,sha,fail,config,requestPolicy,PREFLIGHT_TIMEOUT_MS,schema,PROMPT,validate,diagnostics,
+module.exports={VERSION,CLASSES,UNCERTAINTY_KINDS,DEEPSEEK_MODEL,QWEN_MODEL,models,sha,fail,config,readerMode,qwenPromptBinding,requestPolicy,PREFLIGHT_TIMEOUT_MS,schema,PROMPT,validate,diagnostics,
   QWEN_WIRE_VERSION,QWEN_PROMPT_VERSION,PREVIOUS_QWEN_PROMPT,sameSourcePrompt,wireContract,safeUncertaintyDetails,validateWire:(content,options={})=>validate(content,{...options,providerWire:true}),
   validateCanonical:content=>validate(content,{strictTranscript:true})};

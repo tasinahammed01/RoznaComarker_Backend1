@@ -12,6 +12,15 @@ const safeRevision = (value) => {
   return /^[A-Za-z0-9._/-]{1,120}$/u.test(revision) ? revision : 'local';
 };
 
+// Reader fields appear only for the non-default plain_text reader, so the default hash is unchanged.
+// An invalid flag is reported rather than thrown, keeping the health endpoint available.
+function sourceReader(env) {
+  const plainReader = require('./gptVisionExact/plainReader');
+  let mode;
+  try { mode = require('./gptVisionExact/contract').readerMode(env); } catch { return { qwenSourceReader: 'invalid' }; }
+  return mode === plainReader.PLAIN_READER ? { qwenSourceReader: mode, qwenSourceReaderVersion: plainReader.VERSION } : {};
+}
+
 function runtimeContractFingerprint(env = process.env) {
   const contract = semanticCorrections.contractVersions(require('./aiGateway.service').correctionModel(env));
   const contracts = Object.freeze({
@@ -27,7 +36,8 @@ function runtimeContractFingerprint(env = process.env) {
     canonicalCorrection: canonicalCorrections.VERSION,
     canonicalEvaluation: canonicalEvaluation.VERSION,
     qwenSourceWire:require('./gptVisionExact/contract').QWEN_WIRE_VERSION,
-    qwenSourcePrompt:require('./gptVisionExact/contract').QWEN_PROMPT_VERSION
+    qwenSourcePrompt:require('./gptVisionExact/contract').QWEN_PROMPT_VERSION,
+    ...sourceReader(env)
   });
   const orderedContractValues = [
     contracts.correctionPrompt, contracts.correctionSchema, contracts.rubricPrompt,
@@ -36,6 +46,7 @@ function runtimeContractFingerprint(env = process.env) {
   if(contracts.rubricWire)orderedContractValues.push(contracts.rubricWire);
   orderedContractValues.push(contracts.qwenSourceWire);
   orderedContractValues.push(contracts.qwenSourcePrompt);
+  if(contracts.qwenSourceReader)orderedContractValues.push(contracts.qwenSourceReader, contracts.qwenSourceReaderVersion || null);
   const contractHash = crypto.createHash('sha256').update(JSON.stringify(orderedContractValues)).digest('hex').slice(0, 16);
   return Object.freeze({
     applicationVersion: String(packageJson.version || 'unknown'),
