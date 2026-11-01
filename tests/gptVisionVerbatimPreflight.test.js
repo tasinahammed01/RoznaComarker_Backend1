@@ -23,8 +23,8 @@ const VERBATIM = 'gpt_vision_exact_verbatim_v1', PLAIN = 'gpt_vision_exact_plain
 const QUESTION = 'Describe your favourite place and explain why you like it.';
 const ANSWER = ['My favourite place is the park.', 'I play footbal there with my frends.', 'This artical show that parks matter.'];
 let token, student, teacher, cls, a, bytes, serial = 0, verbatimReply, secondReply;
-const reply = (over = {}) => JSON.stringify({ version: 'verbatim-page-v1', name_present: true, question_lines: [QUESTION], answer_lines: ANSWER,
-  struck_through: [{ line: 0, text: 'For example,' }], uncertain: [{ line: 1, word: 'frends' }], ...over });
+const reply = (over = {}) => JSON.stringify({ version: 'verbatim-page-v2', name_present: true, question_lines: [QUESTION], struck_through: [{ text: 'For example,', after_word: '' }], answer_lines: ANSWER,
+  uncertain: [{ line: 1, word: 'frends' }], ...over });
 const jsonWire = { version: c.QWEN_WIRE_VERSION, physicalLines: [{ segments: [{ classification: 'PROMPT_OR_INSTRUCTION', text: QUESTION, confidence: 1 }] },
   ...ANSWER.map(text => ({ segments: [{ classification: 'STUDENT_ACTIVE_TEXT', text, confidence: 1 }] }))], uncertainties: [] };
 const profiles = () => gateway.providerAttempt.mock.calls.map(([o]) => o.requestProfile);
@@ -80,7 +80,7 @@ test('upload makes one paid Gemini read; the worker reuses it; grading text is t
   expect(JSON.stringify(doc.ocrPages)).not.toContain('For example');
   const saved = await Evidence.findOne({ 'identity.assignmentId': String(a._id) }).select('+payload').lean();
   expect(saved.identity).toMatchObject({ model: GEMINI, readerMode: 'verbatim_json' });
-  expect(saved.payload.review.struck).toEqual([{ line: 0, text: 'For example,' }]);
+  expect(saved.payload.review.struck).toEqual([{ text: 'For example,', after_word: '' }]);
 });
 
 test('uncertain words never block the upload or the submission', async () => {

@@ -4,6 +4,7 @@ const Evidence=require('../../models/SourceFidelityEvidence');
 const {VERSION,PROMPT,sha,config,validateCanonical:validate,fail,QWEN_MODEL,GEMINI_MODEL,sourceBinding,claimModelAccepted,sameSourcePrompt}=require('./contract');
 const {orientImage}=require('./imageInput');
 const IMAGE_MESSAGE='Some handwriting could not be read confidently. Please upload a clearer image.';
+const RETRY_MESSAGE='We could not finish reading this page this time. Please try again.';
 const SERVICE_MESSAGE='Handwriting verification is temporarily unavailable. Please try again later.';
 function binding(context,page,env=process.env){
   const {model}=config(env),assignmentId=String(context.assignment._id),ownerId=String(context.ownerId);
@@ -11,9 +12,11 @@ function binding(context,page,env=process.env){
   const gemini=model===GEMINI_MODEL;
   // Qwen keeps the legacy hash in the identity so its durable key never changes. Gemini's identity carries its own prompt and reader
   // version, so a new prompt version gets a new key instead of finding old, differently-read evidence.
+  const request=gemini?require('./verbatimReader').settings(env):null;
   const identity={preSubmission:true,ownerId,assignmentId,sourceMode:'gpt_vision_exact',version:VERSION,model,
     promptSha256:gemini?extra.promptSha256:sha(PROMPT+JSON.stringify(reference)),
-    ...(gemini?{readerMode:extra.readerMode,readerVersion:extra.readerVersion}:{}),
+    // Reasoning and temperature change what the model returns, so they are part of the Gemini identity (a .env change never returns an old transcript).
+    ...(gemini?{readerMode:extra.readerMode,readerVersion:extra.readerVersion,sourceReasoning:request.reasoning,sourceTemperature:request.temperature===0?'0':'omit'}:{}),
     sourceSha256:page.sourceSha256,inputSha256:sha(page.bytes),pageNumber:page.pageNumber,pageIndex:page.pageNumber-1};
   // Keep the durable reservation key across this wire migration and across readers: changing it
   // would reset failed-source attempts/cooldowns and permit duplicate paid reads.
@@ -63,7 +66,7 @@ return {
     if(old?.status==='GPT_SOURCE_ACCEPTED'&&sameBinding(old.identity,bound)&&old.payload?.primary)return {_id:bound.key,cached:true,evidence:old};
     if(old?.status==='GPT_SOURCE_RESERVED'&&(old.providerStartedAt&&(!old.leaseUntil||old.leaseUntil<=new Date())||!old.leaseUntil&&old.updatedAt<=new Date(Date.now()-240000)))throw fail('OCR_GPT_SOURCE_ATTEMPT_UNKNOWN');
     const payment=old?.status==='GPT_SOURCE_FAILED'&&policy.isPaymentFailure(old.payload?.safeFailureCode);
-    if(old?.status==='GPT_SOURCE_FAILED'&&!payment&&(policy.classify(old.payload?.safeFailureCode,old.payload?.httpStatus)!=='retryable'||(old.attempts||1)>=policy.MAX_ATTEMPTS)){
+    if(old?.status==='GPT_SOURCE_FAILED'&&!payment&&(policy.classify(old.payload?.safeFailureCode,old.payload?.httpStatus)!=='retryable'||(old.attempts||1)>=policy.maxAttempts(old.payload?.safeFailureCode,bound.model))){
       observe({cacheUsed:true});
       throw Object.assign(fail(old.payload?.safeFailureCode||'OCR_GPT_PROVIDER_FAILED'),{sourceDiagnostic:require('../gptVisionExact.service').safeSourceDiagnostic(old.payload)});
     }
@@ -71,11 +74,12 @@ return {
     // the same cooldown; lifetime attempt count never permanently latches billing.
     const paymentRetry={status:'GPT_SOURCE_FAILED','payload.safeFailureCode':'OCR_GPT_PROVIDER_PAYMENT_REQUIRED',
       $or:[{nextAttemptAt:{$lte:new Date()}},{nextAttemptAt:null,updatedAt:{$lte:new Date(Date.now()-policy.PAYMENT_COOLDOWN_MS)}}]};
+    const cap=policy.maxAttempts(old?.payload?.safeFailureCode,bound.model);
     const reclaimed=await Evidence.findOneAndUpdate({_id:bound.key,$or:[
       {status:'GPT_SOURCE_RESERVED',leaseUntil:{$lte:new Date()}},
       ...(payment?[paymentRetry]:[
-      {status:'GPT_SOURCE_FAILED',nextAttemptAt:{$lte:new Date()},attempts:{$lt:policy.MAX_ATTEMPTS}},
-      {status:'GPT_SOURCE_FAILED',nextAttemptAt:null,updatedAt:{$lte:new Date(Date.now()-15000)},$or:[{attempts:{$exists:false}},{attempts:{$lt:policy.MAX_ATTEMPTS}}]}])
+      {status:'GPT_SOURCE_FAILED',nextAttemptAt:{$lte:new Date()},attempts:{$lt:cap}},
+      {status:'GPT_SOURCE_FAILED',nextAttemptAt:null,updatedAt:{$lte:new Date(Date.now()-15000)},$or:[{attempts:{$exists:false}},{attempts:{$lt:cap}}]}])
     ]},{$set:{identity:bound,status:'GPT_SOURCE_RESERVED',leaseOwner:owner,leaseUntil:new Date(Date.now()+240000)},$unset:{providerStartedAt:1},$inc:{attempts:1}},{returnDocument:'after'});
     if(!reclaimed){if(old?.status==='GPT_SOURCE_FAILED')observe({cacheUsed:true});throw fail(old?.status==='GPT_SOURCE_FAILED' ? old.payload?.safeFailureCode||'OCR_GPT_PROVIDER_FAILED' : 'OCR_GPT_SOURCE_CHECKING');}
     }
@@ -113,6 +117,7 @@ function ui(error){
   if(!error)return {sourceReadStatus:'PASSED',canSubmit:true,message:'The handwriting can be read for assessment.'};
   const code=/^OCR_[A-Z0-9_]{1,90}$/.test(error.code||'')?error.code:'OCR_GPT_PROVIDER_FAILED';
   if(code==='OCR_GPT_SOURCE_CHECKING')return {sourceReadStatus:'CHECKING',canSubmit:false,sourceReadErrorCode:code,message:'We are checking whether the handwriting can be read accurately.'};
+  if(['OCR_GPT_SOURCE_TRUNCATED','OCR_GPT_SOURCE_SCHEMA','OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH'].includes(code))return {sourceReadStatus:'FAILED_SERVICE',canSubmit:false,sourceReadErrorCode:code,message:RETRY_MESSAGE};
   const image=['OCR_GPT_SOURCE_UNCERTAIN','OCR_GPT_SOURCE_EMPTY','OCR_PDF_INVALID','OCR_PDF_PASSWORD','OCR_PDF_LIMIT'].includes(code);
   return {sourceReadStatus:image?'FAILED_IMAGE':'FAILED_SERVICE',canSubmit:false,sourceReadErrorCode:code,message:image?IMAGE_MESSAGE:SERVICE_MESSAGE};
 }
@@ -168,4 +173,4 @@ function claimReservation(file,identity){return {
   },
   async complete(){throw fail('OCR_GPT_SOURCE_PREFLIGHT_REQUIRED');}
 };}
-module.exports={binding,pagesFor,reservationFor,checkPages,claimReservation,ui,withSourceCheck,IMAGE_MESSAGE,SERVICE_MESSAGE};
+module.exports={binding,pagesFor,reservationFor,checkPages,claimReservation,ui,withSourceCheck,IMAGE_MESSAGE,SERVICE_MESSAGE,RETRY_MESSAGE};

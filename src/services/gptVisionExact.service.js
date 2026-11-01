@@ -20,8 +20,10 @@ async function reader({model,bytes,mimeType,prompt,assignmentReference,env,signa
     }:fetchImpl,env,now:Date.now,signal,requestProfile:'gpt_vision_exact_v1',onDiagnostic});
 }
 const safeCode=v=>typeof v==='string'&&/^(AI_|OCR_)[A-Z0-9_]{1,75}$/.test(v)?v:null;
-function failureCode(error){const map={AI_PROVIDER_AUTH_ERROR:'OCR_GPT_PROVIDER_AUTH',AI_PROVIDER_PAYMENT_REQUIRED:'OCR_GPT_PROVIDER_PAYMENT_REQUIRED',
+function failureCode(error,truncatedCode=false){const map={AI_PROVIDER_AUTH_ERROR:'OCR_GPT_PROVIDER_AUTH',AI_PROVIDER_PAYMENT_REQUIRED:'OCR_GPT_PROVIDER_PAYMENT_REQUIRED',
   AI_PROVIDER_PERMISSION_DENIED:'OCR_GPT_PROVIDER_ACCESS',AI_PROVIDER_RATE_LIMIT:'OCR_GPT_PROVIDER_RATE_LIMIT',AI_PROVIDER_UNAVAILABLE:'OCR_GPT_PROVIDER_NETWORK',AI_ATTEMPT_TIMEOUT:'OCR_GPT_PROVIDER_NETWORK'};
+  // A reply cut off at the token limit: only the Gemini reader treats it as a retryable, coded reader failure (other models keep their behaviour).
+  if(truncatedCode&&error?.code==='AI_RESPONSE_TRUNCATED')return 'OCR_GPT_SOURCE_TRUNCATED';
   // Direct providerAttempt throws native fetch errors; unlike generate(), it does not wrap them.
   for(let cause=error,depth=0;cause&&depth<4;cause=cause.cause,depth++)
     if(['ETIMEDOUT','ECONNRESET','ECONNREFUSED','ENOTFOUND','EAI_AGAIN','EPIPE','UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT','UND_ERR_SOCKET'].includes(cause.code)
@@ -76,7 +78,7 @@ async function readPage({bytes,mimeType,identity,assignment,google,isCurrentJob=
     const sourceProfile={...transcriptDiagnostic,wireVersion:wire.version,...(wire.promptVersion&&!plain?{qwenPromptVersion:wire.promptVersion}:{}),
       ...(readerMode?{readerMode,readerVersion:bound.readerVersion}:{}),sourceImagePrepareMs:Number(identity.sourceImagePrepareMs)||0,sourceProviderMs,sourceValidationMs,
       // Counts and names of settings only: never page text, question text, crossed-out text or a student name.
-      ...(verbatimMode&&review?{struckCount:review.struckCount,questionLineCount:review.questionLineCount,uncertainCount:review.uncertainCount,uncertainDropped:review.uncertainDropped??0}:{}),
+      ...(verbatimMode&&review?{struckCount:review.struckCount,struckDropped:review.struckDropped??0,questionLineCount:review.questionLineCount,uncertainCount:review.uncertainCount,uncertainDropped:review.uncertainDropped??0}:{}),
       servedProvider:typeof result.provider==='string'?result.provider:null,
       imageWidth:identity.width||null,imageHeight:identity.height||null,encodedImageBytes:bytes.length,imageDetail:'provider_default',
       reasoningControl:model===contract.QWEN_MODEL?'none':verbatimMode?verbatimReader.settings(env).reasoning:'not_set',
@@ -101,7 +103,7 @@ async function readPage({bytes,mimeType,identity,assignment,google,isCurrentJob=
     }
   }catch(error){
     rejectionDiagnostic=safeSourceDiagnostic(error.sourceDiagnostic);
-    code=signal?.aborted?(signal.reason==='source_preflight_deadline'?'OCR_GPT_PROVIDER_NETWORK':'OCR_GPT_SOURCE_CANCELLED'):failureCode(error);if(error.code==='OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH')validationStage='SOURCE_CONTRACT_VALIDATION';
+    code=signal?.aborted?(signal.reason==='source_preflight_deadline'?'OCR_GPT_PROVIDER_NETWORK':'OCR_GPT_SOURCE_CANCELLED'):failureCode(error,verbatimMode);if(error.code==='OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH')validationStage='SOURCE_CONTRACT_VALIDATION';
     if(error.code==='OCR_GPT_SOURCE_UNCERTAIN')validationStage='SOURCE_AMBIGUITY_VALIDATION';
     if(!attempt.cached)await reservation.complete(attempt._id,{status:'GPT_SOURCE_FAILED',payload:{safeFailureCode:code,validationStage:diagnostic?.failureStage||validationStage,
       requestedModel:model,httpStatus:Number.isInteger(diagnostic?.httpStatus)?diagnostic.httpStatus:null,...safeTransportDiagnostic(diagnostic),...rejectionDiagnostic}});

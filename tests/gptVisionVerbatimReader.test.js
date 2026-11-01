@@ -18,8 +18,8 @@ const QUESTION = 'Do you think social media helps or harms friendships?';
 // Student mistakes that must survive unchanged.
 const ANSWER = ['I thinks social media can chang the way', 'people see themselves because the will', 'always compare it to others and how they',
   'This artical show that social media chang the', 'This suggest that social media change people vision negatively.', 'Some friends end up feeling jealousy of the trips.'];
-const reply = (over = {}) => JSON.stringify({ version: 'verbatim-page-v1', name_present: true, question_lines: [QUESTION], answer_lines: ANSWER,
-  struck_through: [{ line: 1, text: 'For example,' }], uncertain: [{ line: 3, word: 'artical' }], ...over });
+const reply = (over = {}) => JSON.stringify({ version: 'verbatim-page-v2', name_present: true, question_lines: [QUESTION], struck_through: [{ text: 'For example,', after_word: 'way' }], answer_lines: ANSWER,
+  uncertain: [{ line: 3, word: 'artical' }], ...over });
 const apiBody = (content, over = {}) => JSON.stringify({ model: GEMINI, provider: 'Google AI Studio', choices: [{ finish_reason: 'stop', message: { content } }],
   usage: { prompt_tokens: 2100, completion_tokens: 420, total_tokens: 2520, cost: 0.0023, completion_tokens_details: { reasoning_tokens: 90 } }, ...over });
 const ok = content => ({ ok: true, status: 200, text: async () => apiBody(content) });
@@ -70,9 +70,9 @@ describe('configuration', () => {
 describe('prompt, schema and strict parsing', () => {
   test('the prompt and schema are exactly what the harness measured', () => {
     const prompts = require('../scripts/ocr-eval/lib/prompts.cjs'), verbatimHarness = require('../scripts/ocr-eval/lib/verbatim.cjs');
-    const spec = prompts.promptSpec('verbatim-json');
+    const spec = prompts.promptSpec('verbatim-json-v2');
     expect(verbatim().PROMPT).toBe(spec.system);
-    expect(verbatim().SCHEMA).toEqual(verbatimHarness.VERBATIM_SCHEMA);
+    expect(verbatim().SCHEMA).toEqual(verbatimHarness.VERBATIM_V2_SCHEMA);
     expect(verbatim().userText(source.reference(assignment))).toBe(spec.userTextFor({ assignment }));
     expect(verbatim().userText({})).toBe(spec.userText);
   });
@@ -85,8 +85,8 @@ describe('prompt, schema and strict parsing', () => {
     for (const mistake of ['I thinks', 'chang the way', 'the will', 'artical show', 'This suggest', 'feeling jealousy', 'people vision']) expect(value.activeTranscript).toContain(mistake);
     expect(JSON.parse(wire).physicalLines[0].segments[0].classification).toBe('PROMPT_OR_INSTRUCTION');
     expect(() => c.validateCanonical(JSON.stringify(value))).not.toThrow();
-    expect(review).toEqual({ readerMode: 'verbatim_json', readerVersion: verbatim().VERSION, namePresent: true, questionLineCount: 1, struckCount: 1, uncertainCount: 1, uncertainDropped: 0,
-      struck: [{ line: 1, text: 'For example,' }], uncertain: [{ line: 3, word: 'artical' }] });
+    expect(review).toEqual({ readerMode: 'verbatim_json', readerVersion: verbatim().VERSION, namePresent: true, questionLineCount: 1, struckCount: 1, struckDropped: 0, uncertainCount: 1, uncertainDropped: 0,
+      struck: [{ text: 'For example,', after_word: 'way' }], uncertain: [{ line: 3, word: 'artical' }] });
   });
   test('an "uncertain" item that does not match its line is DROPPED, never fatal: the page, its transcript and the valid items are kept', () => {
     const bad = [{ line: 3, word: 'artical' }, { line: 0, word: 'zebra' }, { line: 99, word: 'will' }, { line: '1', word: 'will' }, { line: 1 }, 'junk', null, { line: 2, word: '  ' }];
@@ -109,7 +109,7 @@ describe('prompt, schema and strict parsing', () => {
   });
   test.each([
     ['not JSON', 'nope'], ['a student name field', reply({ name: 'A Student' })], ['wrong version', reply({ version: 'x' })],
-    ['a line break inside a line', reply({ answer_lines: ['a\nb'], uncertain: [], struck_through: [] })],
+    ['a NUL inside a line', reply({ answer_lines: ['a\u0000b'], uncertain: [], struck_through: [] })],
   ])('%s is a schema failure with no partial transcript', (_n, content) => {
     expect(() => verbatim().convert(content)).toThrow('OCR_GPT_SOURCE_SCHEMA');
   });
@@ -132,7 +132,7 @@ describe('gateway profile gpt_vision_exact_verbatim_v1 and the request', () => {
     expect(body.max_tokens).toBe(16000);
     expect(body).not.toHaveProperty('max_completion_tokens');
     expect(body.provider).toEqual({ require_parameters: true, allow_fallbacks: false, only: ['google-ai-studio'], ignore: ['google-ai-studio/flex', 'google-ai-studio/priority'] });
-    expect(body.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'verbatim_page_v1', strict: true, schema: verbatim().SCHEMA } });
+    expect(body.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'verbatim_page_v2', strict: true, schema: verbatim().SCHEMA } });
     expect(body.messages[0]).toEqual({ role: 'system', content: verbatim().PROMPT });
     expect(JSON.parse(body.messages[1].content[0].text).assignmentReference).toEqual(source.reference(assignment));
     expect(body.messages[1].content[1].image_url.url).toBe('data:image/jpeg;base64,/9j/');
@@ -151,7 +151,7 @@ describe('gateway profile gpt_vision_exact_verbatim_v1 and the request', () => {
   ])('the gateway refuses %s before any transport', async (_n, override) => {
     const fetchImpl = jest.fn();
     await expect(gateway.providerAttempt({ entry: { provider: 'openrouter', model: GEMINI }, messages: [{ role: 'user', content: 'x' }], maxOutputTokens: 16000, attemptTimeoutMs: 120000,
-      env, now: Date.now, requestProfile: 'gpt_vision_exact_verbatim_v1', fetchImpl, responseFormat: 'json', responseSchema: verbatim().SCHEMA, schemaName: 'verbatim_page_v1', temperature: 0, ...override }))
+      env, now: Date.now, requestProfile: 'gpt_vision_exact_verbatim_v1', fetchImpl, responseFormat: 'json', responseSchema: verbatim().SCHEMA, schemaName: 'verbatim_page_v2', temperature: 0, ...override }))
       .rejects.toMatchObject({ code: 'OCR_SOURCE_PROFILE_INVALID' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -179,7 +179,7 @@ describe('readPage with the verbatim reader', () => {
     expect(JSON.stringify(summary)).not.toContain('For example');
     const [, saved] = o.reservation.complete.mock.calls[0];
     expect(saved.status).toBe('GPT_SOURCE_ACCEPTED');
-    expect(saved.payload.review.struck).toEqual([{ line: 1, text: 'For example,' }]);
+    expect(saved.payload.review.struck).toEqual([{ text: 'For example,', after_word: 'way' }]);
     expect(c.validateCanonical(JSON.stringify(saved.payload.primary))).toEqual(saved.payload.primary);
     // the source records the very text that was graded, exactly
     expect(result.source.sourceTextExact).toBe(ANSWER.join('\n'));
