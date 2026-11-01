@@ -41,6 +41,16 @@ image2.jpg    image2.txt
 image10.png   image10.txt
 ```
 
+Optional files per photo, for the verbatim-reading experiments. A missing file means "unknown" (the matching columns
+stay empty and G10/G11 do not count that photo); an empty `.question.txt` or `.struck.txt` means "checked, none".
+
+| File | Holds |
+|---|---|
+| `image1.answer.txt` | the student's answer only, without the copied question (same conventions as `image1.txt`) |
+| `image1.question.txt` | the question as the student copied it, one line per line (needs `image1.answer.txt`) |
+| `image1.struck.txt` | crossed-out phrases, one per line; lines starting with `#` are comments |
+| `image1.assignment.json` | the assignment text as stored in the app, e.g. `{"title": "...", "instructions": "..."}` (keys: title, prompt, question, instructions, description). `verbatim-json` sends it as untrusted context, like production; `plain-first-excl` uses it to exclude the copied question |
+
 - Any `<name>.jpg|.jpeg|.png` with a matching `<name>.txt`. Names sort naturally (`image2` before `image10`).
   Sub-folders (such as `results`), hidden files and unmatched files are ignored; unmatched files are reported.
 - **Ground-truth conventions** (the prompt asks the models for the same):
@@ -91,7 +101,7 @@ node scripts/ocr-eval/run.cjs --models qwen/qwen3.8-27b --limit 2 --live --confi
 |---|---|
 | `--models a/b,c/d` | OpenRouter model ids. Dry runs also accept `fake/perfect`, `fake/noisy`, `fake/autocorrect`, `fake/reasoning`, `fake/needs-reasoning` (rejects reasoning `none`/`minimal`, accepts `low`+), `fake/always-fails`; any other id is simulated as a generic noisy reader. |
 | `--variants` | `original`, `preprocessed`, `client-export` (default: first two) |
-| `--prompt` | `plain` (default), `production`, or a candidate design: `plain-first`, `production-trim`, `lean-json` (see "Candidate designs") |
+| `--prompt` | `plain` (default), `production`, or a candidate design: `plain-first`, `production-trim`, `lean-json`, `verbatim-json`, `plain-first-excl`, `verbatim-json-v2` (see "Candidate designs") |
 | `--temperature 0\|omit` | `0` (default) sends `temperature: 0`; `omit` sends no temperature, as production does |
 | `--rescore RUN_ID` | offline: rebuild `results.csv`, `summary.md`, `run.json` and `diffs/` from the run's saved `raw/` calls. No network, no key. Add `--prompt` only for old runs whose raw files do not record it. |
 | `--live --confirm N` | real paid calls |
@@ -99,8 +109,10 @@ node scripts/ocr-eval/run.cjs --models qwen/qwen3.8-27b --limit 2 --live --confi
 | `--reasoning-for model=MODE` | reasoning setting for one model, repeatable. `MODE`: `none` (default for every model), `minimal`, `low`, `medium`, `high`, `omit` (send no reasoning parameter). Recorded per model in `summary.md` and `results.csv`. |
 | `--max-failures N` | skip a model's remaining calls after N consecutive failures (default 5); other models continue |
 | `--resume --run-id ID`, `--run-id ID` | reuse saved successful calls; name the run folder |
-| `--provider NAME` | pin one provider (`provider.only`) |
+| `--provider A,B` | pin one or more providers or endpoint tags (`provider.only`) |
+| `--ignore-providers A,B` | exclude providers or endpoint tags (`provider.ignore`), e.g. a pricing tier. Whether OpenRouter accepts a tier tag here is not verified: check the provider and `cost_price_ratio` of the first run |
 | `--sort latency\|throughput\|price\|default` | provider sort order. `default` sends no sort. Production uses `latency` for Qwen. Cannot be combined with `--provider`. |
+| `--only a,b` | run only the named photos (for example `image11`); the plan and `--confirm` cover just them. Cheap probes on the hard page |
 | `--limit N` | first N photos |
 | `--suggest-mistakes` | write draft mistakes files into the run folder |
 | `--no-catalog` | live: skip the free catalog check |
@@ -160,6 +172,21 @@ reject it as unreadable (`OCR_GPT_SOURCE_UNCERTAIN`), or find it invalid. The tr
   and "a copied question is student writing"; production schema.
 - `lean-json` (D): one object per line, `{text, kind: student|excluded}`, strict schema; `excluded` lines are kept
   out of the transcript.
+- `plain-first-excl`: the same request as `plain-first`, but the copied question is excluded the way the production
+  `plain_text` reader does it (`src/services/gptVisionExact/plainReader.js`, loaded only for this mode), using the photo's
+  `.assignment.json`. The scored transcription is everything the student wrote; the answer (graded) text excludes the question.
+- `verbatim-json-v2` (experiment): the same page, but `struck_through` (items `{text, after_word}`) comes BEFORE `answer_lines`, with a stronger rule that a crossed-out word is never copied into the answer. Crossed-out items are advisory (malformed ones are dropped and counted: `struck_dropped`).
+- `verbatim-json`: strict JSON that separates `question_lines`, `answer_lines`, `struck_through` (crossed-out text, audit
+  only), `uncertain` (low-confidence words, flagged for teacher review, never blocking) and `name_present` (the name itself
+  is never requested). The scored transcription is question + answer; the graded text is `answer_lines` only. An `uncertain` item that does not match its line is dropped and counted (`uncertain_dropped`), never a reason to reject the page, exactly as in production. Invalid
+  replies are schema failures with a fixed reason and no transcript. The schema uses only widely supported keywords.
+
+**Answer-only metrics.** With `image1.answer.txt` the harness also scores the graded text alone (`answer_cer_case`,
+`answer_wer_case`), and counts leaks: `question_leaked` (copied-question lines found in the graded text) and
+`struck_leaked` (crossed-out phrases found in it). A phrase leaks when the graded text contains it more often than the answer
+file does, so the same words legitimately written elsewhere do not count; case, punctuation and one misread letter in a
+word of four or more letters are ignored, and a phrase of ten words tolerates two different words. Counts only: no text is
+written to `results.csv` or `summary.md`. Modes that do not separate the page (`plain`, `plain-first`) report the question as leaked by design.
 
 ## Gate (`gate.cjs`)
 
@@ -167,14 +194,23 @@ Compares saved runs only (reads each `results.csv`, no calls). Every arm needs t
 `--sort latency`; both candidate runs must pass every check.
 
 ```powershell
-node scripts/ocr-eval/gate.cjs --baseline P1,P2 --production Q1,Q2 --candidate C1,C2 [--out file.md]
+node scripts/ocr-eval/gate.cjs --baseline P1,P2 --production Q1,Q2 --candidate C1,C2 [--cost-ceiling 0.01] [--out file.md]
 ```
+
+A candidate may be measured at `--sort latency` or on a pinned `--provider` (its own production routing); baseline and
+production runs must be at `--sort latency`. `--cost-ceiling USD` replaces "no more than production" in G9 for a
+candidate that is allowed to cost more; the report states the ceiling.
 
 Checks: G1/G2 mean CER/WER at most +0.5 points over plain; G3 per photo at most +3 points (CER and WER); G4 every
 page under 30 s; G5 every photo valid production evidence; G6 no more pages rejected than production, and none that
 plain read below 5% CER; G7 at most +2 words deleted per photo vs plain; G8 over-correction not worse than plain
-(N/A without mistakes lists); G9 one call per page and cost no higher than production. Exit 0 PASS, 1 FAIL,
-2 INCOMPLETE (missing runs, wrong routing, fewer than two runs) or usage error.
+(N/A without mistakes lists); G9 one call per page and cost no higher than production (or the cost ceiling);
+G10 no REAL extra crossed-out word in the graded text (`struck_real_leaked`: a word inserted in the alignment; the old count `struck_leaked`, which also counts a word that appears because another word was read differently, is printed beside it and does not decide), and G11 no copied-question line in it (both absolute, counted only on photos
+that have a struck/question file; N/A without any; INCOMPLETE if the `results.csv` predates the columns: run `--rescore`).
+`--exclude-photos image4,image7` leaves photos with incomplete ground truth out of every check and out of the verdict, and reports their
+plain and candidate CER/WER in a separate table; a name that is in none of the runs is an error. The report ends with a **Switch decision**:
+a failing G8, G10 or G11 prints `DO NOT SWITCH PRODUCTION` with the check and the run; a pass names any of the three that could not be judged.
+Exit 0 PASS, 1 FAIL, 2 INCOMPLETE (missing runs, wrong routing, fewer than two runs) or usage error.
 
 Reports are rewritten after every call, so an interrupted run keeps a partial `results.csv` and `summary.md`
 (marked "Partial results").

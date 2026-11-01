@@ -326,6 +326,11 @@ const getOcrCorrectionsMiddleware = [
   submissionController.getOcrCorrections
 ];
 
+const teacherAnnotations = require('../controllers/teacherAnnotation.controller');
+router.get('/:submissionId/teacher-annotations', verifyJwtToken, requireRole('teacher'), teacherAnnotations.get);
+router.get('/:submissionId/teacher-annotations/history', verifyJwtToken, requireRole('teacher'), teacherAnnotations.history);
+router.post('/:submissionId/teacher-annotations', createSensitiveRateLimiter(), verifyJwtToken, requireRole('teacher'), teacherAnnotations.mutate);
+
 router.get(
   '/:submissionId/ocr-corrections',
   ...getOcrCorrectionsMiddleware

@@ -133,7 +133,7 @@ describe('candidate converter: transcription text -> production evidence', () =>
 
 describe('prompt modes', () => {
   test('the new modes are available next to plain and production', () => {
-    expect(prompts.PROMPT_MODES).toEqual(['plain', 'production', 'plain-first', 'production-trim', 'lean-json']);
+    expect(prompts.PROMPT_MODES).toEqual(['plain', 'production', 'plain-first', 'production-trim', 'lean-json', 'verbatim-json', 'plain-first-excl', 'verbatim-json-v2']);
   });
   test('A plain-first: the measured plain prompt with one change, genuinely unreadable words become [?]', () => {
     const plain = prompts.promptSpec('plain').system.split('\n'), first = prompts.promptSpec('plain-first');
@@ -238,7 +238,10 @@ describe('word-level substitutions, deletions and insertions', () => {
     const fetchImpl = makeFetch({ content: 'The zephyrquill was powerfull and\nShe go to market yesterday.' }); // "strong." left out
     const { result } = await run(live(), { fetchImpl, apiKey: KEY });
     const rows = csvRows(result.files.csv);
-    expect(Object.keys(rows[0]).slice(-5)).toEqual(['substitutions', 'deletions', 'insertions', 'calls_per_page', 'temperature_mode']);
+    // Appended after the earlier columns, in this order (later steps append more after them).
+    const header = Object.keys(rows[0]), start = header.indexOf('substitutions');
+    expect(header.slice(start, start + 5)).toEqual(['substitutions', 'deletions', 'insertions', 'calls_per_page', 'temperature_mode']);
+    expect(header.slice(start - 2, start)).toEqual(['reasoning_mode', 'reasoning_sent']);
     expect(rows.find(r => r.photo === 'image1')).toMatchObject({ substitutions: '0', deletions: '1', insertions: '0', calls_per_page: '1', temperature_mode: '0' });
   });
 });

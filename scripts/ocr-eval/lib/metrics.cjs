@@ -277,6 +277,65 @@ function overCorrection(groundTruth, modelOutput, mistakes, { wildcardSpan = DEF
   };
 }
 
+/** A phrases sidecar (question or crossed-out text): one phrase per line; blank lines and lines starting with # are ignored. */
+function parsePhrases(text) {
+  return String(text).replace(/^﻿/, '').split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith('#'));
+}
+
+const leakWords = text => tokenize(normalizeText(text, { caseSensitive: false })).map(coreForm).filter(Boolean);
+// Words of 4+ letters may differ by one edit (a misread letter); shorter words must match exactly.
+const sameWord = (a, b) => a === b || (Math.min(a.length, b.length) >= 4 && levenshteinDistance(a, b) <= 1);
+
+/** Non-overlapping places where `phrase` (words) occurs in `words`, allowing one wrong word per five phrase words. */
+function countOccurrences(phrase, words) {
+  const allowed = Math.floor(phrase.length / 5);
+  let count = 0;
+  for (let i = 0; i + phrase.length <= words.length;) {
+    let miss = 0;
+    for (let k = 0; k < phrase.length && miss <= allowed; k++) if (!sameWord(phrase[k], words[i + k])) miss++;
+    if (miss <= allowed) { count++; i += phrase.length; } else i++;
+  }
+  return count;
+}
+
+/**
+ * Did text that must NOT be in the answer (the copied question, crossed-out phrases) end up in it? Count based, so
+ * the same words legitimately written elsewhere in the answer are not a leak: a phrase leaks when the model output
+ * contains it more often than the answer ground truth does. Case, punctuation and spacing are ignored. The result
+ * holds counts only, never text.
+ */
+function phraseLeakage(phrases, truthText, hypothesisText) {
+  const truth = leakWords(truthText), hypothesis = leakWords(hypothesisText);
+  let counted = 0, leaked = 0, extraOccurrences = 0;
+  for (const phrase of phrases || []) {
+    const words = leakWords(phrase);
+    if (!words.length) continue;
+    counted++;
+    const extra = countOccurrences(words, hypothesis) - countOccurrences(words, truth);
+    if (extra > 0) { leaked++; extraOccurrences += extra; }
+  }
+  return { phrases: counted, leaked, extraOccurrences };
+}
+
+/**
+ * Real extra words: a phrase counts only when the model output has an INSERTED word (one the alignment against the answer file cannot
+ * match to any reference word) that belongs to the phrase, on top of the count-based leak above. A word that merely appears because
+ * another reference word was read differently ("too" read as "to") is not an extra word. Counts only, never text.
+ */
+function realExtraWords(phrases, truthText, hypothesisText) {
+  const reference = tokenize(normalizeText(truthText)), hypothesis = tokenize(normalizeText(hypothesisText));
+  const { ops } = alignTokens(reference, hypothesis);
+  const inserted = new Set(ops.filter(op => op.type === 'ins').map(op => (coreForm(hypothesis[op.hyp]) || hypothesis[op.hyp]).toLowerCase()));
+  let counted = 0, realLeaked = 0;
+  for (const phrase of phrases || []) {
+    const words = leakWords(phrase);
+    if (!words.length) continue;
+    counted++;
+    if (phraseLeakage([phrase], truthText, hypothesisText).leaked > 0 && words.some(word => inserted.has(word))) realLeaked++;
+  }
+  return { phrases: counted, realLeaked };
+}
+
 /**
  * Draft helper: ground-truth words that at least one output changed by a small edit (likely spelling
  * corrections, or misreads). A human reviews the result; only genuine student mistakes belong in the list.
@@ -335,5 +394,5 @@ module.exports = {
   UNCERTAIN_MARK, DEFAULT_WILDCARD_SPAN,
   normalizeText, tokenize, isUncertainToken, coreForm,
   levenshteinDistance, alignTokens, scoreTexts, evaluatePair,
-  parseMistakes, overCorrection, suggestMistakes, formatMistakesDraft,
+  parseMistakes, overCorrection, suggestMistakes, formatMistakesDraft, parsePhrases, phraseLeakage, realExtraWords,
 };

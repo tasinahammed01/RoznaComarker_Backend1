@@ -8,10 +8,17 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { parseMistakes } = require('./metrics.cjs');
+const { parseMistakes, parsePhrases } = require('./metrics.cjs');
 
 const IMAGE_EXTENSIONS = Object.freeze(['.jpg', '.jpeg', '.png']);
-const MISTAKES_SUFFIX = '.mistakes.tsv';
+// Optional files next to <name>.jpeg/<name>.txt. All are plain text; none is required.
+//   <name>.mistakes.tsv    genuine student mistakes (over-correction metric)
+//   <name>.answer.txt      the student's answer only: what the page says without the copied question
+//   <name>.question.txt    the question as the student copied it, one line per line; empty = checked, none
+//   <name>.struck.txt      crossed-out phrases, one per line; empty = checked, none
+//   <name>.assignment.json the assignment text stored in the app ({title, instructions, ...}), sent as context
+const SIDECARS = Object.freeze({ '.mistakes.tsv': 'mistakes', '.answer.txt': 'answer', '.question.txt': 'question', '.struck.txt': 'struck', '.assignment.json': 'assignment' });
+const ASSIGNMENT_KEYS = Object.freeze(['title', 'prompt', 'question', 'instructions', 'description']);
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // the production OCR path rejects larger images
 const BACKEND_ROOT = path.resolve(__dirname, '..', '..', '..');
 
@@ -67,14 +74,16 @@ function loadDataset(directory, { maxImageBytes = MAX_IMAGE_BYTES } = {}) {
     warnings.push('The evaluation folder is inside the repository. Keep photos and ground truth outside it so they can never be committed.');
   }
 
-  const images = new Map(), texts = new Map(), sidecars = new Map();
+  const images = new Map(), texts = new Map();
+  const sidecars = Object.fromEntries(Object.values(SIDECARS).map(kind => [kind, new Map()]));
   for (const file of fs.readdirSync(dir).sort(naturalCompare)) {
     if (file.startsWith('.')) continue; // hidden and resource-fork files
     const full = path.join(dir, file);
     let info;
     try { info = fs.statSync(full); } catch { continue; }
     if (!info.isFile()) continue;
-    if (file.toLowerCase().endsWith(MISTAKES_SUFFIX)) { addTo(sidecars, file.slice(0, -MISTAKES_SUFFIX.length), file); continue; }
+    const suffix = Object.keys(SIDECARS).find(s => file.toLowerCase().endsWith(s));
+    if (suffix) { addTo(sidecars[SIDECARS[suffix]], file.slice(0, -suffix.length), file); continue; }
     const { name, ext } = path.parse(file);
     const extension = ext.toLowerCase();
     if (extension === '.txt') addTo(texts, name, file);
@@ -100,33 +109,71 @@ function loadDataset(directory, { maxImageBytes = MAX_IMAGE_BYTES } = {}) {
     if (groundTruth.includes('�')) warnings.push(`${truthFiles[0]}: contains replacement characters, it may not be valid UTF-8`);
 
     let mistakes = null, mistakesPath = null;
-    const sidecarFiles = sidecars.get(name);
-    if (sidecarFiles?.length > 1) { problems.push(`${name}: more than one mistakes file (${sidecarFiles.join(', ')})`); continue; }
-    if (sidecarFiles) {
-      mistakesPath = path.join(dir, sidecarFiles[0]);
+    const mistakeFiles = sidecars.mistakes.get(name);
+    if (mistakeFiles?.length > 1) { problems.push(`${name}: more than one mistakes file (${mistakeFiles.join(', ')})`); continue; }
+    if (mistakeFiles) {
+      mistakesPath = path.join(dir, mistakeFiles[0]);
       const text = readText(mistakesPath, problems);
       if (text === null) continue;
       const parsed = parseMistakes(text);
       if (parsed.errors.length) {
-        for (const error of parsed.errors) problems.push(`${sidecarFiles[0]} line ${error.line}: ${error.message}`);
+        for (const error of parsed.errors) problems.push(`${mistakeFiles[0]} line ${error.line}: ${error.message}`);
         continue;
       }
       mistakes = { entries: parsed.entries };
     }
+
+    // Optional answer / question / struck / assignment files. A missing file means "unknown" (null); an empty
+    // question or struck file means "checked, none". Problems name the file and never repeat its content.
+    const before = problems.length;
+    const single = kind => {
+      const files = sidecars[kind].get(name);
+      if (!files) return null;
+      if (files.length > 1) { problems.push(`${name}: more than one ${kind} file (${files.join(', ')})`); return null; }
+      return { file: files[0], text: readText(path.join(dir, files[0]), problems) };
+    };
+    const answer = single('answer'), question = single('question'), struck = single('struck'), assignmentFile = single('assignment');
+    let answerTruth = null, questionPhrases = null, struckPhrases = null, assignment = null;
+    if (answer?.text != null) {
+      if (!answer.text.trim()) problems.push(`${answer.file}: the answer file is empty`);
+      else answerTruth = answer.text.replace(/\s+$/, '');
+    }
+    if (question?.text != null) {
+      if (!answer) problems.push(`${question.file}: needs a matching ${name}.answer.txt (the answer without the copied question) to judge leaks`);
+      questionPhrases = parsePhrases(question.text);
+    }
+    if (struck?.text != null) struckPhrases = parsePhrases(struck.text);
+    if (assignmentFile?.text != null) {
+      let parsed;
+      try { parsed = JSON.parse(assignmentFile.text.replace(/^﻿/, '')); } catch { problems.push(`${assignmentFile.file}: is not valid JSON`); }
+      if (parsed !== undefined) {
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) problems.push(`${assignmentFile.file}: must be a JSON object such as {"title": "...", "instructions": "..."}`);
+        else {
+          for (const [key, value] of Object.entries(parsed)) {
+            if (!ASSIGNMENT_KEYS.includes(key)) problems.push(`${assignmentFile.file}: unknown key "${key.slice(0, 40)}" (allowed: ${ASSIGNMENT_KEYS.join(', ')})`);
+            else if (typeof value !== 'string') problems.push(`${assignmentFile.file}: "${key}" must be text`);
+          }
+          assignment = parsed;
+        }
+      }
+    }
+    if (problems.length > before) continue;
     if (image.bytes > maxImageBytes) {
       warnings.push(`${image.file}: ${(image.bytes / 1048576).toFixed(1)} MB exceeds the ${(maxImageBytes / 1048576).toFixed(0)} MB production limit`);
     }
     items.push({
       name, imagePath: path.join(dir, image.file), imageExtension: image.extension, imageBytes: image.bytes,
-      groundTruthPath, groundTruth, mistakesPath, mistakes,
+      groundTruthPath, groundTruth, mistakesPath, mistakes, answerTruth, questionPhrases, struckPhrases, assignment,
     });
   }
 
   for (const [name, files] of [...texts].sort(([a], [b]) => naturalCompare(a, b))) {
     if (!images.has(name)) warnings.push(`${files.join(', ')}: skipped, there is no matching image (.jpg, .jpeg or .png)`);
   }
-  for (const [name, files] of [...sidecars].sort(([a], [b]) => naturalCompare(a, b))) {
-    if (!images.has(name)) warnings.push(`${files.join(', ')}: ignored, there is no matching image`);
+  for (const kind of Object.keys(sidecars)) {
+    for (const [name, files] of [...sidecars[kind]].sort(([a], [b]) => naturalCompare(a, b))) {
+      if (!images.has(name)) warnings.push(`${files.join(', ')}: ignored, there is no matching image`);
+    }
   }
 
   if (problems.length) {

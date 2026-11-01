@@ -1122,7 +1122,7 @@ async function getOcrCorrections(req, res) {
       return sendError(res, 400, 'Invalid submission id');
     }
 
-    let doc = await Submission.findById(submissionId);
+    let doc = await Submission.findById(submissionId).select('+teacherAnnotations');
     let kind = 'submission';
     if (!doc) {
       doc = await OcrUpload.findById(submissionId);
@@ -1229,7 +1229,8 @@ async function getOcrCorrections(req, res) {
     const evaluationDoc = kind === 'submission' ? await SubmissionFeedback.findOne({ submissionId: doc._id }).lean() : null;
     const resultState = buildCanonicalResultState({ submission: doc, feedback: evaluationDoc });
     const hasCanonicalCorrections = resultState.correctionCurrent && Array.isArray(doc.writingCorrections);
-    const allCorrections = hasCanonicalCorrections ? doc.writingCorrections : [];
+    const allCorrections = require('../services/teacherAnnotation.service').effective(
+      hasCanonicalCorrections ? doc.writingCorrections : [], canonicalTranscript, doc);
     const corrections = buildCanonicalCorrectionRenderModels(
       scopeCanonicalCorrections(allCorrections, requestedFileId), canonicalTranscript, doc.ocrPages, { submission: doc });
     const currentWordIds = new Set(ocr.flatMap((page) => page.words || []).map((word) => String(word.id)));
@@ -1247,6 +1248,8 @@ async function getOcrCorrections(req, res) {
     const responseData = {
       processing: false,
       corrections,
+      annotationRevision: doc.teacherAnnotations?.revision || 0,
+      annotationGradeReviewRequired: Boolean(doc.teacherAnnotations?.scoringReviewRequired),
       ocr,
       ocrStatus: doc.ocrStatus || null,
       correctionStatus: resultState.correctionStatus,

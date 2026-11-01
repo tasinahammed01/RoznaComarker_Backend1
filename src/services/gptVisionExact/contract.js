@@ -12,6 +12,8 @@ const fail=code=>Object.assign(Error(code),{code,retryable:false,safeMessage:cod
 // support from a vendor prefix. DeepSeek and Qwen metadata verified 2026-10-26.
 const DEEPSEEK_MODEL='deepseek/deepseek-v4.1-flash-1017';
 const QWEN_MODEL='qwen/qwen3.8-27b';
+// Gemini 3.8 Flash is approved ONLY with the verbatim_json reader (strict JSON page, Google AI Studio standard tier, OpenRouter id verified 2026-11).
+const GEMINI_MODEL='google/gemini-3.8-flash';
 // Leave room above the observed valid 90-second reads; operators may restore 180s.
 const PREFLIGHT_TIMEOUT_MS=210000; // Browser source timeout is 240s, leaving 30s for transport/cleanup.
 function requestPolicy(env=process.env){
@@ -22,19 +24,36 @@ function requestPolicy(env=process.env){
   return {attemptTimeoutMs,maxOutputTokens:16000};
 }
 const models=()=>[require('../hybridSource/contract').MODEL,'openai/gpt-6-astra',DEEPSEEK_MODEL,QWEN_MODEL];
-// OCR_GPT_VISION_READER: json_contract (default, today's reader) or plain_text (measured plain-first reader, Qwen only).
+// OCR_GPT_VISION_READER: json_contract (default, today's reader), plain_text (measured plain-first reader, Qwen only)
+// or verbatim_json (strict JSON page with the question, crossed-out text and uncertain words kept apart, Gemini only).
 function readerMode(env=process.env){
   const raw=env.OCR_GPT_VISION_READER,mode=raw===undefined||raw===''?'json_contract':raw;
-  if(!require('./plainReader').READER_MODES.includes(mode))throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
+  if(![...require('./plainReader').READER_MODES,'verbatim_json'].includes(mode))throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
   return mode;
+}
+// OCR_GPT_VISION_SECOND_READER: off (default) or the Qwen model id. Optional comparison read that only flags differences.
+function secondReaderModel(env=process.env){
+  const raw=env.OCR_GPT_VISION_SECOND_READER;
+  if(raw===undefined||raw===''||raw==='off')return null;
+  if(raw!==QWEN_MODEL)throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
+  return raw;
 }
 function config(env=process.env){
   const model=env.OCR_GPT_VISION_MODEL||require('../hybridSource/contract').MODEL;
-  if(!models().includes(model)||!env.OPENROUTER_API_KEY)throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
-  if(readerMode(env)==='plain_text'&&model!==QWEN_MODEL)throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
-  if(model===QWEN_MODEL)requestPolicy(env);
+  if(![...models(),GEMINI_MODEL].includes(model)||!env.OPENROUTER_API_KEY)throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
+  const mode=readerMode(env);
+  // Each reader belongs to one model: Gemini only with verbatim_json, Qwen only with json_contract or plain_text.
+  if((model===GEMINI_MODEL)!==(mode==='verbatim_json'))throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
+  if(mode==='plain_text'&&model!==QWEN_MODEL)throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
+  if(model===QWEN_MODEL||model===GEMINI_MODEL)requestPolicy(env);
+  if(model===GEMINI_MODEL)require('./verbatimReader').settings(env);
+  if(secondReaderModel(env)&&mode!=='verbatim_json')throw fail('OCR_GPT_SOURCE_CONFIGURATION_INVALID');
   return {model};
 }
+// Evidence accepted by the previously approved model stays usable across a switch (and a rollback), so pages checked
+// before the switch can still be submitted without a second paid read. Only this pair; never any other model.
+const CLAIM_PAIRS=new Set([`${QWEN_MODEL}|${GEMINI_MODEL}`,`${GEMINI_MODEL}|${QWEN_MODEL}`]);
+const claimModelAccepted=(claimModel,boundModel)=>claimModel===boundModel||CLAIM_PAIRS.has(`${claimModel}|${boundModel}`);
 const closed=properties=>({type:'object',additionalProperties:false,required:Object.keys(properties),properties});
 const string={type:'string',maxLength:2000};
 const segment=closed({classification:{type:'string',enum:CLASSES},text:{type:['string','null'],maxLength:2000},confidence:{type:'number',minimum:0,maximum:1}});
@@ -86,6 +105,16 @@ function qwenPromptBinding(assignmentReference,env=process.env){
     promptSha256:plain?plainPromptSha256:jsonPromptSha256,wireVersion:wire.version,readerMode:readerMode(env),
     readerVersion:plain?plainReader.VERSION:wire.promptVersion,jsonPromptSha256,plainPromptSha256};
 }
+// Gemini verbatim binding. legacyPromptSha256 is the reader-independent hash of the stored assignment text (same value a Qwen
+// binding carries), so a claim made by the other model can prove the assignment text has not changed since the upload.
+function verbatimBinding(assignmentReference){
+  const verbatim=require('./verbatimReader');
+  return {legacyPromptSha256:sha(PROMPT+JSON.stringify(assignmentReference)),promptSha256:verbatim.promptSha256(assignmentReference),
+    readerMode:verbatim.VERBATIM_READER,readerVersion:verbatim.VERSION};
+}
+// Model-specific prompt identity of a cache binding ({} for models without reader-specific fields).
+const sourceBinding=(model,assignmentReference,env=process.env)=>model===QWEN_MODEL?qwenPromptBinding(assignmentReference,env)
+  :model===GEMINI_MODEL?verbatimBinding(assignmentReference):{};
 function wireContract(model){return model===QWEN_MODEL?{version:QWEN_WIRE_VERSION,promptVersion:QWEN_PROMPT_VERSION,prompt:QWEN_PROMPT,schema:qwenSchema,name:'qwen_physical_source_v1'}
   :{version:VERSION,prompt:PROMPT,schema,name:'gpt_vision_exact_v2'};}
 function schemaFailure(content,selectedSchema=schema){
@@ -190,6 +219,6 @@ function safeUncertaintyDetails(value){
       'uncertaintyKind','physicalLineIndex','segmentIndex','referencedSegmentClassification',
       'referencedTextPresent','referencedTextLength','confidenceBand'].map(key=>[key,d[key]])));
 }
-module.exports={VERSION,CLASSES,UNCERTAINTY_KINDS,DEEPSEEK_MODEL,QWEN_MODEL,models,sha,fail,config,readerMode,qwenPromptBinding,requestPolicy,PREFLIGHT_TIMEOUT_MS,schema,PROMPT,validate,diagnostics,
+module.exports={VERSION,CLASSES,UNCERTAINTY_KINDS,DEEPSEEK_MODEL,QWEN_MODEL,GEMINI_MODEL,models,sha,fail,config,readerMode,secondReaderModel,claimModelAccepted,sourceBinding,qwenPromptBinding,requestPolicy,PREFLIGHT_TIMEOUT_MS,schema,PROMPT,validate,diagnostics,
   QWEN_WIRE_VERSION,QWEN_PROMPT_VERSION,PREVIOUS_QWEN_PROMPT,sameSourcePrompt,wireContract,safeUncertaintyDetails,validateWire:(content,options={})=>validate(content,{...options,providerWire:true}),
   validateCanonical:content=>validate(content,{strictTranscript:true})};

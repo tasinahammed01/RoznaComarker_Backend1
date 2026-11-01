@@ -17,16 +17,17 @@ const crypto = require('crypto');
 const { tokenize, coreForm, isUncertainToken } = require('./metrics.cjs');
 const { QWEN_WIRE_VERSION } = require('../../../src/services/gptVisionExact/contract.js');
 const { LEAN_VERSION } = require('./candidates.cjs');
+const { VERBATIM_VERSION } = require('./verbatim.cjs');
 
 const FAKE_PREFIX = 'fake/';
-const FAKE_MODELS = Object.freeze(['fake/perfect', 'fake/noisy', 'fake/autocorrect', 'fake/reasoning', 'fake/needs-reasoning', 'fake/always-fails']);
+const FAKE_MODELS = Object.freeze(['fake/perfect', 'fake/noisy', 'fake/autocorrect', 'fake/reasoning', 'fake/needs-reasoning', 'fake/always-fails', 'fake/leaky']);
 const isFakeModel = model => typeof model === 'string' && model.startsWith(FAKE_PREFIX);
 
 const PRICES = Object.freeze({ // USD per million tokens, input/output (synthetic)
   'fake/perfect': [0, 0], 'fake/noisy': [0.3, 1.2], 'fake/autocorrect': [0.6, 2.4], 'fake/reasoning': [0.5, 2.0],
-  'fake/needs-reasoning': [0.5, 2.0], generic: [0.3, 1.2],
+  'fake/needs-reasoning': [0.5, 2.0], 'fake/leaky': [0.3, 1.2], generic: [0.3, 1.2],
 });
-const NOISE = Object.freeze({ 'fake/perfect': 0, 'fake/noisy': 0.06, 'fake/autocorrect': 0, 'fake/reasoning': 0.05, 'fake/needs-reasoning': 0.05 });
+const NOISE = Object.freeze({ 'fake/perfect': 0, 'fake/noisy': 0.06, 'fake/autocorrect': 0, 'fake/reasoning': 0.05, 'fake/needs-reasoning': 0.05, 'fake/leaky': 0 });
 const REASONING_REJECTED = Object.freeze(['none', 'minimal']);
 const VARIANT_NOISE_FACTOR = Object.freeze({ original: 1, preprocessed: 0.8, 'client-export': 1.05 });
 const BUILTIN_CORRECTIONS = Object.freeze({ powerfull: 'powerful', recieve: 'receive', wich: 'which', definately: 'definitely', becuase: 'because', teh: 'the', i: 'I' });
@@ -54,6 +55,12 @@ function corruptWord(word, rand) {
   const at = letters[Math.floor(rand() * letters.length)], chars = [...word];
   chars[at] = String.fromCharCode(97 + Math.floor(rand() * 26));
   return chars.join('');
+}
+
+/** fake/autocorrect: quietly fixes student mistakes (from the mistakes list when there is one). */
+function autocorrectTokens(tokens, entries) {
+  return entries.length ? applyCorrections(tokens, entries)
+    : tokens.map(token => { const core = coreForm(token); const fixed = BUILTIN_CORRECTIONS[core]; return fixed ? token.replace(core, fixed) : token; });
 }
 
 function applyCorrections(tokens, entries) {
@@ -91,10 +98,7 @@ function simulate({ model, item, variant, promptMode, image, reasoningMode = 'no
 
   const lines = faithfulLines(item.groundTruth).map(tokens => {
     let out = tokens;
-    if (autocorrect) {
-      out = entries.length ? applyCorrections(out, entries)
-        : out.map(token => { const core = coreForm(token); const fixed = BUILTIN_CORRECTIONS[core]; return fixed ? token.replace(core, fixed) : token; });
-    }
+    if (autocorrect) out = autocorrectTokens(out, entries);
     return out.filter(() => rand() >= noise / 4).map(token => (rand() < noise ? corruptWord(token, rand) : token)).join(' ');
   }).filter(Boolean);
   let outLines = lines;
@@ -104,10 +108,28 @@ function simulate({ model, item, variant, promptMode, image, reasoningMode = 'no
     words[Math.floor(rand() * words.length)] = '[?]';
     outLines = [words.join(' '), ...outLines.slice(1)];
   }
+  // fake/leaky keeps the text it was told to leave out: the crossed-out phrases end up in the answer.
+  const struck = item.struckPhrases ?? [];
+  if (model === 'fake/leaky' && struck.length && outLines.length) outLines = outLines.map((line, i) => (i === outLines.length - 1 ? `${struck.join(' ')} ${line}` : line));
   const text = outLines.join('\n');
 
   let content = text;
-  if (promptMode === 'lean-json') {
+  if (promptMode === 'verbatim-json' || promptMode === 'verbatim-json-v2') {
+    // A reader that separates the page. Uses the answer and question sidecars when the photo has them.
+    const rand2 = random(`${model}|${item.name}|${variant}|verbatim`);
+    const render = tokens => (autocorrect ? autocorrectTokens(tokens, entries) : tokens)
+      .filter(() => rand2() >= noise / 4).map(token => (rand2() < noise ? corruptWord(token, rand2) : token)).join(' ');
+    let answerLines = faithfulLines(item.answerTruth ?? item.groundTruth).map(render).filter(Boolean);
+    let questionLines = [...(item.questionPhrases ?? [])];
+    if (model === 'fake/leaky') {
+      answerLines = [...questionLines, ...answerLines];
+      questionLines = [];
+      if (struck.length && answerLines.length) answerLines[answerLines.length - 1] = `${struck.join(' ')} ${answerLines[answerLines.length - 1]}`;
+    }
+    content = promptMode === 'verbatim-json-v2'
+      ? JSON.stringify({ version: 'verbatim-page-v2', name_present: false, question_lines: questionLines, struck_through: [], answer_lines: answerLines, uncertain: [] })
+      : JSON.stringify({ version: VERBATIM_VERSION, name_present: false, question_lines: questionLines, answer_lines: answerLines, struck_through: [], uncertain: [] });
+  } else if (promptMode === 'lean-json') {
     content = JSON.stringify({ version: LEAN_VERSION, lines: outLines.map(line => ({ text: line, kind: 'student' })) });
   } else if (promptMode === 'production' || promptMode === 'production-trim') {
     const physicalLines = lines.map(line => ({ segments: [{ classification: 'STUDENT_ACTIVE_TEXT', text: line, confidence: 0.9 }] }));

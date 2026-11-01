@@ -32,6 +32,18 @@ const CSV_COLUMNS = Object.freeze([
   // Word-level (case-sensitive) edit counts behind wer_case; deletions = words lost.
   ['substitutions', r => r.substitutions], ['deletions', r => r.deletions], ['insertions', r => r.insertions],
   ['calls_per_page', r => r.callsPerPage], ['temperature_mode', r => r.temperatureMode],
+  // Answer-only accuracy and leaks (empty = the photo has no answer/question/struck file). Counts only, never text.
+  ['answer_cer_case', r => r.answerCerCs], ['answer_wer_case', r => r.answerWerCs],
+  ['question_phrases', r => r.questionPhrases], ['question_leaked', r => r.questionLeaked],
+  ['struck_phrases', r => r.struckPhrases], ['struck_leaked', r => r.struckLeaked],
+  // What a verbatim-json reply reported about the page (counts), and reported cost against --price (1 = as expected).
+  ['uncertain_flagged', r => r.uncertainFlagged], ['struck_reported', r => r.struckReported],
+  ['question_lines_reported', r => r.questionLinesReported], ['name_present', r => r.namePresent],
+  ['cost_price_ratio', r => r.costPriceRatio],
+  ['uncertain_dropped', r => r.uncertainDropped],
+  // struck_leaked is the old gate count (any extra occurrence); struck_real_leaked counts real extra words only and decides G10.
+  ['struck_real_leaked', r => r.struckRealLeaked],
+  ['struck_dropped', r => r.struckDropped],
 ]);
 
 function csvCell(value) {
@@ -160,6 +172,13 @@ function buildWarnings(rows, meta) {
   if (profiles.size > 1) {
     warnings.push(`Models were run with different reasoning settings (${[...reasoningByModel].map(([m, set]) => `${m}: ${[...set].join(' / ')}`).join('; ')}). Compare accuracy with care, and do not compare cost or latency between reasoning-on and reasoning-off runs.`);
   }
+  for (const model of models) {
+    const off = rows.filter(r => r.model === model && Number.isFinite(r.costPriceRatio) && Math.abs(r.costPriceRatio - 1) > 0.15);
+    if (off.length) {
+      const ratios = off.map(r => r.costPriceRatio);
+      warnings.push(`${model}: ${off.length} call(s) cost differently from tokens x the --price you gave (ratio ${Math.min(...ratios).toFixed(2)} to ${Math.max(...ratios).toFixed(2)}, 1 = as expected). A different pricing tier or provider may have served them; check the provider column and the Serving provider section.`);
+    }
+  }
   if (rows.some(r => r.status === 'ok' && !Number.isFinite(r.costUsd))) warnings.push('Some calls have no cost: the API did not report one and no --price was given. Cost columns skip them.');
   if (meta.stoppedEarly) warnings.push(`**Run stopped early:** ${meta.stoppedEarly}`);
   for (const w of meta.datasetWarnings || []) warnings.push(`Dataset: ${w}`);
@@ -195,7 +214,28 @@ function failedCallsSection(rows) {
   return [...out, ''];
 }
 
-const JSON_MODES = Object.freeze(['production', 'production-trim', 'lean-json']);
+const JSON_MODES = Object.freeze(['production', 'production-trim', 'lean-json', 'verbatim-json', 'verbatim-json-v2']);
+
+/** Answer-only accuracy and leaks, per model and variant, for the photos that have the sidecar files. Counts and rates only. */
+function answerSection(rows) {
+  const groups = new Map();
+  for (const row of rows.filter(r => r.status === 'ok')) {
+    const key = `${row.model}\u0000${row.variant}`;
+    if (!groups.has(key)) groups.set(key, { model: row.model, variant: row.variant, rows: [] });
+    groups.get(key).rows.push(row);
+  }
+  const table = [...groups.values()].map(({ model, variant, rows: list }) => {
+    const answers = list.filter(r => Number.isFinite(r.answerCerCs)), asked = list.filter(r => Number.isFinite(r.questionPhrases)), struck = list.filter(r => Number.isFinite(r.struckPhrases));
+    if (!answers.length && !asked.length && !struck.length) return null;
+    const total = (items, pick) => items.reduce((sum, r) => sum + (pick(r) || 0), 0);
+    return `| ${model} | ${variant} | ${answers.length} | ${pct(meanOf(answers.map(r => r.answerCerCs)))} | ${pct(meanOf(answers.map(r => r.answerWerCs)))} | ${asked.length ? `${total(asked, r => r.questionLeaked)} of ${total(asked, r => r.questionPhrases)}` : 'n/a'} | ${struck.length ? `${total(struck, r => r.struckLeaked)} of ${total(struck, r => r.struckPhrases)}` : 'n/a'} | ${meanOf(list.map(r => r.uncertainFlagged)) === null ? 'n/a' : total(list, r => r.uncertainFlagged)} |`;
+  }).filter(Boolean);
+  if (!table.length) return [];
+  return ['## Answer-only accuracy and leakage', '',
+    '| Model | Variant | Photos with answer file | Answer CER (case) | Answer WER (case) | Question lines leaked | Crossed-out phrases leaked | Uncertain words flagged |', '|---|---|---|---|---|---|---|---|',
+    ...table, '',
+    'Answer-only: the text a reader kept as the student\'s answer, scored against the answer file. A leak means question or crossed-out text appears in that answer more often than in the answer file. The ordinary CER/WER above use the full transcription. Counts only; no text is shown.', ''];
+}
 const temperatureCell = r => (r.temperatureMode === 'omit' ? 'not sent (requested omit)'
   : r.temperatureSent === false ? 'not sent (catalog: not supported)' : 'sent: 0');
 
@@ -226,7 +266,7 @@ function renderSummary({ meta, rows }) {
   if (meta.partial) {
     out.push(`> **Partial results: ${rows.length} of ${meta.plannedRows} rows so far.** The run is still going, or it was interrupted; \`--resume\` or \`--rescore\` completes it.`, '');
   }
-  out.push(`- Mode: ${meta.mode} | prompt: \`${meta.promptMode}\` | temperature: ${meta.temperature === 'omit' ? 'omitted (provider default)' : '0'} | reasoning: see "Request settings per model" | sort: ${meta.sort || 'default'} | pinned provider: ${meta.provider || 'none'} | max consecutive failures per model: ${meta.maxFailures ?? 'n/a'}`);
+  out.push(`- Mode: ${meta.mode} | prompt: \`${meta.promptMode}\` | temperature: ${meta.temperature === 'omit' ? 'omitted (provider default)' : '0'} | reasoning: see "Request settings per model" | sort: ${meta.sort || 'default'} | pinned provider: ${meta.provider || 'none'} | ignored providers: ${(meta.ignoreProviders || []).join(', ') || 'none'} | max consecutive failures per model: ${meta.maxFailures ?? 'n/a'}`);
   out.push(`- Photos: ${meta.photoCount} | variants: ${meta.variants.join(', ')} | models: ${meta.models.join(', ')}`);
   out.push(`- Calls: ${rows.length} recorded (${meta.reusedCalls} reused from an earlier run) | cost this run: ${money(meta.totalCostUsd)} | [?] wildcard span: ${meta.wildcardSpan} words`, '');
 
@@ -254,6 +294,8 @@ function renderSummary({ meta, rows }) {
     }
     out.push('', 'Negative = fewer errors than the original. With a small photo set a difference under about one percentage point is within noise.', '');
   }
+
+  out.push(...answerSection(rows));
 
   const warnings = buildWarnings(rows, meta);
   out.push('## Warnings', '');

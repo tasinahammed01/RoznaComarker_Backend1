@@ -15,10 +15,16 @@ const safeRevision = (value) => {
 // Reader fields appear only for the non-default plain_text reader, so the default hash is unchanged.
 // An invalid flag is reported rather than thrown, keeping the health endpoint available.
 function sourceReader(env) {
-  const plainReader = require('./gptVisionExact/plainReader');
+  const plainReader = require('./gptVisionExact/plainReader'), verbatimReader = require('./gptVisionExact/verbatimReader'), contract = require('./gptVisionExact/contract');
   let mode;
-  try { mode = require('./gptVisionExact/contract').readerMode(env); } catch { return { qwenSourceReader: 'invalid' }; }
-  return mode === plainReader.PLAIN_READER ? { qwenSourceReader: mode, qwenSourceReaderVersion: plainReader.VERSION } : {};
+  try { mode = contract.readerMode(env); } catch { return { qwenSourceReader: 'invalid', sourceReader: 'invalid' }; }
+  if (mode === plainReader.PLAIN_READER) return { qwenSourceReader: mode, qwenSourceReaderVersion: plainReader.VERSION };
+  if (mode !== verbatimReader.VERBATIM_READER) return {};
+  // The verbatim reader's whole behaviour is configuration: all of it belongs in the fingerprint, so a mixed deployment is detected.
+  let settings, second;
+  try { settings = verbatimReader.settings(env); second = contract.secondReaderModel(env) || 'off'; } catch { return { sourceReader: 'invalid' }; }
+  return { sourceReader: mode, sourceReaderVersion: verbatimReader.VERSION, sourceModel: String(env.OCR_GPT_VISION_MODEL || ''),
+    sourceReasoning: settings.reasoning, sourceTemperature: settings.temperature === 0 ? '0' : 'omit', sourceSecondReader: second };
 }
 
 function runtimeContractFingerprint(env = process.env) {
@@ -47,6 +53,8 @@ function runtimeContractFingerprint(env = process.env) {
   orderedContractValues.push(contracts.qwenSourceWire);
   orderedContractValues.push(contracts.qwenSourcePrompt);
   if(contracts.qwenSourceReader)orderedContractValues.push(contracts.qwenSourceReader, contracts.qwenSourceReaderVersion || null);
+  if(contracts.sourceReader)orderedContractValues.push(contracts.sourceReader, contracts.sourceReaderVersion || null, contracts.sourceModel || null,
+    contracts.sourceReasoning || null, contracts.sourceTemperature || null, contracts.sourceSecondReader || null);
   const contractHash = crypto.createHash('sha256').update(JSON.stringify(orderedContractValues)).digest('hex').slice(0, 16);
   return Object.freeze({
     applicationVersion: String(packageJson.version || 'unknown'),

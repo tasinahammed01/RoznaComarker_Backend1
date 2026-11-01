@@ -216,7 +216,8 @@ async function buildPersistedSubmissionFeedbackReport({ submission, submissionFe
   if (canonical.text.length > limit('PDF_MAX_TRANSCRIPT_CHARACTERS', 1000000)) throw new ApiError(413, 'The submission transcript is too large for report rendering.');
   if (!canonical.pages.length && ['pending', 'processing'].includes(String(submission.ocrStatus || ''))) throw new ApiError(409, 'Submission OCR is still processing.');
   if (!canonical.pages.length) throw new ApiError(409, 'A canonical transcript is not available for this submission.');
-  const persistedCorrections = Array.isArray(submission.writingCorrections) ? submission.writingCorrections : [];
+  const persistedCorrections = require('./teacherAnnotation.service').effective(
+    Array.isArray(submission.writingCorrections) ? submission.writingCorrections : [], canonical, submission);
   if (!persistedCorrections.length && ['pending', 'processing'].includes(String(submission.correctionStatus || ''))) throw new ApiError(409, 'Submission corrections are still processing.');
   if (!persistedCorrections.length && submission.correctionStatus === 'failed') throw new ApiError(409, 'Submission correction analysis is unavailable.');
   const assetAbortController = new AbortController();
@@ -243,7 +244,7 @@ async function buildPersistedSubmissionFeedbackReport({ submission, submissionFe
   const legend = resolvedLegend || await resolveLegend();
   const vm = buildSubmissionFeedbackReportViewModel({ generatedAt, identity, legend, marksVisible,
     canonicalTranscript: { ...canonical, pages: transcriptPages },
-    submission: { ...(submission.toObject ? submission.toObject() : submission), files: files.map(objectId), canonicalText: canonical.text, transcriptPages, imageDataByPageKey: assets.byPageKey }, evaluation: { ...feedbackObject, status: submission.evaluationStatus }, feedback: { ...feedbackObject, teacherComments, overrideReason: teacherObject.overrideReason } });
+    submission: { ...(submission.toObject ? submission.toObject() : submission), writingCorrections:persistedCorrections, files: files.map(objectId), canonicalText: canonical.text, transcriptPages, imageDataByPageKey: assets.byPageKey }, evaluation: { ...feedbackObject, status: submission.evaluationStatus }, feedback: { ...feedbackObject, teacherComments, overrideReason: teacherObject.overrideReason } });
   return { viewModel: vm, diagnostics: { ...safeDiagnostics(submission, transcriptPages, Array.isArray(submission.writingCorrections) ? submission.writingCorrections : [], vm.submittedPages), missingAssetCount: vm.submittedPages.filter((page) => !page.imageDataUrl).length,
     assetMetrics: assets.metrics, totalEmbeddedAssetBytes: assets.totalEmbeddedBytes },
     timings: { normalizationMs: normalizedAt - startedAt, assetResolutionMs: assetsAt - normalizedAt, viewModelMs: Date.now() - assetsAt, totalMs: Date.now() - startedAt } };

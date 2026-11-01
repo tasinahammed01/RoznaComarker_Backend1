@@ -94,7 +94,10 @@ function buildRequest({ model, prompt, image, capabilities = null, options = {} 
   };
   if (sendTemperature) body.temperature = 0;
   if (sendReasoning) body.reasoning = reasoning.param;
-  if (options.provider) body.provider.only = [options.provider];
+  // --provider may list several providers or endpoint tags; --ignore-providers excludes endpoints (for example a pricing tier).
+  const listOf = value => String(value).split(',').map(part => part.trim()).filter(Boolean);
+  if (options.provider) body.provider.only = listOf(options.provider);
+  if (options.ignoreProviders?.length) body.provider.ignore = [...options.ignoreProviders];
   if (options.sort && options.sort !== 'default') body.provider.sort = options.sort;
   if (prompt.responseSchema) {
     body.response_format = { type: 'json_schema', json_schema: { name: prompt.schemaName, strict: true, schema: prompt.responseSchema } };

@@ -17,7 +17,10 @@ const { DEFAULT_OUT, DEFAULT_MAX_FAILURES, MODEL_ID, RunError, runEvaluation, re
 const HELP = `OCR evaluation harness
 
 Environment
-  OCR_EVAL_DIR          folder with <name>.jpg|.jpeg|.png + <name>.txt (+ optional <name>.mistakes.tsv), outside the repo
+  OCR_EVAL_DIR          folder with <name>.jpg|.jpeg|.png + <name>.txt, outside the repo. Optional per photo:
+                        <name>.mistakes.tsv (genuine student mistakes), <name>.answer.txt (the answer without the copied
+                        question), <name>.question.txt (the copied question), <name>.struck.txt (crossed-out phrases, one
+                        per line), <name>.assignment.json ({"title": "...", "instructions": "..."} as stored in the app)
   OCR_EVAL_OUT          output folder, outside the repo (default: backend/tmp/ocr-eval-results, git-ignored)
   OPENROUTER_API_KEY    only read for --live runs; never printed or written anywhere
 
@@ -36,17 +39,22 @@ Options
   --max-failures N      skip a model's remaining calls after N consecutive failures (default ${DEFAULT_MAX_FAILURES}); other models continue.
                         An authentication or credit error stops the whole run; a rejected parameter skips that model at once
   --variants list       original,preprocessed,client-export (default original,preprocessed)
-  --prompt mode         plain (default) | production | plain-first (A) | production-trim (C) | lean-json (D)
+  --prompt mode         plain (default) | production | plain-first (A) | production-trim (C) | lean-json (D) |
+                        verbatim-json (separates question, answer, crossed-out and uncertain; strict JSON) |
+                        plain-first-excl (plain-first, with the copied question excluded by the production code rule)
   --temperature T       0 (default) | omit (send no temperature: provider default, as production does today)
   --rescore RUN_ID      offline: rebuild results.csv, summary.md and diffs of a run from its saved calls with the
                         current metrics (no API calls, no key). Older runs need --prompt <mode they used>
   --max-cost-usd X      stop once the run has cost X (live: needs the API or --price to report cost)
-  --price model=in:out  USD per million tokens, used when the API reports no cost (repeatable)
+  --price model=in:out  USD per million tokens (repeatable). Used when the API reports no cost, and, when it does, to flag
+                        calls whose reported cost differs from tokens x this price by more than 15% (a different pricing tier)
   --resume --run-id ID  reuse successful calls already saved in that run (no repeat spending)
   --run-id ID           name of the run folder inside the output folder
-  --provider NAME       pin one provider (cannot be combined with --sort)
+  --provider A,B        pin one or more providers or endpoint tags (provider.only); cannot be combined with --sort
+  --ignore-providers A,B  exclude providers or endpoint tags (provider.ignore), for example a pricing tier
   --sort S              latency | throughput | price | default (default = no sort; production uses latency for Qwen)
-  --limit N             only the first N photos (natural order)
+  --only a,b            only these photos (names such as image11); the plan and --confirm cover just them
+  --limit N             only the first N photos (natural order; applied after --only)
   --suggest-mistakes    write draft <name>.mistakes.draft.tsv files into the run folder
   --no-catalog          live: skip the free catalog check (send every parameter to every model)
   --timeout-ms N        per-call timeout (default 180000)
@@ -57,7 +65,7 @@ Options
 class UsageError extends Error {}
 
 const VALUE_FLAGS = new Set(['models', 'variants', 'prompt', 'confirm', 'max-cost-usd', 'run-id', 'provider', 'sort', 'out', 'limit', 'price', 'timeout-ms', 'wildcard-span',
-  'max-failures', 'reasoning-for', 'temperature', 'rescore']);
+  'max-failures', 'reasoning-for', 'temperature', 'rescore', 'ignore-providers', 'only']);
 const BOOLEAN_FLAGS = new Set(['live', 'dry-run', 'resume', 'suggest-mistakes', 'check-models', 'inspect', 'no-catalog', 'help']);
 
 function integer(name, text, min = 0) {
@@ -97,7 +105,12 @@ function parseArgs(argv) {
     models: raw.models ? split(raw.models) : [], variants: raw.variants ? split(raw.variants) : [...DEFAULT_VARIANTS],
     promptMode: raw.prompt ?? 'plain', runId: raw['run-id'], provider: raw.provider ?? null, sort: raw.sort ?? null, out: raw.out, prices: raw.prices,
     reasoningFor: raw.reasoningFor, temperature: raw.temperature ?? '0', promptGiven: raw.prompt !== undefined, rescore: raw.rescore ?? null,
+    ignoreProviders: raw['ignore-providers'] ? split(raw['ignore-providers']) : [], only: raw.only ? split(raw.only) : [],
   };
+  const badOnly = args.only.find(name => !/^[A-Za-z0-9._-]{1,80}$/.test(name));
+  if (badOnly) throw new UsageError(`--only: "${badOnly.slice(0, 40)}" is not a photo name (letters, digits, dot, dash and underscore only).`);
+  const badIgnored = args.ignoreProviders.find(name => !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,79}$/.test(name));
+  if (badIgnored) throw new UsageError(`--ignore-providers: "${badIgnored.slice(0, 40)}" is not a provider name or endpoint tag (letters, digits, dot, dash, underscore and slash only).`);
   if (!openrouter.TEMPERATURE_MODES.includes(args.temperature)) throw new UsageError(`--temperature must be one of: ${openrouter.TEMPERATURE_MODES.join(', ')} (omit = send none, like production today).`);
   if (args.rescore && (args.live || raw['dry-run'] || args.resume || raw.confirm !== undefined || args.checkModels || args.inspect)) {
     throw new UsageError('--rescore works offline on saved calls and cannot be combined with --live, --dry-run, --resume, --confirm, --check-models or --inspect.');
@@ -134,10 +147,12 @@ const refuseNetwork = () => { throw new Error('Network access is disabled in dry
 function printInspect(loaded, logger) {
   logger.info(`Folder: ${loaded.directory}`);
   logger.info(`Pairs: ${loaded.items.length}`);
-  logger.info('name | image file | image bytes | words | [?] tokens | mistakes list');
+  logger.info('name | image file | image bytes | words | [?] tokens | mistakes list | answer file | question lines | struck phrases | assignment text');
   for (const item of loaded.items) {
     const tokens = metrics.tokenize(metrics.normalizeText(item.groundTruth));
-    logger.info(`${item.name} | ${path.basename(item.imagePath)} | ${item.imageBytes} | ${tokens.length} | ${tokens.filter(metrics.isUncertainToken).length} | ${item.mistakes ? `${item.mistakes.entries.length} entries` : 'none'}`);
+    const count = (list, unit) => (list ? `${list.length} ${unit}` : 'none');
+    logger.info(`${item.name} | ${path.basename(item.imagePath)} | ${item.imageBytes} | ${tokens.length} | ${tokens.filter(metrics.isUncertainToken).length} | ${item.mistakes ? `${item.mistakes.entries.length} entries` : 'none'}`
+      + ` | ${item.answerTruth ? 'yes' : 'none'} | ${count(item.questionPhrases, 'lines')} | ${count(item.struckPhrases, 'phrases')} | ${item.assignment ? 'yes' : 'none'}`);
   }
   logger.info(`Total words: ${loaded.items.reduce((sum, item) => sum + metrics.tokenize(metrics.normalizeText(item.groundTruth)).length, 0)}`);
   logger.info(`Warnings: ${loaded.warnings.length}`);

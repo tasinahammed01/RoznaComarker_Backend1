@@ -86,4 +86,4 @@ function leanToWire(content) {
   return linesToWire(value.lines);
 }
 
-module.exports = { LEAN_VERSION, LEAN_SCHEMA, plainTextToWire, leanToWire, linesToWire };
+module.exports = { LEAN_VERSION, LEAN_SCHEMA, plainTextToWire, leanToWire, linesToWire, pieces };

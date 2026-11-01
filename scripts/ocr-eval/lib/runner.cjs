@@ -76,6 +76,9 @@ function rowFor({ item, model, variant, image, source, result, sent, reasoning, 
     name: item.name, model, variant, source, status: 'error', errorCode: null, errorDetail: null, httpStatus: null, rejectedParam: null,
     validation: null, mayBeBilled: false, substitutions: null, deletions: null, insertions: null,
     callsPerPage: prompt.callsPerPage ?? 1, temperatureMode,
+    // Answer-only accuracy and leaks: null = the photo has no such sidecar file (unknown), never 0.
+    answerCerCs: null, answerWerCs: null, questionPhrases: null, questionLeaked: null, struckPhrases: null, struckLeaked: null, struckRealLeaked: null,
+    uncertainFlagged: null, uncertainDropped: null, struckDropped: null, struckReported: null, questionLinesReported: null, namePresent: null, costPriceRatio: null,
     cerCs: null, werCs: null, cerCi: null, werCi: null, referenceWords: null, uncertainMasked: null, overcorrection: null,
     costUsd: null, costSource: null, promptTokens: result.usage?.promptTokens ?? null, completionTokens: result.usage?.completionTokens ?? null,
     reasoningTokens: result.usage?.reasoningTokens ?? null, reasoningNotOff: false, latencyMs: result.latencyMs ?? null,
@@ -90,6 +93,11 @@ function rowFor({ item, model, variant, image, source, result, sent, reasoning, 
     const estimated = openrouter.estimateCost(result.usage, prices[model] || catalogPricing);
     if (estimated !== null) { row.costUsd = estimated; row.costSource = 'estimated'; }
   }
+  // Tier check: with --price given, how far the API's own cost is from tokens x that price (1 = as expected).
+  if (row.costSource === 'api' && prices[model]) {
+    const expected = openrouter.estimateCost(result.usage, prices[model]);
+    if (expected > 0) row.costPriceRatio = row.costUsd / expected;
+  }
   row.reasoningNotOff = (result.usage?.reasoningTokens ?? 0) > 0 || result.reasoningText === true;
   row.truncated = ['length', 'max_tokens'].includes(String(result.finishReason).toLowerCase());
   if (!result.ok) {
@@ -98,10 +106,11 @@ function rowFor({ item, model, variant, image, source, result, sent, reasoning, 
     return row;
   }
 
-  const extracted = prompts.extractTranscript(prompt.mode, result.content);
+  const extracted = prompts.extractTranscript(prompt.mode, result.content, { assignment: item.assignment });
   row.validation = extracted.validation;
   if (extracted.status !== 'ok' || !extracted.text.trim()) {
     row.errorCode = extracted.status === 'empty' ? 'EMPTY_RESPONSE' : 'INVALID_JSON';
+    row.errorDetail = extracted.reason || null; // a fixed sentence, never page text
     return row;
   }
   const scores = metrics.evaluatePair(item.groundTruth, extracted.text, { wildcardSpan: options.wildcardSpan });
@@ -112,6 +121,26 @@ function rowFor({ item, model, variant, image, source, result, sent, reasoning, 
   row.referenceWords = scores.caseSensitive.referenceWords; row.uncertainMasked = scores.caseSensitive.uncertain.referenceTokensMasked;
   row.substitutions = scores.caseSensitive.substitutions; row.deletions = scores.caseSensitive.deletions; row.insertions = scores.caseSensitive.insertions;
   row.overcorrection = metrics.overCorrection(item.groundTruth, extracted.text, item.mistakes, { wildcardSpan: options.wildcardSpan });
+
+  // The part of the output that would be graded, judged against the answer-only ground truth and the leak lists.
+  const answerText = extracted.answerText ?? extracted.text;
+  if (item.answerTruth) {
+    const answer = metrics.scoreTexts(item.answerTruth, answerText, { caseSensitive: true, wildcardSpan: options.wildcardSpan });
+    row.answerCerCs = answer.cer; row.answerWerCs = answer.wer;
+    if (item.questionPhrases) {
+      const leak = metrics.phraseLeakage(item.questionPhrases, item.answerTruth, answerText);
+      row.questionPhrases = leak.phrases; row.questionLeaked = leak.leaked;
+    }
+  }
+  if (item.struckPhrases) {
+    const leak = metrics.phraseLeakage(item.struckPhrases, item.answerTruth ?? item.groundTruth, answerText);
+    row.struckPhrases = leak.phrases; row.struckLeaked = leak.leaked;
+    row.struckRealLeaked = metrics.realExtraWords(item.struckPhrases, item.answerTruth ?? item.groundTruth, answerText).realLeaked;
+  }
+  if (extracted.flags) {
+    row.uncertainFlagged = extracted.flags.uncertainCount; row.uncertainDropped = extracted.flags.uncertainDropped ?? null; row.struckDropped = extracted.flags.struckDropped ?? null; row.struckReported = extracted.flags.struckCount;
+    row.questionLinesReported = extracted.flags.questionLineCount; row.namePresent = extracted.flags.namePresent;
+  }
   return row;
 }
 
@@ -131,7 +160,7 @@ async function runEvaluation(options, deps) {
     dataset, models, variants, promptMode = 'plain', live = false, confirm, maxCostUsd, resume = false, provider = null, sort = null,
     wildcardSpan = metrics.DEFAULT_WILDCARD_SPAN, suggestMistakes = false, prices = {}, timeoutMs = openrouter.DEFAULT_TIMEOUT_MS,
     limit = null, noCatalog = false, outDir = DEFAULT_OUT, runId: requestedRunId, maxFailures = DEFAULT_MAX_FAILURES, reasoningFor = {},
-    temperature = '0',
+    temperature = '0', ignoreProviders = [], only = [],
   } = options;
   const { logger, fetchImpl, apiKey = null, now = () => performance.now(), clock = () => new Date() } = deps;
 
@@ -145,7 +174,10 @@ async function runEvaluation(options, deps) {
     if (!openrouter.REASONING_MODES.includes(mode)) throw new RunError('BAD_REASONING', `Unknown reasoning mode "${mode}" for ${model}. Use one of: ${openrouter.REASONING_MODES.join(', ')}.`);
   }
   const prompt = prompts.promptSpec(promptMode);
-  const items = limit ? dataset.items.slice(0, limit) : dataset.items;
+  const unknownOnly = only.find(name => !dataset.items.some(item => item.name === name));
+  if (unknownOnly) throw new RunError('BAD_ONLY', `--only names ${String(unknownOnly).slice(0, 60)}, which is not a photo in the evaluation folder.`);
+  const chosen = only.length ? dataset.items.filter(item => only.includes(item.name)) : dataset.items;
+  const items = limit ? chosen.slice(0, limit) : chosen;
   const resolvedOut = assertOutputAllowed(outDir);
   const intent = live ? 'live' : 'dry-run';
   const runId = requestedRunId || defaultRunId(clock, intent);
@@ -169,7 +201,9 @@ async function runEvaluation(options, deps) {
   for (const item of items) for (const variant of variants) for (const model of models) {
     const entry = prepared.get(`${item.name}|${variant}`);
     // Non-default settings join the fingerprint; defaults add nothing, so earlier saved results stay reusable.
-    const extra = [...(reasoningModeOf(model) === 'none' ? [] : [`reasoning:${reasoningModeOf(model)}`]), ...(temperature === 'omit' ? ['temperature:omit'] : [])];
+    const itemUserText = prompt.userTextFor ? prompt.userTextFor(item) : null; // modes that send the stored assignment text
+    const extra = [...(reasoningModeOf(model) === 'none' ? [] : [`reasoning:${reasoningModeOf(model)}`]), ...(temperature === 'omit' ? ['temperature:omit'] : []),
+      ...(itemUserText ? [`user:${sha256(itemUserText)}`] : []), ...(ignoreProviders.length ? [`ignore:${ignoreProviders.join(',')}`] : [])];
     const fingerprint = entry.image ? sha256(JSON.stringify([TOOL_VERSION, intent, model, variant, entry.image.sha256, prompt.sha256, promptMode, sort, provider, openrouter.MAX_OUTPUT_TOKENS, ...extra])) : null;
     const reusable = resume && fingerprint ? loadReusable(runDir, model, variant, item.name, fingerprint) : null;
     combos.push({ item, variant, model, entry, fingerprint, reusable });
@@ -207,8 +241,8 @@ async function runEvaluation(options, deps) {
   const rows = [];
   const consecutiveFailures = new Map(), skippedModels = new Map();
   let totalCostUsd = 0, made = 0, stoppedEarly = null;
-  const settings = { sort, provider, wildcardSpan };
-  const metaNow = partial => ({ runId, mode, startedAt, promptMode, sort, provider, variants, models, photoCount: items.length, reusedCalls, totalCostUsd,
+  const settings = { sort, provider, wildcardSpan, ignoreProviders };
+  const metaNow = partial => ({ runId, mode, startedAt, promptMode, sort, provider, ignoreProviders, variants, models, photoCount: items.length, reusedCalls, totalCostUsd,
     stoppedEarly, wildcardSpan, maxFailures, maxOutputTokens: openrouter.MAX_OUTPUT_TOKENS, temperature, partial, plannedRows: combos.length,
     datasetWarnings: dataset.warnings || [] });
   const runJsonNow = complete => ({ complete, datasetDirectory: dataset.directory, plannedCalls, callsMade: made, reasoningDefault: 'none', reasoningFor,
@@ -235,7 +269,8 @@ async function runEvaluation(options, deps) {
       let result;
       if (mode === 'dry-run') result = fake.simulate({ model, item, variant, promptMode, image: entry.image, reasoningMode });
       else {
-        const { body } = openrouter.buildRequest({ model, prompt, image: entry.image, capabilities: caps, options: { ...settings, reasoningMode, temperature } });
+        const itemPrompt = prompt.userTextFor ? { ...prompt, userText: prompt.userTextFor(item) } : prompt;
+        const { body } = openrouter.buildRequest({ model, prompt: itemPrompt, image: entry.image, capabilities: caps, options: { ...settings, reasoningMode, temperature } });
         result = await openrouter.callOpenRouter({ body, apiKey, fetchImpl, timeoutMs, now });
       }
       made++;
@@ -243,7 +278,7 @@ async function runEvaluation(options, deps) {
       settleFailureCost(row, mode);
       writeJson(path.join(runDir, 'raw', report.safeName(model), variant, `${item.name}.json`), {
         toolVersion: TOOL_VERSION, fingerprint, mode, savedAt: clock().toISOString(), model, variant, name: item.name, sent,
-        reasoningMode: reasoning.mode, reasoningSent: reasoning.sent, promptMode, sort, pinnedProvider: provider, temperatureMode: temperature, result });
+        reasoningMode: reasoning.mode, reasoningSent: reasoning.sent, promptMode, sort, pinnedProvider: provider, ignoredProviders: ignoreProviders, temperatureMode: temperature, result });
       totalCostUsd += row.costUsd || 0;
 
       if (row.status === 'ok') consecutiveFailures.set(model, 0);

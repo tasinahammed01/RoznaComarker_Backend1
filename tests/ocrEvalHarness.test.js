@@ -522,10 +522,10 @@ describe('image variants', () => {
     expect(prepared.bytes.equals(bytes)).toBe(true);
     expect(prepared.mimeType).toBe('image/jpeg');
   });
-  test('original re-encodes an EXIF-rotated photo as PNG with swapped dimensions, as production does', async () => {
+  test('original re-encodes an EXIF-rotated JPEG as a high-quality JPEG with swapped dimensions, as production does', async () => {
     await makeJpeg(sample, { width: 900, height: 600, orientation: 6 });
     const prepared = await variants.prepareVariant('original', fs.readFileSync(sample));
-    expect(prepared.mimeType).toBe('image/png');
+    expect(prepared.mimeType).toBe('image/jpeg');
     expect([prepared.width, prepared.height]).toEqual([600, 900]);
   });
   test('preprocessed is a three-channel gray JPEG with the same dimensions', async () => {

@@ -16,6 +16,8 @@ const correctionStatisticsSchema = new Schema(
 
 const submissionSchema = new Schema(
   {
+    // Downstream teacher overrides and audit are atomic; never part of AI persistence.
+    teacherAnnotations: { type: Schema.Types.Mixed, select: false },
     student: {
       type: Schema.Types.ObjectId,
       ref: 'User',
