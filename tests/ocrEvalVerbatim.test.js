@@ -294,7 +294,7 @@ describe('verbatim reply: strict parser and conversion', () => {
 // ---------------------------------------------------------------------------------------------------------------------
 describe('prompt modes verbatim-json and plain-first-excl', () => {
   test('both are available, after the earlier modes (verbatim-json-v2 is the later experiment)', () => {
-    expect(prompts().PROMPT_MODES).toEqual(['plain', 'production', 'plain-first', 'production-trim', 'lean-json', 'verbatim-json', 'plain-first-excl', 'verbatim-json-v2']);
+    expect(prompts().PROMPT_MODES).toEqual(['plain', 'production', 'plain-first', 'production-trim', 'lean-json', 'verbatim-json', 'plain-first-excl', 'verbatim-json-v2', 'verbatim-json-v2-no14']);
   });
   test('verbatim-json: strict schema, one call per page, and the rules the audit asked for', () => {
     const spec = prompts().promptSpec('verbatim-json');

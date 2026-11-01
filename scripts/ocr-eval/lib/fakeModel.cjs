@@ -114,7 +114,7 @@ function simulate({ model, item, variant, promptMode, image, reasoningMode = 'no
   const text = outLines.join('\n');
 
   let content = text;
-  if (promptMode === 'verbatim-json' || promptMode === 'verbatim-json-v2') {
+  if (promptMode === 'verbatim-json' || promptMode === 'verbatim-json-v2' || promptMode === 'verbatim-json-v2-no14') {
     // A reader that separates the page. Uses the answer and question sidecars when the photo has them.
     const rand2 = random(`${model}|${item.name}|${variant}|verbatim`);
     const render = tokens => (autocorrect ? autocorrectTokens(tokens, entries) : tokens)
@@ -126,7 +126,7 @@ function simulate({ model, item, variant, promptMode, image, reasoningMode = 'no
       questionLines = [];
       if (struck.length && answerLines.length) answerLines[answerLines.length - 1] = `${struck.join(' ')} ${answerLines[answerLines.length - 1]}`;
     }
-    content = promptMode === 'verbatim-json-v2'
+    content = promptMode.startsWith('verbatim-json-v2')
       ? JSON.stringify({ version: 'verbatim-page-v2', name_present: false, question_lines: questionLines, struck_through: [], answer_lines: answerLines, uncertain: [] })
       : JSON.stringify({ version: VERBATIM_VERSION, name_present: false, question_lines: questionLines, answer_lines: answerLines, struck_through: [], uncertain: [] });
   } else if (promptMode === 'lean-json') {

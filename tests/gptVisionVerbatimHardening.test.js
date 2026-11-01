@@ -175,3 +175,50 @@ describe('startup configuration', () => {
       expect(example).toContain(name);
   });
 });
+
+describe('records stored before the v2 shape', () => {
+  // Old evidence: review.struck was [{ line, text }] and had no struckDropped. It must still load, and its crossed-out text must never be graded or shown.
+  const oldEvidence = () => {
+    const stored = verbatim().convert(reply());
+    const review = { ...stored.review, struck: [{ line: 1, text: 'CROSSEDOLD' }, { line: -1, text: 'QUESTIONOLD' }] };
+    delete review.struckDropped;
+    return { identity: { model: GEMINI }, payload: { primary: c.validateWire(stored.wire), review } };
+  };
+  test('cached evidence with the old crossed-out shape loads, is not re-read, and grades the answer only', async () => {
+    const o = options();
+    o.reservation.acquire.mockResolvedValue({ _id: 'source', cached: true, evidence: oldEvidence() });
+    const result = await source.readPage(o);
+    expect(o.fetchImpl).not.toHaveBeenCalled();
+    expect(result.fullText).toBe(ANSWER.join('\n'));
+    expect(result.source.sourceTextExact).toBe(ANSWER.join('\n'));
+    const shown = JSON.stringify(result.pages[0].sourceVerificationSummary);
+    expect(shown).not.toContain('CROSSEDOLD');
+    expect(shown).not.toContain('QUESTIONOLD');
+    expect(result.pages[0].sourceVerificationSummary.review).toMatchObject({ struckCount: 1, uncertainDropped: 0 });
+  });
+  test('evidence with no review at all (before the verbatim reader existed) still loads', async () => {
+    const o = options(), old = oldEvidence();
+    delete old.payload.review;
+    o.reservation.acquire.mockResolvedValue({ _id: 'source', cached: true, evidence: old });
+    const result = await source.readPage(o);
+    expect(result.fullText).toBe(ANSWER.join('\n'));
+    expect(result.pages[0].sourceVerificationSummary.review).toBeUndefined();
+  });
+  test('a reply in the old v1 page shape is not accepted as a new read', () => {
+    expect(() => verbatim().convert(reply({ version: 'verbatim-page-v1' }))).toThrow('OCR_GPT_SOURCE_SCHEMA');
+  });
+});
+
+describe('harness: with and without rule 14', () => {
+  const prompts = require('../scripts/ocr-eval/lib/prompts.cjs');
+  test('verbatim-json-v2 is the production prompt; -no14 is the same text minus rule 14 only', () => {
+    const full = prompts.promptSpec('verbatim-json-v2'), lean = prompts.promptSpec('verbatim-json-v2-no14');
+    expect(full.system).toBe(verbatim().PROMPT);
+    expect(full.system).toContain('14. Before answering');
+    expect(lean.system).not.toContain('14. Before answering');
+    expect(lean.system).toBe(full.system.replace(/\n14\. .*$/m, ''));
+    expect(lean.system).toContain('13. Write in the same language');
+    expect(lean.responseSchema).toEqual(full.responseSchema);
+    expect(lean.parser).toBe(full.parser);
+  });
+});

@@ -133,7 +133,7 @@ describe('candidate converter: transcription text -> production evidence', () =>
 
 describe('prompt modes', () => {
   test('the new modes are available next to plain and production', () => {
-    expect(prompts.PROMPT_MODES).toEqual(['plain', 'production', 'plain-first', 'production-trim', 'lean-json', 'verbatim-json', 'plain-first-excl', 'verbatim-json-v2']);
+    expect(prompts.PROMPT_MODES).toEqual(['plain', 'production', 'plain-first', 'production-trim', 'lean-json', 'verbatim-json', 'plain-first-excl', 'verbatim-json-v2', 'verbatim-json-v2-no14']);
   });
   test('A plain-first: the measured plain prompt with one change, genuinely unreadable words become [?]', () => {
     const plain = prompts.promptSpec('plain').system.split('\n'), first = prompts.promptSpec('plain-first');

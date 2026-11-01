@@ -214,7 +214,7 @@ function failedCallsSection(rows) {
   return [...out, ''];
 }
 
-const JSON_MODES = Object.freeze(['production', 'production-trim', 'lean-json', 'verbatim-json', 'verbatim-json-v2']);
+const JSON_MODES = Object.freeze(['production', 'production-trim', 'lean-json', 'verbatim-json', 'verbatim-json-v2', 'verbatim-json-v2-no14']);
 
 /** Answer-only accuracy and leaks, per model and variant, for the photos that have the sidecar files. Counts and rates only. */
 function answerSection(rows) {
