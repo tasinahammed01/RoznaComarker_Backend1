@@ -12,7 +12,7 @@ const openrouter = require('./lib/openrouter.cjs');
 const guards = require('./lib/guards.cjs');
 const { VARIANTS, DEFAULT_VARIANTS } = require('./lib/imageVariants.cjs');
 const { PROMPT_MODES } = require('./lib/prompts.cjs');
-const { DEFAULT_OUT, MODEL_ID, RunError, runEvaluation } = require('./lib/runner.cjs');
+const { DEFAULT_OUT, DEFAULT_MAX_FAILURES, MODEL_ID, RunError, runEvaluation, rescoreRun } = require('./lib/runner.cjs');
 
 const HELP = `OCR evaluation harness
 
@@ -28,9 +28,18 @@ Modes
   --check-models        free OpenRouter catalog lookup for --models (no paid calls)
 
 Options
-  --models a/b,c/d      OpenRouter model ids (dry run also accepts fake/perfect, fake/noisy, fake/autocorrect, fake/reasoning)
+  --models a/b,c/d      OpenRouter model ids (dry run also accepts fake/perfect, fake/noisy, fake/autocorrect, fake/reasoning,
+                        fake/needs-reasoning, fake/always-fails)
+  --reasoning-for m=MODE  reasoning setting for one model (repeatable). MODE: none (default for every model),
+                        minimal, low, medium, high, or omit (send no reasoning parameter). What was sent is recorded
+                        per model in summary.md and results.csv
+  --max-failures N      skip a model's remaining calls after N consecutive failures (default ${DEFAULT_MAX_FAILURES}); other models continue.
+                        An authentication or credit error stops the whole run; a rejected parameter skips that model at once
   --variants list       original,preprocessed,client-export (default original,preprocessed)
-  --prompt mode         plain (default) | production
+  --prompt mode         plain (default) | production | plain-first (A) | production-trim (C) | lean-json (D)
+  --temperature T       0 (default) | omit (send no temperature: provider default, as production does today)
+  --rescore RUN_ID      offline: rebuild results.csv, summary.md and diffs of a run from its saved calls with the
+                        current metrics (no API calls, no key). Older runs need --prompt <mode they used>
   --max-cost-usd X      stop once the run has cost X (live: needs the API or --price to report cost)
   --price model=in:out  USD per million tokens, used when the API reports no cost (repeatable)
   --resume --run-id ID  reuse successful calls already saved in that run (no repeat spending)
@@ -47,7 +56,8 @@ Options
 
 class UsageError extends Error {}
 
-const VALUE_FLAGS = new Set(['models', 'variants', 'prompt', 'confirm', 'max-cost-usd', 'run-id', 'provider', 'sort', 'out', 'limit', 'price', 'timeout-ms', 'wildcard-span']);
+const VALUE_FLAGS = new Set(['models', 'variants', 'prompt', 'confirm', 'max-cost-usd', 'run-id', 'provider', 'sort', 'out', 'limit', 'price', 'timeout-ms', 'wildcard-span',
+  'max-failures', 'reasoning-for', 'temperature', 'rescore']);
 const BOOLEAN_FLAGS = new Set(['live', 'dry-run', 'resume', 'suggest-mistakes', 'check-models', 'inspect', 'no-catalog', 'help']);
 
 function integer(name, text, min = 0) {
@@ -56,7 +66,7 @@ function integer(name, text, min = 0) {
 }
 
 function parseArgs(argv) {
-  const raw = { prices: {} };
+  const raw = { prices: {}, reasoningFor: {} };
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i];
     if (!token.startsWith('--')) throw new UsageError(`Unexpected argument: ${token}`);
@@ -71,6 +81,12 @@ function parseArgs(argv) {
         const match = /^([^=]+)=(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(value);
         if (!match) throw new UsageError('--price must look like model/id=0.30:1.20 (USD per million input:output tokens).');
         raw.prices[match[1]] = { inputPerMillion: Number(match[2]), outputPerMillion: Number(match[3]) };
+      } else if (flag === 'reasoning-for') {
+        const match = /^([^=]+)=(.+)$/.exec(value);
+        if (!match) throw new UsageError(`--reasoning-for must look like model/id=MODE (MODE: ${openrouter.REASONING_MODES.join(', ')}).`);
+        if (!MODEL_ID.test(match[1])) throw new UsageError(`--reasoning-for: not a valid model id: ${match[1]}`);
+        if (!openrouter.REASONING_MODES.includes(match[2])) throw new UsageError(`--reasoning-for: unknown mode "${match[2]}". Use one of: ${openrouter.REASONING_MODES.join(', ')}.`);
+        raw.reasoningFor[match[1]] = match[2];
       } else raw[flag] = value;
     } else throw new UsageError(`Unknown option: --${flag}`);
   }
@@ -80,7 +96,18 @@ function parseArgs(argv) {
     checkModels: Boolean(raw['check-models']), inspect: Boolean(raw.inspect), noCatalog: Boolean(raw['no-catalog']),
     models: raw.models ? split(raw.models) : [], variants: raw.variants ? split(raw.variants) : [...DEFAULT_VARIANTS],
     promptMode: raw.prompt ?? 'plain', runId: raw['run-id'], provider: raw.provider ?? null, sort: raw.sort ?? null, out: raw.out, prices: raw.prices,
+    reasoningFor: raw.reasoningFor, temperature: raw.temperature ?? '0', promptGiven: raw.prompt !== undefined, rescore: raw.rescore ?? null,
   };
+  if (!openrouter.TEMPERATURE_MODES.includes(args.temperature)) throw new UsageError(`--temperature must be one of: ${openrouter.TEMPERATURE_MODES.join(', ')} (omit = send none, like production today).`);
+  if (args.rescore && (args.live || raw['dry-run'] || args.resume || raw.confirm !== undefined || args.checkModels || args.inspect)) {
+    throw new UsageError('--rescore works offline on saved calls and cannot be combined with --live, --dry-run, --resume, --confirm, --check-models or --inspect.');
+  }
+  args.maxFailures = raw['max-failures'] !== undefined ? integer('max-failures', raw['max-failures'], 1) : DEFAULT_MAX_FAILURES;
+  if (!args.checkModels) {
+    for (const model of Object.keys(args.reasoningFor)) {
+      if (args.models.length && !args.models.includes(model)) throw new UsageError(`--reasoning-for names ${model}, which is not in --models.`);
+    }
+  }
   if (raw.live && raw['dry-run']) throw new UsageError('Choose either --live or --dry-run, not both.');
   if (raw.confirm !== undefined) args.confirm = integer('confirm', raw.confirm);
   if (raw['max-cost-usd'] !== undefined) {
@@ -149,6 +176,15 @@ async function main(argv, io = {}) {
     }
     const loaded = dataset.loadDataset(dataset.resolveEvalDir(env));
     if (args.inspect) { printInspect(loaded, logger); return 0; }
+    if (args.rescore) {
+      const result = await rescoreRun({ dataset: loaded, outDir: args.out || env.OCR_EVAL_OUT || DEFAULT_OUT, runId: args.rescore,
+        promptMode: args.promptGiven ? args.promptMode : null, wildcardSpan: args.wildcardSpan, logger });
+      logger.info('');
+      logger.info(result.summary);
+      logger.info(`Run folder: ${result.files.runDir}`);
+      logger.info(`Files: results.csv, summary.md, run.json, ${result.files.diffs.length} diff file(s). No API calls were made.`);
+      return 0;
+    }
     if (!args.models.length) throw new UsageError('--models is required.');
     const outDir = args.out || env.OCR_EVAL_OUT || DEFAULT_OUT;
     const result = await runEvaluation({ ...args, dataset: loaded, outDir }, {

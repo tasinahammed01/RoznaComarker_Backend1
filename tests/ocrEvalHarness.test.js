@@ -54,6 +54,18 @@ function makeFetch({ text = TRUTH.image1, cost = 0.01, reasoningTokens = 0, reas
   return fn;
 }
 
+/** Scripted chat replies for failure tests. */
+const okChat = (options, { cost = 0.01, text = TRUTH.image1, reasoningTokens = 0, provider = 'TestProvider' } = {}) => {
+  const body = JSON.parse(options.body);
+  const usage = { prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200, completion_tokens_details: { reasoning_tokens: reasoningTokens } };
+  if (cost !== null) usage.cost = cost;
+  return response(200, { model: body.model, provider, usage, choices: [{ finish_reason: 'stop', message: { content: text } }] });
+};
+const errChat = (status, message, extra = {}) => response(status, { error: { code: status, message, ...extra } });
+const bodyOf = call => JSON.parse(call.body);
+const postsFor = (fetchImpl, model) => fetchImpl.posts().filter(call => bodyOf(call).model === model);
+const PRICES = model => ({ [model]: { inputPerMillion: 1, outputPerMillion: 2 } });
+
 function listAll(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => (e.isDirectory() ? listAll(path.join(dir, e.name)) : [path.join(dir, e.name)]));
 }
@@ -245,7 +257,10 @@ describe('API key safety', () => {
   test('a provider error that echoes the key never reaches the log, CSV, summary, raw files or run.json', async () => {
     const fetchImpl = makeFetch({ chat: async () => response(401, { error: { code: 401, message: `Invalid key ${KEY} sent as Bearer ${KEY}` } }) });
     const { result, log } = await run({ models: [MODEL_A], live: true, confirm: 3, runId: 'k1' }, { fetchImpl, apiKey: KEY });
-    expect(result.rows.every(r => r.status === 'error' && r.errorCode === 'AUTH_ERROR')).toBe(true);
+    // An authentication error would repeat for every call, so the run stops after the first one.
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ status: 'error', errorCode: 'AUTH_ERROR' });
+    expect(result.stoppedEarly).toMatch(/AUTH_ERROR/);
     expect(log).not.toContain(KEY);
     expect(textOf(result.files.runDir)).not.toContain('TESTKEY');
   });
@@ -639,5 +654,267 @@ describe('reports', () => {
     expect(summary).toMatch(/served by 2 different providers \(P, Q\)/);
     expect(summary).toContain('Dataset: image3.jpeg: skipped');
     expect(summary).not.toContain('DRY RUN');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+describe('a failed call is recorded and the run continues', () => {
+  const live = { live: true, noCatalog: true };
+
+  test('a failed call with --max-cost-usd and --price set does not stop the run', async () => {
+    let n = 0;
+    const fetchImpl = makeFetch({ chat: async (_u, o) => (++n === 1 ? errChat(503, 'Upstream unavailable') : okChat(o)) });
+    const { result } = await run({ ...live, models: [MODEL_A], confirm: 3, maxCostUsd: 1, prices: PRICES(MODEL_A) }, { fetchImpl, apiKey: KEY });
+    expect(fetchImpl.posts()).toHaveLength(3);
+    expect(result.stoppedEarly).toBeNull();
+    expect(result.rows[0]).toMatchObject({ status: 'error', errorCode: 'HTTP_503', httpStatus: 503, costUsd: 0, costSource: 'failed-no-charge' });
+    expect(result.rows.slice(1).every(r => r.status === 'ok')).toBe(true);
+  });
+  test('--max-cost-usd is still enforced on successful calls, with failures in between', async () => {
+    let n = 0;
+    const fetchImpl = makeFetch({ chat: async (_u, o) => (++n === 1 ? errChat(503, 'Upstream unavailable') : okChat(o, { cost: 0.04 })) });
+    const { result } = await run({ ...live, models: [MODEL_A], variants: ['original', 'preprocessed'], confirm: 6, maxCostUsd: 0.07 }, { fetchImpl, apiKey: KEY });
+    expect(fetchImpl.posts()).toHaveLength(3); // failed, ok (0.04), ok (0.08 >= 0.07) -> stop
+    expect(result.stoppedEarly).toMatch(/max-cost-usd 0\.07 reached/);
+    expect(result.totalCostUsd).toBeCloseTo(0.08, 10);
+  });
+  test('a failed call that still reports a cost counts toward the cap', async () => {
+    let n = 0;
+    const fetchImpl = makeFetch({ chat: async (_u, o) => (++n === 1
+      ? response(200, { model: bodyOf({ body: o.body }).model, usage: { prompt_tokens: 900, completion_tokens: 0, total_tokens: 900, cost: 0.05 }, choices: [{ finish_reason: 'stop', message: { content: '' } }] })
+      : okChat(o, { cost: 0.04 })) });
+    const { result } = await run({ ...live, models: [MODEL_A], confirm: 3, maxCostUsd: 0.07 }, { fetchImpl, apiKey: KEY });
+    expect(result.rows[0]).toMatchObject({ status: 'error', errorCode: 'EMPTY_RESPONSE', costUsd: 0.05 });
+    expect(fetchImpl.posts()).toHaveLength(2);
+    expect(result.stoppedEarly).toMatch(/reached/);
+  });
+  test('a timeout does not stop the run and is flagged as possibly billed', async () => {
+    let n = 0;
+    const fetchImpl = makeFetch({ chat: async (_u, o) => { if (++n === 1) throw Object.assign(new Error('aborted'), { name: 'AbortError' }); return okChat(o); } });
+    const { result } = await run({ ...live, models: [MODEL_A], confirm: 3, maxCostUsd: 1, prices: PRICES(MODEL_A) }, { fetchImpl, apiKey: KEY });
+    expect(fetchImpl.posts()).toHaveLength(3);
+    expect(result.rows[0]).toMatchObject({ status: 'error', errorCode: 'TIMEOUT', mayBeBilled: true, costUsd: null });
+    expect(result.summary).toMatch(/may have been billed/);
+    expect(result.stoppedEarly).toBeNull();
+  });
+  test('a successful call with no cost and no price still stops a capped run (the cap cannot be enforced)', async () => {
+    const fetchImpl = makeFetch({ cost: null });
+    const { result } = await run({ ...live, models: [MODEL_A], confirm: 3, maxCostUsd: 1 }, { fetchImpl, apiKey: KEY });
+    expect(fetchImpl.posts()).toHaveLength(1);
+    expect(result.stoppedEarly).toMatch(/cannot be enforced/);
+  });
+});
+
+describe('--max-failures and fatal errors', () => {
+  const ALL = ['original', 'preprocessed', 'client-export']; // 3 photos x 3 variants = 9 calls per model
+  const failing = (status = 503, message = 'Upstream unavailable') => makeFetch({ chat: async (_u, o) => (bodyOf({ body: o.body }).model === MODEL_A ? errChat(status, message) : okChat(o)) });
+
+  test('a model that fails every time is cut off after 5 consecutive failures (default); other models finish', async () => {
+    const fetchImpl = failing();
+    const { result } = await run({ live: true, noCatalog: true, models: [MODEL_A, MODEL_B], variants: ALL, confirm: 18 }, { fetchImpl, apiKey: KEY });
+    expect(postsFor(fetchImpl, MODEL_A)).toHaveLength(5);
+    expect(postsFor(fetchImpl, MODEL_B)).toHaveLength(9);
+    const a = result.rows.filter(r => r.model === MODEL_A);
+    expect(a.filter(r => r.status === 'error')).toHaveLength(5);
+    expect(a.filter(r => r.status === 'skipped')).toHaveLength(4);
+    expect(a.filter(r => r.status === 'skipped').every(r => r.errorCode === 'SKIPPED_MAX_FAILURES' && r.source === 'skipped')).toBe(true);
+    expect(result.rows.filter(r => r.model === MODEL_B).every(r => r.status === 'ok')).toBe(true);
+    expect(result.callsMade).toBe(14);
+    expect(result.summary).toMatch(/\| test\/model-a \| original \| 0 \/ \d+ \(\d+ skipped\)/);
+  });
+  test('--max-failures N sets the limit', async () => {
+    const fetchImpl = failing();
+    await run({ live: true, noCatalog: true, models: [MODEL_A, MODEL_B], variants: ALL, confirm: 18, maxFailures: 2 }, { fetchImpl, apiKey: KEY });
+    expect(postsFor(fetchImpl, MODEL_A)).toHaveLength(2);
+  });
+  test('the count is of consecutive failures: a success resets it', async () => {
+    const pattern = ['fail', 'fail', 'ok', 'fail', 'fail', 'ok', 'fail', 'fail', 'ok'];
+    let n = 0;
+    const fetchImpl = makeFetch({ chat: async (_u, o) => (pattern[n++] === 'fail' ? errChat(503, 'Upstream unavailable') : okChat(o)) });
+    const { result } = await run({ live: true, noCatalog: true, models: [MODEL_A], variants: ALL, confirm: 9, maxFailures: 3 }, { fetchImpl, apiKey: KEY });
+    expect(fetchImpl.posts()).toHaveLength(9);
+    expect(result.rows.some(r => r.status === 'skipped')).toBe(false);
+  });
+  test('skipped calls are not saved, so a later --resume tries them again', async () => {
+    const fetchImpl = failing();
+    const { result } = await run({ live: true, noCatalog: true, models: [MODEL_A, MODEL_B], variants: ALL, confirm: 18, runId: 'mf' }, { fetchImpl, apiKey: KEY });
+    const files = listAll(path.join(result.files.runDir, 'raw', 'test__model-a'));
+    expect(files).toHaveLength(5);
+  });
+  test.each([[401, 'No auth credentials found', 'AUTH_ERROR'], [402, 'Insufficient credits', 'PAYMENT_REQUIRED']])('an HTTP %i (%s) stops the whole run at once', async (status, message, code) => {
+    const fetchImpl = makeFetch({ chat: async () => errChat(status, message) });
+    const { result } = await run({ live: true, noCatalog: true, models: [MODEL_A, MODEL_B], confirm: 6 }, { fetchImpl, apiKey: KEY });
+    expect(fetchImpl.posts()).toHaveLength(1);
+    expect(result.rows).toHaveLength(1);
+    expect(result.stoppedEarly).toContain(code);
+    expect(result.summary).toContain('Run stopped early');
+  });
+  test('a parameter rejection skips that model\'s remaining calls at once; other models continue', async () => {
+    const fetchImpl = failing(400, 'No endpoints found that support the requested parameter reasoning');
+    const { result } = await run({ live: true, noCatalog: true, models: [MODEL_A, MODEL_B], confirm: 6 }, { fetchImpl, apiKey: KEY });
+    expect(postsFor(fetchImpl, MODEL_A)).toHaveLength(1);
+    expect(postsFor(fetchImpl, MODEL_B)).toHaveLength(3);
+    const a = result.rows.filter(r => r.model === MODEL_A);
+    expect(a.map(r => [r.status, r.errorCode])).toEqual([['error', 'PARAMETER_REJECTED'], ['skipped', 'SKIPPED_PARAMETER_REJECTED'], ['skipped', 'SKIPPED_PARAMETER_REJECTED']]);
+    expect(result.stoppedEarly).toBeNull();
+  });
+  test('dry run: fake/always-fails is cut off after the limit while fake/perfect completes', async () => {
+    const { result } = await run({ models: ['fake/always-fails', 'fake/perfect'], variants: ALL });
+    const failed = result.rows.filter(r => r.model === 'fake/always-fails');
+    expect(failed.filter(r => r.status === 'error')).toHaveLength(5);
+    expect(failed.filter(r => r.status === 'skipped')).toHaveLength(4);
+    expect(result.rows.filter(r => r.model === 'fake/perfect').every(r => r.status === 'ok')).toBe(true);
+  });
+  test('the summary counts skipped calls separately from failures', () => {
+    const base = { name: 'image1', model: MODEL_A, variant: 'original', source: 'live', status: 'ok', cerCs: 0.1, werCs: 0.1, cerCi: 0.1, werCi: 0.1, costUsd: 0.01, latencyMs: 1 };
+    const [group] = report.aggregate([base, { ...base, status: 'error', errorCode: 'HTTP_503' }, { ...base, status: 'skipped', source: 'skipped', errorCode: 'SKIPPED_MAX_FAILURES', costUsd: null }]);
+    expect(group).toMatchObject({ calls: 3, ok: 1, failed: 1, skipped: 1 });
+  });
+  test('failed calls (cost 0) do not dilute the cost per page, but they stay in the total', () => {
+    const base = { name: 'image1', model: MODEL_A, variant: 'original', source: 'live', status: 'ok', cerCs: 0.1, werCs: 0.1, cerCi: 0.1, werCi: 0.1, costUsd: 0.01, latencyMs: 1 };
+    const [group] = report.aggregate([base, { ...base, name: 'image2' }, { ...base, name: 'image3', status: 'error', errorCode: 'HTTP_503', costUsd: 0, costSource: 'failed-no-charge' }]);
+    expect(group.costMean).toBeCloseTo(0.01, 10);
+    expect(group.costTotal).toBeCloseTo(0.02, 10);
+  });
+  test('CLI: --max-failures defaults to 5 and must be a whole number of at least 1', () => {
+    expect(cli.parseArgs([]).maxFailures).toBe(5);
+    expect(cli.parseArgs(['--max-failures', '3']).maxFailures).toBe(3);
+    for (const bad of ['0', 'abc', '-1', '2.5']) expect(() => cli.parseArgs(['--max-failures', bad])).toThrow(/--max-failures/);
+  });
+});
+
+describe('error details are captured, never lost in a generic message', () => {
+  const nested = (innerMessage, extra = {}) => ({ error: { code: 400, message: 'Provider returned error',
+    metadata: { provider_name: 'Google AI Studio', raw: JSON.stringify({ error: { message: innerMessage, type: 'invalid_request_error', ...extra } }) } } });
+  const call = (status, body) => openrouter.callOpenRouter({ body: {}, apiKey: KEY, fetchImpl: async () => response(status, body) });
+
+  test('the real reason inside an OpenRouter "Provider returned error" wrapper is read, classified, and the parameter named', async () => {
+    const result = await call(400, nested("Invalid value for 'reasoning.effort': 'none'. Supported values are: 'low', 'medium', 'high'.", { param: 'reasoning.effort' }));
+    expect(result).toMatchObject({ ok: false, errorCode: 'PARAMETER_REJECTED', httpStatus: 400, rejectedParam: 'reasoning.effort', providerName: 'Google AI Studio' });
+    expect(result.errorDetail).toContain('Supported values are');
+    expect(result.errorDetail).not.toBe('Provider returned error');
+  });
+  test('the rejected parameter is inferred from the text when the API does not name it', async () => {
+    const cases = [
+      [404, { error: { message: 'No endpoints found that support the requested parameter reasoning' } }, 'reasoning'],
+      [400, { error: { message: 'temperature is not supported for this model' } }, 'temperature'],
+      [400, { error: { message: "'max_tokens' must be less than 8192" } }, 'max_tokens'],
+      [400, { error: { message: 'Unsupported value: reasoning effort none' } }, 'reasoning.effort'],
+      [400, { error: { message: 'something else entirely' } }, null],
+      [500, { error: { message: 'reasoning backend crashed' } }, null],
+    ];
+    for (const [status, body, param] of cases) expect((await call(status, body)).rejectedParam).toBe(param);
+  });
+  test('a plain-text provider message is used as the detail', async () => {
+    const result = await call(400, { error: { code: 400, message: 'Provider returned error', metadata: { raw: 'Model does not support effort none' } } });
+    expect(result.errorDetail).toContain('does not support effort none');
+    expect(result.rejectedParam).toBe('reasoning.effort');
+  });
+  test('details are bounded and carry no key or long encoded blobs', async () => {
+    const blob = 'QUJD'.repeat(80);
+    const result = await call(400, { error: { message: `bad request with ${KEY} and ${blob} ${'x '.repeat(400)}` } });
+    expect(result.errorDetail).not.toContain('TESTKEY');
+    expect(result.errorDetail).not.toContain(blob);
+    expect(result.errorDetail).toContain('[...]');
+    expect(result.errorDetail.length).toBeLessThanOrEqual(400);
+  });
+  test('results.csv gets http_status, error_detail and rejected_param, and summary.md a Failed calls section', async () => {
+    const fetchImpl = makeFetch({ chat: async (_u, o) => (bodyOf({ body: o.body }).model === MODEL_A
+      ? response(400, nested("Invalid value for 'reasoning.effort': 'none'. Supported values are: 'low', 'medium', 'high'.", { param: 'reasoning.effort' }))
+      : okChat(o)) });
+    const { result } = await run({ live: true, noCatalog: true, models: [MODEL_A, MODEL_B], confirm: 6, runId: 'ed' }, { fetchImpl, apiKey: KEY });
+    const lines = fs.readFileSync(result.files.csv, 'utf8').trim().split('\r\n');
+    // Newer columns (S/D/I, calls_per_page, temperature_mode) are appended after these.
+    expect(lines[0]).toMatch(/,http_status,error_detail,rejected_param,may_be_billed,reasoning_mode,reasoning_sent(,|$)/);
+    const failedLine = lines.find(l => l.includes('PARAMETER_REJECTED') && !l.includes('SKIPPED'));
+    expect(failedLine).toContain('400');
+    expect(failedLine).toContain('reasoning.effort');
+    expect(failedLine).toContain('Supported values are');
+    const summary = result.summary;
+    expect(summary).toContain('## Failed calls');
+    expect(summary).toMatch(/test\/model-a.*PARAMETER_REJECTED.*HTTP 400.*reasoning\.effort.*Supported values are/);
+    expect(summary).toContain('--reasoning-for');
+    expect(summary + fs.readFileSync(result.files.csv, 'utf8')).not.toContain('TESTKEY');
+  });
+  test('dry run: fake/needs-reasoning is rejected with reasoning.effort named, then skipped', async () => {
+    const { result } = await run({ models: ['fake/needs-reasoning'] });
+    expect(result.rows[0]).toMatchObject({ status: 'error', errorCode: 'PARAMETER_REJECTED', httpStatus: 400, rejectedParam: 'reasoning.effort' });
+    expect(result.rows.slice(1).every(r => r.status === 'skipped')).toBe(true);
+  });
+});
+
+describe('--reasoning-for: what was sent is recorded', () => {
+  const reasoningOf = (fetchImpl, model) => postsFor(fetchImpl, model).map(c => bodyOf(c).reasoning);
+
+  test('a per-model mode changes only that model\'s request', async () => {
+    const fetchImpl = makeFetch();
+    const { result } = await run({ live: true, models: [MODEL_A, MODEL_B], confirm: 6, reasoningFor: { [MODEL_A]: 'low' } }, { fetchImpl, apiKey: KEY });
+    expect(new Set(reasoningOf(fetchImpl, MODEL_A).map(r => JSON.stringify(r)))).toEqual(new Set(['{"effort":"low"}']));
+    expect(new Set(reasoningOf(fetchImpl, MODEL_B).map(r => JSON.stringify(r)))).toEqual(new Set(['{"effort":"none"}']));
+    expect(result.rows.find(r => r.model === MODEL_A)).toMatchObject({ reasoningMode: 'low', reasoningSent: '{"effort":"low"}', reasoningParamSent: true });
+    expect(result.rows.find(r => r.model === MODEL_B)).toMatchObject({ reasoningMode: 'none', reasoningSent: '{"effort":"none"}' });
+  });
+  test.each(['minimal', 'medium', 'high'])('%s is sent as that effort', async mode => {
+    const fetchImpl = makeFetch();
+    await run({ live: true, models: [MODEL_A], confirm: 3, reasoningFor: { [MODEL_A]: mode } }, { fetchImpl, apiKey: KEY });
+    expect(reasoningOf(fetchImpl, MODEL_A)[0]).toEqual({ effort: mode });
+  });
+  test('omit sends no reasoning parameter and says so', async () => {
+    const fetchImpl = makeFetch();
+    const { result } = await run({ live: true, models: [MODEL_A, MODEL_B], confirm: 6, reasoningFor: { [MODEL_A]: 'omit' } }, { fetchImpl, apiKey: KEY });
+    expect(postsFor(fetchImpl, MODEL_A).every(c => !('reasoning' in bodyOf(c)))).toBe(true);
+    expect(result.rows.find(r => r.model === MODEL_A)).toMatchObject({ reasoningMode: 'omit', reasoningSent: 'omitted (not requested)', reasoningParamSent: false });
+  });
+  test('a mode the catalog says the model cannot take is omitted, with the reason recorded', async () => {
+    const catalog = [{ ...CATALOG([MODEL_A])[0], supported_parameters: ['temperature'] }];
+    const fetchImpl = makeFetch({ catalog });
+    const { result } = await run({ live: true, models: [MODEL_A], confirm: 3, reasoningFor: { [MODEL_A]: 'low' } }, { fetchImpl, apiKey: KEY });
+    expect(postsFor(fetchImpl, MODEL_A).every(c => !('reasoning' in bodyOf(c)))).toBe(true);
+    expect(result.rows[0].reasoningSent).toBe('omitted (catalog: no reasoning control)');
+  });
+  test('summary.md has a Request settings table, and warns when models are not like-for-like', async () => {
+    const fetchImpl = makeFetch();
+    const { result } = await run({ live: true, models: [MODEL_A, MODEL_B], confirm: 6, reasoningFor: { [MODEL_A]: 'omit' } }, { fetchImpl, apiKey: KEY });
+    const s = result.summary;
+    expect(s).toContain('## Request settings per model');
+    expect(s).toMatch(/\| test\/model-a \| sent: 0 \| omit -> omitted \(not requested\) \| 16000 \|/);
+    expect(s).toMatch(/\| test\/model-b \| sent: 0 \| none -> \{"effort":"none"\} \| 16000 \|/);
+    expect(s).toMatch(/different reasoning settings/);
+  });
+  test('when every model uses the default, the table is there but there is no like-for-like warning', async () => {
+    const { result } = await run({ live: true, models: [MODEL_A, MODEL_B], confirm: 6 }, { fetchImpl: makeFetch(), apiKey: KEY });
+    expect(result.summary).toContain('## Request settings per model');
+    expect(result.summary).not.toMatch(/different reasoning settings/);
+  });
+  test('results.csv records reasoning_mode and reasoning_sent for every call', async () => {
+    const { result } = await run({ live: true, models: [MODEL_A], confirm: 3, reasoningFor: { [MODEL_A]: 'high' } }, { fetchImpl: makeFetch(), apiKey: KEY });
+    const lines = fs.readFileSync(result.files.csv, 'utf8').trim().split('\r\n');
+    expect(lines[1]).toMatch(/,high,"\{""effort"":""high""\}"(,|$)/);
+  });
+  test('a different mode is a different request: --resume does not reuse the other mode\'s results', async () => {
+    await run({ live: true, models: [MODEL_A], confirm: 3, runId: 'rf', reasoningFor: { [MODEL_A]: 'none' } }, { fetchImpl: makeFetch(), apiKey: KEY });
+    const { result } = await run({ live: true, models: [MODEL_A], confirm: 3, resume: true, runId: 'rf', reasoningFor: { [MODEL_A]: 'low' } }, { fetchImpl: makeFetch(), apiKey: KEY });
+    expect(result.reusedCalls).toBe(0);
+  });
+  test('dry run: fake/needs-reasoning accepts low, and its reasoning tokens are reported', async () => {
+    const { result } = await run({ models: ['fake/needs-reasoning'], reasoningFor: { 'fake/needs-reasoning': 'low' } });
+    expect(result.rows.every(r => r.status === 'ok' && r.reasoningSent === '{"effort":"low"}')).toBe(true);
+    expect(result.rows.every(r => r.reasoningNotOff && r.reasoningTokens > 0)).toBe(true);
+    expect(result.summary).toContain('low -> {"effort":"low"}');
+  });
+  test('invalid settings are rejected before anything runs', async () => {
+    await expect(run({ models: [MODEL_A], reasoningFor: { [MODEL_A]: 'bogus' } })).rejects.toThrow(/reasoning/i);
+    await expect(run({ models: [MODEL_A], reasoningFor: { [MODEL_B]: 'low' } })).rejects.toThrow(/not in --models/);
+  });
+  test('CLI: parses --reasoning-for (repeatable) and rejects bad modes, bad format and models not in --models', async () => {
+    expect(cli.parseArgs(['--models', `${MODEL_A},${MODEL_B}`, '--reasoning-for', `${MODEL_A}=low`, '--reasoning-for', `${MODEL_B}=omit`]).reasoningFor)
+      .toEqual({ [MODEL_A]: 'low', [MODEL_B]: 'omit' });
+    expect(cli.parseArgs([]).reasoningFor).toEqual({});
+    for (const argv of [['--models', MODEL_A, '--reasoning-for', `${MODEL_A}=bogus`], ['--models', MODEL_A, '--reasoning-for', 'nonsense'],
+      ['--models', MODEL_A, '--reasoning-for', `${MODEL_B}=low`]]) {
+      const err = sink();
+      expect(await cli.main(argv, { env: { OCR_EVAL_DIR: dataDir, OCR_EVAL_OUT: outDir }, stdout: sink(), stderr: err })).toBe(2);
+      expect(err.text()).toMatch(/--reasoning-for/);
+    }
   });
 });

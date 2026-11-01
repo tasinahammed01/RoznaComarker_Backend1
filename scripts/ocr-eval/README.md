@@ -15,7 +15,7 @@ silently replacing a student's mistake with the corrected form.
 - `--max-cost-usd X` stops the run once X has been spent. If the API reports no cost and no price is known, the
   cap cannot be enforced and the run stops after the first call (use `--price model=in:out`).
 - One attempt per call. No retries, so spending is never hidden. `--resume --run-id ID` reuses calls that already
-  succeeded.
+  succeeded. See "When calls fail" for how failures, costs and `--max-failures` work.
 - **The API key** is read from `OPENROUTER_API_KEY` in the environment, only for `--live`. It is sent only in the
   `Authorization` header and is redacted from every log line, error message and file. Nothing reads `.env` files.
 - **Your data is never copied.** Photos and ground truth are read in place from `OCR_EVAL_DIR`. Results go to
@@ -89,11 +89,15 @@ node scripts/ocr-eval/run.cjs --models qwen/qwen3.8-27b --limit 2 --live --confi
 
 | Option | Meaning |
 |---|---|
-| `--models a/b,c/d` | OpenRouter model ids. Dry runs also accept `fake/perfect`, `fake/noisy`, `fake/autocorrect`, `fake/reasoning`; any other id is simulated as a generic noisy reader. |
+| `--models a/b,c/d` | OpenRouter model ids. Dry runs also accept `fake/perfect`, `fake/noisy`, `fake/autocorrect`, `fake/reasoning`, `fake/needs-reasoning` (rejects reasoning `none`/`minimal`, accepts `low`+), `fake/always-fails`; any other id is simulated as a generic noisy reader. |
 | `--variants` | `original`, `preprocessed`, `client-export` (default: first two) |
-| `--prompt` | `plain` (default) or `production` |
+| `--prompt` | `plain` (default), `production`, or a candidate design: `plain-first`, `production-trim`, `lean-json` (see "Candidate designs") |
+| `--temperature 0\|omit` | `0` (default) sends `temperature: 0`; `omit` sends no temperature, as production does |
+| `--rescore RUN_ID` | offline: rebuild `results.csv`, `summary.md`, `run.json` and `diffs/` from the run's saved `raw/` calls. No network, no key. Add `--prompt` only for old runs whose raw files do not record it. |
 | `--live --confirm N` | real paid calls |
 | `--max-cost-usd X`, `--price model=in:out` | cost cap; USD per million tokens for estimating cost |
+| `--reasoning-for model=MODE` | reasoning setting for one model, repeatable. `MODE`: `none` (default for every model), `minimal`, `low`, `medium`, `high`, `omit` (send no reasoning parameter). Recorded per model in `summary.md` and `results.csv`. |
+| `--max-failures N` | skip a model's remaining calls after N consecutive failures (default 5); other models continue |
 | `--resume --run-id ID`, `--run-id ID` | reuse saved successful calls; name the run folder |
 | `--provider NAME` | pin one provider (`provider.only`) |
 | `--sort latency\|throughput\|price\|default` | provider sort order. `default` sends no sort. Production uses `latency` for Qwen. Cannot be combined with `--provider`. |
@@ -114,9 +118,66 @@ node scripts/ocr-eval/run.cjs --models qwen/qwen3.8-27b --limit 2 --live --confi
 **Reasoning check.** Every call is flagged `reasoning_not_off` when the response reports reasoning tokens or
 includes reasoning text. Such models are not comparable on cost, latency or accuracy.
 
+**Models that reject `reasoning: none`.** Some models cannot switch thinking off, and the API answers
+`PARAMETER_REJECTED`. Give such a model its own setting, for example
+`--reasoning-for google/some-model=low` (the lowest value it accepts) or `--reasoning-for vendor/other=omit`
+(send no reasoning parameter). The setting is never silent: `summary.md` has a **Request settings per model**
+table (temperature, reasoning requested -> sent, max tokens, sort, pinned provider, prompt, output), a warning when
+models did not all receive the same reasoning setting, and `results.csv` records `reasoning_mode` and
+`reasoning_sent` for every call. A model that still reasons is flagged, and its reasoning tokens are in the CSV.
+
+## When calls fail
+
+- A failed call is recorded (code, HTTP status, the API's own error text, and the parameter it names) and the run
+  **continues** with the next call. `results.csv` has `http_status`, `error_detail` and `rejected_param` (the last
+  columns), and `summary.md` has a **Failed calls** section. Error text is API text only, bounded, with the key and
+  long encoded blobs removed.
+- **Cost.** An HTTP error response (rejected before anything is generated) counts as no charge and never trips
+  `--max-cost-usd`. A call that produced output or reported a cost counts toward the cap. A call that ended with no
+  response at all (timeout, network error) may have been billed: it is flagged `may_be_billed` and left out of the
+  totals. The cap is still enforced on successful calls, and a successful call with no cost and no price still stops
+  a capped run because the cap cannot be enforced.
+- **`--max-failures N`** (default 5) counts consecutive failures per model; a success resets the count. At N, that
+  model's remaining calls are recorded as `skipped` (they are not saved, so `--resume` tries them again) and the other
+  models carry on.
+- **Run-level stops.** An authentication error (HTTP 401/403) or insufficient credits (HTTP 402) stops the whole run,
+  since every later call would fail identically. A rejected parameter (`PARAMETER_REJECTED`) skips that model's remaining
+  calls at once, because the same request would be rejected again.
+
 **Serving provider.** Every call logs which provider served it (if the response reports one). OpenRouter can route
 one model id to different providers, possibly with different quantizations; use `--provider` and `--sort` to
 test the effect.
+
+## Candidate designs
+
+Each design is one call per page. Its output is converted to the production wire JSON and checked by the production
+validators (`validateWire` + `validateCanonical`), so `validation` shows whether production would accept the page,
+reject it as unreadable (`OCR_GPT_SOURCE_UNCERTAIN`), or find it invalid. The transcript is scored either way.
+
+- `plain-first` (A): the plain prompt, plus `[?]` for a word that is genuinely unreadable. Every line is student
+  text (the copied question too, like the ground truth). A `[?]` word becomes an `UNCERTAIN` segment.
+- `production-trim` (C): the production Qwen prompt without the self-check paragraph, plus "one segment per line"
+  and "a copied question is student writing"; production schema.
+- `lean-json` (D): one object per line, `{text, kind: student|excluded}`, strict schema; `excluded` lines are kept
+  out of the transcript.
+
+## Gate (`gate.cjs`)
+
+Compares saved runs only (reads each `results.csv`, no calls). Every arm needs two runs, each measured at
+`--sort latency`; both candidate runs must pass every check.
+
+```powershell
+node scripts/ocr-eval/gate.cjs --baseline P1,P2 --production Q1,Q2 --candidate C1,C2 [--out file.md]
+```
+
+Checks: G1/G2 mean CER/WER at most +0.5 points over plain; G3 per photo at most +3 points (CER and WER); G4 every
+page under 30 s; G5 every photo valid production evidence; G6 no more pages rejected than production, and none that
+plain read below 5% CER; G7 at most +2 words deleted per photo vs plain; G8 over-correction not worse than plain
+(N/A without mistakes lists); G9 one call per page and cost no higher than production. Exit 0 PASS, 1 FAIL,
+2 INCOMPLETE (missing runs, wrong routing, fewer than two runs) or usage error.
+
+Reports are rewritten after every call, so an interrupted run keeps a partial `results.csv` and `summary.md`
+(marked "Partial results").
 
 ## Image variants
 
@@ -130,6 +191,7 @@ test the effect.
 - **CER / WER**, case-sensitive and case-insensitive, via edit distance over the normalised text. Whitespace and
   line breaks do not count; punctuation stays attached to its word; typographic quotes and dashes are treated as
   plain ones. Averages are per photo (every photo weighs the same); failed calls are excluded and counted.
+  `results.csv` also splits the case-sensitive word errors into `substitutions`, `deletions` and `insertions`.
 - **Over-correction** = listed student mistakes the model replaced with the correct form / listed mistakes found.
   Each occurrence is `preserved`, `overcorrected`, `misread` (anything else) or `dropped`. Without a mistakes list the
   value is `n/a`, never 0. "Unlisted substitutions" counts model changes that are not on your list.
@@ -157,4 +219,4 @@ vs output for the worst 3 photos per model and variant, skipping perfect ones), 
 
 ## Tests
 
-`npx jest --runInBand tests/ocrEvalMetrics.test.js tests/ocrEvalDataset.test.js tests/ocrEvalHarness.test.js`
+`npx jest --runInBand tests/ocrEval`

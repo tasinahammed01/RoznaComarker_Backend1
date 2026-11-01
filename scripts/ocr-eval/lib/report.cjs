@@ -26,6 +26,12 @@ const CSV_COLUMNS = Object.freeze([
   ['temperature_sent', r => r.temperatureSent], ['reasoning_param_sent', r => r.reasoningParamSent],
   ['prompt_mode', r => r.promptMode], ['sort', r => r.sort], ['pinned_provider', r => r.pinnedProvider],
   ['image_bytes', r => r.imageBytes], ['image_width', r => r.imageWidth], ['image_height', r => r.imageHeight],
+  // Appended last so earlier columns keep their position in existing spreadsheets.
+  ['http_status', r => r.httpStatus], ['error_detail', r => r.errorDetail], ['rejected_param', r => r.rejectedParam],
+  ['may_be_billed', r => r.mayBeBilled], ['reasoning_mode', r => r.reasoningMode], ['reasoning_sent', r => r.reasoningSent],
+  // Word-level (case-sensitive) edit counts behind wer_case; deletions = words lost.
+  ['substitutions', r => r.substitutions], ['deletions', r => r.deletions], ['insertions', r => r.insertions],
+  ['calls_per_page', r => r.callsPerPage], ['temperature_mode', r => r.temperatureMode],
 ]);
 
 function csvCell(value) {
@@ -68,14 +74,16 @@ function aggregate(rows) {
     const providers = new Map();
     for (const r of ok) providers.set(r.provider || 'unknown', (providers.get(r.provider || 'unknown') || 0) + 1);
     return {
-      model, variant, calls: all.length, ok: ok.length, failed: all.length - ok.length,
+      model, variant, calls: all.length, ok: ok.length, failed: all.filter(r => r.status === 'error').length,
+      skipped: all.filter(r => r.status === 'skipped').length,
       rejected: ok.filter(r => r.validation && r.validation !== 'accepted').length,
       truncated: ok.filter(r => r.truncated).length,
       reasoningFlagged: all.filter(r => r.reasoningNotOff).length,
       cerCs: meanOf(ok.map(r => r.cerCs)), werCs: meanOf(ok.map(r => r.werCs)),
       cerCi: meanOf(ok.map(r => r.cerCi)), werCi: meanOf(ok.map(r => r.werCi)),
       overcorrection: pooledOvercorrection(ok),
-      costMean: meanOf(all.map(r => r.costUsd)), costKnown: numeric(all.map(r => r.costUsd)).length, costTotal: sumOf(all.map(r => r.costUsd)),
+      // Cost per page is the cost of pages that were read; failed calls (cost 0) must not dilute it.
+      costMean: meanOf(ok.map(r => r.costUsd)), costKnown: numeric(all.map(r => r.costUsd)).length, costTotal: sumOf(all.map(r => r.costUsd)),
       latencyMean: meanOf(all.map(r => r.latencyMs)), latencyMedian: medianOf(all.map(r => r.latencyMs)),
       providers,
     };
@@ -123,11 +131,15 @@ function buildWarnings(rows, meta) {
     if (flagged.length) {
       warnings.push(`**${model}: reasoning was NOT off** on ${flagged.length}/${own.length} calls (reasoning tokens reported). Its latency, cost and accuracy are not comparable with non-reasoning runs. Examples: ${[...new Set(flagged.map(r => `${r.name}/${r.variant}`))].slice(0, 3).join(', ')}.`);
     }
-    if (own.some(r => r.reasoningParamSent === false)) warnings.push(`${model}: the catalog says it has no reasoning control, so the reasoning parameter was not sent. Check the reasoning-token column.`);
-    if (own.some(r => r.temperatureSent === false)) warnings.push(`${model}: the catalog says it does not accept temperature, so it ran at the provider default (not temperature 0).`);
+    if (own.some(r => r.reasoningParamSent === false && r.reasoningMode !== 'omit' && r.source !== 'skipped')) warnings.push(`${model}: the catalog says it has no reasoning control, so the reasoning parameter was not sent. Check the reasoning-token column.`);
+    if (own.some(r => r.reasoningMode === 'omit')) warnings.push(`${model}: the reasoning parameter was omitted on request, so the model's own default applies. Check its reasoning tokens.`);
+    if (own.some(r => r.temperatureSent === false && r.temperatureMode !== 'omit' && r.source !== 'skipped')) warnings.push(`${model}: the catalog says it does not accept temperature, so it ran at the provider default (not temperature 0).`);
+    if (own.some(r => r.temperatureMode === 'omit')) warnings.push(`${model}: temperature omitted on request (--temperature omit), so the provider default sampling applies, as in production today.`);
     const errors = new Map();
-    for (const r of own.filter(x => x.status !== 'ok')) errors.set(r.errorCode || 'ERROR', (errors.get(r.errorCode || 'ERROR') || 0) + 1);
-    if (errors.size) warnings.push(`${model}: failed calls - ${[...errors].map(([code, n]) => `${code} x${n}`).join(', ')}.${errors.has('PARAMETER_REJECTED') ? ' PARAMETER_REJECTED means no provider of this model accepts one of the requested parameters (temperature, reasoning, structured output).' : ''}`);
+    for (const r of own.filter(x => x.status === 'error')) errors.set(r.errorCode || 'ERROR', (errors.get(r.errorCode || 'ERROR') || 0) + 1);
+    if (errors.size) warnings.push(`${model}: failed calls - ${[...errors].map(([code, n]) => `${code} x${n}`).join(', ')} (details under Failed calls).`);
+    const skippedCount = own.filter(x => x.status === 'skipped').length;
+    if (skippedCount) warnings.push(`${model}: ${skippedCount} call(s) were skipped after repeated failures or a rejected request, so its averages cover fewer photos.`);
     const okRows = own.filter(r => r.status === 'ok');
     const providers = new Set(okRows.map(r => r.provider || 'unknown'));
     if (providers.size > 1) warnings.push(`${model}: served by ${providers.size} different providers (${[...providers].join(', ')}). Results can differ by provider or quantization; pin one with --provider to test.`);
@@ -138,10 +150,69 @@ function buildWarnings(rows, meta) {
     const mismatch = okRows.filter(r => r.returnedModel && r.returnedModel !== model);
     if (mismatch.length) warnings.push(`${model}: ${mismatch.length} response(s) came from a different model id (${[...new Set(mismatch.map(r => r.returnedModel))].join(', ')}).`);
   }
+  // Honest comparison: say so whenever models did not receive the same reasoning setting.
+  const reasoningByModel = new Map();
+  for (const r of rows.filter(x => x.source !== 'skipped' && x.imageBytes != null && x.reasoningSent)) {
+    if (!reasoningByModel.has(r.model)) reasoningByModel.set(r.model, new Set());
+    reasoningByModel.get(r.model).add(r.reasoningSent);
+  }
+  const profiles = new Set([...reasoningByModel.values()].map(set => [...set].sort().join(' / ')));
+  if (profiles.size > 1) {
+    warnings.push(`Models were run with different reasoning settings (${[...reasoningByModel].map(([m, set]) => `${m}: ${[...set].join(' / ')}`).join('; ')}). Compare accuracy with care, and do not compare cost or latency between reasoning-on and reasoning-off runs.`);
+  }
   if (rows.some(r => r.status === 'ok' && !Number.isFinite(r.costUsd))) warnings.push('Some calls have no cost: the API did not report one and no --price was given. Cost columns skip them.');
   if (meta.stoppedEarly) warnings.push(`**Run stopped early:** ${meta.stoppedEarly}`);
   for (const w of meta.datasetWarnings || []) warnings.push(`Dataset: ${w}`);
   return warnings;
+}
+
+/** Failed and skipped calls, with the API's own error text (never student text). */
+function failedCallsSection(rows) {
+  const failed = rows.filter(r => r.status === 'error');
+  const skipped = rows.filter(r => r.status === 'skipped');
+  if (!failed.length && !skipped.length) return [];
+  const out = ['## Failed calls', ''];
+  const groups = new Map();
+  for (const r of failed) {
+    const key = [r.model, r.errorCode, r.httpStatus, r.rejectedParam, r.errorDetail].join('\u0000');
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  for (const list of groups.values()) {
+    const r = list[0];
+    out.push(`- **${r.model}** - ${r.errorCode}${r.httpStatus ? ` (HTTP ${r.httpStatus})` : ''} x${list.length}${r.rejectedParam ? ` - rejected parameter: \`${r.rejectedParam}\`` : ''}${r.provider ? ` - provider: ${r.provider}` : ''}${r.errorDetail ? ` - "${r.errorDetail}"` : ''}`);
+    if (r.errorCode === 'PARAMETER_REJECTED' && (!r.rejectedParam || r.rejectedParam.startsWith('reasoning'))) {
+      out.push(`  - If reasoning is the cause, try \`--reasoning-for ${r.model}=low\` (or \`=omit\`) and compare the Request settings table.`);
+    }
+  }
+  const skips = new Map();
+  for (const r of skipped) { const key = `${r.model}\u0000${r.errorCode}`; skips.set(key, [...(skips.get(key) || []), r]); }
+  for (const list of skips.values()) out.push(`- **${list[0].model}** - ${list.length} call(s) skipped (${list[0].errorCode}): ${list[0].errorDetail}`);
+  const unknown = rows.filter(r => r.mayBeBilled);
+  if (unknown.length) {
+    out.push(`- ${unknown.length} call(s) ended without any response (timeout or network error) and may have been billed; their cost is not in the totals (${[...new Set(unknown.map(r => r.model))].join(', ')}).`);
+  }
+  return [...out, ''];
+}
+
+const JSON_MODES = Object.freeze(['production', 'production-trim', 'lean-json']);
+const temperatureCell = r => (r.temperatureMode === 'omit' ? 'not sent (requested omit)'
+  : r.temperatureSent === false ? 'not sent (catalog: not supported)' : 'sent: 0');
+
+/** Exactly what each model was sent, so the comparison stays honest. */
+function requestSettingsSection(rows, meta) {
+  const sent = rows.filter(r => r.source !== 'skipped' && r.imageBytes !== null && r.imageBytes !== undefined);
+  if (!sent.length) return [];
+  const distinct = (list, pick) => [...new Set(list.map(pick))].join(' / ');
+  const out = ['## Request settings per model', '',
+    '| Model | Temperature | Reasoning (requested -> sent) | Max tokens | Sort | Pinned provider | Prompt | Output |', '|---|---|---|---|---|---|---|---|'];
+  for (const model of meta.models) {
+    const own = sent.filter(r => r.model === model);
+    if (!own.length) continue;
+    out.push(`| ${model} | ${distinct(own, temperatureCell)} | ${distinct(own, r => `${r.reasoningMode ?? 'n/a'} -> ${r.reasoningSent ?? 'n/a'}`)} | ${meta.maxOutputTokens ?? 'n/a'} | ${distinct(own, r => r.sort ?? 'default')} | ${distinct(own, r => r.pinnedProvider || 'none')} | ${distinct(own, r => r.promptMode ?? 'n/a')} | ${distinct(own, r => (JSON_MODES.includes(r.promptMode) ? 'strict JSON schema' : 'plain text'))} |`);
+  }
+  out.push('', 'Every model gets the same prompt, image variants and routing (require_parameters, no fallbacks). A parameter is left out only when asked for (`omit`) or when the model\'s catalog entry says it cannot take it.', '');
+  return out;
 }
 
 function renderSummary({ meta, rows }) {
@@ -152,7 +223,10 @@ function renderSummary({ meta, rows }) {
     out.push('> **DRY RUN - simulated models.** Every number below is synthetic. It only shows the shape of the report; it says nothing about real models.', '');
   }
   out.push(`- Run: \`${meta.runId}\` (${meta.startedAt})`);
-  out.push(`- Mode: ${meta.mode} | prompt: \`${meta.promptMode}\` | temperature 0 | reasoning requested off | sort: ${meta.sort || 'default'} | pinned provider: ${meta.provider || 'none'}`);
+  if (meta.partial) {
+    out.push(`> **Partial results: ${rows.length} of ${meta.plannedRows} rows so far.** The run is still going, or it was interrupted; \`--resume\` or \`--rescore\` completes it.`, '');
+  }
+  out.push(`- Mode: ${meta.mode} | prompt: \`${meta.promptMode}\` | temperature: ${meta.temperature === 'omit' ? 'omitted (provider default)' : '0'} | reasoning: see "Request settings per model" | sort: ${meta.sort || 'default'} | pinned provider: ${meta.provider || 'none'} | max consecutive failures per model: ${meta.maxFailures ?? 'n/a'}`);
   out.push(`- Photos: ${meta.photoCount} | variants: ${meta.variants.join(', ')} | models: ${meta.models.join(', ')}`);
   out.push(`- Calls: ${rows.length} recorded (${meta.reusedCalls} reused from an earlier run) | cost this run: ${money(meta.totalCostUsd)} | [?] wildcard span: ${meta.wildcardSpan} words`, '');
 
@@ -160,7 +234,7 @@ function renderSummary({ meta, rows }) {
   out.push('| Model | Variant | OK / calls | CER (case) | WER (case) | CER (any case) | WER (any case) | Over-correction | Cost / page | Latency (mean) | Reasoning not off |');
   out.push('|---|---|---|---|---|---|---|---|---|---|---|');
   for (const g of groups) {
-    out.push(`| ${g.model} | ${g.variant} | ${g.ok} / ${g.calls} | ${pct(g.cerCs)} | ${pct(g.werCs)} | ${pct(g.cerCi)} | ${pct(g.werCi)} | ${ocText(g.overcorrection)} | ${money(g.costMean)} | ${seconds(g.latencyMean)} | ${g.reasoningFlagged ? `**${g.reasoningFlagged}**` : '0'} |`);
+    out.push(`| ${g.model} | ${g.variant} | ${g.ok} / ${g.calls}${g.skipped ? ` (${g.skipped} skipped)` : ''} | ${pct(g.cerCs)} | ${pct(g.werCs)} | ${pct(g.cerCi)} | ${pct(g.werCi)} | ${ocText(g.overcorrection)} | ${money(g.costMean)} | ${seconds(g.latencyMean)} | ${g.reasoningFlagged ? `**${g.reasoningFlagged}**` : '0'} |`);
   }
   out.push('', 'CER/WER: lower is better, averaged over photos whose call succeeded. "Case" is case-sensitive; "any case" ignores capitalisation. Over-correction: share of listed student mistakes that the model silently replaced with the correct form, pooled over photos with a mistakes list (n/a without one). Cost: from the API response where available.', '');
 
@@ -184,6 +258,8 @@ function renderSummary({ meta, rows }) {
   const warnings = buildWarnings(rows, meta);
   out.push('## Warnings', '');
   out.push(...(warnings.length ? warnings.map(w => `- ${w}`) : ['- None.']), '');
+  out.push(...failedCallsSection(rows));
+  out.push(...requestSettingsSection(rows, meta));
 
   const providerLines = groups.filter(g => g.providers.size).map(g => `- ${g.model} / ${g.variant}: ${[...g.providers].map(([p, n]) => `${p} x${n}`).join(', ')}`);
   if (providerLines.length) out.push('## Serving provider per call', '', ...providerLines, '');

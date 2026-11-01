@@ -9,6 +9,10 @@ const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 const MAX_OUTPUT_TOKENS = 16000; // same as the production OCR profile
 const DEFAULT_TIMEOUT_MS = 180000;
 const SORT_VALUES = Object.freeze(['latency', 'throughput', 'price', 'default']);
+// 'omit' sends no reasoning parameter at all (the model's own default applies).
+const REASONING_MODES = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'omit']);
+// '0' sends temperature 0; 'omit' sends none, so the provider default applies (what production does today).
+const TEMPERATURE_MODES = Object.freeze(['0', 'omit']);
 
 function redact(text, secrets = []) {
   let out = String(text ?? '');
@@ -55,12 +59,27 @@ async function fetchCatalog({ fetchImpl, timeoutMs = 30000 }) {
 }
 
 /**
- * Same body for every model, apart from parameters a model's catalog entry says it cannot take.
- * `capabilities` null = unknown, so everything is sent (and require_parameters makes unsupported routes fail loudly).
+ * What the reasoning parameter will be for one model: the requested mode, the parameter object actually sent
+ * (null = none) and a human-readable record of it for the reports. A mode the catalog says the model cannot
+ * take is left out, and the record says why.
+ */
+function reasoningPlan(mode = 'none', capabilities = null) {
+  if (!REASONING_MODES.includes(mode)) throw new RangeError(`Unknown reasoning mode: ${mode}`);
+  if (mode === 'omit') return { mode, param: null, sent: 'omitted (not requested)' };
+  if (capabilities?.reasoning === false) return { mode, param: null, sent: 'omitted (catalog: no reasoning control)' };
+  const param = { effort: mode };
+  return { mode, param, sent: JSON.stringify(param) };
+}
+
+/**
+ * Same body for every model, apart from parameters a model's catalog entry says it cannot take (and the
+ * per-model reasoning mode). `capabilities` null = unknown, so everything is sent (and require_parameters makes
+ * unsupported routes fail loudly). Returns the body, which parameters were sent, and the reasoning record.
  */
 function buildRequest({ model, prompt, image, capabilities = null, options = {} }) {
-  const sendTemperature = capabilities?.temperature !== false;
-  const sendReasoning = capabilities?.reasoning !== false;
+  const sendTemperature = capabilities?.temperature !== false && options.temperature !== 'omit';
+  const reasoning = reasoningPlan(options.reasoningMode ?? 'none', capabilities);
+  const sendReasoning = Boolean(reasoning.param);
   const body = {
     model,
     messages: [
@@ -74,21 +93,61 @@ function buildRequest({ model, prompt, image, capabilities = null, options = {} 
     provider: { require_parameters: true, allow_fallbacks: false },
   };
   if (sendTemperature) body.temperature = 0;
-  if (sendReasoning) body.reasoning = { effort: 'none' };
+  if (sendReasoning) body.reasoning = reasoning.param;
   if (options.provider) body.provider.only = [options.provider];
   if (options.sort && options.sort !== 'default') body.provider.sort = options.sort;
   if (prompt.responseSchema) {
     body.response_format = { type: 'json_schema', json_schema: { name: prompt.schemaName, strict: true, schema: prompt.responseSchema } };
   }
-  return { body, sent: { temperature: sendTemperature, reasoning: sendReasoning } };
+  return { body, sent: { temperature: sendTemperature, reasoning: sendReasoning }, reasoningSent: reasoning.sent };
 }
 
 function classifyHttpError(status, message) {
   if (status === 401 || status === 403) return 'AUTH_ERROR';
   if (status === 402) return 'PAYMENT_REQUIRED';
   if (status === 429) return 'RATE_LIMITED';
-  if ((status === 400 || status === 404) && /support|parameter|endpoint|response_format|structured|schema/i.test(message)) return 'PARAMETER_REJECTED';
+  if ((status === 400 || status === 404 || status === 422)
+    && /support|parameter|endpoint|response_format|structured|schema|reasoning|effort|temperature|max_tokens|unrecognized/i.test(message)) return 'PARAMETER_REJECTED';
   return `HTTP_${status}`;
+}
+
+// ---- provider error details ------------------------------------------------------------------------------------------
+
+const MAX_DETAIL_CHARS = 400;
+const NAMED_PARAMETERS = [
+  ['reasoning.effort', /reasoning[._ ]effort|\beffort\b/i], ['reasoning', /\breasoning\b/i], ['temperature', /\btemperature\b/i],
+  ['max_tokens', /max_(?:completion_)?tokens/i], ['response_format', /response_format|structured[_ ]outputs?|json_schema/i], ['top_p', /\btop_p\b/i],
+];
+
+/** API error text only: no key, no long encoded blobs, one line, bounded. */
+function cleanDetail(text, secrets = []) {
+  return redact(String(text ?? ''), secrets).replace(/[A-Za-z0-9+/]{60,}={0,2}/g, '[...]').replace(/\s+/g, ' ').trim().slice(0, MAX_DETAIL_CHARS);
+}
+
+/**
+ * OpenRouter often wraps the provider's own error: { message: "Provider returned error", metadata: { raw, provider_name } }.
+ * The useful text (and the parameter name) is inside metadata.raw, so read that first.
+ */
+function parseProviderError(apiError, status, secrets = []) {
+  const outer = apiError && typeof apiError === 'object' ? apiError : {};
+  const raw = outer.metadata?.raw;
+  let inner = null, rawText = null;
+  if (typeof raw === 'string' && raw.length <= 12000) {
+    try {
+      const parsed = JSON.parse(raw);
+      inner = parsed?.error && typeof parsed.error === 'object' ? parsed.error : (parsed && typeof parsed === 'object' ? parsed : null);
+    } catch { rawText = raw; }
+  } else if (raw && typeof raw === 'object') {
+    inner = raw.error && typeof raw.error === 'object' ? raw.error : raw;
+  }
+  const text = [inner?.message, rawText, outer.message].find(value => typeof value === 'string' && value.trim()) || '';
+  const named = [inner?.param, outer.param, outer.metadata?.param].find(value => typeof value === 'string' && value.trim());
+  const inferred = [400, 404, 422].includes(status) ? NAMED_PARAMETERS.find(([, pattern]) => pattern.test(text))?.[0] : null;
+  return {
+    message: cleanDetail(text, secrets),
+    rejectedParam: named ? cleanDetail(named, secrets).slice(0, 80) : (inferred ?? null),
+    providerName: typeof outer.metadata?.provider_name === 'string' ? cleanDetail(outer.metadata.provider_name, secrets).slice(0, 80) : null,
+  };
 }
 
 const finiteOrNull = value => (Number.isFinite(value) ? value : null);
@@ -107,9 +166,8 @@ async function callOpenRouter({ body, apiKey, fetchImpl, timeoutMs = DEFAULT_TIM
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const started = now();
-  const scrub = text => redact(text, [apiKey, ...secrets]);
   const failure = (errorCode, errorDetail, extra = {}) =>
-    ({ ok: false, errorCode, errorDetail: scrub(errorDetail).slice(0, 240), latencyMs: Math.round(now() - started), ...extra });
+    ({ ok: false, errorCode, errorDetail: cleanDetail(errorDetail, [apiKey, ...secrets]), latencyMs: Math.round(now() - started), ...extra });
   try {
     const response = await fetchImpl(`${OPENROUTER_BASE}/chat/completions`, {
       method: 'POST',
@@ -127,8 +185,9 @@ async function callOpenRouter({ body, apiKey, fetchImpl, timeoutMs = DEFAULT_TIM
     const provider = typeof payload?.provider === 'string' && payload.provider.trim() ? payload.provider.trim().slice(0, 80) : null;
     if (!response.ok || apiError) {
       const status = response.ok ? Number(apiError?.code) || 500 : response.status;
-      const message = String(apiError?.message || '');
-      return { ...failure(classifyHttpError(status, message), message || `HTTP ${status}`, { httpStatus: status }), usage, provider, latencyMs };
+      const details = parseProviderError(apiError, status, [apiKey, ...secrets]);
+      return { ...failure(classifyHttpError(status, details.message), details.message || `HTTP ${status}`,
+        { httpStatus: status, rejectedParam: details.rejectedParam, providerName: details.providerName }), usage, provider, latencyMs };
     }
     const choice = payload?.choices?.[0];
     const rawContent = choice?.message?.content;
@@ -155,5 +214,5 @@ function estimateCost(usage, pricing) {
   return (usage.promptTokens * pricing.inputPerMillion + usage.completionTokens * pricing.outputPerMillion) / 1e6;
 }
 
-module.exports = { OPENROUTER_BASE, MAX_OUTPUT_TOKENS, DEFAULT_TIMEOUT_MS, SORT_VALUES, redact, createLogger, capabilitiesFromCatalog,
-  fetchCatalog, buildRequest, classifyHttpError, callOpenRouter, estimateCost };
+module.exports = { OPENROUTER_BASE, MAX_OUTPUT_TOKENS, DEFAULT_TIMEOUT_MS, SORT_VALUES, REASONING_MODES, TEMPERATURE_MODES, redact, createLogger, capabilitiesFromCatalog,
+  fetchCatalog, reasoningPlan, buildRequest, classifyHttpError, cleanDetail, parseProviderError, callOpenRouter, estimateCost };
