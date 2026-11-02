@@ -33,7 +33,7 @@ const HIDDEN_MESSAGE = 'before a vowel sound';
   frontend.get(/.*/, (_req, res) => res.sendFile(path.join(build, 'index.html')));
   const listen = (server, port, host) => new Promise((resolve, reject) => { const l = server.listen(port, host, () => resolve(l)); l.on('error', reject); });
   const api = await listen(app, 0, '127.0.0.1');
-  const site = await listen(frontend, FRONT_PORT, '127.0.0.1');
+  const site = await listen(frontend, FRONT_PORT);   // both address families: the page opens "localhost", which may resolve to ::1 first
   const browser = await require('puppeteer').launch({ headless: true, args: ['--no-sandbox'] });
   fs.mkdirSync(evidence, { recursive: true });
   const report = { views: {} };
@@ -72,7 +72,8 @@ const HIDDEN_MESSAGE = 'before a vowel sound';
         const status = res.status();
         const key = target.pathname.replace(/[a-f0-9]{24}/g, ':id') + target.search;
         if (status >= 400) failedApi.push(`${res.request().method()} ${key} ${status}`);
-        if (status === 200 && /ocr-corrections|\/feedback\/|submissions\/(my|assignment)/.test(target.pathname)) apiBodies[key] = await res.json().catch(() => null);
+        // The pages keep polling. A response that can no longer be read must not replace one that was: the leak check below would pass on nothing.
+        if (status === 200 && /ocr-corrections|\/feedback\/|submissions\/(my|assignment)/.test(target.pathname)) { const body = await res.json().catch(() => null); if (body) apiBodies[key] = body; }
       });
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await page.waitForSelector(readySelector, { timeout: 60000 });
@@ -120,7 +121,15 @@ const HIDDEN_MESSAGE = 'before a vowel sound';
       expect(report.views[name].statistics.length).toBeGreaterThan(0);
     }
     // The student's correction API bodies never contain the hidden correction.
-    if (hide) { expect(JSON.stringify(student.apiBodies)).not.toContain(hidden.id); expect(JSON.stringify(teacher.apiBodies)).not.toContain(hidden.id); }
+    // The teacher's list also has the guest's submission: same words, so the same deterministic correction id, and nothing hidden there. Only this
+    // submission's row counts; every other body is checked whole. The row must be there, or the check would pass on nothing.
+    if (hide) {
+      expect(JSON.stringify(student.apiBodies)).not.toContain(hidden.id);
+      const thisSubmission = Object.fromEntries(Object.entries(teacher.apiBodies).map(([key, body]) => [key, Array.isArray(body?.data) ? body.data.filter(row => String(row._id) === String(fixture.IDS.registered)) : body]));
+      expect(thisSubmission['/api/submissions/assignment/:id'].length).toBe(1);
+      expect(thisSubmission['/api/submissions/assignment/:id'][0].writingCorrections.length).toBeGreaterThan(0);
+      expect(JSON.stringify(thisSubmission)).not.toContain(hidden.id);
+    }
   } finally {
     fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2));
     await browser.close(); api.close(); site.close(); await disconnectInMemoryMongo();
