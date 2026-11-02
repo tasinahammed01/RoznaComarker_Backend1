@@ -81,8 +81,8 @@ async function migrate({ apply = false, reverse = false, backupConfirmed = false
     const { resolveOverlay } = require('../src/services/studentCorrectionView.service');
     const resolution = resolveOverlay(doc, state);
     const active = state.entries.filter(e => e.draftNumber == null || e.draftNumber === Math.max(1, Number(doc.draftNumber) || 1)).length;
-    report.reanchored += active - resolution.orphans.length;
-    for (const o of resolution.orphans) report.orphaned[o.reason] = (report.orphaned[o.reason] || 0) + 1;
+    report.reanchored += active - resolution.orphanIds.size;
+    for (const o of [...resolution.orphans, ...resolution.archivedOrphans]) report.orphaned[o.reason] = (report.orphaned[o.reason] || 0) + 1;
     // Pinning entries to their draft can change what students see (an earlier draft's hide no longer covers a later draft): counted.
     const shown = r => JSON.stringify(r.visible.map(c => [String(c.id), c.message]).sort());
     if (shown(resolveOverlay(doc, doc.teacherAnnotations)) !== shown(resolution)) report.studentViewChanged += 1;

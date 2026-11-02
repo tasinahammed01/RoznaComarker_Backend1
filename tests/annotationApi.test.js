@@ -67,6 +67,16 @@ describe('authorization: 404 for everyone but the owning teacher', () => {
     expect((await teacher.snapshot(new mongoose.Types.ObjectId())).status).toBe(404);
     expect((await teacher.snapshot('not-an-id')).status).toBe(404);
   });
+  test('the snapshot states the rules: orphan transitions, and read-only with its reason', async () => {
+    const open = (await teacher.snapshot(fixture.IDS.registered)).body.data;
+    expect({ readOnly: open.readOnly, readOnlyReason: open.readOnlyReason }).toEqual({ readOnly: false, readOnlyReason: null });
+    expect(open.transitions.orphan).toEqual({ edit: { from: ['visible', 'hidden'], to: null }, archive: { from: ['visible', 'hidden'], to: 'archived' }, restore: { from: ['archived'], to: 'orphaned' } });
+    expect(open.transitions.hide).toEqual({ from: ['visible'], to: 'hidden' });
+    expect(open.archivedOrphans).toEqual([]);
+    await require('../src/models/class.model').updateOne({ _id: fixture.IDS.class }, { $set: { status: 'archived' } });
+    const closed = (await teacher.snapshot(fixture.IDS.registered)).body.data;
+    expect({ readOnly: closed.readOnly, readOnlyReason: closed.readOnlyReason }).toEqual({ readOnly: true, readOnlyReason: 'CLASS_CLOSED' });
+  });
   test('deleted class or assignment: 404; closed (archived) class: read-only', async () => {
     const Class = require('../src/models/class.model');
     await Class.updateOne({ _id: fixture.IDS.class }, { $set: { status: 'archived' } });

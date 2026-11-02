@@ -14,7 +14,7 @@ const policy = require('../src/services/teacherAnnotation.service');
 const view = require('../src/services/studentCorrectionView.service');
 const { connectInMemoryMongo, disconnectInMemoryMongo } = require('./helpers/testServer');
 const { seedTestPlans } = require('./helpers/seedTestPlans');
-const { seedAnnotationFixture, regenerateCorrections, AI_SPECS } = require('./helpers/annotationFixture');
+const { seedAnnotationFixture, regenerateCorrections, rerunOcr, AI_SPECS, WORDS } = require('./helpers/annotationFixture');
 const { manualValue } = require('./helpers/annotationApi');
 
 jest.setTimeout(120000);
@@ -77,6 +77,60 @@ describe('transition table', () => {
     const target = ai(await load(), 'dont');
     expect((await apply({ action: 'reject', id: target.id })).auditRow.action).toBe('archive');
     expect(policy.normalizeState((await load()).teacherAnnotations).entries[0].status).toBe('archived');
+  });
+  test('archived orphan: leaves the needs-review list, restore returns it to needs review, never to the student', async () => {
+    const realy = ai(await load(), 'realy');
+    await apply({ action: 'hide', id: realy.id });
+    await regenerateCorrections({ submissionId: fixture.IDS.registered, specs: AI_SPECS.filter(s => s[0] !== 22) });
+    const teacherView = async () => view.buildStudentCorrectionView(await load(), { audience: 'teacher' });
+    const entryId = (await teacherView()).orphans[0].entryId;
+    expect(await attempt({ action: 'archive', id: entryId })).toBe('ok');
+    let v = await teacherView();
+    expect(v.orphans).toEqual([]);
+    expect(v.archivedOrphans.map(o => [o.entryId, o.status, o.reason])).toEqual([[entryId, 'archived', 'NO_MATCHING_CORRECTION']]);
+    // Archived orphan table: only restore.
+    for (const action of ['hide', 'archive']) expect(await attempt({ action, id: entryId })).toBe('ANNOTATION_ORPHANED');
+    expect(await attempt({ action: 'edit', id: entryId, value: manualValue(fixture.registered, 'dont', { symbol: 'SP', category: 'MECHANICS' }) })).toBe('ANNOTATION_ORPHANED');
+    expect(await attempt({ action: 'restore', id: entryId })).toBe('ok');
+    v = await teacherView();
+    expect(v.archivedOrphans).toEqual([]);
+    expect(v.orphans.map(o => [o.entryId, o.status])).toEqual([[entryId, 'hidden']]);
+    expect(v.corrections.some(c => c.quotedText === 'realy')).toBe(false);
+    // Fail closed: the AI re-detects it after the restore, and it stays hidden from the student.
+    await regenerateCorrections({ submissionId: fixture.IDS.registered, specs: AI_SPECS });
+    v = await teacherView();
+    expect(v.corrections.some(c => c.quotedText === 'realy')).toBe(false);
+    expect(v.rows.filter(r => r.quotedText === 'realy').map(r => r.moderationStatus)).toEqual(['hidden']);
+  });
+  test('archived manual orphan: restore returns it to needs review; it is not shown while its text is gone', async () => {
+    const added = await apply({ action: 'add', value: manualValue(fixture.registered, 'park', { message: 'Manual note.' }) });
+    const id = added.auditRow.entryId;
+    await rerunOcr({ submissionId: fixture.IDS.registered, words: WORDS.map(w => w === 'park' ? 'garden' : w), specs: AI_SPECS });
+    expect(await attempt({ action: 'archive', id })).toBe('ok');
+    let v = view.buildStudentCorrectionView(await load(), { audience: 'teacher' });
+    expect(v.archivedOrphans.map(o => o.entryId)).toEqual([id]);
+    expect(await attempt({ action: 'restore', id })).toBe('ok');
+    v = view.buildStudentCorrectionView(await load(), { audience: 'teacher' });
+    expect(v.orphans.map(o => [o.entryId, o.reason])).toEqual([[id, 'TEXT_NOT_FOUND']]);
+    expect(v.corrections.some(c => c.message === 'Manual note.')).toBe(false);
+  });
+  test('a hidden entry that was edited: the teacher row has the edited text and flag; the student still gets nothing', async () => {
+    const dont = ai(await load(), 'dont');
+    const value = manualValue(fixture.registered, 'dont', { symbol: 'P', category: 'MECHANICS', message: 'Teacher wording.', suggestedText: "do not" });
+    await apply({ action: 'edit', id: dont.id, value });
+    await apply({ action: 'hide', id: dont.id });
+    const teacher = view.buildStudentCorrectionView(await load(), { audience: 'teacher' });
+    const row = teacher.rows.find(r => r.id === dont.id);
+    expect(row).toEqual(expect.objectContaining({ moderationStatus: 'hidden', teacherEdited: true, message: 'Teacher wording.', suggestedText: 'do not', symbol: 'P', quotedText: 'dont' }));
+    expect(teacher.corrections.some(c => c.quotedText === 'dont')).toBe(false);
+    expect(JSON.stringify(teacher.corrections)).not.toContain('Teacher wording.');
+    expect(teacher.statistics).toEqual(expect.objectContaining({ mechanics: 1, total: 4 }));
+    // Archived behaves the same; after an AI regenerate (new id) the row still carries the teacher's text.
+    await apply({ action: 'archive', id: dont.id });
+    await regenerateCorrections({ submissionId: fixture.IDS.registered, specs: AI_SPECS.map(s => s[0] === 13 ? [13, 'CAP', 'MECHANICS', "don't", 'AI again.'] : s) });
+    const after = view.buildStudentCorrectionView(await load(), { audience: 'teacher' });
+    expect(after.rows.filter(r => r.quotedText === 'dont').map(r => [r.moderationStatus, r.message, r.teacherEdited])).toEqual([['archived', 'Teacher wording.', true]]);
+    expect(after.corrections.some(c => c.quotedText === 'dont')).toBe(false);
   });
   test('orphaned entries accept only edit (placed again) and archive', async () => {
     const realy = ai(await load(), 'realy');

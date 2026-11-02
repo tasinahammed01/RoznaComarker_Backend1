@@ -21,11 +21,12 @@ async function authorized(req, { write = false } = {}) {
   const doc = await Submission.findById(req.params.submissionId).select('+teacherAnnotations').lean();
   const owned = doc && await Class.findOne({ _id: doc.class, teacher: req.user._id, isActive: true }).select('status').lean();
   if (!owned || !await Assignment.exists({ _id: doc.assignment, class: doc.class, teacher: req.user._id, isActive: true })) throw fail(404, 'ANNOTATION_NOT_FOUND');
-  if (write && owned.status === 'archived') throw fail(409, 'ANNOTATION_CLASS_CLOSED');
+  req.annotationClassClosed = owned.status === 'archived';
+  if (write && req.annotationClassClosed) throw fail(409, 'ANNOTATION_CLASS_CLOSED');
   return doc;
 }
 
-async function snapshot(doc) {
+async function snapshot(doc, classClosed) {
   const { canonical, sourceHash } = policy.source(doc);
   const view = studentView.buildStudentCorrectionView(doc, { overlay: doc.teacherAnnotations ?? null, audience: 'teacher' });
   const pages = await Promise.all(canonical.pages.map(async page => {
@@ -39,9 +40,10 @@ async function snapshot(doc) {
     return { ...page, words, sourceGeometry, pageImageUrl: stored?.pageImageUrl };
   }));
   return { revision: view.revision, sourceHash, scoringReviewRequired: Boolean(view.scoringReviewRequired),
-    pages, legend: defaultLegend(), corrections: view.rows, orphans: view.orphans,
+    pages, legend: defaultLegend(), corrections: view.rows, orphans: view.orphans, archivedOrphans: view.archivedOrphans,
+    readOnly: Boolean(classClosed), readOnlyReason: classClosed ? 'CLASS_CLOSED' : null,
     effective: buildCanonicalCorrectionRenderModels(view.corrections, canonical, doc.ocrPages, { submission: doc }),
-    transitions: policy.TRANSITIONS, publication: 'saved-effective',
+    transitions: { ...policy.TRANSITIONS, orphan: policy.ORPHAN_TRANSITIONS }, publication: 'saved-effective',
     scorePolicy: 'Annotation changes do not change grades. Review substantive changes using the existing teacher grading controls.' };
 }
 
@@ -65,7 +67,7 @@ const endpoint = fn => async (req, res) => { try { res.set('Cache-Control', 'pri
   res.status(error.statusCode || 500).json({ success: false, code, message: code });
 } };
 
-const get = endpoint(async (req, res) => res.json({ success: true, data: await snapshot(await authorized(req)) }));
+const get = endpoint(async (req, res) => { const doc = await authorized(req); res.json({ success: true, data: await snapshot(doc, req.annotationClassClosed) }); });
 
 const history = endpoint(async (req, res) => {
   const doc = await authorized(req);

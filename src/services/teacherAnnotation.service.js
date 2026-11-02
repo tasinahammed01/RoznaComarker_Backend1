@@ -23,7 +23,7 @@ const ACTIONS = ['add', 'edit', 'hide', 'restore', 'archive', 'reject'];
 const RECENT_AUDIT = 20;
 const MAX_ENTRIES = 1000;
 const MAX_STATE_BYTES = 2 * 1024 * 1024;
-// Lifecycle. `reject` is the version-1 name of `archive`. Orphaned entries accept only `edit` (place it again) and `archive`.
+// Lifecycle. `reject` is the version-1 name of `archive`.
 const TRANSITIONS = Object.freeze({
   hide: { from: ['visible'], to: 'hidden' },
   restore: { from: ['hidden', 'archived'], to: 'visible' },
@@ -31,7 +31,19 @@ const TRANSITIONS = Object.freeze({
   edit: { from: ['visible', 'hidden'], to: null },
   add: { from: [], to: 'visible' },
 });
-const ORPHAN_ACTIONS = ['edit', 'archive'];
+// Orphaned entries (derived: the anchor no longer matches) have their own table. Orphans are never shown to students, so restoring an
+// archived orphan returns it to "needs review", not to the student: see restoredOrphanStatus.
+const ORPHAN_TRANSITIONS = Object.freeze({
+  edit: { from: ['visible', 'hidden'], to: null },
+  archive: { from: ['visible', 'hidden'], to: 'archived' },
+  restore: { from: ['archived'], to: 'orphaned' },
+});
+/**
+ * The status an archived orphan comes back with. An AI entry goes to hidden, so it keeps suppressing any re-detected correction (fail
+ * closed; as "visible" it would stop doing so and the correction could reach the student). A manual entry goes to visible: it is shown
+ * only if and when its text can be located again, like any manual correction.
+ */
+const restoredOrphanStatus = entry => entry.kind === 'manual' ? 'visible' : 'hidden';
 const EDITABLE = ['symbol', 'category', 'message', 'suggestedText', 'startChar', 'endChar', 'quotedText', 'fileId', 'page'];
 
 function emptyState() { return { version: 2, revision: 0, scoringReviewRequired: false, entries: [], recent: [] }; }
@@ -148,8 +160,8 @@ function prepare(doc, actor, body, { resolution, prior, now = new Date() } = {})
   }
   const before = copy({ ...entry, status: entry.status });
   const orphaned = resolution.orphanIds.has(entry.id);
-  if (orphaned && !ORPHAN_ACTIONS.includes(action)) throw fail(409,'ANNOTATION_ORPHANED');
-  const rule = TRANSITIONS[action];
+  const rule = orphaned ? ORPHAN_TRANSITIONS[action] : TRANSITIONS[action];
+  if (orphaned && !rule?.from.includes(entry.status)) throw fail(409,'ANNOTATION_ORPHANED');
   if (action !== 'add' && !rule.from.includes(entry.status)) throw fail(409,'ANNOTATION_STATE_CONFLICT');
 
   let changedFields = [];
@@ -165,7 +177,8 @@ function prepare(doc, actor, body, { resolution, prior, now = new Date() } = {})
     else entry.edited = true;
     delete entry.legacy;
   }
-  if (rule.to) entry.status = rule.to;
+  if (orphaned && action === 'restore') entry.status = restoredOrphanStatus(entry);
+  else if (rule.to) entry.status = rule.to;
   entry.draftNumber = draftNumber;
   entry.updatedAt = at; entry.updatedBy = String(actor);
 
@@ -184,4 +197,4 @@ function prepare(doc, actor, body, { resolution, prior, now = new Date() } = {})
   return { state: stored, auditRow, revision: state.revision, legacyAudit: state.legacyAudit || [] };
 }
 
-module.exports = { TRANSITIONS, ORPHAN_ACTIONS, RECENT_AUDIT, MAX_ENTRIES, normalizeState, source, validateValue, prepare, checkBody, replayOf, requestHashOf };
+module.exports = { TRANSITIONS, ORPHAN_TRANSITIONS, RECENT_AUDIT, MAX_ENTRIES, normalizeState, source, validateValue, prepare, checkBody, replayOf, requestHashOf };

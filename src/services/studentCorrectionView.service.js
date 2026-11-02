@@ -47,7 +47,8 @@ function placed(value, span, canonical, hash, submission, extra) {
 
 /**
  * Resolves the overlay against the current corrections and transcript. Pure. Returns
- * { changed, visible, suppressedIds, editedById, orphans, rows (teacher list), aiById, entryIdByAiId, orphanIds, state, revision }.
+ * { changed, visible, suppressedIds, editedById, orphans (need review), archivedOrphans (removed by the teacher), rows (teacher list), aiById,
+ * entryIdByAiId, orphanIds (both kinds), state, revision }.
  */
 function resolveOverlay(submission, overlay, { corrections } = {}) {
   const state = normalizeState(overlay);
@@ -56,14 +57,14 @@ function resolveOverlay(submission, overlay, { corrections } = {}) {
   const entries = activeEntries(state, draftNumber);
   const aiById = new Map(raw.map(c => [idOf(c), c]));
   const base = { state, revision: state.revision, scoringReviewRequired: Boolean(state.scoringReviewRequired), aiById,
-    entryIdByAiId: new Map(), orphanIds: new Set(), orphans: [], suppressedIds: new Set(), editedById: new Map() };
+    entryIdByAiId: new Map(), orphanIds: new Set(), orphans: [], archivedOrphans: [], suppressedIds: new Set(), editedById: new Map() };
   if (!entries.length) return { ...base, changed: false, visible: raw, manual: [], rows: raw.map(c => ({ ...c, moderationStatus: 'visible' })) };
 
   const canonical = buildCanonicalSubmissionTranscript(submission);
   const hash = ocrEvidenceHash(canonical, submission);
   const suppressedBy = new Map(), editClaims = new Map(), manual = [];
   const orphan = (entry, reason, extra = {}) => { base.orphanIds.add(entry.id);
-    base.orphans.push({ entryId: entry.id, kind: entry.kind, status: entry.status, edited: Boolean(entry.edited), reason,
+    (entry.status === 'archived' ? base.archivedOrphans : base.orphans).push({ entryId: entry.id, kind: entry.kind, status: entry.status, edited: Boolean(entry.edited), reason,
       anchor: entry.anchor || null, value: entry.value || null, ...extra }); };
   // Legacy entries cannot tell which draft they belong to: they relocate only on the first draft, except suppressions (fail closed).
   const mayRelocate = entry => !entry.legacy || draftNumber === 1 || SUPPRESSING.includes(entry.status);
@@ -113,7 +114,18 @@ function resolveOverlay(submission, overlay, { corrections } = {}) {
   for (const c of raw) {
     const id = idOf(c);
     const hider = suppressedBy.get(id);
-    if (hider) { base.suppressedIds.add(id); rows.push({ ...c, moderationStatus: hider.status, entryId: hider.id }); continue; }
+    if (hider) {
+      base.suppressedIds.add(id);
+      // Teacher list only: a hidden or archived entry that was edited shows the teacher's own text. Students never get this row.
+      let shown = c;
+      if (hider.edited && hider.value) {
+        const found = where(hider.valueAnchor, hider);
+        shown = found.span ? placed(hider.value, found.span, canonical, hash, submission, { id, source: c.source, teacherEdited: true })
+          : { ...c, symbol: hider.value.symbol, category: hider.value.category, symbolLabel: hider.value.symbolLabel, message: hider.value.message, suggestedText: hider.value.suggestedText, teacherEdited: true };
+      }
+      rows.push({ ...shown, moderationStatus: hider.status, entryId: hider.id });
+      continue;
+    }
     const claim = editClaims.get(id);
     if (claim && !base.orphanIds.has(claim.entry.id)) {
       const found = where(claim.entry.valueAnchor, claim.entry);
@@ -144,7 +156,7 @@ function withoutOverlay(submission) {
  * What a student sees of one submission's corrections.
  *   audience 'student' (default): { changed, corrections, statistics, submission (projected: visible corrections + statistics, no overlay),
  *     revision, scoringReviewRequired, suppressedIds, editedById }
- *   audience 'teacher': additionally { rows (every correction with its status), orphans }.
+ *   audience 'teacher': additionally { rows (every correction with its status), orphans, archivedOrphans }.
  * `overlay` must be given or loaded on the submission; a missing overlay throws instead of leaking hidden corrections.
  */
 function buildStudentCorrectionView(submission, { overlay, audience = 'student', corrections } = {}) {
@@ -159,7 +171,7 @@ function buildStudentCorrectionView(submission, { overlay, audience = 'student',
   const view = { changed: resolution.changed, corrections: resolution.visible, statistics, submission: projected,
     revision: resolution.revision, scoringReviewRequired: resolution.scoringReviewRequired,
     suppressedIds: resolution.suppressedIds, editedById: resolution.editedById };
-  return audience === 'teacher' ? { ...view, rows: resolution.rows, orphans: resolution.orphans, resolution } : view;
+  return audience === 'teacher' ? { ...view, rows: resolution.rows, orphans: resolution.orphans, archivedOrphans: resolution.archivedOrphans, resolution } : view;
 }
 
 /**
