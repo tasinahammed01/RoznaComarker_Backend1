@@ -93,6 +93,13 @@ afterAll(async () => {
   fs.rmSync(process.env.PDF_FEEDBACK_CACHE_DIR, { recursive: true, force: true });
 });
 
+const NOT_FOR_STUDENTS = ['annotationGradeReviewRequired', 'annotationRevision', 'teacherReviewedAt', 'teacherReviewedBy', 'teacherId', 'teacherCommentsUpdatedBy', 'teacherAnnotations',
+  'scoringReviewRequired', 'scoringReview', 'scoreReview', 'totalIssueCount', 'countedIssueCount', 'ignoredCorrectionIds', 'canonicalCount', 'rawCorrectionCount', 'acceptedCorrectionCount', 'evaluationDiagnostics'];
+function keysIn(value, keys, at = '$', out = []) {
+  if (Array.isArray(value)) value.forEach((v, i) => keysIn(v, keys, `${at}[${i}]`, out));
+  else if (value && typeof value === 'object') for (const [k, v] of Object.entries(value)) { if (keys.includes(k)) out.push(`${at}.${k}`); keysIn(v, keys, `${at}.${k}`, out); }
+  return out;
+}
 function assertClean(label, text) {
   for (const secret of SECRETS) expect({ label, secret, leaked: text.includes(secret) }).toEqual({ label, secret, leaked: false });
   for (const id of hiddenIds) expect({ label, id, leaked: text.includes(id) }).toEqual({ label, id, leaked: false });
@@ -128,6 +135,8 @@ describe('no-leak matrix', () => {
       expect({ label, status: res.status }).toEqual({ label, status: 200 });
       assertClean(`${label} body`, JSON.stringify(res.body));
       assertClean(`${label} headers`, JSON.stringify(res.headers));
+      // Task 7A: nothing a teacher did, and no count of the raw list, in any student body.
+      expect({ label, found: keysIn(res.body, NOT_FOR_STUDENTS) }).toEqual({ label, found: [] });
       const data = res.body.data || {};
       for (const stats of [data.statistics, data.correctionStatistics, data.correctionStats, data.submission?.correctionStatistics, data[0]?.correctionStatistics]) {
         if (!stats) continue;

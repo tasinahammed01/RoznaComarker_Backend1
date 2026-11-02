@@ -10,13 +10,14 @@
 //   - edited entries replace the text of the one AI correction they match (same category, best IoU); no unique match -> orphaned;
 //   - manual entries are shown where their anchor locates; otherwise orphaned;
 //   - orphaned entries are never shown to students; the teacher snapshot lists them;
-//   - counts follow the visible set; scores are never touched.
+//   - counts follow the visible set, including counts inside stored text and rubric rows (studentPayload); scores are never touched.
 const { ocrEvidenceHash } = require('./correctionEvidenceIdentity.service');
 const { buildCanonicalSubmissionTranscript } = require('../utils/ocrTranscriptNormalizer');
 const { statistics: canonicalStatistics } = require('./correctionCanonical.service');
 const { dominantSymbols, examples } = require('./canonicalDetailedFeedback.service');
 const anchors = require('./annotationAnchor.service');
 const { normalizeState } = require('./teacherAnnotation.service');
+const { languageComment } = require('./rubricLanguageScoring.service');
 
 const SUPPRESSING = ['hidden', 'archived'];
 const notLoaded = () => Object.assign(new Error('ANNOTATION_OVERLAY_NOT_LOADED'), { statusCode: 500, code: 'ANNOTATION_OVERLAY_NOT_LOADED' });
@@ -166,6 +167,9 @@ function buildStudentCorrectionView(submission, { overlay, audience = 'student',
   if (resolution.changed) {
     const base = typeof submission.toJSON === 'function' ? submission.toJSON() : { ...projected };
     delete base.teacherAnnotations;
+    // Diagnostics count the raw list. Coverage has no correction counts and is what the result state and draft comparison read.
+    delete base.evaluationDiagnostics;
+    if (base.semanticMetrics) base.semanticMetrics = base.semanticMetrics.coverage ? { coverage: base.semanticMetrics.coverage } : undefined;
     projected = { ...base, writingCorrections: resolution.visible, correctionStatistics: statistics };
   }
   const view = { changed: resolution.changed, corrections: resolution.visible, statistics, submission: projected,
@@ -192,6 +196,31 @@ const loadStudentCorrectionView = async (document, options) => (await loadStuden
 /** The visible list as the correction endpoints and the PDF send it: plain copies, each marked visible. */
 const visibleCorrectionList = view => (view.corrections || []).map(c => ({ ...JSON.parse(JSON.stringify(c)), moderationStatus: 'visible' }));
 
+// "3 grammar issues", "3 validated canonical grammar corrections" (the wording semanticRubricAssessment.normalizeStatisticsComment writes).
+const COUNT_CLAIM = /\b\d+(\s+(?:(?:validated|canonical|detected|localized)\s+)*(?:\w+\s+)?)(correction|error|issue)s?\b/giu;
+const COUNTED_CATEGORIES = ['CONTENT', 'ORGANIZATION', 'GRAMMAR', 'VOCABULARY', 'MECHANICS'];
+const visibleCount = (view, category) => Number(view.statistics?.[String(category).toLowerCase()] || 0);
+/** Stored text with its correction count replaced by the visible one. The deterministic language comment is rebuilt, as its wording follows the count. */
+function restateCount(text, count, item) {
+  if (typeof text !== 'string') return text;
+  const language = text.match(/^\d+ (grammar|mechanics) issues? detected\./);
+  if (language && Number.isFinite(Number(item?.score)) && Number(item?.maxScore) > 0) return languageComment(language[1], count, Number(item.score), Number(item.maxScore));
+  return text.replace(COUNT_CLAIM, (_, middle, noun) => `${count}${middle}${noun}${count === 1 ? '' : 's'}`);
+}
+/** Text with no category to count: the claim stays, the number goes. */
+const withoutCount = text => typeof text === 'string' ? text.replace(COUNT_CLAIM, (_, middle, noun) => `${middle.trim()} ${noun}s`.trim()) : text;
+/** Rubric rows for the visible set: issue counts and comments restated, scores untouched. */
+function rubricForView(rubric, view) {
+  const out = { ...rubric };
+  for (const category of COUNTED_CATEGORIES) {
+    const item = out[category];
+    if (!item || typeof item !== 'object') continue;
+    const count = visibleCount(view, category);
+    out[category] = { ...item, issueCount: count, ...(typeof item.comment === 'string' ? { comment: restateCount(item.comment, count, item) } : {}) };
+  }
+  return out;
+}
+
 const templated = {
   explanation: (n, symbols) => `${n} distinct issue${n === 1 ? '' : 's'} affected this category. `
     + (symbols.length ? `The main recorded pattern${symbols.length === 1 ? ' is' : 's are'} ${symbols.join(', ')}.` : 'The canonical analysis identified revision evidence.'),
@@ -212,7 +241,7 @@ function detailedFeedbackForView(detailed, view) {
     if (!count) { rewritten.set(area.category, null); return null; }
     const symbols = dominantSymbols(items);
     const next = { ...area, issueCount: count, dominantSymbols: symbols, examples: examples(items),
-      explanation: area.explanation === templated.explanation(area.issueCount, area.dominantSymbols || []) ? templated.explanation(count, symbols) : area.explanation };
+      explanation: area.explanation === templated.explanation(area.issueCount, area.dominantSymbols || []) ? templated.explanation(count, symbols) : restateCount(area.explanation, count) };
     rewritten.set(area.category, { before: area, after: next });
     return next;
   }).filter(Boolean);
@@ -223,9 +252,11 @@ function detailedFeedbackForView(detailed, view) {
     const { before, after } = change;
     return { ...step, relatedSymbols: after.dominantSymbols, relatedCorrectionIds: after.examples.map(item => item.correctionId),
       action: step.action === templated.action(before.dominantSymbols || [], before.issueCount) ? templated.action(after.dominantSymbols, after.issueCount) : step.action,
-      reason: step.reason === templated.reason(before.issueCount, before.title || '') ? templated.reason(after.issueCount, after.title || '') : step.reason };
+      reason: step.reason === templated.reason(before.issueCount, before.title || '') ? templated.reason(after.issueCount, after.title || '') : restateCount(step.reason, after.issueCount) };
   }).filter(Boolean) : detailed.actionSteps;
-  return { ...detailed, areasForImprovement: areas, actionSteps };
+  const strengths = Array.isArray(detailed.strengths) ? detailed.strengths.map(item => COUNTED_CATEGORIES.includes(item?.category) && typeof item.explanation === 'string'
+    ? { ...item, explanation: restateCount(item.explanation, visibleCount(view, item.category), item) } : item) : detailed.strengths;
+  return { ...detailed, areasForImprovement: areas, actionSteps, strengths };
 }
 
 // Correction id shapes: canonical `<source>_<16 hex>`, manual `teacher_<uuid>`, legacy LanguageTool `lt_<n>`.
@@ -235,7 +266,8 @@ const CORRECTION_ID = /^(?:[a-z]+_[0-9a-f]{16}|teacher_[0-9a-f-]{36}|lt_\d+)$/;
  * Any student-facing payload restated for the visible set. Allowlist: an object that references a correction (correctionId or
  * evidenceId 'correction:<id>') or a correction-id string survives only when that correction is visible, so stale references (feedback
  * written before a regenerate or OCR re-run) are dropped too. Refreshes example text of edited corrections and restates structured
- * detailed feedback. Returns the payload itself when nothing changed.
+ * detailed feedback, rubric rows and any stored count of the raw list (scoring audit and diagnostics reduced or removed). Scores stay.
+ * Returns the payload itself when nothing changed.
  */
 function studentPayload(payload, view) {
   if (!view?.changed || payload == null) return payload;
@@ -247,9 +279,17 @@ function studentPayload(payload, view) {
     if (Array.isArray(value)) return value.filter(item => !(typeof item === 'string' && CORRECTION_ID.test(item) && hiddenRef(item))
       && !(item && typeof item === 'object' && referenced(item))).map(item => walk(item, key));
     if (!value || typeof value !== 'object' || value instanceof Date || value._bsontype || Buffer.isBuffer(value)) return value;
-    if (key === 'detailedFeedback') value = detailedFeedbackForView(value, view);
+    // The page reads overallMethod; the custom rubric block holds no correction counts.
+    if (key === 'scoringAudit') return { overallMethod: value.overallMethod, ...(value.customRubric ? { customRubric: value.customRubric } : {}) };
+    if (Array.isArray(value.areasForImprovement)) value = detailedFeedbackForView(value, view);   // detailedFeedback, and the ocr-corrections evaluation block
+    if (key === 'rubricScores' || key === 'categoryScores') value = rubricForView(value, view);
+    if (key === 'aiFeedback' && Array.isArray(value.perCategory)) value = { ...value, perCategory: value.perCategory.map(item => {
+      const category = String(item?.category || '').toUpperCase();
+      return { ...item, message: COUNTED_CATEGORIES.includes(category) ? restateCount(item.message, visibleCount(view, category)) : withoutCount(item.message) };
+    }) };
+    if (key === 'customRubricScores' && Array.isArray(value.criteria)) value = { ...value, criteria: value.criteria.map(item => ({ ...item, comment: withoutCount(item?.comment) })) };
     const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = walk(v, k);
+    for (const [k, v] of Object.entries(value)) if (k !== 'evaluationDiagnostics') out[k] = walk(v, k);
     const edited = out.correctionId && view.editedById.get(String(out.correctionId));
     if (edited && 'quotedText' in out) Object.assign(out, { symbol: edited.symbol, quotedText: edited.quotedText,
       ...('message' in out ? { message: edited.message } : {}), ...('suggestedText' in out ? { suggestedText: edited.suggestedText } : {}) });

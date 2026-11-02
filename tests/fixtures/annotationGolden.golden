@@ -1426,8 +1426,6 @@
       }
      }
     ],
-    "annotationRevision": 0,
-    "annotationGradeReviewRequired": false,
     "ocr": [
      {
       "pageNumber": 1,
@@ -2341,7 +2339,6 @@
     "classId": "0000000000000000000000c1",
     "submissionMode": "registered",
     "studentId": "0000000000000000000000a3",
-    "teacherId": "0000000000000000000000a1",
     "assessmentVersion": "writing-rubric-100-v5-teacher-policy",
     "maxOverallScore": 100,
     "rubricScores": {
@@ -2701,8 +2698,6 @@
      "active": false
     },
     "previousEvaluation": null,
-    "teacherReviewedAt": null,
-    "teacherReviewedBy": null,
     "correctionSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
     "marksVisible": true
    }
@@ -3494,8 +3489,6 @@
       }
      }
     ],
-    "annotationRevision": 0,
-    "annotationGradeReviewRequired": false,
     "ocr": [
      {
       "pageNumber": 1,
@@ -4408,7 +4401,6 @@
     "_id": "0000000000000000000000b2",
     "classId": "0000000000000000000000c1",
     "submissionMode": "guest",
-    "teacherId": "0000000000000000000000a1",
     "assessmentVersion": "writing-rubric-100-v5-teacher-policy",
     "maxOverallScore": 100,
     "rubricScores": {
@@ -4768,8 +4760,6 @@
      "active": false
     },
     "previousEvaluation": null,
-    "teacherReviewedAt": null,
-    "teacherReviewedBy": null,
     "correctionSourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
     "marksVisible": true
    }

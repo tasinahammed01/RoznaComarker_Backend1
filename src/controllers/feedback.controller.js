@@ -959,6 +959,8 @@ async function getSubmissionFeedback(req, res) {
       correctionSourceHash: submission.correctionSourceHash || null,
       marksVisible
     };
+    // Who reviewed and when is for the teacher's pages (dashboards). No student page reads them.
+    if (role === "student") for (const key of ["teacherId", "teacherReviewedAt", "teacherReviewedBy"]) delete responseData[key];
     const studentData = studentPayload(responseData, view);
     return sendSuccess(res, marksVisible ? studentData : redactStudentMarks(studentData));
 
@@ -4204,6 +4206,10 @@ async function getFeedbackBySubmissionForStudent(req, res) {
 
     const populated = await populateFeedback(feedback._id);
     const withEval = await attachEvaluationToFeedbackDoc(populated);
+    // The populated submission holds the raw corrections.
+    const view = await loadStudentCorrectionView(submission);
+    if (view.changed) withEval.submission = { ...view.submission, ...Object.fromEntries(['transcriptText', 'combinedOcrText', 'ocrText']
+      .filter((key) => withEval.submission?.[key] !== undefined).map((key) => [key, withEval.submission[key]])) };
     const assignment = await Assignment.findById(submission.assignment).select('showMarksToStudent').lean();
     const marksVisible = showMarksToStudent(assignment);
     return sendSuccess(res, marksVisible ? withEval : redactStudentMarks(withEval));

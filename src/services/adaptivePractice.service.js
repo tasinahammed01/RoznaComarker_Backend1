@@ -157,9 +157,12 @@ async function loadOwnedSource(submissionId, studentId) {
 
   const skills = calculateSkills(feedback.rubricScores);
   const assessedSkills = skills.filter((skill) => skill.assessed).map(({ assessed, ...skill }) => skill);
+  // The rubric comments go into the prompt, and the practice text into the student's hands: comments as the student sees them.
+  const correctionView = require('./studentCorrectionView.service');
+  const shownFeedback = correctionView.studentPayload(feedback, await correctionView.loadStudentCorrectionView(submission));
   const weakSkills = assessedSkills
     .filter((skill) => skill.percentage < ADAPTIVE_PRACTICE_THRESHOLD)
-    .map((skill) => ({ ...skill, weakness: weaknessContext(feedback, skill) }));
+    .map((skill) => ({ ...skill, weakness: weaknessContext(shownFeedback, skill) }));
   const sourceEvaluation = normalizeSourceEvaluation({
     correctionSourceHash,
     evaluationSourceHash,

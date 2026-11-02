@@ -1259,8 +1259,6 @@ async function getOcrCorrections(req, res) {
     const responseData = {
       processing: false,
       corrections,
-      annotationRevision: view.revision || 0,
-      annotationGradeReviewRequired: Boolean(view.scoringReviewRequired),
       ocr,
       ocrStatus: doc.ocrStatus || null,
       correctionStatus: resultState.correctionStatus,
