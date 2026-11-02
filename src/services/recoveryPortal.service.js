@@ -30,7 +30,6 @@ function config(env = process.env) {
     linkHours: bounded(env.RECOVERY_LINK_TTL_HOURS, 1, 168, 24),
     maxUses: bounded(env.RECOVERY_LINK_MAX_USES, 1, 100, 10),
     sessionMinutes: bounded(env.RECOVERY_SESSION_MINUTES, 5, 240, 30),
-    emailsPerHour: bounded(env.RECOVERY_EMAILS_PER_HOUR, 1, 20, 3),
   };
 }
 
@@ -44,26 +43,6 @@ function normalizeEmail(email) {
 const portalLink = token => access.frontendLink(`/recover/portal#${token}`);
 
 /**
- * Atomic per-address cap: one counter per (address hash, clock hour), incremented in a single update. Only the first `limit`
- * increments in a window get a slot, however many requests run in parallel. A lost upsert race is retried once.
- */
-async function claimEmailSlot(emailNormalized, limit, now) {
-  const RecoveryEmailWindow = require('../models/RecoveryEmailWindow');
-  const hour = Math.floor(now.getTime() / 3600000);
-  const _id = `${sha(emailNormalized)}:${hour}`;
-  const update = { $inc: { count: 1 }, $setOnInsert: { expiresAt: new Date((hour + 2) * 3600000) } };
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const window = await RecoveryEmailWindow.findOneAndUpdate({ _id }, update, { upsert: true, returnDocument: 'after' }).lean();
-      return window.count <= limit;
-    } catch (error) {
-      if (error?.code !== 11000 || attempt === 1) throw error;
-    }
-  }
-  return false;
-}
-
-/**
  * Creates a link and emails it, but only when the address has at least one guest submission and has not asked too often.
  * Returns what happened (for tests and the future teacher flow); callers facing the public never reveal it.
  * `source`/`issuedBy` let a teacher issue a link later (Task 5) through this same function.
@@ -72,9 +51,13 @@ async function issueLink(emailNormalized, { source = 'student', issuedBy = null,
   const settings = config(env);
   const hasSubmissions = await Submission.exists({ submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null });
   if (!hasSubmissions) return { sent: false, reason: 'no_submissions' };
-  if (!(await claimEmailSlot(emailNormalized, settings.emailsPerHour, now))) return { sent: false, reason: 'throttled' };
+  // Shared with the single-submission link resend: per-address cool-down and hourly cap, both atomic.
+  const slot = await require('./recoveryEmailQuota.service').claim(emailNormalized, { now, env });
+  if (!slot.granted) return { sent: false, reason: slot.reason };
   const token = crypto.randomBytes(32).toString('base64url');
-  const link = portalLink(token);   // validates FRONTEND_URL before anything is stored
+  let link;
+  try { link = portalLink(token); }   // validates FRONTEND_URL before anything is stored
+  catch (error) { await slot.release(); throw error; }
   const expiresAt = new Date(now.getTime() + settings.linkHours * 3600000);
   const doc = await RecoveryToken.create({ emailNormalized, tokenHash: sha(token), expiresAt, source, issuedBy,
     purgeAt: new Date(expiresAt.getTime() + PURGE_AFTER_EXPIRY_MS) });
@@ -82,6 +65,9 @@ async function issueLink(emailNormalized, { source = 'student', issuedBy = null,
   if (!delivery?.success) {
     // An undelivered link is useless; revoke it so it can never be used.
     await RecoveryToken.updateOne({ _id: doc._id }, { $set: { revokedAt: new Date() } });
+    // The student must be able to ask again at once: the cool-down and hourly slot are given back.
+    await slot.release();
+    logger.warn({ event: 'recovery_link_delivery_failed', code: /^[A-Z_]{1,40}$/.test(delivery?.code || '') ? delivery.code : 'UNKNOWN' });
     return { sent: false, reason: 'delivery_failed' };
   }
   logger.info({ event: 'recovery_link_issued', source });

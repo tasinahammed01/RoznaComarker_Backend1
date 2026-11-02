@@ -104,6 +104,10 @@ const uploadRoot = path.resolve(__dirname, '..', process.env.UPLOAD_BASE_PATH);
     for (const [name, seeded] of Object.entries(cases)) {
       const own = await open(`${name}-own-link`, page => page.goto(`http://localhost:${FRONT_PORT}${seeded.returnUrl.pathname}${seeded.returnUrl.hash}`, { waitUntil: 'networkidle0' }));
       const before = sendLink.mock.calls.length;
+      // Each case asks for a fresh portal link: move the Date clock past the shared 2-minute email cool-down (timers stay real).
+      const later = Date.now() + 3 * 60000;
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'clearImmediate', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'queueMicrotask', 'hrtime', 'performance'] });
+      jest.setSystemTime(later);
       expect((await request(app).post('/api/recovery/request').send({ email: EMAIL })).status).toBe(202);
       for (let i = 0; i < 300 && sendLink.mock.calls.length === before; i++) await new Promise(r => setTimeout(r, 10));
       const link = new URL(sendLink.mock.calls.at(-1)[0].link);

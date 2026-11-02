@@ -44,7 +44,9 @@ async function authorize(submissionId, token) {
   }
   const doc = await Submission.findOne({ _id: submissionId, submissionMode: 'guest',
     $or: [{ 'guest.accessHash': hash(token), 'guest.expiresAt': { $gt: new Date() } },
-      { 'guest.resultAccessHash': hash(token), 'guest.resultExpiresAt': { $gt: new Date() } }], 'guest.revokedAt': null });
+      { 'guest.resultAccessHash': hash(token), 'guest.resultExpiresAt': { $gt: new Date() } },
+      // Links sent by email recovery; each one stays valid until its own expiry.
+      { 'guest.recoveryAccess': { $elemMatch: { hash: hash(token), expiresAt: { $gt: new Date() } } } }], 'guest.revokedAt': null });
   if (!doc) {
     // Diagnostics never authorize access and never include identifiers, tokens or hashes.
     try {

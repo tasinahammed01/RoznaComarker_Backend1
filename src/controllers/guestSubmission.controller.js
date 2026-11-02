@@ -321,33 +321,14 @@ const results = endpoint(async (req, res) => {
   ok(res, data.marksVisible ? data : redactStudentMarks(data));
 });
 const recover = endpoint(async (req, res) => {
-  // Always acknowledge before lookup/provider work; no timing or existence oracle.
-  ok(res, { message: 'If a matching submission exists, a new link will be emailed.' });
-  setImmediate(async () => {
-    try {
-      const guest = access.identity({ name: 'Recovery', email: req.body?.email });
-      let qrToken = req.params.qrToken;
-      if (req.params.submissionId) {
-        if (!mongoose.isValidObjectId(req.params.submissionId)) return;
-        const original = await Submission.findOne({ _id: req.params.submissionId, submissionMode: 'guest',
-          'guest.normalizedEmail': guest.normalizedEmail, 'guest.revokedAt': null }).select('qrToken');
-        if (!original) return;
-        qrToken = original.qrToken;
-      }
-      const { assignment } = await assignmentFor(qrToken);
-      const cutoff = new Date(Date.now() - 15 * 60 * 1000);
-      // Recover only the latest submission. Rotation is atomic and throttled per submission.
-      const candidate = await Submission.findOne({ ...(req.params.submissionId ? { _id: req.params.submissionId } : {}), assignment: assignment._id, submissionMode: 'guest',
-        'guest.normalizedEmail': guest.normalizedEmail, 'guest.revokedAt': null }).sort({ submittedAt: -1 }).select('_id');
-      if (!candidate) return;
-      const issued = access.issueToken();
-      const link = access.returnUrl(candidate._id, issued.token);
-      const rotated = await Submission.findOneAndUpdate({ _id: candidate._id, 'guest.revokedAt': null,
-        $or: [{ 'guest.recoveredAt': { $exists: false } }, { 'guest.recoveredAt': { $lte: cutoff } }] },
-      { $set: { 'guest.accessHash': issued.accessHash, 'guest.expiresAt': issued.expiresAt, 'guest.recoveredAt': new Date() },
-        $unset: { 'guest.resultAccessHash': 1, 'guest.resultExpiresAt': 1 } });
-      if (rotated) await email.sendGuestSubmissionEmail({ to: guest.normalizedEmail, assignmentTitle: assignment.title, returnUrl: link });
-    } catch { logger.warn({ event: 'guest_recovery_failed' }); }
+  // A malformed address is a 400 about the format only. Everything else gets the same answer, sent BEFORE any lookup or email
+  // work, so neither the body, the headers nor the timing tells anything about the address.
+  const guest = access.identity({ name: 'Recovery', email: req.body?.email });
+  ok(res, require('../services/recoveryEmailQuota.service').publicAnswer());
+  const { submissionId = null, qrToken = null } = req.params;
+  setImmediate(() => {
+    require('../services/guestRecovery.service').resendGuestLink({ emailNormalized: guest.normalizedEmail, submissionId, qrToken })
+      .catch(() => logger.warn({ event: 'guest_recovery_failed' }));
   });
 });
 const practice = endpoint(async (req, res) => {
@@ -366,7 +347,7 @@ const revoke = endpoint(async (req, res) => {
   const submission = await Submission.findOne({ _id: req.params.submissionId, submissionMode: 'guest' });
   if (!submission) throw access.fail(404, 'Submission unavailable.');
   await require('../services/upload.service').assertTeacherOwnsClassOrThrow(req.user._id, submission.class);
-  await Submission.updateOne({ _id: submission._id }, { $set: { 'guest.revokedAt': new Date() }, $unset: { 'guest.accessHash': 1 } });
+  await Submission.updateOne({ _id: submission._id }, { $set: { 'guest.revokedAt': new Date() }, $unset: { 'guest.accessHash': 1, 'guest.recoveryAccess': 1 } });
   ok(res, { revoked: true });
 });
 module.exports = { entry, prepare, prepareRevision, prepareRevisionPreview, bindRevisionIdentity, revise, submit, results, recover, practice, attempt, attempts, presentation, media, drafts, revoke, assignmentFor, requireIndexes };

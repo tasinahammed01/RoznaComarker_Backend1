@@ -52,6 +52,13 @@ beforeEach(async () => {
   await guest(hidden, ALICE);
 });
 
+// Moves only the Date clock (timers stay real so Mongo and HTTP keep working).
+function advanceDate(ms) {
+  const now = Date.now() + ms;
+  jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'clearImmediate', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'queueMicrotask', 'hrtime', 'performance'] });
+  jest.setSystemTime(now);
+}
+afterEach(() => jest.useRealTimers());
 const waitFor = async check => { for (let i = 0; i < 200; i++) { if (await check()) return; await new Promise(r => setTimeout(r, 10)); } throw new Error('timeout'); };
 async function linkFor(email) {
   const before = sendLink.mock.calls.length;
@@ -98,7 +105,7 @@ describe('requesting a link', () => {
   });
   test('per-address limit: no more than RECOVERY_EMAILS_PER_HOUR links an hour, with the same public answer', async () => {
     process.env.RECOVERY_EMAILS_PER_HOUR = '2';
-    await linkFor(ALICE); await linkFor(ALICE);
+    await linkFor(ALICE); advanceDate(3 * 60000); await linkFor(ALICE); advanceDate(3 * 60000);   // past the 2-minute cool-down each time
     const third = await request(app).post('/api/recovery/request').send({ email: ALICE });
     expect(third.status).toBe(202);
     await new Promise(r => setTimeout(r, 150));

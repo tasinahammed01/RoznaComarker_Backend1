@@ -2,7 +2,6 @@
 const portal = require('../services/recoveryPortal.service');
 const logger = require('../utils/logger');
 
-const GENERIC_SENT = 'If we find submissions for this email address, we will send a link to see all of them. Check your inbox in a few minutes.';
 const ok = (res, data, status = 200) => res.status(status).json({ success: true, data });
 
 function endpoint(fn) {
@@ -22,7 +21,7 @@ function endpoint(fn) {
 // so neither the body nor the response time tells an observer anything about the address.
 const request = endpoint(async (req, res) => {
   const email = portal.normalizeEmail(req.body?.email);   // a malformed address is a 400 (format only, never existence)
-  ok(res, { message: GENERIC_SENT }, 202);
+  ok(res, require('../services/recoveryEmailQuota.service').publicAnswer(), 202);
   setImmediate(() => {
     portal.issueLink(email).catch(() => logger.warn({ event: 'recovery_link_issue_failed' }));
   });
@@ -43,4 +42,4 @@ const endSession = endpoint(async (req, res) => {
   ok(res, { ended: true });
 });
 
-module.exports = { request, exchange, assignments, endSession, GENERIC_SENT };
+module.exports = { request, exchange, assignments, endSession };

@@ -36,7 +36,10 @@ const submissionSchema = new Schema(
       resultEmailNextAttemptAt: Date,
       expiresAt: Date,
       revokedAt: Date,
-      recoveredAt: Date
+      recoveredAt: Date,
+      // Links issued by email recovery. A resend ADDS a link and never invalidates the student's other links, so a third party
+      // who knows the email cannot cut off a working link. Hashes only; the newest 10 are kept.
+      recoveryAccess: { type: [{ _id: false, hash: String, expiresAt: Date, createdAt: Date }], select: false, default: undefined }
     },
     guestRequestKey: { type: String, select: false },
     registeredRequestKey: { type: String, select: false },

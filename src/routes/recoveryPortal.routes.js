@@ -12,8 +12,8 @@ router.use(require('../config/guestSubmission').requireGuestSubmissionEnabled);
 
 const MINUTES_15 = 15 * 60 * 1000;
 router.post('/request',
-  createSensitiveRateLimiter({ limit: 5, windowMs: MINUTES_15, reason: 'recovery_request_ip' }),
-  createEmailRateLimiter({ limit: 3, windowMs: 60 * 60 * 1000, reason: 'recovery_request_email' }),
+  createSensitiveRateLimiter({ limit: 20, windowMs: MINUTES_15, reason: 'recovery_request_ip' }),
+  createEmailRateLimiter({ limit: require('../services/recoveryEmailQuota.service').config().requestsPerHour, windowMs: 60 * 60 * 1000, reason: 'recovery_request_email' }),
   controller.request);
 router.post('/exchange', createSensitiveRateLimiter({ limit: 20, windowMs: MINUTES_15, reason: 'recovery_exchange' }), controller.exchange);
 router.get('/assignments', createSensitiveRateLimiter({ limit: 120, windowMs: MINUTES_15, reason: 'recovery_list' }), controller.assignments);

@@ -224,7 +224,7 @@ test('teacher disabling guest permission blocks every scoped return resource', a
   }
 });
 
-test('expired submission-specific recovery requires matching email and rotates only that submission', async () => {
+test('expired submission-specific recovery requires matching email and issues a new link for only that submission', async () => {
   const accepted = await send(); const link = new URL(accepted.body.data.returnUrl);
   const id = link.pathname.split('/').pop();
   await Submission.updateOne({ _id: id }, { $set: { 'guest.expiresAt': new Date(0) } });
@@ -465,7 +465,7 @@ test('marks and draft progress respect teacher visibility without exposing guest
   const drafts = await request(app).get(`/api/guest/submissions/${doc.id}/drafts`).set('X-Guest-Token', token);
   expect(drafts.body.data.code).toBe('MARKS_HIDDEN');
 });
-test('recovery acknowledges generically, rotates once, and cannot restore revoked access', async () => {
+test('recovery acknowledges generically, adds a link WITHOUT invalidating the existing one, and holds an immediate repeat', async () => {
   const response = await send(); const doc = await Submission.findOne();
   const creditsBefore = await require('../src/models/CreditTransaction').countDocuments();
   const oldToken = new URL(response.body.data.returnUrl).hash.slice(1);
@@ -476,7 +476,8 @@ test('recovery acknowledges generically, rotates once, and cannot restore revoke
   expect(email).toHaveBeenCalledTimes(1);
   const newToken = new URL(email.mock.calls[0][0].returnUrl).hash.slice(1);
   expect(newToken).not.toBe(oldToken);
-  await expect(access.authorize(doc.id, oldToken)).rejects.toMatchObject({ statusCode: 410 });
+  // Task 3: a resend never cuts off a working link (a third party who knows the email could otherwise do it).
+  await expect(access.authorize(doc.id, oldToken)).resolves.toBeTruthy();
   await expect(access.authorize(doc.id, newToken)).resolves.toBeTruthy();
   const unknown = await request(app).post(url('/recover')).send({ email: 'unknown@example.com' });
   expect(unknown.body).toEqual(recovered.body);
@@ -592,14 +593,21 @@ test('recovery cannot reissue revoked access, and provider failure never changes
   email.mockClear(); email.mockResolvedValue({ success: false });
   await Submission.updateOne({ _id: doc._id }, { $set: { 'guest.revokedAt': new Date() } });
   const revoked = await request(app).post(url('/recover')).send({ email: 'guest@example.com' });
-  const invalid = await request(app).post(url('/recover')).send({ email: 'invalid' });
+  const unknown = await request(app).post(url('/recover')).send({ email: 'nobody@example.com' });
+  // A malformed address is answered about its format only (400), never about existence.
+  expect((await request(app).post(url('/recover')).send({ email: 'invalid' })).status).toBe(400);
   await new Promise(resolve => setTimeout(resolve, 100));
-  expect(revoked.body).toEqual(invalid.body); expect(email).not.toHaveBeenCalled();
+  expect(revoked.body).toEqual(unknown.body); expect(email).not.toHaveBeenCalled();
   await expect(access.authorize(doc.id, new URL(created.body.data.returnUrl).hash.slice(1))).rejects.toMatchObject({ statusCode: 410 });
   await Submission.updateOne({ _id: doc._id }, { $unset: { 'guest.revokedAt': 1 } });
   const failedDelivery = await request(app).post(url('/recover')).send({ email: 'guest@example.com' });
   for (let i = 0; i < 100 && !email.mock.calls.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
-  expect(failedDelivery.body).toEqual(invalid.body); expect(email).toHaveBeenCalledTimes(1);
+  expect(failedDelivery.body).toEqual(unknown.body); expect(email).toHaveBeenCalledTimes(1);
+  // The failed send did not consume the cool-down: an immediate retry sends again.
+  email.mockResolvedValue({ success: true });
+  await request(app).post(url('/recover')).send({ email: 'guest@example.com' });
+  for (let i = 0; i < 100 && email.mock.calls.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  expect(email).toHaveBeenCalledTimes(2);
   expect(await Submission.countDocuments()).toBe(1);
 });
 test.each(['missing', 'extra-key', 'narrow-partial'])('guest submission fails closed with %s uniqueness index', async mode => {
