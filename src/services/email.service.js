@@ -147,6 +147,34 @@ module.exports = {
       return { success: false };
     }
   },
+  // Recovery portal link. Deliberately carries nothing but the link: no assignment titles, names, scores or feedback.
+  async sendRecoveryPortalEmail({ to, link, expiresInHours }) {
+    try {
+      const readiness = emailReadiness();
+      if (!readiness.ready) throw Object.assign(new Error('Email configuration unavailable'), { code: readiness.code });
+      const hours = Number.isInteger(expiresInHours) ? expiresInHours : 24;
+      const message = {
+        from: `"${process.env.MAIL_FROM_NAME || 'CoMarker'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
+        to,
+        subject: 'Your Co-Marker link to see all your submissions',
+        text: `Rozna Co-Marker\n\nUse this private link to see all assignments you submitted with this email address:\n${link}\n\n`
+          + `The link works for ${hours} hours. Keep it private. If you did not ask for it, you can ignore this email.`,
+        html: `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#302e2e;line-height:1.5;">`
+          + `<p><strong>Rozna Co-Marker</strong></p><p>Use this private link to see all assignments you submitted with this email address:</p>`
+          + `<p><a href="${escapeHtml(link)}" style="color:#008081;font-weight:bold;">See my submissions</a></p>`
+          + `<p style="font-size:13px;color:#666;">The link works for ${hours} hours. Keep it private. If you did not ask for it, you can ignore this email.</p>`
+          + `</body></html>`,
+      };
+      const result = await getTransporter().sendMail(message);
+      if (result?.rejected?.length && !result?.accepted?.length) throw Object.assign(new Error('Email rejected'), { code: 'PROVIDER_REJECTED' });
+      logger.info({ event: 'recovery_portal_email_sent', provider: 'smtp' });
+      return { success: true };
+    } catch (error) {
+      const code = safeEmailFailure(error);
+      logger.warn({ event: 'recovery_portal_email_failed', code });
+      return { success: false, code };
+    }
+  },
   async sendGuestSubmissionEmail({ to, assignmentTitle, returnUrl, resultReady = false }) {
     try {
       const readiness = emailReadiness();

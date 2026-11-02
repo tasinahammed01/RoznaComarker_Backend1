@@ -7,6 +7,7 @@
     "start": "node src/server.js",
     "ocr:preflight": "node scripts/ocrPreflight.cjs",
     "migrate:flashcard-indexes": "node scripts/migrateFlashcardIndexes.js",
+    "migrate:recovery-portal-indexes": "node scripts/migrateRecoveryPortalIndexes.js",
     "verify:runtime": "node scripts/verify-runtime-contract.js",
     "verify:production-security": "node scripts/verify-production-security.js --dry-run",
     "test": "jest --runInBand",

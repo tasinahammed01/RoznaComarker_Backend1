@@ -25,12 +25,16 @@ function issueToken() {
   const days = Number.isFinite(configured) && configured >= 1 && configured <= 365 ? configured : 30;
   return { token, accessHash: hash(token), expiresAt: new Date(Date.now() + days * 86400000) };
 }
-function returnUrl(submissionId, token) {
+// A link into the frontend: http(s) only, no credentials in the URL, https in production.
+function frontendLink(pathAndFragment) {
   const base = new URL(process.env.FRONTEND_URL || 'http://localhost:4200');
   if (!['https:', 'http:'].includes(base.protocol) || base.username || base.password
       || (process.env.NODE_ENV === 'production' && base.protocol !== 'https:')) throw fail(503, 'Return links are temporarily unavailable.');
+  return new URL(pathAndFragment, base).href;
+}
+function returnUrl(submissionId, token) {
   // Fragments are never sent to HTTP servers or in Referrer headers.
-  return new URL(`/guest/results/${submissionId}#${token}`, base).href;
+  return frontendLink(`/guest/results/${submissionId}#${token}`);
 }
 async function authorize(submissionId, token) {
   if (!/^[a-f\d]{24}$/i.test(String(submissionId || '')) || !/^[\w-]{43}$/.test(String(token || ''))) {
@@ -57,7 +61,12 @@ async function authorize(submissionId, token) {
 }
 async function requireGuestAccess(req, res, next) {
   try {
-    req.guestSubmission = await authorize(req.params.submissionId, req.get('X-Guest-Token'));
+    const guestToken = req.get('X-Guest-Token'), portalSession = req.get('X-Recovery-Session');
+    // A recovery-portal session opens results READ-ONLY (GET/HEAD) and only for submissions made with the session's email.
+    // Revisions, practice generation and uploads still need the submission's own link.
+    req.guestSubmission = !guestToken && portalSession && ['GET', 'HEAD'].includes(req.method)
+      ? await require('./recoveryPortal.service').submissionForSession(req.params.submissionId, portalSession)
+      : await authorize(req.params.submissionId, guestToken);
     const assignment = await require('../models/assignment.model').findOne({ _id: req.guestSubmission.assignment, isActive: true, allowGuestSubmission: true });
     if (!assignment) throw fail(404, 'Results unavailable.');
     const classDoc = await require('../models/class.model').findOne(
@@ -70,4 +79,4 @@ async function requireGuestAccess(req, res, next) {
   } catch (error) { res.status(error.statusCode || 503).json({ success: false,
     message: error.statusCode ? error.message : 'Results are temporarily unavailable.', code: error.code }); }
 }
-module.exports = { fail, hash, identity, issueToken, returnUrl, authorize, requireGuestAccess };
+module.exports = { fail, hash, identity, issueToken, frontendLink, returnUrl, authorize, requireGuestAccess };

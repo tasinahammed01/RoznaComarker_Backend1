@@ -65,7 +65,7 @@ function createCorsMiddleware() {
     // browser-managed cookie. Do not opt private APIs into credentialed CORS.
     credentials: false,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Guest-Token', 'Idempotency-Key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Guest-Token', 'X-Recovery-Session', 'Idempotency-Key'],
     exposedHeaders: ['Content-Length', 'Content-Type']
   });
 }
