@@ -7,7 +7,8 @@ const request = require('supertest');
 const Submission = require('../../src/models/Submission');
 const Feedback = require('../../src/models/SubmissionFeedback');
 
-async function seedRealisticGuestResult({ app, assignment, teacher, email, name = 'QA Student', png, overallScore = 82, teacherComments = 'Teacher review complete.' }) {
+async function seedRealisticGuestResult({ app, assignment, teacher, email, name = 'QA Student', png, overallScore = 82, teacherComments = 'Teacher review complete.',
+  teacherReviewed = true }) {
   const pipeline = require('../../src/services/canonicalCorrectionsPipeline.service');
   const evaluation = require('../../src/services/canonicalEvaluation.service');
   const canonical = require('../../src/services/correctionCanonical.service');
@@ -46,13 +47,17 @@ async function seedRealisticGuestResult({ app, assignment, teacher, email, name 
   await Feedback.create({ submissionMode: 'guest', submissionId: submission._id, classId: submission.class, teacherId: teacher._id,
     overallScore, evaluationStatus: 'completed', evaluationSourceHash: sourceHash,
     assessmentVersion: versions.ASSESSMENT_VERSION, evaluationVersion: versions.EVALUATION_VERSION,
-    // The teacher reviewed the AI result (the common released state); the detailed feedback belongs to this exact source.
-    overriddenByTeacher: true, detailedFeedbackSourceHash: sourceHash, evaluationRubricSourceHash: rubricHash, evaluationPolicyHash: policyHash,
+    // teacherReviewed: the teacher reviewed the AI result (overriddenByTeacher). Otherwise: a current AI evaluation, not reviewed yet.
+    overriddenByTeacher: teacherReviewed, ...(teacherReviewed ? {} : { evaluationSource: 'ai' }),
+    detailedFeedbackSourceHash: sourceHash, evaluationRubricSourceHash: rubricHash, evaluationPolicyHash: policyHash,
     analysisInputHash: evaluation.analysisInputHash({ sourceHash, rubricHash, policyHash, contextHash: evaluation.hashBuiltInContext(assignment) }),
     rubricScores: { GRAMMAR: { score: 20, maxScore: 25, feedback: 'Watch subject-verb agreement.' } },
-    detailedFeedback: { status: 'completed', sourceHash, version: 'canonical-detailed-feedback-1', summary: 'A clear short paragraph.',
-      strengths: ['Clear ideas.'], areasForImprovement: ['Subject-verb agreement.'], actionSteps: ['Check verbs after "I".'] },
-    teacherComments });
+    detailedFeedback: teacherReviewed
+      ? { status: 'completed', sourceHash, version: 'canonical-detailed-feedback-1', summary: 'A clear short paragraph.',
+        strengths: ['Clear ideas.'], areasForImprovement: ['Subject-verb agreement.'], actionSteps: ['Check verbs after "I".'] }
+      : { status: 'completed', sourceHash, version: 'canonical-detailed-feedback-1', strengths: [{ explanation: 'Clear ideas.' }],
+        areasForImprovement: [{ explanation: 'Subject-verb agreement.' }], actionSteps: [{ explanation: 'Check verbs after "I".' }] },
+    teacherComments: teacherReviewed ? teacherComments : '' });
   return { submission: await Submission.findById(submission._id), guestToken: returnUrl.hash.slice(1), returnUrl };
 }
 

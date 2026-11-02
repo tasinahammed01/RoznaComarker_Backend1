@@ -116,6 +116,38 @@ describe('A. opened results are identical via own link and via the portal sessio
   });
 });
 
+describe('Task 4: the portal list status always matches what the result page shows', () => {
+  test('ready / processing / failed / stale evaluation: list status and result status agree', async () => {
+    const ready = await seedRealisticGuestResult({ app, assignment: visible, teacher, email: EMAIL, png });
+    const stale = await seedRealisticGuestResult({ app, assignment: hidden, teacher, email: EMAIL, png });
+    await require('../src/models/SubmissionFeedback').updateOne({ submissionId: stale.submission._id }, { $set: { overriddenByTeacher: false, evaluationVersion: 'old' } });
+    const failed = await seedRealisticGuestResult({ app, assignment: other, teacher, email: EMAIL, png });
+    await Submission.updateOne({ _id: failed.submission._id }, { $set: { assessmentStatus: 'failed', evaluationStatus: 'failed' } });
+    const session = await portalSession();
+    const list = (await request(app).get('/api/recovery/assignments').set('X-Recovery-Session', session)).body.data.assignments;
+    const expected = { complete: 'ready', processing: 'processing', failed: 'failed', blocked: 'failed' };
+    const seen = {};
+    for (const seeded of [ready, stale, failed]) {
+      const page = await request(app).get(`/api/guest/submissions/${seeded.submission._id}/`).set('X-Guest-Token', seeded.guestToken);
+      const item = list.find(i => i.id === String(seeded.submission._id));
+      seen[page.body.data.status] = item.status;
+      expect(item.status).toBe(expected[page.body.data.status]);
+    }
+    expect(seen).toEqual({ complete: 'ready', processing: 'processing', failed: 'failed' });
+  });
+});
+
+test('Task 4: feedback and ocr-corrections report the same evaluation freshness, so a teacher-reviewed label cannot be lost', async () => {
+  const reviewed = await seedRealisticGuestResult({ app, assignment: visible, teacher, email: EMAIL, png });
+  const ai = await seedRealisticGuestResult({ app, assignment: hidden, teacher, email: EMAIL, png, teacherReviewed: false });
+  for (const [seeded, expected] of [[reviewed, 'overridden'], [ai, 'current']]) {
+    const base = `/api/guest/submissions/${seeded.submission._id}`;
+    const feedback = await request(app).get(`${base}/feedback`).set('X-Guest-Token', seeded.guestToken);
+    const ocr = await request(app).get(`${base}/ocr-corrections`).set('X-Guest-Token', seeded.guestToken);
+    expect([feedback.body.data.evaluationFreshness, ocr.body.data.evaluationFreshness]).toEqual([expected, expected]);
+  }
+});
+
 describe('B. the portal read path has no side effects', () => {
   async function snapshot() {
     const collections = await mongoose.connection.db.listCollections().toArray();

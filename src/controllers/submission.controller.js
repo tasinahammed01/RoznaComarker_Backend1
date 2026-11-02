@@ -1292,6 +1292,9 @@ async function getOcrCorrections(req, res) {
       assessmentCompletedAt: doc.assessmentCompletedAt || null,
       assessmentErrorCode: doc.assessmentErrorCode || null,
       evaluationSource: resultState.evaluationSource,
+      // Without it the page derives "current" from the status and a teacher-reviewed result loses its label, depending on which
+      // response arrives last. The same value the feedback endpoint already returns.
+      evaluationFreshness: resultState.evaluationFreshness,
       evaluationVersion: resultState.evaluationVersion,
       assessmentVersion: resultState.assessmentVersion,
       evaluationErrorCode: resultState.evaluationErrorCode,

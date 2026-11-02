@@ -175,7 +175,8 @@ describe('the portal list', () => {
     const items = res.body.data.assignments;
     expect(items.map(i => i.id).sort()).toEqual([String(aliceA._id), String(aliceB._id)].sort());   // not Bob's, not the closed assignment
     for (const item of items) expect(Object.keys(item).sort()).toEqual(['assignmentTitle', 'className', 'id', 'status', 'submittedAt']);
-    expect(items.find(i => i.id === String(aliceA._id))).toMatchObject({ assignmentTitle: 'Essay A', className: 'Writing 7B', status: 'ready' });
+    // assessmentStatus 'complete' but no evaluation stored: the result page shows it as processing, so the list does too (Task 4).
+    expect(items.find(i => i.id === String(aliceA._id))).toMatchObject({ assignmentTitle: 'Essay A', className: 'Writing 7B', status: 'processing' });
     expect(items.find(i => i.id === String(aliceB._id))).toMatchObject({ status: 'processing' });
     const body = JSON.stringify(res.body);
     for (const leak of [BOB, ALICE, 'PRIVATE RUBRIC', 'Student', 'accessHash', 'qr-']) expect(body).not.toContain(leak);

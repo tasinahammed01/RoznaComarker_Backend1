@@ -105,7 +105,11 @@ async function verifySession(rawSession, { now = new Date() } = {}) {
   return { emailNormalized: found.emailNormalized, sessionId: found._id };
 }
 
-const status = submission => submission.assessmentStatus === 'complete' ? 'ready' : submission.assessmentStatus === 'failed' ? 'failed' : 'processing';
+// Same status rule as the result page (canonicalResultState.guestResultStatus), so the list never promises what the page does not show.
+const listStatus = (submission, feedback) => {
+  const { status } = require('./canonicalResultState.service').guestResultStatus({ submission, feedback });
+  return status === 'complete' ? 'ready' : ['failed', 'blocked'].includes(status) ? 'failed' : 'processing';
+};
 
 /**
  * Every guest submission made with this email whose assignment and class are still open to guests (the same conditions the result
@@ -114,19 +118,21 @@ const status = submission => submission.assessmentStatus === 'complete' ? 'ready
 async function listAssignments(emailNormalized) {
   const Assignment = require('../models/assignment.model'), Class = require('../models/class.model');
   const submissions = await Submission.find({ submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null })
-    .select('_id assignment submittedAt createdAt assessmentStatus').sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean();
+    .select('-ocrPages -transcriptPages').sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean();
   if (!submissions.length) return [];
   const assignments = await Assignment.find({ _id: { $in: [...new Set(submissions.map(s => String(s.assignment)))] }, isActive: true, allowGuestSubmission: true })
     .select('_id title class teacher').lean();
   const classes = await Class.find(require('./classLifecycle.service').withActiveStatus({
     _id: { $in: [...new Set(assignments.map(a => String(a.class)))] }, isActive: true })).select('_id name teacher').lean();
   const classById = new Map(classes.map(c => [String(c._id), c]));
+  const feedbacks = await require('../models/SubmissionFeedback').find({ submissionId: { $in: submissions.map(x => x._id) } }).lean();
+  const feedbackBySubmission = new Map(feedbacks.map(fb => [String(fb.submissionId), fb]));
   const assignmentById = new Map(assignments.map(a => [String(a._id), a]));
   return submissions.flatMap(s => {
     const assignment = assignmentById.get(String(s.assignment)), classDoc = assignment && classById.get(String(assignment.class));
     if (!assignment || !classDoc || String(classDoc.teacher) !== String(assignment.teacher)) return [];
     return [{ id: String(s._id), assignmentTitle: String(assignment.title || '').slice(0, 200), className: String(classDoc.name || '').slice(0, 120),
-      submittedAt: s.submittedAt || s.createdAt || null, status: status(s) }];
+      submittedAt: s.submittedAt || s.createdAt || null, status: listStatus(s, feedbackBySubmission.get(String(s._id)) || null) }];
   });
 }
 

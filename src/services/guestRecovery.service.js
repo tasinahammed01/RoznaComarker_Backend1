@@ -39,7 +39,9 @@ async function resendGuestLink({ emailNormalized, submissionId = null, qrToken =
     $set: { 'guest.recoveredAt': now } });
   if (!added.modifiedCount) { await slot.release(); return { sent: false, reason: 'no_submission' }; }
 
-  const delivery = await require('./email.service').sendGuestSubmissionEmail({ to: emailNormalized, assignmentTitle: assignment.title, returnUrl: link });
+  // A dedicated recovery email (not the submission receipt): what the link opens and how long it works; no title, name or score.
+  const delivery = await require('./email.service').sendGuestRecoveryEmail({ to: emailNormalized, link,
+    expiresInDays: Math.max(1, Math.round((issued.expiresAt.getTime() - now.getTime()) / 86400000)) });
   if (!delivery?.success) {
     // Nobody received this link: remove it, and give the slot back so the student can ask again at once.
     await Submission.updateOne({ _id: candidate._id }, { $pull: { 'guest.recoveryAccess': { hash: issued.accessHash } } });

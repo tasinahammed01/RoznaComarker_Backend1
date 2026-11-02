@@ -11,7 +11,8 @@ process.env.RECOVERY_EMAIL_COOLDOWN_SECONDS = '30';   // the minimum, so the run
 jest.mock('../src/services/assessmentRecovery.service', () => ({ scheduleSubmissionAnalysis: jest.fn() }));
 jest.mock('../src/services/visionOcr.service', () => ({ extractOcrFromImageFile: jest.fn() }));
 jest.mock('../src/services/email.service', () => ({ sendGuestSubmissionEmail: jest.fn(async () => ({ success: true })),
-  sendTeacherSubmissionEmail: jest.fn(async () => ({ success: true })), sendRecoveryPortalEmail: jest.fn(async () => ({ success: true })) }));
+  sendTeacherSubmissionEmail: jest.fn(async () => ({ success: true })), sendRecoveryPortalEmail: jest.fn(async () => ({ success: true })),
+  sendGuestRecoveryEmail: jest.fn(async () => ({ success: true })) }));
 jest.mock('../src/services/assessmentCreditRouter.service', () => ({ canRunAssessment: jest.fn(async () => ({ allowed: true })) }));
 jest.mock('../src/services/imagePreflight.service', () => ({ evaluateImage: jest.fn(async () => ({ ready: true, checks: [] })) }));
 const fs = require('fs');
@@ -77,14 +78,15 @@ const uploadRoot = path.resolve(__dirname, '..', process.env.UPLOAD_BASE_PATH);
       const ok = await page.waitForSelector('app-my-submission-page', { timeout: 30000 }).then(() => true, () => false);
       return { ok, page, context };
     };
-    const emails = () => email.sendGuestSubmissionEmail.mock.calls.map(([m]) => m.returnUrl);
+    const emails = () => email.sendGuestRecoveryEmail.mock.calls.map(([m]) => m.link);
     const waitForEmails = async n => { for (let i = 0; i < 600 && emails().length < n; i++) await new Promise(r => setTimeout(r, 50)); };
 
     // 1. The student lost the link: the result page without a token offers recovery.
     const { page: lost, consoleErrors } = await newPage();
     await lost.goto(`http://localhost:${FRONT_PORT}/guest/results/${seeded.submission._id}`, { waitUntil: 'networkidle0' });
     await lost.waitForSelector('details.recovery summary');
-    await lost.click('details.recovery summary');
+    // Task 4: the form is already open on a page without its link; open it only if it is not.
+    if (!(await lost.$eval('details.recovery', d => d.open))) await lost.click('details.recovery summary');
     await lost.type('#recovery-email', EMAIL);
     await lost.click('details.recovery button[type=submit]');
     await lost.waitForFunction(() => /You can ask again in \d:\d\d/.test(document.querySelector('details.recovery button[type=submit]')?.textContent || ''));

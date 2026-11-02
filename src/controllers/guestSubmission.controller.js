@@ -300,10 +300,7 @@ const results = endpoint(async (req, res) => {
   const assignment = await Assignment.findById(doc.assignment);
   if (!assignment?.isActive) throw access.fail(404, 'Results unavailable.');
   const feedback = await Feedback.findOne({ submissionId: doc._id }).lean();
-  const state = require('../services/canonicalResultState.service').buildCanonicalResultState({ submission: doc, feedback });
-  const ready = doc.assessmentStatus === 'complete' && state.evaluationCurrent && state.detailedFeedbackCurrent;
-  const failed = [doc.assessmentStatus, doc.ocrStatus, doc.correctionStatus, doc.semanticStatus, doc.evaluationStatus].includes('failed');
-  const status = ready ? 'complete' : failed ? 'failed' : doc.evaluationStatus === 'blocked' ? 'blocked' : 'processing';
+  const { status, state, ready } = require('../services/canonicalResultState.service').guestResultStatus({ submission: doc, feedback });
   const publicFeedback = ready ? { overallScore: state.score, rubricScores: feedback.rubricScores,
     detailedFeedback: feedback.detailedFeedback, teacherComments: feedback.teacherComments || '' } : null;
   const data = { title: assignment.title, name: doc.guest.displayName, submittedAt: doc.submittedAt,

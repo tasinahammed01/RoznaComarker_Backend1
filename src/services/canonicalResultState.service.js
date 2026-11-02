@@ -266,4 +266,15 @@ function detailedFeedbackForResult(feedback, state) {
     state.categoryAvailability?.[String(area.category).toLowerCase()] === 'available' ? area
       : { ...area, issueCount: null, examples: [], dominantSymbols: [] }) };
 }
-module.exports = { buildCanonicalResultState, buildPreviousEvaluation, countSources, safeErrorCode, detailedFeedbackForResult };
+/**
+ * The one status a guest sees for a submission: the result page and the recovery-portal list both use it, so the list never says
+ * "ready" for something the page shows as still processing. 'complete' | 'failed' | 'blocked' | 'processing'. Also returns the state.
+ */
+function guestResultStatus({ submission, feedback }) {
+  const state = buildCanonicalResultState({ submission, feedback });
+  const ready = submission.assessmentStatus === 'complete' && state.evaluationCurrent && state.detailedFeedbackCurrent;
+  const failed = [submission.assessmentStatus, submission.ocrStatus, submission.correctionStatus, submission.semanticStatus, submission.evaluationStatus].includes('failed');
+  return { status: ready ? 'complete' : failed ? 'failed' : submission.evaluationStatus === 'blocked' ? 'blocked' : 'processing', state, ready };
+}
+
+module.exports = { buildCanonicalResultState, buildPreviousEvaluation, countSources, safeErrorCode, detailedFeedbackForResult, guestResultStatus };

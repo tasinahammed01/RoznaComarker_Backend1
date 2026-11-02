@@ -9,7 +9,8 @@ process.env.UPLOAD_BASE_PATH = 'uploads/guest-recovery-resend-' + process.pid;
 jest.mock('../src/services/assessmentRecovery.service', () => ({ scheduleSubmissionAnalysis: jest.fn() }));
 jest.mock('../src/services/visionOcr.service', () => ({ extractOcrFromImageFile: jest.fn() }));
 jest.mock('../src/services/email.service', () => ({ sendGuestSubmissionEmail: jest.fn(async () => ({ success: true })),
-  sendTeacherSubmissionEmail: jest.fn(async () => ({ success: true })), sendRecoveryPortalEmail: jest.fn(async () => ({ success: true })) }));
+  sendTeacherSubmissionEmail: jest.fn(async () => ({ success: true })), sendRecoveryPortalEmail: jest.fn(async () => ({ success: true })),
+  sendGuestRecoveryEmail: jest.fn(async () => ({ success: true })) }));
 jest.mock('../src/services/assessmentCreditRouter.service', () => ({ canRunAssessment: jest.fn(async () => ({ allowed: true })) }));
 jest.mock('../src/services/imagePreflight.service', () => ({ evaluateImage: jest.fn(async () => ({ ready: true, checks: [] })) }));
 jest.mock('../src/middlewares/rateLimit.middleware', () => {
@@ -61,9 +62,9 @@ async function submitOnce() {
   const doc = await Submission.findOne({ assignment: assignment._id });
   return { id: String(doc._id), token: new URL(res.body.data.returnUrl).hash.slice(1) };
 }
-const recoveryEmails = () => email.sendGuestSubmissionEmail.mock.calls.map(([message]) => new URL(message.returnUrl).hash.slice(1));
+const recoveryEmails = () => email.sendGuestRecoveryEmail.mock.calls.map(([message]) => new URL(message.link).hash.slice(1));
 async function settle(expectedCalls) {
-  for (let i = 0; i < 300 && email.sendGuestSubmissionEmail.mock.calls.length < expectedCalls; i++) await new Promise(r => setTimeout(r, 10));
+  for (let i = 0; i < 300 && email.sendGuestRecoveryEmail.mock.calls.length < expectedCalls; i++) await new Promise(r => setTimeout(r, 10));
   await new Promise(r => setTimeout(r, 50));
 }
 const recover = (submission, address = EMAIL) => request(app).post(`/api/guest/submissions/${submission.id}/recover`).send({ email: address });
@@ -159,7 +160,7 @@ describe('links stay safe', () => {
   });
   test('an SMTP failure does not consume the cool-down, leaves no unsent working link, and keeps the old link working', async () => {
     const submission = await submitOnce();
-    email.sendGuestSubmissionEmail.mockResolvedValueOnce({ success: false, code: 'SMTP_TIMEOUT' });
+    email.sendGuestRecoveryEmail.mockResolvedValueOnce({ success: false, code: 'SMTP_TIMEOUT' });
     const failed = await recover(submission); await settle(1);
     const unsent = recoveryEmails()[0];
     expect((await presentation(submission, unsent)).status).toBe(410);
@@ -195,7 +196,7 @@ describe('no enumeration, no leaks', () => {
     const sinks = ['info', 'warn', 'error', 'debug'].map(level => jest.spyOn(logger, level));
     try {
       const submission = await submitOnce();
-      email.sendGuestSubmissionEmail.mockResolvedValueOnce({ success: false, code: 'SMTP' });
+      email.sendGuestRecoveryEmail.mockResolvedValueOnce({ success: false, code: 'SMTP' });
       await recover(submission); await settle(1);
       await recover(submission); await settle(2);
       const logged = JSON.stringify(sinks.flatMap(s => s.mock.calls));
