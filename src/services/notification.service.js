@@ -63,7 +63,7 @@ async function createNotification({ recipientId, actorId, type, title, descripti
   publishToUser({
     userId: recipientId,
     event: 'notification',
-    payload: populated
+    payload: populated?.recipient?.role === 'student' ? require('./studentTeacherIdentity.service').notificationForStudent(populated) : populated
   });
   logger.info({ event: 'smart_notification_created', recipientId: String(recipientId), type,
     category: resolvedCategory, priority: resolvedPriority, sourceId: data?.submissionId || data?.sessionId || data?.rewardGrantId });

@@ -34,6 +34,7 @@ const logger = require('../utils/logger');
 const { bytesToMB, ensureActivePlan, getLimit, incrementUsage } = require('../middlewares/usage.middleware');
 const { getPublicApiUrl, buildPublicUploadUrl } = require('../utils/publicApiUrl');
 const { showMarksToStudent, redactStudentMarks } = require('../services/assignmentAccessPolicy.service');
+const { submissionForStudent } = require('../services/studentTeacherIdentity.service');
 const { scopeCanonicalPages, scopeCanonicalCorrections } = require('../services/canonicalCorrectionResponse.service');
 const { buildCanonicalCorrectionRenderModels } = require('../services/canonicalCorrectionRender.service');
 const { annotationImageGeometry } = require('../services/annotationImageGeometry.service');
@@ -785,7 +786,7 @@ async function upsertSubmissionLocked({ req, res, assignment, qrToken }) {
       logger.info({ message: 'Assessment pipeline timing', submissionId: String(saved._id),
         stage: 'submissionAcceptedAt', timestamp: new Date().toISOString(),
         durationMs: Date.now() - submissionStartedAt, draftNumber: Number(saved.draftNumber || 1) });
-      return sendSuccess(res, populated);
+      return sendSuccess(res, submissionForStudent(populated));
     }
 
     const created = await Submission.create({
@@ -868,7 +869,7 @@ async function upsertSubmissionLocked({ req, res, assignment, qrToken }) {
       }
     });
 
-    return sendSuccess(res, populated);
+    return sendSuccess(res, submissionForStudent(populated));
   } catch (err) {
     if (err && err.code === 11000) {
       return sendError(res, 409, 'Already submitted');
@@ -1059,7 +1060,7 @@ async function getMySubmissionByAssignmentId(req, res) {
     const correctionStatistics = await buildSubmissionCorrectionStatistics(visible);
     visible.correctionStatistics = correctionStatistics;
 
-    return sendSuccess(res, visible);
+    return sendSuccess(res, submissionForStudent(visible));
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch submission');
   }
@@ -1092,7 +1093,7 @@ async function getMySubmissions(req, res) {
       s.correctionStatistics = correctionStatistics;
     }
 
-    return sendSuccess(res, visible);
+    return sendSuccess(res, visible.map(submissionForStudent));
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch submissions');
   }

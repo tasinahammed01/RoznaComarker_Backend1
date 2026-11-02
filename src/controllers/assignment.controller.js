@@ -30,6 +30,7 @@ const {
 const { incrementUsage } = require('../middlewares/usage.middleware');
 const logger = require('../utils/logger');
 const { createNotification } = require('../services/notification.service');
+const { assignmentForStudent } = require('../services/studentTeacherIdentity.service');
 const { normalizeRubricDesignerPayload } = require('../utils/rubricNormalizer');
 const { repairAiRubric } = require('../utils/aiRubricRepair');
 const { completeRubric } = require('../services/rubricCompletion.service');
@@ -1537,7 +1538,7 @@ async function getMyAssignments(req, res) {
 
     const filteredAssignments = await filterAssignmentsWithAvailableResources(assignments);
 
-    return sendSuccess(res, filteredAssignments);
+    return sendSuccess(res, filteredAssignments.map(item => assignmentForStudent(item)));
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch assignments');
   }
@@ -1585,7 +1586,7 @@ async function getAssignmentById(req, res) {
       return sendError(res, 403, 'Forbidden');
     }
 
-    return sendSuccess(res, filteredAssignment);
+    return sendSuccess(res, assignmentForStudent(filteredAssignment));
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch assignment');
   }
@@ -1970,7 +1971,7 @@ async function getAssignmentByQrToken(req, res) {
       return sendError(res, 403, 'Forbidden');
     }
 
-    return sendSuccess(res, filteredAssignment);
+    return sendSuccess(res, assignmentForStudent(filteredAssignment));
   } catch (err) {
     return sendError(res, 500, 'Failed to resolve assignment QR');
   }

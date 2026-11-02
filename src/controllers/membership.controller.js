@@ -4,6 +4,7 @@ const Class = require('../models/class.model');
 const Membership = require('../models/membership.model');
 const User = require('../models/user.model');
 const { createNotification } = require('../services/notification.service');
+const { classForStudent, membershipForStudent } = require('../services/studentTeacherIdentity.service');
 const { publishToUser } = require('../services/notificationRealtime.service');
 
 const { ensureActivePlan, getLimit } = require('../middlewares/usage.middleware');
@@ -148,7 +149,7 @@ async function joinClassByCode(req, res) {
 
     return sendSuccess(res, {
       membership,
-      class: classDoc
+      class: classForStudent(classDoc)
     });
   } catch (err) {
     if (reservedTeacherId) {
@@ -186,7 +187,7 @@ async function getMyClasses(req, res) {
 
     const filtered = memberships.filter((m) => m.class);
 
-    return sendSuccess(res, filtered);
+    return sendSuccess(res, filtered.map(membershipForStudent));
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch classes');
   }

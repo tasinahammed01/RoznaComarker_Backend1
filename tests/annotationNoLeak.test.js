@@ -94,6 +94,7 @@ afterAll(async () => {
 });
 
 const NOT_FOR_STUDENTS = ['annotationGradeReviewRequired', 'annotationRevision', 'teacherReviewedAt', 'teacherReviewedBy', 'teacherId', 'teacherCommentsUpdatedBy', 'teacherAnnotations',
+  'teacher', 'evaluationProvider', 'evaluationModel', 'evaluationAttempts', 'evaluationPolicy', 'analysisInputHash',
   'scoringReviewRequired', 'scoringReview', 'scoreReview', 'totalIssueCount', 'countedIssueCount', 'ignoredCorrectionIds', 'canonicalCount', 'rawCorrectionCount', 'acceptedCorrectionCount', 'evaluationDiagnostics'];
 function keysIn(value, keys, at = '$', out = []) {
   if (Array.isArray(value)) value.forEach((v, i) => keysIn(v, keys, `${at}[${i}]`, out));
@@ -101,6 +102,7 @@ function keysIn(value, keys, at = '$', out = []) {
   return out;
 }
 function assertClean(label, text) {
+  for (const identity of [String(fixture.IDS.teacher), 'teacher@example.com']) expect({ label, identity, leaked: text.includes(identity) }).toEqual({ label, identity, leaked: false });
   for (const secret of SECRETS) expect({ label, secret, leaked: text.includes(secret) }).toEqual({ label, secret, leaked: false });
   for (const id of hiddenIds) expect({ label, id, leaked: text.includes(id) }).toEqual({ label, id, leaked: false });
 }

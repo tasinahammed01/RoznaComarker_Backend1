@@ -661,11 +661,12 @@ async function getClassSummary(req, res) {
       status: classDoc.status || 'active',
       archivedAt: classDoc.archivedAt || null,
       gradingScale: classDoc.gradingScale,
-      teacher: {
+      // Students get a display name only.
+      ...(user.role === "student" ? { teacherDisplayName: require("../services/studentTeacherIdentity.service").teacherDisplayName(teacher) } : { teacher: {
         id: teacher && teacher._id ? String(teacher._id) : String(teacherId),
         name: teacherName,
         email: teacherEmail,
-      },
+      } }),
       studentsCount,
       assignmentsCount,
       submissionsCount,

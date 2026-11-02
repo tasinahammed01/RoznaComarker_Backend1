@@ -1,4 +1,5 @@
 const Notification = require('../models/notification.model');
+const { notificationForStudent } = require('../services/studentTeacherIdentity.service');
 const { verifyJwt } = require('../utils/jwt');
 const User = require('../models/user.model');
 const { registerStream } = require('../services/notificationRealtime.service');
@@ -31,7 +32,7 @@ async function listMyNotifications(req, res) {
       .limit(limit)
       .populate('actor', '_id email displayName photoURL role');
 
-    return sendSuccess(res, items);
+    return sendSuccess(res, req.user?.role === 'student' ? items.map(notificationForStudent) : items);
   } catch {
     return sendError(res, 500, 'Failed to fetch notifications');
   }
@@ -92,7 +93,7 @@ async function markRead(req, res) {
     const populated = await Notification.findById(doc._id)
       .populate('actor', '_id email displayName photoURL role');
 
-    return sendSuccess(res, populated);
+    return sendSuccess(res, req.user?.role === 'student' ? notificationForStudent(populated) : populated);
   } catch {
     return sendError(res, 500, 'Failed to mark notification as read');
   }

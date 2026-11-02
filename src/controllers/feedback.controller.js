@@ -27,6 +27,7 @@ const { loadStudentCorrectionView, studentPayload } = require("../services/stude
 const { currentEvaluationSettings } = require("../services/evaluationSettingsContext.service");
 const { resolveTeacherComments } = require("../services/teacherComments.service");
 const { showMarksToStudent, redactStudentMarks } = require("../services/assignmentAccessPolicy.service");
+const studentIdentity = require("../services/studentTeacherIdentity.service");
 const { TEACHER_COMMENTS_MAX_LENGTH } = require("../models/SubmissionFeedback");
 const aiGateway = require("../services/aiGateway.service");
 const { RUBRIC_SCHEMA, DETAILED_FEEDBACK_SCHEMA } = require("../services/structuredOutputSchemas.service");
@@ -960,7 +961,7 @@ async function getSubmissionFeedback(req, res) {
       marksVisible
     };
     // Who reviewed and when is for the teacher's pages (dashboards). No student page reads them.
-    if (role === "student") for (const key of ["teacherId", "teacherReviewedAt", "teacherReviewedBy"]) delete responseData[key];
+    if (role === "student") for (const key of ["teacherId", "teacherReviewedAt", "teacherReviewedBy", ...studentIdentity.INTERNAL_FIELDS]) delete responseData[key];
     const studentData = studentPayload(responseData, view);
     return sendSuccess(res, marksVisible ? studentData : redactStudentMarks(studentData));
 
@@ -4212,7 +4213,8 @@ async function getFeedbackBySubmissionForStudent(req, res) {
       .filter((key) => withEval.submission?.[key] !== undefined).map((key) => [key, withEval.submission[key]])) };
     const assignment = await Assignment.findById(submission.assignment).select('showMarksToStudent').lean();
     const marksVisible = showMarksToStudent(assignment);
-    return sendSuccess(res, marksVisible ? withEval : redactStudentMarks(withEval));
+    const shown = studentIdentity.legacyFeedbackForStudent(withEval);
+    return sendSuccess(res, marksVisible ? shown : redactStudentMarks(shown));
   } catch (err) {
     return sendError(res, 500, "Failed to fetch feedback");
   }

@@ -19,11 +19,6 @@
      "resourceId": null,
      "instructions": "Describe your weekend.",
      "class": "0000000000000000000000c1",
-     "teacher": {
-      "_id": "0000000000000000000000a1",
-      "email": "teacher@example.com",
-      "displayName": "Teacher"
-     },
      "qrToken": "fixture-qr",
      "allowLateResubmission": false,
      "allowGuestSubmission": true,
@@ -33,12 +28,12 @@
      "isActive": true,
      "createdAt": "<volatile>",
      "updatedAt": "<volatile>",
-     "__v": "<volatile>"
+     "__v": "<volatile>",
+     "teacherDisplayName": "Teacher"
     },
     "class": {
      "_id": "0000000000000000000000c1",
      "name": "Writing 7B",
-     "teacher": "0000000000000000000000a1",
      "joinCode": "FIXTURE-1",
      "gradingScale": "score_0_100",
      "lateSubmissionPenaltyPercent": 10,
@@ -50,7 +45,8 @@
      "archivedBy": null,
      "createdAt": "<volatile>",
      "updatedAt": "<volatile>",
-     "__v": "<volatile>"
+     "__v": "<volatile>",
+     "teacherDisplayName": "Teacher"
     },
     "file": {
      "_id": "0000000000000000000000f1",
@@ -601,11 +597,6 @@
       "resourceId": null,
       "instructions": "Describe your weekend.",
       "class": "0000000000000000000000c1",
-      "teacher": {
-       "_id": "0000000000000000000000a1",
-       "email": "teacher@example.com",
-       "displayName": "Teacher"
-      },
       "qrToken": "fixture-qr",
       "allowLateResubmission": false,
       "allowGuestSubmission": true,
@@ -615,12 +606,12 @@
       "isActive": true,
       "createdAt": "<volatile>",
       "updatedAt": "<volatile>",
-      "__v": "<volatile>"
+      "__v": "<volatile>",
+      "teacherDisplayName": "Teacher"
      },
      "class": {
       "_id": "0000000000000000000000c1",
       "name": "Writing 7B",
-      "teacher": "0000000000000000000000a1",
       "joinCode": "FIXTURE-1",
       "gradingScale": "score_0_100",
       "lateSubmissionPenaltyPercent": 10,
@@ -632,7 +623,8 @@
       "archivedBy": null,
       "createdAt": "<volatile>",
       "updatedAt": "<volatile>",
-      "__v": "<volatile>"
+      "__v": "<volatile>",
+      "teacherDisplayName": "Teacher"
      },
      "file": {
       "_id": "0000000000000000000000f1",
@@ -2384,7 +2376,6 @@
     "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
     "evaluationRubricSourceHash": "804aa28a8608e4d036fa6d03162ed1f3d1ee00b102db1a92ef310720c50b9574",
     "evaluationPolicyHash": "9cad237b79d82ce5e0ae570b59b7b545743579304f97a15d146402b67f8e7117",
-    "analysisInputHash": "5ef64968d7d78b893f4e9a366dc2059a352e5bbd19ffba64ea63a363d71a924a",
     "evaluationSource": "deterministic_fallback",
     "evaluationStatus": "completed",
     "grade": "F",
@@ -4446,7 +4437,6 @@
     "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
     "evaluationRubricSourceHash": "804aa28a8608e4d036fa6d03162ed1f3d1ee00b102db1a92ef310720c50b9574",
     "evaluationPolicyHash": "9cad237b79d82ce5e0ae570b59b7b545743579304f97a15d146402b67f8e7117",
-    "analysisInputHash": "69afd7cf497ff27b038aa371a39bb060a8c355f210919642a3c8b7ef5f2e0ad2",
     "evaluationSource": "deterministic_fallback",
     "evaluationStatus": "completed",
     "grade": "F",
