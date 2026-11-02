@@ -9,7 +9,10 @@ const Submission = require('../models/Submission');
 const Class = require('../models/class.model');
 const Assignment = require('../models/assignment.model');
 const AnnotationAudit = require('../models/AnnotationAudit');
+const SubmissionFeedback = require('../models/SubmissionFeedback');
 const policy = require('../services/teacherAnnotation.service');
+const review = require('../services/scoreReview.service');
+const { currentEvaluationSettings } = require('../services/evaluationSettingsContext.service');
 const studentView = require('../services/studentCorrectionView.service');
 const logger = require('../utils/logger');
 const { defaultLegend } = require('../services/writingCorrections.service');
@@ -26,6 +29,19 @@ async function authorized(req, { write = false } = {}) {
   return doc;
 }
 
+const COUNT_KEYS = ['content', 'organization', 'grammar', 'vocabulary', 'mechanics', 'total'];
+const counts = stats => Object.fromEntries(COUNT_KEYS.map(key => [key, Number(stats?.[key] || 0)]));
+/** The grade check as of now, read from the current feedback and the assignment's current settings. Reads only. */
+async function evaluateReview(doc) {
+  const [feedback, assignment] = await Promise.all([SubmissionFeedback.findOne({ submissionId: doc._id }).lean(), Assignment.findById(doc.assignment).lean()]);
+  return { feedback, current: review.evaluate(doc, feedback, assignment ? await currentEvaluationSettings(assignment) : null) };
+}
+/** What the teacher sees. countsScored: the list the scores were computed from; countsVisible: what the student is shown now. */
+function reviewPayload(current, doc, visibleStatistics) {
+  return { status: current.status, scores: current.scores, fingerprint: current.fingerprint, decision: current.state.scoringReview?.decision ?? null,
+    countsScored: counts(doc.correctionStatistics), countsVisible: counts(visibleStatistics) };
+}
+
 async function snapshot(doc, classClosed) {
   const { canonical, sourceHash } = policy.source(doc);
   const view = studentView.buildStudentCorrectionView(doc, { overlay: doc.teacherAnnotations ?? null, audience: 'teacher' });
@@ -39,7 +55,8 @@ async function snapshot(doc, classClosed) {
       id => require('../models/File').findById(id).select('path').lean());
     return { ...page, words, sourceGeometry, pageImageUrl: stored?.pageImageUrl };
   }));
-  return { revision: view.revision, sourceHash, scoringReviewRequired: Boolean(view.scoringReviewRequired),
+  const { current } = await evaluateReview(doc);
+  return { revision: view.revision, sourceHash, scoringReviewRequired: Boolean(view.scoringReviewRequired), scoreReview: reviewPayload(current, doc, view.statistics),
     pages, legend: defaultLegend(), corrections: view.rows, orphans: view.orphans, archivedOrphans: view.archivedOrphans,
     readOnly: Boolean(classClosed), readOnlyReason: classClosed ? 'CLASS_CLOSED' : null,
     effective: buildCanonicalCorrectionRenderModels(view.corrections, canonical, doc.ocrPages, { submission: doc }),
@@ -79,6 +96,16 @@ const history = endpoint(async (req, res) => {
   res.json({ success: true, data: { items: rows.slice(0, 20), nextOffset: rows.length > 20 ? offset + 20 : null } });
 });
 
+/** Writes the whole overlay, only if the submission and the overlay revision are still what the request was checked against. */
+async function saveOverlay(doc, state) {
+  const match = { _id: doc._id, class: doc.class, assignment: doc.assignment };
+  for (const key of ['ocrJobId','ocrUpdatedAt','correctionUpdatedAt','draftNumber','ocrPages','writingCorrections',
+    'files','file','fileOrder','sourceFidelityMode','sourceReviewStatus','ocrStatus','assessmentStatus','correctionStatus','evaluationStatus']) match[key] = doc[key] === undefined ? { $exists: false } : doc[key];
+  match['teacherAnnotations.revision'] = doc.teacherAnnotations?.revision === undefined ? { $exists: false } : doc.teacherAnnotations.revision;
+  const saved = await Submission.updateOne(match, { $set: { teacherAnnotations: state } });
+  if (saved.modifiedCount !== 1) throw fail(409, 'ANNOTATION_REVISION_CONFLICT');
+}
+
 const mutate = endpoint(async (req, res) => {
   const doc = await authorized(req, { write: true });
   policy.checkBody(req.body);
@@ -86,18 +113,41 @@ const mutate = endpoint(async (req, res) => {
   const resolution = studentView.resolveOverlay(doc, doc.teacherAnnotations ?? null);
   const result = policy.prepare(doc, req.user._id, req.body, { resolution, prior });
   if (result.replay) { await syncAudit(doc); return res.json({ success: true, data: { revision: result.revision, replay: true } }); }
-  if (['pending','processing'].includes(doc.ocrStatus) || ['started','processing','queued','pending'].includes(doc.assessmentStatus)
-    || ['pending','processing'].includes(doc.correctionStatus) || ['pending','processing'].includes(doc.evaluationStatus)) throw fail(409, 'ANNOTATION_ASSESSMENT_BUSY');
-  const match = { _id: doc._id, class: doc.class, assignment: doc.assignment };
-  for (const key of ['ocrJobId','ocrUpdatedAt','correctionUpdatedAt','draftNumber','ocrPages','writingCorrections',
-    'files','file','fileOrder','sourceFidelityMode','sourceReviewStatus','ocrStatus','assessmentStatus','correctionStatus','evaluationStatus']) match[key] = doc[key] === undefined ? { $exists: false } : doc[key];
-  match['teacherAnnotations.revision'] = doc.teacherAnnotations?.revision === undefined ? { $exists: false } : doc.teacherAnnotations.revision;
-  const saved = await Submission.updateOne(match, { $set: { teacherAnnotations: result.state } });
-  if (saved.modifiedCount !== 1) throw fail(409, 'ANNOTATION_REVISION_CONFLICT');
+  if (review.assessmentBusy(doc)) throw fail(409, 'ANNOTATION_ASSESSMENT_BUSY');
+  await saveOverlay(doc, result.state);
   // The overlay already holds the row (state.recent), so a failed insert is repaired by the next history read or replay.
   try { await syncAudit(doc, [...result.legacyAudit.map(legacyRow), result.auditRow]); }
   catch (error) { logger.error({ event: 'teacher_annotation_audit_deferred', submissionId: String(doc._id), error: error.name }); }
   res.json({ success: true, data: { revision: result.revision } });
+});
+
+// Task 7C: "keep these scores". Writes the teacher overlay and the audit row, nothing else: it only reads the feedback document, calls no AI
+// and spends no credits. It goes through the overlay revision, so it serialises against annotation writes.
+const scoreReview = endpoint(async (req, res) => {
+  const doc = await authorized(req, { write: true });
+  review.checkBody(req.body);
+  const prior = await AnnotationAudit.findOne({ submissionId: doc._id, requestId: req.body.requestId }).lean();
+  const stored = policy.normalizeState(doc.teacherAnnotations);
+  const visible = () => studentView.buildStudentCorrectionView(doc, { overlay: doc.teacherAnnotations ?? null }).statistics;
+  const replay = policy.replayOf(prior || (stored.recent || []).find(row => row.requestId === req.body.requestId), req.user._id, req.body);
+  if (replay) {
+    await syncAudit(doc);
+    const { current } = await evaluateReview(doc);
+    return res.json({ success: true, data: { revision: replay.revision, replay: true, scoreReview: reviewPayload(current, doc, visible()) } });
+  }
+  if (review.assessmentBusy(doc)) throw fail(409, 'ANNOTATION_ASSESSMENT_BUSY');
+  if (req.body.revision !== stored.revision || req.body.sourceHash !== policy.source(doc).sourceHash) throw fail(409, 'ANNOTATION_REVISION_CONFLICT');
+  const { current } = await evaluateReview(doc);
+  if (!current.evaluationCurrent) throw fail(409, 'ANNOTATION_EVALUATION_NOT_CURRENT');
+  if (req.body.scoreFingerprint !== current.fingerprint) throw fail(409, 'ANNOTATION_SCORE_CHANGED');
+  if (current.status !== 'needed') throw fail(409, 'ANNOTATION_REVIEW_NOT_NEEDED');
+  const result = review.prepareDecision({ doc, actor: req.user._id, body: req.body, review: current });
+  await saveOverlay(doc, result.state);
+  try { await syncAudit(doc, [...result.legacyAudit.map(legacyRow), result.auditRow]); }
+  catch (error) { logger.error({ event: 'teacher_annotation_audit_deferred', submissionId: String(doc._id), error: error.name }); }
+  const saved = { ...doc, teacherAnnotations: result.state };
+  res.json({ success: true, data: { revision: result.revision, scoreReview: reviewPayload({ ...current, state: result.state, status: 'checked' }, saved,
+    studentView.buildStudentCorrectionView(saved, { overlay: result.state }).statistics) } });
 });
 
 /** Runs a student-facing handler as the submission's owner and returns the body it would send. */
@@ -122,4 +172,4 @@ const preview = endpoint(async (req, res) => {
     feedback: feedback.body?.data ?? null, feedbackStatus: feedback.status } });
 });
 
-module.exports = { get, history, mutate, preview };
+module.exports = { get, history, mutate, scoreReview, preview };

@@ -149,8 +149,9 @@ describe('transition table', () => {
     const Feedback = require('../src/models/SubmissionFeedback');
     const before = await Feedback.findOne({ submissionId: fixture.IDS.registered }).lean();
     const target = ai(await load(), 'goes', 'AGR');
-    await apply({ action: 'hide', id: target.id });
     expect(policy.normalizeState((await load()).teacherAnnotations).scoringReviewRequired).toBe(false);
+    await apply({ action: 'hide', id: target.id });   // Task 7B: a hide moves the visible set, so it asks for a grade check too
+    expect(policy.normalizeState((await load()).teacherAnnotations).scoringReviewRequired).toBe(true);
     await apply({ action: 'archive', id: target.id });
     expect(policy.normalizeState((await load()).teacherAnnotations).scoringReviewRequired).toBe(true);
     const after = await Feedback.findOne({ submissionId: fixture.IDS.registered }).lean();

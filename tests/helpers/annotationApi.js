@@ -13,6 +13,7 @@ function annotationApi(app, user) {
     history: (id, query = '') => auth(request(app).get(`${base(id)}/history${query}`)),
     preview: id => auth(request(app).get(`${base(id)}/preview`)),
     post: (id, body) => auth(request(app).post(base(id))).send(body),
+    scoreReview: (id, body) => auth(request(app).post(`${base(id)}/score-review`)).send(body),
     /** Reads the current revision and source, then applies one action. Returns the response. */
     async act(id, body) {
       const snap = await api.snapshot(id);

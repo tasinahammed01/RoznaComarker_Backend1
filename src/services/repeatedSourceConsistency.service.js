@@ -200,4 +200,4 @@ function compareRuns(a, b, tolerance = .5) {
     notes: ['Raw provider responses and historical configuration may be absent; classification describes persisted differences, not proof of a provider-internal cause.',
       'Geometry comparison covers server percent axes; browser/device layout requires separate QA.'] };
 }
-module.exports = { digest, inspectBytes, snapshotRun, compareRuns };
+module.exports = { digest, inspectBytes, snapshotRun, compareRuns, scoreIdentity };

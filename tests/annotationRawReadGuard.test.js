@@ -46,10 +46,11 @@ const RAW_READERS = {
 const OVERLAY_READERS = ['models/Submission.js', 'models/SubmissionRevision.js', 'services/studentCorrectionView.service.js',
   'services/teacherAnnotation.service.js', 'controllers/teacherAnnotation.controller.js', 'services/submissionRevision.service.js',
   'controllers/pdf.controller.js', 'services/submissionFeedbackPdfCache.service.js', 'services/submissionFeedbackReport.service.js',
-  'routes/submission.routes.js' /* route wiring only */, 'services/draftComparison.service.js' /* selects the overlay it passes to the builder */];
+  'routes/submission.routes.js' /* route wiring only */, 'services/draftComparison.service.js' /* selects the overlay it passes to the builder */,
+  'services/scoreReview.service.js' /* teacher-only grade check; never reaches a student response */];
 // Student-facing modules and the handlers in them that must go through the builder.
 const MUST_USE_BUILDER = {
-  'controllers/feedback.controller.js': ['getSubmissionFeedback'],
+  'controllers/feedback.controller.js': ['getSubmissionFeedback', 'getFeedbackBySubmissionForStudent'],
   'controllers/submission.controller.js': ['getOcrCorrections', 'getMySubmissionByAssignmentId', 'getMySubmissions', 'getSubmissionsByAssignment'],
   'controllers/guestSubmission.controller.js': ['presentation', 'results'],
   'services/draftComparison.service.js': ['comparisonForSubmission', 'historiesForFilter'],

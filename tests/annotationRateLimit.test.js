@@ -28,6 +28,9 @@ test('the 4th write in the window is 429 for that teacher only; reads are not li
   expect(statuses.slice(0, 3).every(s => s !== 429)).toBe(true);
   const limited = await teacher.post(fixture.IDS.registered, body());
   expect({ status: limited.status, code: limited.body.code }).toEqual({ status: 429, code: 'ANNOTATION_RATE_LIMITED' });
+  // Task 7C: "keep these scores" shares the same per-teacher limit.
+  const keep = await teacher.scoreReview(fixture.IDS.registered, { requestId: crypto.randomUUID(), revision: 0, sourceHash: 'x', scoreFingerprint: 'a'.repeat(64), outcome: 'kept' });
+  expect({ status: keep.status, code: keep.body.code }).toEqual({ status: 429, code: 'ANNOTATION_RATE_LIMITED' });
   expect(statuses[3]).toBe(429);
   // Another teacher from the same address keeps a full budget (it gets 404: not their submission).
   expect((await other.post(fixture.IDS.registered, body())).status).toBe(404);

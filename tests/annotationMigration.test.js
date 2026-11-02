@@ -43,11 +43,46 @@ describe('index migration', () => {
     const ttlSeconds = value => { let indexes; jest.isolateModules(() => { process.env.ANNOTATION_AUDIT_TTL_DAYS = value;
       indexes = require('../src/models/AnnotationAudit').schema.indexes(); });
       delete process.env.ANNOTATION_AUDIT_TTL_DAYS;
-      return indexes.find(([, options]) => options.name === 'annotation_audit_ttl_v1')?.[1].expireAfterSeconds ?? null; };
+      return indexes.find(([, options]) => options.name === 'annotation_audit_ttl_v2')?.[1].expireAfterSeconds ?? null; };
     expect(ttlSeconds('400')).toBe(400 * 86400);
     expect(ttlSeconds('abc')).toBeNull();
     expect(ttlSeconds('-1')).toBeNull();
     expect(ttlSeconds('1.5')).toBeNull();
+  });
+  const ttlOptions = () => { let found; jest.isolateModules(() => { process.env.ANNOTATION_AUDIT_TTL_DAYS = '1';
+    found = require('../src/models/AnnotationAudit').schema.indexes().find(([, options]) => options.name === 'annotation_audit_ttl_v2')[1]; });
+    delete process.env.ANNOTATION_AUDIT_TTL_DAYS; return found; };
+  test('every action but score_review sorts before it, so the partial TTL covers exactly those', () => {
+    const actions = require('../src/models/AnnotationAudit').schema.path('action').enumValues;
+    expect(actions).toContain('score_review');
+    expect(actions.filter(action => !(action < 'score_review'))).toEqual(['score_review']);
+    expect(ttlOptions().partialFilterExpression).toEqual({ action: { $lt: 'score_review' } });
+  });
+  test('the old TTL index, which would expire score decisions, is dropped; running again changes nothing', async () => {
+    const collection = require('../src/models/AnnotationAudit').collection;
+    await collection.createIndex({ createdAt: 1 }, { name: 'annotation_audit_ttl_v1', expireAfterSeconds: 86400 });
+    const first = await ensureAnnotationIndexes();
+    expect(first.annotationaudits.some(i => i.name === 'annotation_audit_ttl_v1')).toBe(false);
+    expect(await ensureAnnotationIndexes()).toEqual(first);
+  });
+  test('with the real TTL monitor: old annotation rows expire, score_review rows stay', async () => {
+    const Audit = require('../src/models/AnnotationAudit');
+    await mongoose.connection.db.admin().command({ setParameter: 1, ttlMonitorSleepSecs: 1 });
+    const { partialFilterExpression, name } = ttlOptions();
+    await Audit.collection.createIndex({ createdAt: 1 }, { name, expireAfterSeconds: 1, partialFilterExpression });
+    try {
+      const submissionId = new mongoose.Types.ObjectId();
+      const old = new Date('2020-01-01T00:00:00.000Z');
+      await Audit.collection.insertMany(['add', 'edit', 'hide', 'restore', 'archive', 'reject', 'score_review'].map((action, i) =>
+        ({ submissionId, requestId: `r${i}`, requestHash: 'h', action, actor: 'a', previousRevision: i, newRevision: i + 1, createdAt: old })));
+      let left = [];
+      for (let i = 0; i < 90; i++) {
+        left = await Audit.collection.find({ submissionId }).toArray();
+        if (left.length === 1) break;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      expect(left.map(row => row.action)).toEqual(['score_review']);
+    } finally { await Audit.collection.dropIndex(name); }
   });
 });
 

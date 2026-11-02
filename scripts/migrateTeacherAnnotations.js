@@ -58,7 +58,8 @@ function convert(doc, revisions) {
       list.push(entry); revisionStates.set(previous.draftNumber, list);
     } else tally.draftUnknown += 1;
   }
-  const v2 = { version: 2, revision: state.revision, scoringReviewRequired: Boolean(state.scoringReviewRequired), entries: state.entries, recent: [] };
+  const v2 = { version: 2, revision: state.revision, scoringReviewRequired: Boolean(state.scoringReviewRequired), ...(state.scoringReview ? { scoringReview: state.scoringReview } : {}),
+    entries: state.entries, recent: [] };
   return { state: v2, legacyAudit: state.legacyAudit || [],
     revisionStates: new Map([...revisionStates].map(([n, entries]) => [n, { ...v2, entries }])), tally };
 }

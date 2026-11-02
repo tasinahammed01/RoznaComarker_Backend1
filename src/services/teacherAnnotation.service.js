@@ -3,7 +3,7 @@
 // studentCorrectionView.service; this module never filters corrections itself.
 //
 // Stored in Submission.teacherAnnotations (select:false):
-//   { version: 2, revision, scoringReviewRequired, entries: [Entry], recent: [last RECENT_AUDIT audit rows] }
+//   { version: 2, revision, scoringReviewRequired, scoringReview (scoreReview.service), entries: [Entry], recent: [last RECENT_AUDIT audit rows] }
 //   Entry = { id, kind: 'ai' | 'manual', targetId (ai: the AI correction id it was created for), status: 'visible' | 'hidden' | 'archived',
 //             edited (ai: teacher replaced the AI text), value (edited/manual correction), anchor (where the decision applies),
 //             valueAnchor (where an edited/manual value is placed), draftNumber, createdAt, createdBy, updatedAt, updatedBy }
@@ -46,7 +46,7 @@ const ORPHAN_TRANSITIONS = Object.freeze({
 const restoredOrphanStatus = entry => entry.kind === 'manual' ? 'visible' : 'hidden';
 const EDITABLE = ['symbol', 'category', 'message', 'suggestedText', 'startChar', 'endChar', 'quotedText', 'fileId', 'page'];
 
-function emptyState() { return { version: 2, revision: 0, scoringReviewRequired: false, entries: [], recent: [] }; }
+function emptyState() { return { version: 2, revision: 0, scoringReviewRequired: false, scoringReview: null, entries: [], recent: [] }; }
 
 /** Version 1 entry -> version 2 entry. Anchors have no context (the old text is gone), so repeated quotes may become ambiguous. */
 function upgradeEntry(e) {
@@ -64,7 +64,7 @@ function upgradeEntry(e) {
 function normalizeState(raw) {
   if (!raw || typeof raw !== 'object') return emptyState();
   if (raw.version === 2) return { ...emptyState(), ...copy(raw) };
-  return { ...emptyState(), revision: Number(raw.revision || 0), scoringReviewRequired: Boolean(raw.scoringReviewRequired),
+  return { ...emptyState(), revision: Number(raw.revision || 0), scoringReviewRequired: Boolean(raw.scoringReviewRequired), scoringReview: copy(raw.scoringReview),
     entries: (raw.entries || []).map(upgradeEntry), legacyAudit: copy(raw.audit || []) };
 }
 
@@ -182,17 +182,19 @@ function prepare(doc, actor, body, { resolution, prior, now = new Date() } = {})
   entry.draftNumber = draftNumber;
   entry.updatedAt = at; entry.updatedBy = String(actor);
 
-  const scoringReviewRequired = ['add', 'archive'].includes(action)
-    || (action === 'edit' && changedFields.some(key => !['message', 'suggestedText'].includes(key)))
-    || (action === 'restore' && before.status === 'archived');
+  // Everything that changes which corrections the student sees or what they count as asks for a grade check, restore from hidden too: it
+  // moves the visible set exactly as the hide did, and a decision taken while hidden was about a different set. Only rewording does not.
+  const scoringReviewRequired = action !== 'edit' || changedFields.some(key => !['message', 'suggestedText'].includes(key));
   state.revision += 1;
   state.scoringReviewRequired = Boolean(state.scoringReviewRequired || scoringReviewRequired);
+  if (scoringReviewRequired) state.scoringReview = { decision: state.scoringReview?.decision ?? null, requiredDraftNumber: draftNumber };
   const auditRow = { submissionId: String(doc._id), classId: doc.class ? String(doc.class) : null, requestId: body.requestId,
     requestHash: requestHashOf(actor, body), action, actor: String(actor), entryId: entry.id, correctionId: body.id || null,
     previousRevision: body.revision, newRevision: state.revision, before: action === 'add' ? null : before, after: copy(entry),
     changedFields, visibilityChanged: before.status !== entry.status, scoringReviewRequired, draftNumber, createdAt: at };
   state.recent = [...(state.recent || []), auditRow].slice(-RECENT_AUDIT);
-  const stored = { version: 2, revision: state.revision, scoringReviewRequired: state.scoringReviewRequired, entries: state.entries, recent: state.recent };
+  const stored = { version: 2, revision: state.revision, scoringReviewRequired: state.scoringReviewRequired, ...(state.scoringReview ? { scoringReview: state.scoringReview } : {}),
+    entries: state.entries, recent: state.recent };
   if (Buffer.byteLength(JSON.stringify(stored), 'utf8') > MAX_STATE_BYTES) throw fail(409,'ANNOTATION_HISTORY_LIMIT');
   return { state: stored, auditRow, revision: state.revision, legacyAudit: state.legacyAudit || [] };
 }
