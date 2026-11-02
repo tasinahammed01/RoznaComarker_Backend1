@@ -45,6 +45,7 @@ const AssessmentCreditRouter = require('../services/assessmentCreditRouter.servi
 const { captureCurrentRevision } = require('../services/submissionRevision.service');
 const { scheduleSubmissionAnalysis } = require('../services/assessmentRecovery.service');
 const draftComparison = require('../services/draftComparison.service');
+const studentCorrectionView = require('../services/studentCorrectionView.service');
 const User = require('../models/user.model');
 const { normalizeTeacherEvaluationPolicy, evaluationPolicyHash } = require('../services/teacherEvaluationPolicy.service');
 const { normalizeAssignmentRubric, hashNormalizedRubric } = require('../services/assignmentRubric.service');
@@ -306,6 +307,11 @@ function normalizeSubmissionForClient(req, submission) {
   }
 
   return doc;
+}
+
+/** Submissions as students see them: each document itself when no teacher decision changes it, else a plain copy of the visible set. */
+async function studentSubmissions(list) {
+  return (await studentCorrectionView.loadStudentCorrectionViews(list)).map((view) => view.submission);
 }
 
 function toPublicUrl(req, type, filename) {
@@ -1003,14 +1009,15 @@ async function getSubmissionsByAssignment(req, res) {
       .populate('file')
       .populate('files');
 
-    for (const s of submissions) {
-      normalizeSubmissionForClient(req, s);
+    for (const s of submissions) normalizeSubmissionForClient(req, s);
+    const visible = await studentSubmissions(submissions);
+    for (const s of visible) {
       // Compute canonical correction statistics for consistency with Student view
       const correctionStatistics = await buildSubmissionCorrectionStatistics(s);
       s.correctionStatistics = correctionStatistics;
     }
 
-    return sendSuccess(res, submissions);
+    return sendSuccess(res, visible);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch submissions');
   }
@@ -1046,12 +1053,13 @@ async function getMySubmissionByAssignmentId(req, res) {
     }
 
     normalizeSubmissionForClient(req, submission);
+    const [visible] = await studentSubmissions([submission]);
 
     // Compute canonical correction statistics for consistency with Teacher view
-    const correctionStatistics = await buildSubmissionCorrectionStatistics(submission);
-    submission.correctionStatistics = correctionStatistics;
+    const correctionStatistics = await buildSubmissionCorrectionStatistics(visible);
+    visible.correctionStatistics = correctionStatistics;
 
-    return sendSuccess(res, submission);
+    return sendSuccess(res, visible);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch submission');
   }
@@ -1076,14 +1084,15 @@ async function getMySubmissions(req, res) {
       .populate('file')
       .populate('files');
 
-    for (const s of submissions) {
-      normalizeSubmissionForClient(req, s);
+    for (const s of submissions) normalizeSubmissionForClient(req, s);
+    const visible = await studentSubmissions(submissions);
+    for (const s of visible) {
       // Compute canonical correction statistics for consistency with Teacher view
       const correctionStatistics = await buildSubmissionCorrectionStatistics(s);
       s.correctionStatistics = correctionStatistics;
     }
 
-    return sendSuccess(res, submissions);
+    return sendSuccess(res, visible);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch submissions');
   }
@@ -1122,7 +1131,7 @@ async function getOcrCorrections(req, res) {
       return sendError(res, 400, 'Invalid submission id');
     }
 
-    let doc = await Submission.findById(submissionId).select('+teacherAnnotations');
+    let doc = await Submission.findById(submissionId);
     let kind = 'submission';
     if (!doc) {
       doc = await OcrUpload.findById(submissionId);
@@ -1227,10 +1236,12 @@ async function getOcrCorrections(req, res) {
         words: words.map((w) => ({ id: w.id, fileId, ...(preserveSourceTokens ? { page: w.page } : {}), text: w.text, bbox: w.bbox, separatorBefore: separators.get(w.id) || '' })), lines: [] };
     }));
     const evaluationDoc = kind === 'submission' ? await SubmissionFeedback.findOne({ submissionId: doc._id }).lean() : null;
-    const resultState = buildCanonicalResultState({ submission: doc, feedback: evaluationDoc });
-    const hasCanonicalCorrections = resultState.correctionCurrent && Array.isArray(doc.writingCorrections);
-    const allCorrections = require('../services/teacherAnnotation.service').effective(
-      hasCanonicalCorrections ? doc.writingCorrections : [], canonicalTranscript, doc);
+    // Teachers and students both get the student-visible set here; the teacher's full list is the teacher-annotations snapshot.
+    const view = kind === 'submission' ? await studentCorrectionView.loadStudentCorrectionView(doc)
+      : studentCorrectionView.buildStudentCorrectionView(doc, { overlay: null });
+    const resultState = buildCanonicalResultState({ submission: view.submission, feedback: evaluationDoc });
+    const hasCanonicalCorrections = resultState.correctionCurrent && Array.isArray(view.corrections);
+    const allCorrections = hasCanonicalCorrections ? studentCorrectionView.visibleCorrectionList(view) : [];
     const corrections = buildCanonicalCorrectionRenderModels(
       scopeCanonicalCorrections(allCorrections, requestedFileId), canonicalTranscript, doc.ocrPages, { submission: doc });
     const currentWordIds = new Set(ocr.flatMap((page) => page.words || []).map((word) => String(word.id)));
@@ -1248,8 +1259,8 @@ async function getOcrCorrections(req, res) {
     const responseData = {
       processing: false,
       corrections,
-      annotationRevision: doc.teacherAnnotations?.revision || 0,
-      annotationGradeReviewRequired: Boolean(doc.teacherAnnotations?.scoringReviewRequired),
+      annotationRevision: view.revision || 0,
+      annotationGradeReviewRequired: Boolean(view.scoringReviewRequired),
       ocr,
       ocrStatus: doc.ocrStatus || null,
       correctionStatus: resultState.correctionStatus,
@@ -1319,7 +1330,8 @@ async function getOcrCorrections(req, res) {
       fileId: hasRequestedFile ? requestedFileId : null,
       marksVisible
     };
-    return sendSuccess(res, marksVisible ? responseData : redactStudentMarks(responseData));
+    const studentData = studentCorrectionView.studentPayload(responseData, view);
+    return sendSuccess(res, marksVisible ? studentData : redactStudentMarks(studentData));
   } catch (err) {
     logger.error({ message: 'Failed to fetch OCR corrections', ...logContext, error: err?.message, stack: err?.stack });
     const message =

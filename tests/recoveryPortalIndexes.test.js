@@ -22,8 +22,8 @@ test('the migration creates every recovery-portal index, including the TTL index
   expect(byName.recoverysessions.recovery_session_token_v1).toMatchObject({ key: { tokenId: 1 } });
   expect(byName.recoverysessions.recovery_session_purge_v1).toMatchObject({ key: { expiresAt: 1 }, expireAfterSeconds: 3600 });
   expect(byName.recoveryemailwindows.recovery_email_window_purge_v1).toMatchObject({ key: { expiresAt: 1 }, expireAfterSeconds: 0 });
-  // Task 5 audit trail of teacher-sent links: lookups by submission and by teacher; kept (no TTL).
+  // Task 5 audit trail of teacher-sent links: lookups by submission and by teacher; removed after one year (Task 6A).
   expect(byName.recoverylinkaudits.recovery_link_audit_submission_v1).toMatchObject({ key: { submissionId: 1, createdAt: -1 } });
   expect(byName.recoverylinkaudits.recovery_link_audit_teacher_v1).toMatchObject({ key: { issuedBy: 1, createdAt: -1 } });
-  expect(Object.values(byName.recoverylinkaudits).some(i => i.expireAfterSeconds !== undefined)).toBe(false);
+  expect(byName.recoverylinkaudits.recovery_link_audit_ttl_v1).toMatchObject({ key: { createdAt: 1 }, expireAfterSeconds: 365 * 24 * 60 * 60 });
 });

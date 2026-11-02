@@ -307,6 +307,7 @@ submissionSchema.index({ ocrStatus: 1, analysisNextRetryAt: 1, analysisLeaseExpi
 require('../services/sourceFidelity/immutability').install(submissionSchema);
 submissionSchema.set('toJSON',{transform(_doc,ret){
   delete ret.registeredRequestKey;
+  delete ret.teacherAnnotations; // teacher-only, even when a query selected it
   for(const page of ret.ocrPages||[])delete page.studentSourceEvidence;
   const source=require('../utils/sourceFidelity').payload(ret);if(source)ret.sourceFidelity=source;return ret;
 }});

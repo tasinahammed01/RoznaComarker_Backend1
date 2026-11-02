@@ -44,9 +44,12 @@ async function progressForWindow({ teacherId, classIds, assignmentIds, start, en
   const chainIds = [...new Set([...windowArchives.map((x) => String(x.sourceSubmissionId)), ...windowLive.map((x) => String(x._id))])];
   if (!chainIds.length) return { studentsImproved: 0, improvedRevisions: 0,
     averageRevisionScoreDelta: null, issuesCorrected: 0, strongestImprovedCategory: null, improvedByClass: new Map() };
+  // Issue counts follow the corrections students see (teacher-hidden ones excluded).
+  const visible = require('./studentCorrectionView.service');
   const [roots, archives, feedbacks] = await Promise.all([
-    Submission.find({ _id: { $in: chainIds }, ...scope }).lean(),
-    SubmissionRevision.find({ sourceSubmissionId: { $in: chainIds } }).sort({ draftNumber: 1 }).lean(),
+    Submission.find({ _id: { $in: chainIds }, ...scope }).lean().then((list) => visible.loadStudentCorrectionViews(list)).then((views) => views.map((v) => v.submission)),
+    SubmissionRevision.find({ sourceSubmissionId: { $in: chainIds } }).sort({ draftNumber: 1 }).lean()
+      .then((list) => visible.loadStudentCorrectionViews(list, { model: 'SubmissionRevision' })).then((views) => views.map((v) => v.submission)),
     SubmissionFeedback.find({ submissionId: { $in: chainIds } }).lean()
   ]);
   const feedbackById = new Map(feedbacks.map((x) => [String(x.submissionId), x]));

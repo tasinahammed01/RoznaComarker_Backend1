@@ -1,0 +1,4791 @@
+{
+ "registered: my submission for assignment": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "data": {
+    "_id": "0000000000000000000000e1",
+    "student": {
+     "_id": "0000000000000000000000a3",
+     "email": "student@example.com",
+     "displayName": "Student",
+     "role": "student"
+    },
+    "submissionMode": "registered",
+    "assignment": {
+     "_id": "0000000000000000000000d1",
+     "title": "Weekend essay",
+     "resourceType": "essay",
+     "resourceId": null,
+     "instructions": "Describe your weekend.",
+     "class": "0000000000000000000000c1",
+     "teacher": {
+      "_id": "0000000000000000000000a1",
+      "email": "teacher@example.com",
+      "displayName": "Teacher"
+     },
+     "qrToken": "fixture-qr",
+     "allowLateResubmission": false,
+     "allowGuestSubmission": true,
+     "showMarksToStudent": true,
+     "allowResubmission": false,
+     "requireAdaptiveBeforeResubmission": false,
+     "isActive": true,
+     "createdAt": "<volatile>",
+     "updatedAt": "<volatile>",
+     "__v": "<volatile>"
+    },
+    "class": {
+     "_id": "0000000000000000000000c1",
+     "name": "Writing 7B",
+     "teacher": "0000000000000000000000a1",
+     "joinCode": "FIXTURE-1",
+     "gradingScale": "score_0_100",
+     "lateSubmissionPenaltyPercent": 10,
+     "autoPublishGrades": false,
+     "isActive": true,
+     "institutionId": null,
+     "status": "active",
+     "archivedAt": null,
+     "archivedBy": null,
+     "createdAt": "<volatile>",
+     "updatedAt": "<volatile>",
+     "__v": "<volatile>"
+    },
+    "file": {
+     "_id": "0000000000000000000000f1",
+     "originalName": "essay.png",
+     "filename": "0000000000000000000000f1.png",
+     "path": "annotation-golden/submissions/0000000000000000000000f1.png",
+     "url": "<host>/uploads/submissions/0000000000000000000000f1.png",
+     "uploadedBy": "0000000000000000000000a3",
+     "role": "student",
+     "type": "submissions",
+     "createdAt": "<volatile>"
+    },
+    "fileUrl": "<host>/uploads/submissions/0000000000000000000000f1.png",
+    "files": [
+     {
+      "_id": "0000000000000000000000f1",
+      "originalName": "essay.png",
+      "filename": "0000000000000000000000f1.png",
+      "path": "annotation-golden/submissions/0000000000000000000000f1.png",
+      "url": "<host>/uploads/submissions/0000000000000000000000f1.png",
+      "uploadedBy": "0000000000000000000000a3",
+      "role": "student",
+      "type": "submissions",
+      "createdAt": "<volatile>"
+     }
+    ],
+    "fileOrder": [
+     {
+      "fileId": "0000000000000000000000f1",
+      "order": 0
+     }
+    ],
+    "fileUrls": [
+     "<host>/uploads/submissions/0000000000000000000000f1.png"
+    ],
+    "status": "submitted",
+    "submittedAt": "2026-10-01T09:00:00.000Z",
+    "isLate": false,
+    "qrToken": "fixture-qr",
+    "draftNumber": 1,
+    "previousRevision": null,
+    "fileContentIdentity": "fixture-registered",
+    "reusedFromRevisionId": null,
+    "reusedAssessment": false,
+    "analysisAttempt": 0,
+    "ocrPages": [
+     {
+      "fileId": "0000000000000000000000f1",
+      "fileOrder": 0,
+      "pageNumber": 1,
+      "pageIndex": 0,
+      "width": 1200,
+      "height": 900,
+      "coordinateSpace": "display-image",
+      "ocrImageWidth": 1200,
+      "ocrImageHeight": 900,
+      "text": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+      "rawText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+      "words": [
+       {
+        "id": "word_0000000000000000000000f1_1_1",
+        "text": "I",
+        "page": 1,
+        "bbox": {
+         "x0": 0.04,
+         "y0": 0.1,
+         "x1": 0.09,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": ""
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_2",
+        "text": "goes",
+        "page": 1,
+        "bbox": {
+         "x0": 0.098,
+         "y0": 0.1,
+         "x1": 0.14800000000000002,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_3",
+        "text": "to",
+        "page": 1,
+        "bbox": {
+         "x0": 0.156,
+         "y0": 0.1,
+         "x1": 0.20600000000000002,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_4",
+        "text": "the",
+        "page": 1,
+        "bbox": {
+         "x0": 0.21400000000000002,
+         "y0": 0.1,
+         "x1": 0.264,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_5",
+        "text": "park",
+        "page": 1,
+        "bbox": {
+         "x0": 0.272,
+         "y0": 0.1,
+         "x1": 0.322,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_6",
+        "text": "every",
+        "page": 1,
+        "bbox": {
+         "x0": 0.33,
+         "y0": 0.1,
+         "x1": 0.38,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_7",
+        "text": "day.",
+        "page": 1,
+        "bbox": {
+         "x0": 0.388,
+         "y0": 0.1,
+         "x1": 0.438,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_8",
+        "text": "I",
+        "page": 1,
+        "bbox": {
+         "x0": 0.446,
+         "y0": 0.1,
+         "x1": 0.496,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_9",
+        "text": "ate",
+        "page": 1,
+        "bbox": {
+         "x0": 0.504,
+         "y0": 0.1,
+         "x1": 0.554,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_10",
+        "text": "a",
+        "page": 1,
+        "bbox": {
+         "x0": 0.562,
+         "y0": 0.1,
+         "x1": 0.6120000000000001,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_11",
+        "text": "apple",
+        "page": 1,
+        "bbox": {
+         "x0": 0.6200000000000001,
+         "y0": 0.1,
+         "x1": 0.6700000000000002,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_12",
+        "text": "and",
+        "page": 1,
+        "bbox": {
+         "x0": 0.678,
+         "y0": 0.1,
+         "x1": 0.7280000000000001,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_13",
+        "text": "I",
+        "page": 1,
+        "bbox": {
+         "x0": 0.7360000000000001,
+         "y0": 0.1,
+         "x1": 0.7860000000000001,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_14",
+        "text": "dont",
+        "page": 1,
+        "bbox": {
+         "x0": 0.794,
+         "y0": 0.1,
+         "x1": 0.8440000000000001,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_15",
+        "text": "like",
+        "page": 1,
+        "bbox": {
+         "x0": 0.8520000000000001,
+         "y0": 0.1,
+         "x1": 0.9020000000000001,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_16",
+        "text": "it.",
+        "page": 1,
+        "bbox": {
+         "x0": 0.91,
+         "y0": 0.1,
+         "x1": 0.9600000000000001,
+         "y1": 0.15
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_17",
+        "text": "She",
+        "page": 1,
+        "bbox": {
+         "x0": 0.04,
+         "y0": 0.18,
+         "x1": 0.09,
+         "y1": 0.22999999999999998
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_18",
+        "text": "goes",
+        "page": 1,
+        "bbox": {
+         "x0": 0.098,
+         "y0": 0.18,
+         "x1": 0.14800000000000002,
+         "y1": 0.22999999999999998
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_19",
+        "text": "home",
+        "page": 1,
+        "bbox": {
+         "x0": 0.156,
+         "y0": 0.18,
+         "x1": 0.20600000000000002,
+         "y1": 0.22999999999999998
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_20",
+        "text": "and",
+        "page": 1,
+        "bbox": {
+         "x0": 0.21400000000000002,
+         "y0": 0.18,
+         "x1": 0.264,
+         "y1": 0.22999999999999998
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_21",
+        "text": "she",
+        "page": 1,
+        "bbox": {
+         "x0": 0.272,
+         "y0": 0.18,
+         "x1": 0.322,
+         "y1": 0.22999999999999998
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_22",
+        "text": "is",
+        "page": 1,
+        "bbox": {
+         "x0": 0.33,
+         "y0": 0.18,
+         "x1": 0.38,
+         "y1": 0.22999999999999998
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_23",
+        "text": "realy",
+        "page": 1,
+        "bbox": {
+         "x0": 0.388,
+         "y0": 0.18,
+         "x1": 0.438,
+         "y1": 0.22999999999999998
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_24",
+        "text": "tired.",
+        "page": 1,
+        "bbox": {
+         "x0": 0.446,
+         "y0": 0.18,
+         "x1": 0.496,
+         "y1": 0.22999999999999998
+        },
+        "ocrLayoutSuspicious": false,
+        "separatorBefore": " "
+       }
+      ],
+      "_id": "00000000000000000000009a"
+     }
+    ],
+    "ocrJobId": "job-registered",
+    "ocrStatus": "completed",
+    "correctionStatus": "completed",
+    "semanticStatus": "completed",
+    "transcriptText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+    "correctionTranscriptLayoutVersion": "ocr-layout-v5-native-text",
+    "correctionGenerationConfig": {
+     "reviewIdentity": "665e2ee966619d9bbb3829bdc3af5f254134c398e7b72eafc80013de23aa83ad"
+    },
+    "correctionVersion": "canonical-8-source-grounded",
+    "correctionSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
+    "writingCorrections": [
+     {
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "startChar": 2,
+      "endChar": 6,
+      "quotedText": "goes",
+      "suggestedText": "go",
+      "message": "Use \"go\" after \"I\".",
+      "category": "GRAMMAR",
+      "symbol": "AGR",
+      "wordIds": [
+       "word_0000000000000000000000f1_1_2"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f1_1_2"
+      ],
+      "id": "ai_14467f8445c25b28",
+      "source": "AI",
+      "groupKey": "GRAMMAR",
+      "symbolLabel": "AGR",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "3148daf8d7213ca2606db99491759bde1a3f3d9e3d02a651762d1034c8126d9d",
+      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+      "ocrRunId": "job-registered"
+     },
+     {
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "startChar": 36,
+      "endChar": 37,
+      "quotedText": "a",
+      "suggestedText": "an",
+      "message": "Use \"an\" before a vowel sound.",
+      "category": "GRAMMAR",
+      "symbol": "ART",
+      "wordIds": [
+       "word_0000000000000000000000f1_1_10"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f1_1_10"
+      ],
+      "id": "ai_f8d03c3463fb67f9",
+      "source": "AI",
+      "groupKey": "GRAMMAR",
+      "symbolLabel": "ART",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "29d662661115f78431c3d35dc4fbc1acf4de92195a810fa70920960058d8134e",
+      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+      "ocrRunId": "job-registered"
+     },
+     {
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "startChar": 50,
+      "endChar": 54,
+      "quotedText": "dont",
+      "suggestedText": "don't",
+      "message": "Missing apostrophe.",
+      "category": "MECHANICS",
+      "symbol": "SP",
+      "wordIds": [
+       "word_0000000000000000000000f1_1_14"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f1_1_14"
+      ],
+      "id": "ai_00a053ed5aabd8c3",
+      "source": "AI",
+      "groupKey": "MECHANICS",
+      "symbolLabel": "SP",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "2b02463eb02358aab320b316d01579aa2fb5eda94188612dd6b5802cfe59612e",
+      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+      "ocrRunId": "job-registered"
+     },
+     {
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "startChar": 68,
+      "endChar": 72,
+      "quotedText": "goes",
+      "suggestedText": "go",
+      "message": "Check the verb.",
+      "category": "GRAMMAR",
+      "symbol": "AGR",
+      "wordIds": [
+       "word_0000000000000000000000f1_1_18"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f1_1_18"
+      ],
+      "id": "ai_4f28ce7bb0bf7df2",
+      "source": "AI",
+      "groupKey": "GRAMMAR",
+      "symbolLabel": "AGR",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "265acd0aed3a7c9ea5731b6994d205d9c414340b885f422e06f57cc6b2623e12",
+      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+      "ocrRunId": "job-registered"
+     },
+     {
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "startChar": 89,
+      "endChar": 94,
+      "quotedText": "realy",
+      "suggestedText": "really",
+      "message": "Spelling.",
+      "category": "MECHANICS",
+      "symbol": "SP",
+      "wordIds": [
+       "word_0000000000000000000000f1_1_23"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f1_1_23"
+      ],
+      "id": "ai_1354345f0245cb35",
+      "source": "AI",
+      "groupKey": "MECHANICS",
+      "symbolLabel": "SP",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "1fe96f6d88a926d0d552e88aa39bec55dcf9666de42ca992c6c1f2698f4b4eae",
+      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+      "ocrRunId": "job-registered"
+     }
+    ],
+    "correctionStatistics": {
+     "content": 0,
+     "grammar": 3,
+     "organization": 0,
+     "vocabulary": 0,
+     "mechanics": 2,
+     "total": 5
+    },
+    "evaluationStatus": "completed",
+    "assessmentStatus": "complete",
+    "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
+    "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
+    "correctionOcrJobId": "job-registered",
+    "correctionOcrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+    "createdAt": "<volatile>",
+    "updatedAt": "<volatile>",
+    "__v": "<volatile>",
+    "combinedOcrText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired."
+   }
+  }
+ },
+ "registered: my submissions list": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "data": [
+    {
+     "_id": "0000000000000000000000e1",
+     "student": "0000000000000000000000a3",
+     "submissionMode": "registered",
+     "assignment": {
+      "_id": "0000000000000000000000d1",
+      "title": "Weekend essay",
+      "resourceType": "essay",
+      "resourceId": null,
+      "instructions": "Describe your weekend.",
+      "class": "0000000000000000000000c1",
+      "teacher": {
+       "_id": "0000000000000000000000a1",
+       "email": "teacher@example.com",
+       "displayName": "Teacher"
+      },
+      "qrToken": "fixture-qr",
+      "allowLateResubmission": false,
+      "allowGuestSubmission": true,
+      "showMarksToStudent": true,
+      "allowResubmission": false,
+      "requireAdaptiveBeforeResubmission": false,
+      "isActive": true,
+      "createdAt": "<volatile>",
+      "updatedAt": "<volatile>",
+      "__v": "<volatile>"
+     },
+     "class": {
+      "_id": "0000000000000000000000c1",
+      "name": "Writing 7B",
+      "teacher": "0000000000000000000000a1",
+      "joinCode": "FIXTURE-1",
+      "gradingScale": "score_0_100",
+      "lateSubmissionPenaltyPercent": 10,
+      "autoPublishGrades": false,
+      "isActive": true,
+      "institutionId": null,
+      "status": "active",
+      "archivedAt": null,
+      "archivedBy": null,
+      "createdAt": "<volatile>",
+      "updatedAt": "<volatile>",
+      "__v": "<volatile>"
+     },
+     "file": {
+      "_id": "0000000000000000000000f1",
+      "originalName": "essay.png",
+      "filename": "0000000000000000000000f1.png",
+      "path": "annotation-golden/submissions/0000000000000000000000f1.png",
+      "url": "<host>/uploads/submissions/0000000000000000000000f1.png",
+      "uploadedBy": "0000000000000000000000a3",
+      "role": "student",
+      "type": "submissions",
+      "createdAt": "<volatile>"
+     },
+     "fileUrl": "<host>/uploads/submissions/0000000000000000000000f1.png",
+     "files": [
+      {
+       "_id": "0000000000000000000000f1",
+       "originalName": "essay.png",
+       "filename": "0000000000000000000000f1.png",
+       "path": "annotation-golden/submissions/0000000000000000000000f1.png",
+       "url": "<host>/uploads/submissions/0000000000000000000000f1.png",
+       "uploadedBy": "0000000000000000000000a3",
+       "role": "student",
+       "type": "submissions",
+       "createdAt": "<volatile>"
+      }
+     ],
+     "fileOrder": [
+      {
+       "fileId": "0000000000000000000000f1",
+       "order": 0
+      }
+     ],
+     "fileUrls": [
+      "<host>/uploads/submissions/0000000000000000000000f1.png"
+     ],
+     "status": "submitted",
+     "submittedAt": "2026-10-01T09:00:00.000Z",
+     "isLate": false,
+     "qrToken": "fixture-qr",
+     "draftNumber": 1,
+     "previousRevision": null,
+     "fileContentIdentity": "fixture-registered",
+     "reusedFromRevisionId": null,
+     "reusedAssessment": false,
+     "analysisAttempt": 0,
+     "ocrPages": [
+      {
+       "fileId": "0000000000000000000000f1",
+       "fileOrder": 0,
+       "pageNumber": 1,
+       "pageIndex": 0,
+       "width": 1200,
+       "height": 900,
+       "coordinateSpace": "display-image",
+       "ocrImageWidth": 1200,
+       "ocrImageHeight": 900,
+       "text": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+       "rawText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+       "words": [
+        {
+         "id": "word_0000000000000000000000f1_1_1",
+         "text": "I",
+         "page": 1,
+         "bbox": {
+          "x0": 0.04,
+          "y0": 0.1,
+          "x1": 0.09,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": ""
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_2",
+         "text": "goes",
+         "page": 1,
+         "bbox": {
+          "x0": 0.098,
+          "y0": 0.1,
+          "x1": 0.14800000000000002,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_3",
+         "text": "to",
+         "page": 1,
+         "bbox": {
+          "x0": 0.156,
+          "y0": 0.1,
+          "x1": 0.20600000000000002,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_4",
+         "text": "the",
+         "page": 1,
+         "bbox": {
+          "x0": 0.21400000000000002,
+          "y0": 0.1,
+          "x1": 0.264,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_5",
+         "text": "park",
+         "page": 1,
+         "bbox": {
+          "x0": 0.272,
+          "y0": 0.1,
+          "x1": 0.322,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_6",
+         "text": "every",
+         "page": 1,
+         "bbox": {
+          "x0": 0.33,
+          "y0": 0.1,
+          "x1": 0.38,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_7",
+         "text": "day.",
+         "page": 1,
+         "bbox": {
+          "x0": 0.388,
+          "y0": 0.1,
+          "x1": 0.438,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_8",
+         "text": "I",
+         "page": 1,
+         "bbox": {
+          "x0": 0.446,
+          "y0": 0.1,
+          "x1": 0.496,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_9",
+         "text": "ate",
+         "page": 1,
+         "bbox": {
+          "x0": 0.504,
+          "y0": 0.1,
+          "x1": 0.554,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_10",
+         "text": "a",
+         "page": 1,
+         "bbox": {
+          "x0": 0.562,
+          "y0": 0.1,
+          "x1": 0.6120000000000001,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_11",
+         "text": "apple",
+         "page": 1,
+         "bbox": {
+          "x0": 0.6200000000000001,
+          "y0": 0.1,
+          "x1": 0.6700000000000002,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_12",
+         "text": "and",
+         "page": 1,
+         "bbox": {
+          "x0": 0.678,
+          "y0": 0.1,
+          "x1": 0.7280000000000001,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_13",
+         "text": "I",
+         "page": 1,
+         "bbox": {
+          "x0": 0.7360000000000001,
+          "y0": 0.1,
+          "x1": 0.7860000000000001,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_14",
+         "text": "dont",
+         "page": 1,
+         "bbox": {
+          "x0": 0.794,
+          "y0": 0.1,
+          "x1": 0.8440000000000001,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_15",
+         "text": "like",
+         "page": 1,
+         "bbox": {
+          "x0": 0.8520000000000001,
+          "y0": 0.1,
+          "x1": 0.9020000000000001,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_16",
+         "text": "it.",
+         "page": 1,
+         "bbox": {
+          "x0": 0.91,
+          "y0": 0.1,
+          "x1": 0.9600000000000001,
+          "y1": 0.15
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_17",
+         "text": "She",
+         "page": 1,
+         "bbox": {
+          "x0": 0.04,
+          "y0": 0.18,
+          "x1": 0.09,
+          "y1": 0.22999999999999998
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_18",
+         "text": "goes",
+         "page": 1,
+         "bbox": {
+          "x0": 0.098,
+          "y0": 0.18,
+          "x1": 0.14800000000000002,
+          "y1": 0.22999999999999998
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_19",
+         "text": "home",
+         "page": 1,
+         "bbox": {
+          "x0": 0.156,
+          "y0": 0.18,
+          "x1": 0.20600000000000002,
+          "y1": 0.22999999999999998
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_20",
+         "text": "and",
+         "page": 1,
+         "bbox": {
+          "x0": 0.21400000000000002,
+          "y0": 0.18,
+          "x1": 0.264,
+          "y1": 0.22999999999999998
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_21",
+         "text": "she",
+         "page": 1,
+         "bbox": {
+          "x0": 0.272,
+          "y0": 0.18,
+          "x1": 0.322,
+          "y1": 0.22999999999999998
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_22",
+         "text": "is",
+         "page": 1,
+         "bbox": {
+          "x0": 0.33,
+          "y0": 0.18,
+          "x1": 0.38,
+          "y1": 0.22999999999999998
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_23",
+         "text": "realy",
+         "page": 1,
+         "bbox": {
+          "x0": 0.388,
+          "y0": 0.18,
+          "x1": 0.438,
+          "y1": 0.22999999999999998
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        },
+        {
+         "id": "word_0000000000000000000000f1_1_24",
+         "text": "tired.",
+         "page": 1,
+         "bbox": {
+          "x0": 0.446,
+          "y0": 0.18,
+          "x1": 0.496,
+          "y1": 0.22999999999999998
+         },
+         "ocrLayoutSuspicious": false,
+         "separatorBefore": " "
+        }
+       ],
+       "_id": "00000000000000000000009a"
+      }
+     ],
+     "ocrJobId": "job-registered",
+     "ocrStatus": "completed",
+     "correctionStatus": "completed",
+     "semanticStatus": "completed",
+     "transcriptText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+     "correctionTranscriptLayoutVersion": "ocr-layout-v5-native-text",
+     "correctionGenerationConfig": {
+      "reviewIdentity": "665e2ee966619d9bbb3829bdc3af5f254134c398e7b72eafc80013de23aa83ad"
+     },
+     "correctionVersion": "canonical-8-source-grounded",
+     "correctionSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
+     "writingCorrections": [
+      {
+       "fileId": "0000000000000000000000f1",
+       "page": 1,
+       "startChar": 2,
+       "endChar": 6,
+       "quotedText": "goes",
+       "suggestedText": "go",
+       "message": "Use \"go\" after \"I\".",
+       "category": "GRAMMAR",
+       "symbol": "AGR",
+       "wordIds": [
+        "word_0000000000000000000000f1_1_2"
+       ],
+       "evidenceWordIds": [
+        "word_0000000000000000000000f1_1_2"
+       ],
+       "id": "ai_14467f8445c25b28",
+       "source": "AI",
+       "groupKey": "GRAMMAR",
+       "symbolLabel": "AGR",
+       "color": "#FFD6A5",
+       "correctionFingerprint": "3148daf8d7213ca2606db99491759bde1a3f3d9e3d02a651762d1034c8126d9d",
+       "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+       "ocrRunId": "job-registered"
+      },
+      {
+       "fileId": "0000000000000000000000f1",
+       "page": 1,
+       "startChar": 36,
+       "endChar": 37,
+       "quotedText": "a",
+       "suggestedText": "an",
+       "message": "Use \"an\" before a vowel sound.",
+       "category": "GRAMMAR",
+       "symbol": "ART",
+       "wordIds": [
+        "word_0000000000000000000000f1_1_10"
+       ],
+       "evidenceWordIds": [
+        "word_0000000000000000000000f1_1_10"
+       ],
+       "id": "ai_f8d03c3463fb67f9",
+       "source": "AI",
+       "groupKey": "GRAMMAR",
+       "symbolLabel": "ART",
+       "color": "#FFD6A5",
+       "correctionFingerprint": "29d662661115f78431c3d35dc4fbc1acf4de92195a810fa70920960058d8134e",
+       "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+       "ocrRunId": "job-registered"
+      },
+      {
+       "fileId": "0000000000000000000000f1",
+       "page": 1,
+       "startChar": 50,
+       "endChar": 54,
+       "quotedText": "dont",
+       "suggestedText": "don't",
+       "message": "Missing apostrophe.",
+       "category": "MECHANICS",
+       "symbol": "SP",
+       "wordIds": [
+        "word_0000000000000000000000f1_1_14"
+       ],
+       "evidenceWordIds": [
+        "word_0000000000000000000000f1_1_14"
+       ],
+       "id": "ai_00a053ed5aabd8c3",
+       "source": "AI",
+       "groupKey": "MECHANICS",
+       "symbolLabel": "SP",
+       "color": "#FFD6A5",
+       "correctionFingerprint": "2b02463eb02358aab320b316d01579aa2fb5eda94188612dd6b5802cfe59612e",
+       "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+       "ocrRunId": "job-registered"
+      },
+      {
+       "fileId": "0000000000000000000000f1",
+       "page": 1,
+       "startChar": 68,
+       "endChar": 72,
+       "quotedText": "goes",
+       "suggestedText": "go",
+       "message": "Check the verb.",
+       "category": "GRAMMAR",
+       "symbol": "AGR",
+       "wordIds": [
+        "word_0000000000000000000000f1_1_18"
+       ],
+       "evidenceWordIds": [
+        "word_0000000000000000000000f1_1_18"
+       ],
+       "id": "ai_4f28ce7bb0bf7df2",
+       "source": "AI",
+       "groupKey": "GRAMMAR",
+       "symbolLabel": "AGR",
+       "color": "#FFD6A5",
+       "correctionFingerprint": "265acd0aed3a7c9ea5731b6994d205d9c414340b885f422e06f57cc6b2623e12",
+       "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+       "ocrRunId": "job-registered"
+      },
+      {
+       "fileId": "0000000000000000000000f1",
+       "page": 1,
+       "startChar": 89,
+       "endChar": 94,
+       "quotedText": "realy",
+       "suggestedText": "really",
+       "message": "Spelling.",
+       "category": "MECHANICS",
+       "symbol": "SP",
+       "wordIds": [
+        "word_0000000000000000000000f1_1_23"
+       ],
+       "evidenceWordIds": [
+        "word_0000000000000000000000f1_1_23"
+       ],
+       "id": "ai_1354345f0245cb35",
+       "source": "AI",
+       "groupKey": "MECHANICS",
+       "symbolLabel": "SP",
+       "color": "#FFD6A5",
+       "correctionFingerprint": "1fe96f6d88a926d0d552e88aa39bec55dcf9666de42ca992c6c1f2698f4b4eae",
+       "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+       "ocrRunId": "job-registered"
+      }
+     ],
+     "correctionStatistics": {
+      "content": 0,
+      "grammar": 3,
+      "organization": 0,
+      "vocabulary": 0,
+      "mechanics": 2,
+      "total": 5
+     },
+     "evaluationStatus": "completed",
+     "assessmentStatus": "complete",
+     "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
+     "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
+     "correctionOcrJobId": "job-registered",
+     "correctionOcrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+     "createdAt": "<volatile>",
+     "updatedAt": "<volatile>",
+     "__v": "<volatile>",
+     "combinedOcrText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired."
+    }
+   ]
+  }
+ },
+ "registered: ocr-corrections": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "data": {
+    "processing": false,
+    "corrections": [
+     {
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "startChar": 2,
+      "endChar": 6,
+      "quotedText": "goes",
+      "suggestedText": "go",
+      "message": "Use \"go\" after \"I\".",
+      "category": "GRAMMAR",
+      "symbol": "AGR",
+      "wordIds": [
+       "word_0000000000000000000000f1_1_2"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f1_1_2"
+      ],
+      "id": "ai_14467f8445c25b28",
+      "source": "AI",
+      "groupKey": "GRAMMAR",
+      "symbolLabel": "AGR",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "3148daf8d7213ca2606db99491759bde1a3f3d9e3d02a651762d1034c8126d9d",
+      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+      "ocrRunId": "job-registered",
+      "moderationStatus": "visible",
+      "renderTarget": {
+       "version": 1,
+       "source": "wordIds",
+       "wordIds": [
+        "word_0000000000000000000000f1_1_2"
+       ],
+       "anchors": [],
+       "boxes": [
+        {
+         "x": 0.098,
+         "y": 0.1,
+         "w": 0.05000000000000002,
+         "h": 0.04999999999999999
+        }
+       ],
+       "textRanges": [
+        {
+         "start": 2,
+         "end": 6
+        }
+       ],
+       "textAnchors": [],
+       "coordinateSpace": "display-image"
+      }
+     },
+     {
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "startChar": 36,
+      "endChar": 37,
+      "quotedText": "a",
+      "suggestedText": "an",
+      "message": "Use \"an\" before a vowel sound.",
+      "category": "GRAMMAR",
+      "symbol": "ART",
+      "wordIds": [
+       "word_0000000000000000000000f1_1_10"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f1_1_10"
+      ],
+      "id": "ai_f8d03c3463fb67f9",
+      "source": "AI",
+      "groupKey": "GRAMMAR",
+      "symbolLabel": "ART",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "29d662661115f78431c3d35dc4fbc1acf4de92195a810fa70920960058d8134e",
+      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+      "ocrRunId": "job-registered",
+      "moderationStatus": "visible",
+      "renderTarget": {
+       "version": 1,
+       "source": "wordIds",
+       "wordIds": [
+        "word_0000000000000000000000f1_1_10"
+       ],
+       "anchors": [],
+       "boxes": [
+        {
+         "x": 0.562,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        }
+       ],
+       "textRanges": [
+        {
+         "start": 36,
+         "end": 37
+        }
+       ],
+       "textAnchors": [],
+       "coordinateSpace": "display-image"
+      }
+     },
+     {
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "startChar": 50,
+      "endChar": 54,
+      "quotedText": "dont",
+      "suggestedText": "don't",
+      "message": "Missing apostrophe.",
+      "category": "MECHANICS",
+      "symbol": "SP",
+      "wordIds": [
+       "word_0000000000000000000000f1_1_14"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f1_1_14"
+      ],
+      "id": "ai_00a053ed5aabd8c3",
+      "source": "AI",
+      "groupKey": "MECHANICS",
+      "symbolLabel": "SP",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "2b02463eb02358aab320b316d01579aa2fb5eda94188612dd6b5802cfe59612e",
+      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+      "ocrRunId": "job-registered",
+      "moderationStatus": "visible",
+      "renderTarget": {
+       "version": 1,
+       "source": "wordIds",
+       "wordIds": [
+        "word_0000000000000000000000f1_1_14"
+       ],
+       "anchors": [],
+       "boxes": [
+        {
+         "x": 0.794,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        }
+       ],
+       "textRanges": [
+        {
+         "start": 50,
+         "end": 54
+        }
+       ],
+       "textAnchors": [],
+       "coordinateSpace": "display-image"
+      }
+     },
+     {
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "startChar": 68,
+      "endChar": 72,
+      "quotedText": "goes",
+      "suggestedText": "go",
+      "message": "Check the verb.",
+      "category": "GRAMMAR",
+      "symbol": "AGR",
+      "wordIds": [
+       "word_0000000000000000000000f1_1_18"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f1_1_18"
+      ],
+      "id": "ai_4f28ce7bb0bf7df2",
+      "source": "AI",
+      "groupKey": "GRAMMAR",
+      "symbolLabel": "AGR",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "265acd0aed3a7c9ea5731b6994d205d9c414340b885f422e06f57cc6b2623e12",
+      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+      "ocrRunId": "job-registered",
+      "moderationStatus": "visible",
+      "renderTarget": {
+       "version": 1,
+       "source": "wordIds",
+       "wordIds": [
+        "word_0000000000000000000000f1_1_18"
+       ],
+       "anchors": [],
+       "boxes": [
+        {
+         "x": 0.098,
+         "y": 0.18,
+         "w": 0.05000000000000002,
+         "h": 0.04999999999999999
+        }
+       ],
+       "textRanges": [
+        {
+         "start": 68,
+         "end": 72
+        }
+       ],
+       "textAnchors": [],
+       "coordinateSpace": "display-image"
+      }
+     },
+     {
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "startChar": 89,
+      "endChar": 94,
+      "quotedText": "realy",
+      "suggestedText": "really",
+      "message": "Spelling.",
+      "category": "MECHANICS",
+      "symbol": "SP",
+      "wordIds": [
+       "word_0000000000000000000000f1_1_23"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f1_1_23"
+      ],
+      "id": "ai_1354345f0245cb35",
+      "source": "AI",
+      "groupKey": "MECHANICS",
+      "symbolLabel": "SP",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "1fe96f6d88a926d0d552e88aa39bec55dcf9666de42ca992c6c1f2698f4b4eae",
+      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
+      "ocrRunId": "job-registered",
+      "moderationStatus": "visible",
+      "renderTarget": {
+       "version": 1,
+       "source": "wordIds",
+       "wordIds": [
+        "word_0000000000000000000000f1_1_23"
+       ],
+       "anchors": [],
+       "boxes": [
+        {
+         "x": 0.388,
+         "y": 0.18,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        }
+       ],
+       "textRanges": [
+        {
+         "start": 89,
+         "end": 94
+        }
+       ],
+       "textAnchors": [],
+       "coordinateSpace": "display-image"
+      }
+     }
+    ],
+    "annotationRevision": 0,
+    "annotationGradeReviewRequired": false,
+    "ocr": [
+     {
+      "pageNumber": 1,
+      "fileId": "0000000000000000000000f1",
+      "width": 1200,
+      "height": 900,
+      "sourceGeometry": {
+       "version": 1,
+       "fileId": "0000000000000000000000f1",
+       "pageNumber": 1,
+       "width": 1200,
+       "height": 900,
+       "orientation": 1,
+       "coordinateSpace": "display-image",
+       "ambiguous": false
+      },
+      "pageImageUrl": null,
+      "derivedImageFileId": null,
+      "rasterHash": null,
+      "rasterizationVersion": null,
+      "words": [
+       {
+        "id": "word_0000000000000000000000f1_1_1",
+        "fileId": "0000000000000000000000f1",
+        "text": "I",
+        "bbox": {
+         "x": 0.04,
+         "y": 0.1,
+         "w": 0.049999999999999996,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": ""
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_2",
+        "fileId": "0000000000000000000000f1",
+        "text": "goes",
+        "bbox": {
+         "x": 0.098,
+         "y": 0.1,
+         "w": 0.05000000000000002,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_3",
+        "fileId": "0000000000000000000000f1",
+        "text": "to",
+        "bbox": {
+         "x": 0.156,
+         "y": 0.1,
+         "w": 0.05000000000000002,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_4",
+        "fileId": "0000000000000000000000f1",
+        "text": "the",
+        "bbox": {
+         "x": 0.21400000000000002,
+         "y": 0.1,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_5",
+        "fileId": "0000000000000000000000f1",
+        "text": "park",
+        "bbox": {
+         "x": 0.272,
+         "y": 0.1,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_6",
+        "fileId": "0000000000000000000000f1",
+        "text": "every",
+        "bbox": {
+         "x": 0.33,
+         "y": 0.1,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_7",
+        "fileId": "0000000000000000000000f1",
+        "text": "day.",
+        "bbox": {
+         "x": 0.388,
+         "y": 0.1,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_8",
+        "fileId": "0000000000000000000000f1",
+        "text": "I",
+        "bbox": {
+         "x": 0.446,
+         "y": 0.1,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_9",
+        "fileId": "0000000000000000000000f1",
+        "text": "ate",
+        "bbox": {
+         "x": 0.504,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_10",
+        "fileId": "0000000000000000000000f1",
+        "text": "a",
+        "bbox": {
+         "x": 0.562,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_11",
+        "fileId": "0000000000000000000000f1",
+        "text": "apple",
+        "bbox": {
+         "x": 0.6200000000000001,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_12",
+        "fileId": "0000000000000000000000f1",
+        "text": "and",
+        "bbox": {
+         "x": 0.678,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_13",
+        "fileId": "0000000000000000000000f1",
+        "text": "I",
+        "bbox": {
+         "x": 0.7360000000000001,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_14",
+        "fileId": "0000000000000000000000f1",
+        "text": "dont",
+        "bbox": {
+         "x": 0.794,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_15",
+        "fileId": "0000000000000000000000f1",
+        "text": "like",
+        "bbox": {
+         "x": 0.8520000000000001,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_16",
+        "fileId": "0000000000000000000000f1",
+        "text": "it.",
+        "bbox": {
+         "x": 0.91,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_17",
+        "fileId": "0000000000000000000000f1",
+        "text": "She",
+        "bbox": {
+         "x": 0.04,
+         "y": 0.18,
+         "w": 0.049999999999999996,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_18",
+        "fileId": "0000000000000000000000f1",
+        "text": "goes",
+        "bbox": {
+         "x": 0.098,
+         "y": 0.18,
+         "w": 0.05000000000000002,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_19",
+        "fileId": "0000000000000000000000f1",
+        "text": "home",
+        "bbox": {
+         "x": 0.156,
+         "y": 0.18,
+         "w": 0.05000000000000002,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_20",
+        "fileId": "0000000000000000000000f1",
+        "text": "and",
+        "bbox": {
+         "x": 0.21400000000000002,
+         "y": 0.18,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_21",
+        "fileId": "0000000000000000000000f1",
+        "text": "she",
+        "bbox": {
+         "x": 0.272,
+         "y": 0.18,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_22",
+        "fileId": "0000000000000000000000f1",
+        "text": "is",
+        "bbox": {
+         "x": 0.33,
+         "y": 0.18,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_23",
+        "fileId": "0000000000000000000000f1",
+        "text": "realy",
+        "bbox": {
+         "x": 0.388,
+         "y": 0.18,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f1_1_24",
+        "fileId": "0000000000000000000000f1",
+        "text": "tired.",
+        "bbox": {
+         "x": 0.446,
+         "y": 0.18,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       }
+      ],
+      "lines": []
+     }
+    ],
+    "ocrStatus": "completed",
+    "correctionStatus": "completed",
+    "correctionStage": "complete",
+    "statisticsStatus": "complete",
+    "statisticsCompleteness": "canonical",
+    "categoryAvailability": {
+     "content": "available",
+     "organization": "available",
+     "vocabulary": "available",
+     "grammar": "available",
+     "mechanics": "available"
+    },
+    "sourceCounts": {
+     "languageTool": 0,
+     "semanticAi": 5
+    },
+    "correctionErrorCode": null,
+    "retryable": false,
+    "processingActive": false,
+    "automaticPollingAllowed": false,
+    "manualRetryAllowed": false,
+    "terminal": true,
+    "evaluationBlockedReason": null,
+    "detailedFeedbackBlockedReason": null,
+    "semanticStatus": "completed",
+    "semanticAttempt": 0,
+    "semanticMaxAttempts": 0,
+    "semanticNextRetryAt": null,
+    "semanticErrorCode": null,
+    "semanticCoverage": null,
+    "coverageComplete": false,
+    "statistics": {
+     "content": 0,
+     "grammar": 3,
+     "organization": 0,
+     "vocabulary": 0,
+     "mechanics": 2,
+     "total": 5
+    },
+    "transcript": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+    "transcriptPages": [
+     {
+      "fileId": "0000000000000000000000f1",
+      "pageNumber": 1,
+      "startChar": 0,
+      "endChar": 101,
+      "paragraphs": [
+       {
+        "startChar": 0,
+        "endChar": 101,
+        "text": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+        "wordIds": [
+         "word_0000000000000000000000f1_1_1",
+         "word_0000000000000000000000f1_1_2",
+         "word_0000000000000000000000f1_1_3",
+         "word_0000000000000000000000f1_1_4",
+         "word_0000000000000000000000f1_1_5",
+         "word_0000000000000000000000f1_1_6",
+         "word_0000000000000000000000f1_1_7",
+         "word_0000000000000000000000f1_1_8",
+         "word_0000000000000000000000f1_1_9",
+         "word_0000000000000000000000f1_1_10",
+         "word_0000000000000000000000f1_1_11",
+         "word_0000000000000000000000f1_1_12",
+         "word_0000000000000000000000f1_1_13",
+         "word_0000000000000000000000f1_1_14",
+         "word_0000000000000000000000f1_1_15",
+         "word_0000000000000000000000f1_1_16",
+         "word_0000000000000000000000f1_1_17",
+         "word_0000000000000000000000f1_1_18",
+         "word_0000000000000000000000f1_1_19",
+         "word_0000000000000000000000f1_1_20",
+         "word_0000000000000000000000f1_1_21",
+         "word_0000000000000000000000f1_1_22",
+         "word_0000000000000000000000f1_1_23",
+         "word_0000000000000000000000f1_1_24"
+        ]
+       }
+      ]
+     }
+    ],
+    "transcriptWordSpans": [
+     {
+      "wordId": "word_0000000000000000000000f1_1_1",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 0,
+      "end": 1,
+      "separatorBefore": ""
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_2",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 2,
+      "end": 6,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_3",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 7,
+      "end": 9,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_4",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 10,
+      "end": 13,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_5",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 14,
+      "end": 18,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_6",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 19,
+      "end": 24,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_7",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 25,
+      "end": 29,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_8",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 30,
+      "end": 31,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_9",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 32,
+      "end": 35,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_10",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 36,
+      "end": 37,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_11",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 38,
+      "end": 43,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_12",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 44,
+      "end": 47,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_13",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 48,
+      "end": 49,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_14",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 50,
+      "end": 54,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_15",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 55,
+      "end": 59,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_16",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 60,
+      "end": 63,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_17",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 64,
+      "end": 67,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_18",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 68,
+      "end": 72,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_19",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 73,
+      "end": 77,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_20",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 78,
+      "end": 81,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_21",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 82,
+      "end": 85,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_22",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 86,
+      "end": 88,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_23",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 89,
+      "end": 94,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f1_1_24",
+      "fileId": "0000000000000000000000f1",
+      "page": 1,
+      "start": 95,
+      "end": 101,
+      "separatorBefore": " "
+     }
+    ],
+    "transcriptSeparators": [
+     "",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " "
+    ],
+    "transcriptSource": "ocrPages",
+    "transcriptComplete": true,
+    "transcriptLayoutVersion": "ocr-layout-v5-native-text",
+    "correctionCurrent": true,
+    "correctionSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
+    "evaluationStatus": "completed",
+    "assessmentRunId": null,
+    "assessmentStatus": "complete",
+    "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
+    "assessmentErrorCode": null,
+    "evaluationSource": "deterministic_fallback",
+    "evaluationFreshness": "overridden",
+    "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
+    "assessmentVersion": "writing-rubric-100-v5-teacher-policy",
+    "evaluationErrorCode": null,
+    "detailedFeedbackStatus": "completed",
+    "detailedFeedbackSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
+    "detailedFeedbackVersion": null,
+    "detailedFeedback": {
+     "status": "completed",
+     "sourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
+     "evaluationVersion": "canonical-detailed-feedback-2",
+     "areasForImprovement": [
+      {
+       "id": "area_grammar",
+       "category": "GRAMMAR",
+       "title": "Grammar",
+       "issueCount": 3,
+       "score": 18,
+       "maxScore": 25,
+       "explanation": "3 distinct issues affected this category. The main recorded patterns are AGR, ART.",
+       "dominantSymbols": [
+        "AGR",
+        "ART"
+       ],
+       "examples": [
+        {
+         "correctionId": "ai_14467f8445c25b28",
+         "symbol": "AGR",
+         "symbolLabel": "AGR",
+         "quotedText": "goes",
+         "message": "Use \"go\" after \"I\".",
+         "suggestedText": "go"
+        },
+        {
+         "correctionId": "ai_4f28ce7bb0bf7df2",
+         "symbol": "AGR",
+         "symbolLabel": "AGR",
+         "quotedText": "goes",
+         "message": "Check the verb.",
+         "suggestedText": "go"
+        },
+        {
+         "correctionId": "ai_f8d03c3463fb67f9",
+         "symbol": "ART",
+         "symbolLabel": "ART",
+         "quotedText": "a",
+         "message": "Use \"an\" before a vowel sound.",
+         "suggestedText": "an"
+        }
+       ]
+      },
+      {
+       "id": "area_mechanics",
+       "category": "MECHANICS",
+       "title": "Mechanics",
+       "issueCount": 2,
+       "score": 8,
+       "maxScore": 10,
+       "explanation": "2 distinct issues affected this category. The main recorded pattern is SP.",
+       "dominantSymbols": [
+        "SP"
+       ],
+       "examples": [
+        {
+         "correctionId": "ai_00a053ed5aabd8c3",
+         "symbol": "SP",
+         "symbolLabel": "SP",
+         "quotedText": "dont",
+         "message": "Missing apostrophe.",
+         "suggestedText": "don't"
+        },
+        {
+         "correctionId": "ai_1354345f0245cb35",
+         "symbol": "SP",
+         "symbolLabel": "SP",
+         "quotedText": "realy",
+         "message": "Spelling.",
+         "suggestedText": "really"
+        }
+       ]
+      }
+     ],
+     "strengths": [],
+     "actionSteps": [
+      {
+       "id": "action_grammar",
+       "priority": 1,
+       "category": "GRAMMAR",
+       "action": "Revise the AGR/ART corrections in the highlighted passages.",
+       "reason": "3 canonical grammar issues currently affect this category.",
+       "relatedSymbols": [
+        "AGR",
+        "ART"
+       ],
+       "relatedCorrectionIds": [
+        "ai_14467f8445c25b28",
+        "ai_4f28ce7bb0bf7df2",
+        "ai_f8d03c3463fb67f9"
+       ]
+      },
+      {
+       "id": "action_mechanics",
+       "priority": 2,
+       "category": "MECHANICS",
+       "action": "Revise the SP corrections in the highlighted passages.",
+       "reason": "2 canonical mechanics issues currently affect this category.",
+       "relatedSymbols": [
+        "SP"
+       ],
+       "relatedCorrectionIds": [
+        "ai_00a053ed5aabd8c3",
+        "ai_1354345f0245cb35"
+       ]
+      }
+     ],
+     "summary": "Short paragraph."
+    },
+    "overriddenByTeacher": true,
+    "evaluationSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
+    "evaluation": {
+     "categoryScores": {
+      "GRAMMAR": {
+       "score": 18,
+       "maxScore": 25,
+       "comment": "",
+       "issueCount": 0
+      },
+      "CONTENT": {
+       "score": 0,
+       "maxScore": 20,
+       "comment": "",
+       "issueCount": 0
+      },
+      "ORGANIZATION": {
+       "score": 0,
+       "maxScore": 20,
+       "comment": "",
+       "issueCount": 0
+      },
+      "VOCABULARY": {
+       "score": 0,
+       "maxScore": 20,
+       "comment": "",
+       "issueCount": 0
+      },
+      "MECHANICS": {
+       "score": 0,
+       "maxScore": 10,
+       "comment": "",
+       "issueCount": 0
+      },
+      "PRESENTATION": {
+       "score": 0,
+       "maxScore": 5,
+       "comment": "",
+       "issueCount": 0
+      }
+     },
+     "overallScore": 82,
+     "grade": "F",
+     "evaluationSource": "deterministic_fallback",
+     "evaluationStatus": "completed",
+     "assessmentVersion": "writing-rubric-100-v5-teacher-policy",
+     "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
+     "strengths": [],
+     "areasForImprovement": [
+      {
+       "id": "area_grammar",
+       "category": "GRAMMAR",
+       "title": "Grammar",
+       "issueCount": 3,
+       "score": 18,
+       "maxScore": 25,
+       "explanation": "3 distinct issues affected this category. The main recorded patterns are AGR, ART.",
+       "dominantSymbols": [
+        "AGR",
+        "ART"
+       ],
+       "examples": [
+        {
+         "correctionId": "ai_14467f8445c25b28",
+         "symbol": "AGR",
+         "symbolLabel": "AGR",
+         "quotedText": "goes",
+         "message": "Use \"go\" after \"I\".",
+         "suggestedText": "go"
+        },
+        {
+         "correctionId": "ai_4f28ce7bb0bf7df2",
+         "symbol": "AGR",
+         "symbolLabel": "AGR",
+         "quotedText": "goes",
+         "message": "Check the verb.",
+         "suggestedText": "go"
+        },
+        {
+         "correctionId": "ai_f8d03c3463fb67f9",
+         "symbol": "ART",
+         "symbolLabel": "ART",
+         "quotedText": "a",
+         "message": "Use \"an\" before a vowel sound.",
+         "suggestedText": "an"
+        }
+       ]
+      },
+      {
+       "id": "area_mechanics",
+       "category": "MECHANICS",
+       "title": "Mechanics",
+       "issueCount": 2,
+       "score": 8,
+       "maxScore": 10,
+       "explanation": "2 distinct issues affected this category. The main recorded pattern is SP.",
+       "dominantSymbols": [
+        "SP"
+       ],
+       "examples": [
+        {
+         "correctionId": "ai_00a053ed5aabd8c3",
+         "symbol": "SP",
+         "symbolLabel": "SP",
+         "quotedText": "dont",
+         "message": "Missing apostrophe.",
+         "suggestedText": "don't"
+        },
+        {
+         "correctionId": "ai_1354345f0245cb35",
+         "symbol": "SP",
+         "symbolLabel": "SP",
+         "quotedText": "realy",
+         "message": "Spelling.",
+         "suggestedText": "really"
+        }
+       ]
+      }
+     ],
+     "actionSteps": [
+      {
+       "id": "action_grammar",
+       "priority": 1,
+       "category": "GRAMMAR",
+       "action": "Revise the AGR/ART corrections in the highlighted passages.",
+       "reason": "3 canonical grammar issues currently affect this category.",
+       "relatedSymbols": [
+        "AGR",
+        "ART"
+       ],
+       "relatedCorrectionIds": [
+        "ai_14467f8445c25b28",
+        "ai_4f28ce7bb0bf7df2",
+        "ai_f8d03c3463fb67f9"
+       ]
+      },
+      {
+       "id": "action_mechanics",
+       "priority": 2,
+       "category": "MECHANICS",
+       "action": "Revise the SP corrections in the highlighted passages.",
+       "reason": "2 canonical mechanics issues currently affect this category.",
+       "relatedSymbols": [
+        "SP"
+       ],
+       "relatedCorrectionIds": [
+        "ai_00a053ed5aabd8c3",
+        "ai_1354345f0245cb35"
+       ]
+      }
+     ],
+     "source": "deterministic_fallback"
+    },
+    "ocrError": null,
+    "ocrErrorCode": null,
+    "ocrFailures": [],
+    "fileId": null,
+    "marksVisible": true
+   }
+  }
+ },
+ "registered: feedback": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "data": {
+    "submissionId": "0000000000000000000000e1",
+    "_id": "0000000000000000000000b1",
+    "classId": "0000000000000000000000c1",
+    "submissionMode": "registered",
+    "studentId": "0000000000000000000000a3",
+    "teacherId": "0000000000000000000000a1",
+    "assessmentVersion": "writing-rubric-100-v5-teacher-policy",
+    "maxOverallScore": 100,
+    "rubricScores": {
+     "GRAMMAR": {
+      "score": 18,
+      "maxScore": 25,
+      "comment": "",
+      "issueCount": 0
+     },
+     "CONTENT": {
+      "score": 0,
+      "maxScore": 20,
+      "comment": "",
+      "issueCount": 0
+     },
+     "ORGANIZATION": {
+      "score": 0,
+      "maxScore": 20,
+      "comment": "",
+      "issueCount": 0
+     },
+     "VOCABULARY": {
+      "score": 0,
+      "maxScore": 20,
+      "comment": "",
+      "issueCount": 0
+     },
+     "MECHANICS": {
+      "score": 0,
+      "maxScore": 10,
+      "comment": "",
+      "issueCount": 0
+     },
+     "PRESENTATION": {
+      "score": 0,
+      "maxScore": 5,
+      "comment": "",
+      "issueCount": 0
+     }
+    },
+    "overallScore": 82,
+    "evaluationSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
+    "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
+    "evaluationRubricSourceHash": "804aa28a8608e4d036fa6d03162ed1f3d1ee00b102db1a92ef310720c50b9574",
+    "evaluationPolicyHash": "9cad237b79d82ce5e0ae570b59b7b545743579304f97a15d146402b67f8e7117",
+    "analysisInputHash": "5ef64968d7d78b893f4e9a366dc2059a352e5bbd19ffba64ea63a363d71a924a",
+    "evaluationSource": "deterministic_fallback",
+    "evaluationStatus": "completed",
+    "grade": "F",
+    "detailedFeedback": {
+     "status": "completed",
+     "sourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
+     "evaluationVersion": "canonical-detailed-feedback-2",
+     "areasForImprovement": [
+      {
+       "id": "area_grammar",
+       "category": "GRAMMAR",
+       "title": "Grammar",
+       "issueCount": 3,
+       "score": 18,
+       "maxScore": 25,
+       "explanation": "3 distinct issues affected this category. The main recorded patterns are AGR, ART.",
+       "dominantSymbols": [
+        "AGR",
+        "ART"
+       ],
+       "examples": [
+        {
+         "correctionId": "ai_14467f8445c25b28",
+         "symbol": "AGR",
+         "symbolLabel": "AGR",
+         "quotedText": "goes",
+         "message": "Use \"go\" after \"I\".",
+         "suggestedText": "go"
+        },
+        {
+         "correctionId": "ai_4f28ce7bb0bf7df2",
+         "symbol": "AGR",
+         "symbolLabel": "AGR",
+         "quotedText": "goes",
+         "message": "Check the verb.",
+         "suggestedText": "go"
+        },
+        {
+         "correctionId": "ai_f8d03c3463fb67f9",
+         "symbol": "ART",
+         "symbolLabel": "ART",
+         "quotedText": "a",
+         "message": "Use \"an\" before a vowel sound.",
+         "suggestedText": "an"
+        }
+       ]
+      },
+      {
+       "id": "area_mechanics",
+       "category": "MECHANICS",
+       "title": "Mechanics",
+       "issueCount": 2,
+       "score": 8,
+       "maxScore": 10,
+       "explanation": "2 distinct issues affected this category. The main recorded pattern is SP.",
+       "dominantSymbols": [
+        "SP"
+       ],
+       "examples": [
+        {
+         "correctionId": "ai_00a053ed5aabd8c3",
+         "symbol": "SP",
+         "symbolLabel": "SP",
+         "quotedText": "dont",
+         "message": "Missing apostrophe.",
+         "suggestedText": "don't"
+        },
+        {
+         "correctionId": "ai_1354345f0245cb35",
+         "symbol": "SP",
+         "symbolLabel": "SP",
+         "quotedText": "realy",
+         "message": "Spelling.",
+         "suggestedText": "really"
+        }
+       ]
+      }
+     ],
+     "strengths": [],
+     "actionSteps": [
+      {
+       "id": "action_grammar",
+       "priority": 1,
+       "category": "GRAMMAR",
+       "action": "Revise the AGR/ART corrections in the highlighted passages.",
+       "reason": "3 canonical grammar issues currently affect this category.",
+       "relatedSymbols": [
+        "AGR",
+        "ART"
+       ],
+       "relatedCorrectionIds": [
+        "ai_14467f8445c25b28",
+        "ai_4f28ce7bb0bf7df2",
+        "ai_f8d03c3463fb67f9"
+       ]
+      },
+      {
+       "id": "action_mechanics",
+       "priority": 2,
+       "category": "MECHANICS",
+       "action": "Revise the SP corrections in the highlighted passages.",
+       "reason": "2 canonical mechanics issues currently affect this category.",
+       "relatedSymbols": [
+        "SP"
+       ],
+       "relatedCorrectionIds": [
+        "ai_00a053ed5aabd8c3",
+        "ai_1354345f0245cb35"
+       ]
+      }
+     ],
+     "summary": "Short paragraph."
+    },
+    "detailedFeedbackSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
+    "teacherComments": "Teacher review complete.",
+    "rubricDesigner": null,
+    "scoringAudit": {
+     "version": "fixture",
+     "categories": [
+      {
+       "category": "GRAMMAR",
+       "maxScore": 25,
+       "wordCount": 24,
+       "totalIssueCount": 3,
+       "countedIssueCount": 3,
+       "ignoredIssueCount": 0,
+       "basePenalty": 0,
+       "repetitionAdjustedPenalty": 0,
+       "weightedPenalty": 0,
+       "density": 0,
+       "tolerance": 1,
+       "multiplier": 0.8,
+       "maximumDeduction": 12.5,
+       "cappedDeduction": 0,
+       "unroundedScore": 25,
+       "finalScore": 24.5,
+       "score": 24.5,
+       "correctionIds": [
+        "ai_14467f8445c25b28",
+        "ai_f8d03c3463fb67f9",
+        "ai_4f28ce7bb0bf7df2"
+       ],
+       "ignoredCorrectionIds": [],
+       "groups": [
+        {
+         "key": "GRAMMAR|AGR|go",
+         "symbol": "AGR",
+         "ruleId": null,
+         "count": 2,
+         "severityWeight": 0,
+         "weightedPenalty": 0,
+         "correctionIds": [
+          "ai_14467f8445c25b28",
+          "ai_4f28ce7bb0bf7df2"
+         ]
+        },
+        {
+         "key": "GRAMMAR|ART|an",
+         "symbol": "ART",
+         "ruleId": null,
+         "count": 1,
+         "severityWeight": 0,
+         "weightedPenalty": 0,
+         "correctionIds": [
+          "ai_f8d03c3463fb67f9"
+         ]
+        }
+       ]
+      },
+      {
+       "category": "MECHANICS",
+       "maxScore": 10,
+       "wordCount": 24,
+       "totalIssueCount": 2,
+       "countedIssueCount": 2,
+       "ignoredIssueCount": 0,
+       "basePenalty": 0,
+       "repetitionAdjustedPenalty": 0,
+       "weightedPenalty": 0,
+       "density": 0,
+       "tolerance": 1,
+       "multiplier": 0.8,
+       "maximumDeduction": 5,
+       "cappedDeduction": 0,
+       "unroundedScore": 10,
+       "finalScore": 9.5,
+       "score": 9.5,
+       "correctionIds": [
+        "ai_00a053ed5aabd8c3",
+        "ai_1354345f0245cb35"
+       ],
+       "ignoredCorrectionIds": [],
+       "groups": [
+        {
+         "key": "MECHANICS|SP|don't",
+         "symbol": "SP",
+         "ruleId": null,
+         "count": 1,
+         "severityWeight": 0,
+         "weightedPenalty": 0,
+         "correctionIds": [
+          "ai_00a053ed5aabd8c3"
+         ]
+        },
+        {
+         "key": "MECHANICS|SP|really",
+         "symbol": "SP",
+         "ruleId": null,
+         "count": 1,
+         "severityWeight": 0,
+         "weightedPenalty": 0,
+         "correctionIds": [
+          "ai_1354345f0245cb35"
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    "overriddenByTeacher": true,
+    "createdAt": "<volatile>",
+    "updatedAt": "<volatile>",
+    "correctionStats": {
+     "content": 0,
+     "organization": 0,
+     "grammar": 3,
+     "vocabulary": 0,
+     "mechanics": 2,
+     "total": 5
+    },
+    "aiFeedback": {
+     "overallComments": "",
+     "perCategory": []
+    },
+    "__v": "<volatile>",
+    "correctionStatistics": {
+     "content": 0,
+     "organization": 0,
+     "grammar": 3,
+     "vocabulary": 0,
+     "mechanics": 2,
+     "total": 5
+    },
+    "ocrStatus": "completed",
+    "ocrErrorCode": null,
+    "ocrFailureMessage": null,
+    "correctionStatus": "completed",
+    "correctionCurrent": true,
+    "transcriptLayoutVersion": "ocr-layout-v5-native-text",
+    "correctionStage": "complete",
+    "statisticsStatus": "complete",
+    "statisticsCompleteness": "canonical",
+    "statistics": {
+     "content": 0,
+     "grammar": 3,
+     "organization": 0,
+     "vocabulary": 0,
+     "mechanics": 2,
+     "total": 5
+    },
+    "categoryAvailability": {
+     "content": "available",
+     "organization": "available",
+     "vocabulary": "available",
+     "grammar": "available",
+     "mechanics": "available"
+    },
+    "sourceCounts": {
+     "languageTool": 0,
+     "semanticAi": 5
+    },
+    "correctionErrorCode": null,
+    "evaluationErrorCode": null,
+    "detailedFeedbackStatus": "completed",
+    "processingActive": false,
+    "automaticPollingAllowed": false,
+    "manualRetryAllowed": false,
+    "terminal": true,
+    "evaluationBlockedReason": null,
+    "detailedFeedbackBlockedReason": null,
+    "semanticStatus": "completed",
+    "semanticSucceeded": true,
+    "correctionsAvailable": true,
+    "correctionsCompleteness": "complete",
+    "semanticAttempt": 0,
+    "semanticMaxAttempts": 0,
+    "semanticNextRetryAt": null,
+    "semanticErrorCode": null,
+    "semanticCoverage": null,
+    "coverageComplete": false,
+    "retryable": false,
+    "score": 82,
+    "evaluationCurrent": true,
+    "evaluationFreshness": "overridden",
+    "requiresCanonicalReevaluation": false,
+    "reevaluationReason": null,
+    "detailedFeedbackCurrent": true,
+    "evaluationStaleReason": null,
+    "rubricFresh": true,
+    "policyFresh": true,
+    "hasValidCustomRubric": false,
+    "currentRubricSourceHash": "804aa28a8608e4d036fa6d03162ed1f3d1ee00b102db1a92ef310720c50b9574",
+    "currentPolicyHash": "9cad237b79d82ce5e0ae570b59b7b545743579304f97a15d146402b67f8e7117",
+    "processingProgress": {
+     "status": "completed",
+     "stage": "completed",
+     "percent": 100,
+     "message": "Result ready",
+     "completed": true,
+     "failed": false,
+     "active": false
+    },
+    "previousEvaluation": null,
+    "teacherReviewedAt": null,
+    "teacherReviewedBy": null,
+    "correctionSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
+    "marksVisible": true
+   }
+  }
+ },
+ "registered: draft comparison": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "data": {
+    "available": false,
+    "code": "FIRST_DRAFT",
+    "message": "No previous assessed draft to compare yet.",
+    "previousSubmissionId": "",
+    "currentSubmissionId": "0000000000000000000000e1"
+   }
+  }
+ },
+ "guest: results": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "data": {
+    "title": "Weekend essay",
+    "name": "Guest Student",
+    "submittedAt": "2026-10-01T09:00:00.000Z",
+    "status": "complete",
+    "ocrStatus": "completed",
+    "transcript": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+    "feedback": {
+     "overallScore": 82,
+     "rubricScores": {
+      "GRAMMAR": {
+       "score": 18,
+       "maxScore": 25,
+       "comment": "",
+       "issueCount": 0
+      },
+      "CONTENT": {
+       "score": 0,
+       "maxScore": 20,
+       "comment": "",
+       "issueCount": 0
+      },
+      "ORGANIZATION": {
+       "score": 0,
+       "maxScore": 20,
+       "comment": "",
+       "issueCount": 0
+      },
+      "VOCABULARY": {
+       "score": 0,
+       "maxScore": 20,
+       "comment": "",
+       "issueCount": 0
+      },
+      "MECHANICS": {
+       "score": 0,
+       "maxScore": 10,
+       "comment": "",
+       "issueCount": 0
+      },
+      "PRESENTATION": {
+       "score": 0,
+       "maxScore": 5,
+       "comment": "",
+       "issueCount": 0
+      }
+     },
+     "detailedFeedback": {
+      "status": "completed",
+      "sourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
+      "evaluationVersion": "canonical-detailed-feedback-2",
+      "areasForImprovement": [
+       {
+        "id": "area_grammar",
+        "category": "GRAMMAR",
+        "title": "Grammar",
+        "issueCount": 3,
+        "score": 18,
+        "maxScore": 25,
+        "explanation": "3 distinct issues affected this category. The main recorded patterns are AGR, ART.",
+        "dominantSymbols": [
+         "AGR",
+         "ART"
+        ],
+        "examples": [
+         {
+          "correctionId": "ai_14467f8445c25b28",
+          "symbol": "AGR",
+          "symbolLabel": "AGR",
+          "quotedText": "goes",
+          "message": "Use \"go\" after \"I\".",
+          "suggestedText": "go"
+         },
+         {
+          "correctionId": "ai_4f28ce7bb0bf7df2",
+          "symbol": "AGR",
+          "symbolLabel": "AGR",
+          "quotedText": "goes",
+          "message": "Check the verb.",
+          "suggestedText": "go"
+         },
+         {
+          "correctionId": "ai_f8d03c3463fb67f9",
+          "symbol": "ART",
+          "symbolLabel": "ART",
+          "quotedText": "a",
+          "message": "Use \"an\" before a vowel sound.",
+          "suggestedText": "an"
+         }
+        ]
+       },
+       {
+        "id": "area_mechanics",
+        "category": "MECHANICS",
+        "title": "Mechanics",
+        "issueCount": 2,
+        "score": 8,
+        "maxScore": 10,
+        "explanation": "2 distinct issues affected this category. The main recorded pattern is SP.",
+        "dominantSymbols": [
+         "SP"
+        ],
+        "examples": [
+         {
+          "correctionId": "ai_00a053ed5aabd8c3",
+          "symbol": "SP",
+          "symbolLabel": "SP",
+          "quotedText": "dont",
+          "message": "Missing apostrophe.",
+          "suggestedText": "don't"
+         },
+         {
+          "correctionId": "ai_1354345f0245cb35",
+          "symbol": "SP",
+          "symbolLabel": "SP",
+          "quotedText": "realy",
+          "message": "Spelling.",
+          "suggestedText": "really"
+         }
+        ]
+       }
+      ],
+      "strengths": [],
+      "actionSteps": [
+       {
+        "id": "action_grammar",
+        "priority": 1,
+        "category": "GRAMMAR",
+        "action": "Revise the AGR/ART corrections in the highlighted passages.",
+        "reason": "3 canonical grammar issues currently affect this category.",
+        "relatedSymbols": [
+         "AGR",
+         "ART"
+        ],
+        "relatedCorrectionIds": [
+         "ai_14467f8445c25b28",
+         "ai_4f28ce7bb0bf7df2",
+         "ai_f8d03c3463fb67f9"
+        ]
+       },
+       {
+        "id": "action_mechanics",
+        "priority": 2,
+        "category": "MECHANICS",
+        "action": "Revise the SP corrections in the highlighted passages.",
+        "reason": "2 canonical mechanics issues currently affect this category.",
+        "relatedSymbols": [
+         "SP"
+        ],
+        "relatedCorrectionIds": [
+         "ai_00a053ed5aabd8c3",
+         "ai_1354345f0245cb35"
+        ]
+       }
+      ],
+      "summary": "Short paragraph."
+     },
+     "teacherComments": "Teacher review complete."
+    },
+    "marksVisible": true,
+    "allowResubmission": false,
+    "requireAdaptiveBeforeResubmission": false
+   }
+  }
+ },
+ "guest: presentation": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "data": {
+    "submission": {
+     "_id": "0000000000000000000000e2",
+     "submittedAt": "2026-10-01T09:00:00.000Z",
+     "status": "submitted",
+     "isLate": false,
+     "draftNumber": 1,
+     "ocrJobId": "job-guest",
+     "transcriptText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+     "ocrStatus": "completed",
+     "correctionStatus": "completed",
+     "semanticStatus": "completed",
+     "evaluationStatus": "completed",
+     "assessmentStatus": "complete",
+     "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
+     "correctionSourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
+     "correctionStatistics": {
+      "content": 0,
+      "grammar": 3,
+      "organization": 0,
+      "vocabulary": 0,
+      "mechanics": 2,
+      "total": 5
+     },
+     "files": [
+      {
+       "_id": "0000000000000000000000f2",
+       "originalName": "essay.png",
+       "url": "/api/guest/submissions/0000000000000000000000e2/media/0000000000000000000000f2/essay.png"
+      }
+     ],
+     "ocrPages": [
+      {
+       "fileId": "0000000000000000000000f2",
+       "fileOrder": 0,
+       "pageNumber": 1,
+       "pageIndex": 0,
+       "width": 1200,
+       "height": 900,
+       "coordinateSpace": "display-image",
+       "ocrImageWidth": 1200,
+       "ocrImageHeight": 900,
+       "text": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+       "rawText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+       "words": [
+        {
+         "id": "word_0000000000000000000000f2_1_1",
+         "text": "I",
+         "page": 1,
+         "bbox": {
+          "x0": 0.04,
+          "y0": 0.1,
+          "x1": 0.09,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_2",
+         "text": "goes",
+         "page": 1,
+         "bbox": {
+          "x0": 0.098,
+          "y0": 0.1,
+          "x1": 0.14800000000000002,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_3",
+         "text": "to",
+         "page": 1,
+         "bbox": {
+          "x0": 0.156,
+          "y0": 0.1,
+          "x1": 0.20600000000000002,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_4",
+         "text": "the",
+         "page": 1,
+         "bbox": {
+          "x0": 0.21400000000000002,
+          "y0": 0.1,
+          "x1": 0.264,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_5",
+         "text": "park",
+         "page": 1,
+         "bbox": {
+          "x0": 0.272,
+          "y0": 0.1,
+          "x1": 0.322,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_6",
+         "text": "every",
+         "page": 1,
+         "bbox": {
+          "x0": 0.33,
+          "y0": 0.1,
+          "x1": 0.38,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_7",
+         "text": "day.",
+         "page": 1,
+         "bbox": {
+          "x0": 0.388,
+          "y0": 0.1,
+          "x1": 0.438,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_8",
+         "text": "I",
+         "page": 1,
+         "bbox": {
+          "x0": 0.446,
+          "y0": 0.1,
+          "x1": 0.496,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_9",
+         "text": "ate",
+         "page": 1,
+         "bbox": {
+          "x0": 0.504,
+          "y0": 0.1,
+          "x1": 0.554,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_10",
+         "text": "a",
+         "page": 1,
+         "bbox": {
+          "x0": 0.562,
+          "y0": 0.1,
+          "x1": 0.6120000000000001,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_11",
+         "text": "apple",
+         "page": 1,
+         "bbox": {
+          "x0": 0.6200000000000001,
+          "y0": 0.1,
+          "x1": 0.6700000000000002,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_12",
+         "text": "and",
+         "page": 1,
+         "bbox": {
+          "x0": 0.678,
+          "y0": 0.1,
+          "x1": 0.7280000000000001,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_13",
+         "text": "I",
+         "page": 1,
+         "bbox": {
+          "x0": 0.7360000000000001,
+          "y0": 0.1,
+          "x1": 0.7860000000000001,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_14",
+         "text": "dont",
+         "page": 1,
+         "bbox": {
+          "x0": 0.794,
+          "y0": 0.1,
+          "x1": 0.8440000000000001,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_15",
+         "text": "like",
+         "page": 1,
+         "bbox": {
+          "x0": 0.8520000000000001,
+          "y0": 0.1,
+          "x1": 0.9020000000000001,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_16",
+         "text": "it.",
+         "page": 1,
+         "bbox": {
+          "x0": 0.91,
+          "y0": 0.1,
+          "x1": 0.9600000000000001,
+          "y1": 0.15
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_17",
+         "text": "She",
+         "page": 1,
+         "bbox": {
+          "x0": 0.04,
+          "y0": 0.18,
+          "x1": 0.09,
+          "y1": 0.22999999999999998
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_18",
+         "text": "goes",
+         "page": 1,
+         "bbox": {
+          "x0": 0.098,
+          "y0": 0.18,
+          "x1": 0.14800000000000002,
+          "y1": 0.22999999999999998
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_19",
+         "text": "home",
+         "page": 1,
+         "bbox": {
+          "x0": 0.156,
+          "y0": 0.18,
+          "x1": 0.20600000000000002,
+          "y1": 0.22999999999999998
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_20",
+         "text": "and",
+         "page": 1,
+         "bbox": {
+          "x0": 0.21400000000000002,
+          "y0": 0.18,
+          "x1": 0.264,
+          "y1": 0.22999999999999998
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_21",
+         "text": "she",
+         "page": 1,
+         "bbox": {
+          "x0": 0.272,
+          "y0": 0.18,
+          "x1": 0.322,
+          "y1": 0.22999999999999998
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_22",
+         "text": "is",
+         "page": 1,
+         "bbox": {
+          "x0": 0.33,
+          "y0": 0.18,
+          "x1": 0.38,
+          "y1": 0.22999999999999998
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_23",
+         "text": "realy",
+         "page": 1,
+         "bbox": {
+          "x0": 0.388,
+          "y0": 0.18,
+          "x1": 0.438,
+          "y1": 0.22999999999999998
+         }
+        },
+        {
+         "id": "word_0000000000000000000000f2_1_24",
+         "text": "tired.",
+         "page": 1,
+         "bbox": {
+          "x0": 0.446,
+          "y0": 0.18,
+          "x1": 0.496,
+          "y1": 0.22999999999999998
+         }
+        }
+       ],
+       "_id": "00000000000000000000009b"
+      }
+     ],
+     "file": {
+      "_id": "0000000000000000000000f2",
+      "originalName": "essay.png",
+      "url": "/api/guest/submissions/0000000000000000000000e2/media/0000000000000000000000f2/essay.png"
+     },
+     "fileUrls": [
+      "/api/guest/submissions/0000000000000000000000e2/media/0000000000000000000000f2/essay.png"
+     ],
+     "fileUrl": "/api/guest/submissions/0000000000000000000000e2/media/0000000000000000000000f2/essay.png",
+     "assignment": "0000000000000000000000d1",
+     "class": "0000000000000000000000c1",
+     "submissionMode": "guest"
+    },
+    "assignment": {
+     "_id": "0000000000000000000000d1",
+     "title": "Weekend essay",
+     "instructions": "Describe your weekend.",
+     "showMarksToStudent": true,
+     "allowResubmission": false,
+     "requireAdaptiveBeforeResubmission": false,
+     "qrToken": "fixture-qr"
+    },
+    "classSummary": {
+     "name": "Writing 7B",
+     "gradingScale": "score_0_100"
+    }
+   }
+  }
+ },
+ "guest: ocr-corrections": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "data": {
+    "processing": false,
+    "corrections": [
+     {
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "startChar": 2,
+      "endChar": 6,
+      "quotedText": "goes",
+      "suggestedText": "go",
+      "message": "Use \"go\" after \"I\".",
+      "category": "GRAMMAR",
+      "symbol": "AGR",
+      "wordIds": [
+       "word_0000000000000000000000f2_1_2"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f2_1_2"
+      ],
+      "id": "ai_14467f8445c25b28",
+      "source": "AI",
+      "groupKey": "GRAMMAR",
+      "symbolLabel": "AGR",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "847ea0e7d471d0003934d12a82f0fe7ce1eff5d4d03300c50c9589a993554280",
+      "ocrEvidenceHash": "12e6a91b78fc8bf8c957817db1b5cda2ec8e4101faf301e91c2522fbe63f7d03",
+      "ocrRunId": "job-guest",
+      "moderationStatus": "visible",
+      "renderTarget": {
+       "version": 1,
+       "source": "wordIds",
+       "wordIds": [
+        "word_0000000000000000000000f2_1_2"
+       ],
+       "anchors": [],
+       "boxes": [
+        {
+         "x": 0.098,
+         "y": 0.1,
+         "w": 0.05000000000000002,
+         "h": 0.04999999999999999
+        }
+       ],
+       "textRanges": [
+        {
+         "start": 2,
+         "end": 6
+        }
+       ],
+       "textAnchors": [],
+       "coordinateSpace": "display-image"
+      }
+     },
+     {
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "startChar": 36,
+      "endChar": 37,
+      "quotedText": "a",
+      "suggestedText": "an",
+      "message": "Use \"an\" before a vowel sound.",
+      "category": "GRAMMAR",
+      "symbol": "ART",
+      "wordIds": [
+       "word_0000000000000000000000f2_1_10"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f2_1_10"
+      ],
+      "id": "ai_f8d03c3463fb67f9",
+      "source": "AI",
+      "groupKey": "GRAMMAR",
+      "symbolLabel": "ART",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "770c1095fa745eab99307b3e32cc271c6f597def48d9ff987280b1c454fd603f",
+      "ocrEvidenceHash": "12e6a91b78fc8bf8c957817db1b5cda2ec8e4101faf301e91c2522fbe63f7d03",
+      "ocrRunId": "job-guest",
+      "moderationStatus": "visible",
+      "renderTarget": {
+       "version": 1,
+       "source": "wordIds",
+       "wordIds": [
+        "word_0000000000000000000000f2_1_10"
+       ],
+       "anchors": [],
+       "boxes": [
+        {
+         "x": 0.562,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        }
+       ],
+       "textRanges": [
+        {
+         "start": 36,
+         "end": 37
+        }
+       ],
+       "textAnchors": [],
+       "coordinateSpace": "display-image"
+      }
+     },
+     {
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "startChar": 50,
+      "endChar": 54,
+      "quotedText": "dont",
+      "suggestedText": "don't",
+      "message": "Missing apostrophe.",
+      "category": "MECHANICS",
+      "symbol": "SP",
+      "wordIds": [
+       "word_0000000000000000000000f2_1_14"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f2_1_14"
+      ],
+      "id": "ai_00a053ed5aabd8c3",
+      "source": "AI",
+      "groupKey": "MECHANICS",
+      "symbolLabel": "SP",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "3a0db985969efb7b25a11ecf29d310229a8743915030cf7ed11e09cbec150b12",
+      "ocrEvidenceHash": "12e6a91b78fc8bf8c957817db1b5cda2ec8e4101faf301e91c2522fbe63f7d03",
+      "ocrRunId": "job-guest",
+      "moderationStatus": "visible",
+      "renderTarget": {
+       "version": 1,
+       "source": "wordIds",
+       "wordIds": [
+        "word_0000000000000000000000f2_1_14"
+       ],
+       "anchors": [],
+       "boxes": [
+        {
+         "x": 0.794,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        }
+       ],
+       "textRanges": [
+        {
+         "start": 50,
+         "end": 54
+        }
+       ],
+       "textAnchors": [],
+       "coordinateSpace": "display-image"
+      }
+     },
+     {
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "startChar": 68,
+      "endChar": 72,
+      "quotedText": "goes",
+      "suggestedText": "go",
+      "message": "Check the verb.",
+      "category": "GRAMMAR",
+      "symbol": "AGR",
+      "wordIds": [
+       "word_0000000000000000000000f2_1_18"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f2_1_18"
+      ],
+      "id": "ai_4f28ce7bb0bf7df2",
+      "source": "AI",
+      "groupKey": "GRAMMAR",
+      "symbolLabel": "AGR",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "0a06225d0faf2d755d30b9001c9b280be84dd5e92a17d3b39e00fe09f4ed8b84",
+      "ocrEvidenceHash": "12e6a91b78fc8bf8c957817db1b5cda2ec8e4101faf301e91c2522fbe63f7d03",
+      "ocrRunId": "job-guest",
+      "moderationStatus": "visible",
+      "renderTarget": {
+       "version": 1,
+       "source": "wordIds",
+       "wordIds": [
+        "word_0000000000000000000000f2_1_18"
+       ],
+       "anchors": [],
+       "boxes": [
+        {
+         "x": 0.098,
+         "y": 0.18,
+         "w": 0.05000000000000002,
+         "h": 0.04999999999999999
+        }
+       ],
+       "textRanges": [
+        {
+         "start": 68,
+         "end": 72
+        }
+       ],
+       "textAnchors": [],
+       "coordinateSpace": "display-image"
+      }
+     },
+     {
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "startChar": 89,
+      "endChar": 94,
+      "quotedText": "realy",
+      "suggestedText": "really",
+      "message": "Spelling.",
+      "category": "MECHANICS",
+      "symbol": "SP",
+      "wordIds": [
+       "word_0000000000000000000000f2_1_23"
+      ],
+      "evidenceWordIds": [
+       "word_0000000000000000000000f2_1_23"
+      ],
+      "id": "ai_1354345f0245cb35",
+      "source": "AI",
+      "groupKey": "MECHANICS",
+      "symbolLabel": "SP",
+      "color": "#FFD6A5",
+      "correctionFingerprint": "3021eb023314f917c62dcccacf18e7602a18614d4d805a56262047ca1304938a",
+      "ocrEvidenceHash": "12e6a91b78fc8bf8c957817db1b5cda2ec8e4101faf301e91c2522fbe63f7d03",
+      "ocrRunId": "job-guest",
+      "moderationStatus": "visible",
+      "renderTarget": {
+       "version": 1,
+       "source": "wordIds",
+       "wordIds": [
+        "word_0000000000000000000000f2_1_23"
+       ],
+       "anchors": [],
+       "boxes": [
+        {
+         "x": 0.388,
+         "y": 0.18,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        }
+       ],
+       "textRanges": [
+        {
+         "start": 89,
+         "end": 94
+        }
+       ],
+       "textAnchors": [],
+       "coordinateSpace": "display-image"
+      }
+     }
+    ],
+    "annotationRevision": 0,
+    "annotationGradeReviewRequired": false,
+    "ocr": [
+     {
+      "pageNumber": 1,
+      "fileId": "0000000000000000000000f2",
+      "width": 1200,
+      "height": 900,
+      "sourceGeometry": {
+       "version": 1,
+       "fileId": "0000000000000000000000f2",
+       "pageNumber": 1,
+       "width": 1200,
+       "height": 900,
+       "orientation": 1,
+       "coordinateSpace": "display-image",
+       "ambiguous": false
+      },
+      "pageImageUrl": null,
+      "derivedImageFileId": null,
+      "rasterHash": null,
+      "rasterizationVersion": null,
+      "words": [
+       {
+        "id": "word_0000000000000000000000f2_1_1",
+        "fileId": "0000000000000000000000f2",
+        "text": "I",
+        "bbox": {
+         "x": 0.04,
+         "y": 0.1,
+         "w": 0.049999999999999996,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": ""
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_2",
+        "fileId": "0000000000000000000000f2",
+        "text": "goes",
+        "bbox": {
+         "x": 0.098,
+         "y": 0.1,
+         "w": 0.05000000000000002,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_3",
+        "fileId": "0000000000000000000000f2",
+        "text": "to",
+        "bbox": {
+         "x": 0.156,
+         "y": 0.1,
+         "w": 0.05000000000000002,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_4",
+        "fileId": "0000000000000000000000f2",
+        "text": "the",
+        "bbox": {
+         "x": 0.21400000000000002,
+         "y": 0.1,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_5",
+        "fileId": "0000000000000000000000f2",
+        "text": "park",
+        "bbox": {
+         "x": 0.272,
+         "y": 0.1,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_6",
+        "fileId": "0000000000000000000000f2",
+        "text": "every",
+        "bbox": {
+         "x": 0.33,
+         "y": 0.1,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_7",
+        "fileId": "0000000000000000000000f2",
+        "text": "day.",
+        "bbox": {
+         "x": 0.388,
+         "y": 0.1,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_8",
+        "fileId": "0000000000000000000000f2",
+        "text": "I",
+        "bbox": {
+         "x": 0.446,
+         "y": 0.1,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_9",
+        "fileId": "0000000000000000000000f2",
+        "text": "ate",
+        "bbox": {
+         "x": 0.504,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_10",
+        "fileId": "0000000000000000000000f2",
+        "text": "a",
+        "bbox": {
+         "x": 0.562,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_11",
+        "fileId": "0000000000000000000000f2",
+        "text": "apple",
+        "bbox": {
+         "x": 0.6200000000000001,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_12",
+        "fileId": "0000000000000000000000f2",
+        "text": "and",
+        "bbox": {
+         "x": 0.678,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_13",
+        "fileId": "0000000000000000000000f2",
+        "text": "I",
+        "bbox": {
+         "x": 0.7360000000000001,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_14",
+        "fileId": "0000000000000000000000f2",
+        "text": "dont",
+        "bbox": {
+         "x": 0.794,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_15",
+        "fileId": "0000000000000000000000f2",
+        "text": "like",
+        "bbox": {
+         "x": 0.8520000000000001,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_16",
+        "fileId": "0000000000000000000000f2",
+        "text": "it.",
+        "bbox": {
+         "x": 0.91,
+         "y": 0.1,
+         "w": 0.050000000000000044,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_17",
+        "fileId": "0000000000000000000000f2",
+        "text": "She",
+        "bbox": {
+         "x": 0.04,
+         "y": 0.18,
+         "w": 0.049999999999999996,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_18",
+        "fileId": "0000000000000000000000f2",
+        "text": "goes",
+        "bbox": {
+         "x": 0.098,
+         "y": 0.18,
+         "w": 0.05000000000000002,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_19",
+        "fileId": "0000000000000000000000f2",
+        "text": "home",
+        "bbox": {
+         "x": 0.156,
+         "y": 0.18,
+         "w": 0.05000000000000002,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_20",
+        "fileId": "0000000000000000000000f2",
+        "text": "and",
+        "bbox": {
+         "x": 0.21400000000000002,
+         "y": 0.18,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_21",
+        "fileId": "0000000000000000000000f2",
+        "text": "she",
+        "bbox": {
+         "x": 0.272,
+         "y": 0.18,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_22",
+        "fileId": "0000000000000000000000f2",
+        "text": "is",
+        "bbox": {
+         "x": 0.33,
+         "y": 0.18,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_23",
+        "fileId": "0000000000000000000000f2",
+        "text": "realy",
+        "bbox": {
+         "x": 0.388,
+         "y": 0.18,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       },
+       {
+        "id": "word_0000000000000000000000f2_1_24",
+        "fileId": "0000000000000000000000f2",
+        "text": "tired.",
+        "bbox": {
+         "x": 0.446,
+         "y": 0.18,
+         "w": 0.04999999999999999,
+         "h": 0.04999999999999999
+        },
+        "separatorBefore": " "
+       }
+      ],
+      "lines": []
+     }
+    ],
+    "ocrStatus": "completed",
+    "correctionStatus": "completed",
+    "correctionStage": "complete",
+    "statisticsStatus": "complete",
+    "statisticsCompleteness": "canonical",
+    "categoryAvailability": {
+     "content": "available",
+     "organization": "available",
+     "vocabulary": "available",
+     "grammar": "available",
+     "mechanics": "available"
+    },
+    "sourceCounts": {
+     "languageTool": 0,
+     "semanticAi": 5
+    },
+    "correctionErrorCode": null,
+    "retryable": false,
+    "processingActive": false,
+    "automaticPollingAllowed": false,
+    "manualRetryAllowed": false,
+    "terminal": true,
+    "evaluationBlockedReason": null,
+    "detailedFeedbackBlockedReason": null,
+    "semanticStatus": "completed",
+    "semanticAttempt": 0,
+    "semanticMaxAttempts": 0,
+    "semanticNextRetryAt": null,
+    "semanticErrorCode": null,
+    "semanticCoverage": null,
+    "coverageComplete": false,
+    "statistics": {
+     "content": 0,
+     "grammar": 3,
+     "organization": 0,
+     "vocabulary": 0,
+     "mechanics": 2,
+     "total": 5
+    },
+    "transcript": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+    "transcriptPages": [
+     {
+      "fileId": "0000000000000000000000f2",
+      "pageNumber": 1,
+      "startChar": 0,
+      "endChar": 101,
+      "paragraphs": [
+       {
+        "startChar": 0,
+        "endChar": 101,
+        "text": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
+        "wordIds": [
+         "word_0000000000000000000000f2_1_1",
+         "word_0000000000000000000000f2_1_2",
+         "word_0000000000000000000000f2_1_3",
+         "word_0000000000000000000000f2_1_4",
+         "word_0000000000000000000000f2_1_5",
+         "word_0000000000000000000000f2_1_6",
+         "word_0000000000000000000000f2_1_7",
+         "word_0000000000000000000000f2_1_8",
+         "word_0000000000000000000000f2_1_9",
+         "word_0000000000000000000000f2_1_10",
+         "word_0000000000000000000000f2_1_11",
+         "word_0000000000000000000000f2_1_12",
+         "word_0000000000000000000000f2_1_13",
+         "word_0000000000000000000000f2_1_14",
+         "word_0000000000000000000000f2_1_15",
+         "word_0000000000000000000000f2_1_16",
+         "word_0000000000000000000000f2_1_17",
+         "word_0000000000000000000000f2_1_18",
+         "word_0000000000000000000000f2_1_19",
+         "word_0000000000000000000000f2_1_20",
+         "word_0000000000000000000000f2_1_21",
+         "word_0000000000000000000000f2_1_22",
+         "word_0000000000000000000000f2_1_23",
+         "word_0000000000000000000000f2_1_24"
+        ]
+       }
+      ]
+     }
+    ],
+    "transcriptWordSpans": [
+     {
+      "wordId": "word_0000000000000000000000f2_1_1",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 0,
+      "end": 1,
+      "separatorBefore": ""
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_2",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 2,
+      "end": 6,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_3",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 7,
+      "end": 9,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_4",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 10,
+      "end": 13,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_5",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 14,
+      "end": 18,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_6",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 19,
+      "end": 24,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_7",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 25,
+      "end": 29,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_8",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 30,
+      "end": 31,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_9",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 32,
+      "end": 35,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_10",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 36,
+      "end": 37,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_11",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 38,
+      "end": 43,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_12",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 44,
+      "end": 47,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_13",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 48,
+      "end": 49,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_14",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 50,
+      "end": 54,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_15",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 55,
+      "end": 59,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_16",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 60,
+      "end": 63,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_17",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 64,
+      "end": 67,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_18",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 68,
+      "end": 72,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_19",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 73,
+      "end": 77,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_20",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 78,
+      "end": 81,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_21",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 82,
+      "end": 85,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_22",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 86,
+      "end": 88,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_23",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 89,
+      "end": 94,
+      "separatorBefore": " "
+     },
+     {
+      "wordId": "word_0000000000000000000000f2_1_24",
+      "fileId": "0000000000000000000000f2",
+      "page": 1,
+      "start": 95,
+      "end": 101,
+      "separatorBefore": " "
+     }
+    ],
+    "transcriptSeparators": [
+     "",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " ",
+     " "
+    ],
+    "transcriptSource": "ocrPages",
+    "transcriptComplete": true,
+    "transcriptLayoutVersion": "ocr-layout-v5-native-text",
+    "correctionCurrent": true,
+    "correctionSourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
+    "evaluationStatus": "completed",
+    "assessmentRunId": null,
+    "assessmentStatus": "complete",
+    "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
+    "assessmentErrorCode": null,
+    "evaluationSource": "deterministic_fallback",
+    "evaluationFreshness": "overridden",
+    "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
+    "assessmentVersion": "writing-rubric-100-v5-teacher-policy",
+    "evaluationErrorCode": null,
+    "detailedFeedbackStatus": "completed",
+    "detailedFeedbackSourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
+    "detailedFeedbackVersion": null,
+    "detailedFeedback": {
+     "status": "completed",
+     "sourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
+     "evaluationVersion": "canonical-detailed-feedback-2",
+     "areasForImprovement": [
+      {
+       "id": "area_grammar",
+       "category": "GRAMMAR",
+       "title": "Grammar",
+       "issueCount": 3,
+       "score": 18,
+       "maxScore": 25,
+       "explanation": "3 distinct issues affected this category. The main recorded patterns are AGR, ART.",
+       "dominantSymbols": [
+        "AGR",
+        "ART"
+       ],
+       "examples": [
+        {
+         "correctionId": "ai_14467f8445c25b28",
+         "symbol": "AGR",
+         "symbolLabel": "AGR",
+         "quotedText": "goes",
+         "message": "Use \"go\" after \"I\".",
+         "suggestedText": "go"
+        },
+        {
+         "correctionId": "ai_4f28ce7bb0bf7df2",
+         "symbol": "AGR",
+         "symbolLabel": "AGR",
+         "quotedText": "goes",
+         "message": "Check the verb.",
+         "suggestedText": "go"
+        },
+        {
+         "correctionId": "ai_f8d03c3463fb67f9",
+         "symbol": "ART",
+         "symbolLabel": "ART",
+         "quotedText": "a",
+         "message": "Use \"an\" before a vowel sound.",
+         "suggestedText": "an"
+        }
+       ]
+      },
+      {
+       "id": "area_mechanics",
+       "category": "MECHANICS",
+       "title": "Mechanics",
+       "issueCount": 2,
+       "score": 8,
+       "maxScore": 10,
+       "explanation": "2 distinct issues affected this category. The main recorded pattern is SP.",
+       "dominantSymbols": [
+        "SP"
+       ],
+       "examples": [
+        {
+         "correctionId": "ai_00a053ed5aabd8c3",
+         "symbol": "SP",
+         "symbolLabel": "SP",
+         "quotedText": "dont",
+         "message": "Missing apostrophe.",
+         "suggestedText": "don't"
+        },
+        {
+         "correctionId": "ai_1354345f0245cb35",
+         "symbol": "SP",
+         "symbolLabel": "SP",
+         "quotedText": "realy",
+         "message": "Spelling.",
+         "suggestedText": "really"
+        }
+       ]
+      }
+     ],
+     "strengths": [],
+     "actionSteps": [
+      {
+       "id": "action_grammar",
+       "priority": 1,
+       "category": "GRAMMAR",
+       "action": "Revise the AGR/ART corrections in the highlighted passages.",
+       "reason": "3 canonical grammar issues currently affect this category.",
+       "relatedSymbols": [
+        "AGR",
+        "ART"
+       ],
+       "relatedCorrectionIds": [
+        "ai_14467f8445c25b28",
+        "ai_4f28ce7bb0bf7df2",
+        "ai_f8d03c3463fb67f9"
+       ]
+      },
+      {
+       "id": "action_mechanics",
+       "priority": 2,
+       "category": "MECHANICS",
+       "action": "Revise the SP corrections in the highlighted passages.",
+       "reason": "2 canonical mechanics issues currently affect this category.",
+       "relatedSymbols": [
+        "SP"
+       ],
+       "relatedCorrectionIds": [
+        "ai_00a053ed5aabd8c3",
+        "ai_1354345f0245cb35"
+       ]
+      }
+     ],
+     "summary": "Short paragraph."
+    },
+    "overriddenByTeacher": true,
+    "evaluationSourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
+    "evaluation": {
+     "categoryScores": {
+      "GRAMMAR": {
+       "score": 18,
+       "maxScore": 25,
+       "comment": "",
+       "issueCount": 0
+      },
+      "CONTENT": {
+       "score": 0,
+       "maxScore": 20,
+       "comment": "",
+       "issueCount": 0
+      },
+      "ORGANIZATION": {
+       "score": 0,
+       "maxScore": 20,
+       "comment": "",
+       "issueCount": 0
+      },
+      "VOCABULARY": {
+       "score": 0,
+       "maxScore": 20,
+       "comment": "",
+       "issueCount": 0
+      },
+      "MECHANICS": {
+       "score": 0,
+       "maxScore": 10,
+       "comment": "",
+       "issueCount": 0
+      },
+      "PRESENTATION": {
+       "score": 0,
+       "maxScore": 5,
+       "comment": "",
+       "issueCount": 0
+      }
+     },
+     "overallScore": 82,
+     "grade": "F",
+     "evaluationSource": "deterministic_fallback",
+     "evaluationStatus": "completed",
+     "assessmentVersion": "writing-rubric-100-v5-teacher-policy",
+     "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
+     "strengths": [],
+     "areasForImprovement": [
+      {
+       "id": "area_grammar",
+       "category": "GRAMMAR",
+       "title": "Grammar",
+       "issueCount": 3,
+       "score": 18,
+       "maxScore": 25,
+       "explanation": "3 distinct issues affected this category. The main recorded patterns are AGR, ART.",
+       "dominantSymbols": [
+        "AGR",
+        "ART"
+       ],
+       "examples": [
+        {
+         "correctionId": "ai_14467f8445c25b28",
+         "symbol": "AGR",
+         "symbolLabel": "AGR",
+         "quotedText": "goes",
+         "message": "Use \"go\" after \"I\".",
+         "suggestedText": "go"
+        },
+        {
+         "correctionId": "ai_4f28ce7bb0bf7df2",
+         "symbol": "AGR",
+         "symbolLabel": "AGR",
+         "quotedText": "goes",
+         "message": "Check the verb.",
+         "suggestedText": "go"
+        },
+        {
+         "correctionId": "ai_f8d03c3463fb67f9",
+         "symbol": "ART",
+         "symbolLabel": "ART",
+         "quotedText": "a",
+         "message": "Use \"an\" before a vowel sound.",
+         "suggestedText": "an"
+        }
+       ]
+      },
+      {
+       "id": "area_mechanics",
+       "category": "MECHANICS",
+       "title": "Mechanics",
+       "issueCount": 2,
+       "score": 8,
+       "maxScore": 10,
+       "explanation": "2 distinct issues affected this category. The main recorded pattern is SP.",
+       "dominantSymbols": [
+        "SP"
+       ],
+       "examples": [
+        {
+         "correctionId": "ai_00a053ed5aabd8c3",
+         "symbol": "SP",
+         "symbolLabel": "SP",
+         "quotedText": "dont",
+         "message": "Missing apostrophe.",
+         "suggestedText": "don't"
+        },
+        {
+         "correctionId": "ai_1354345f0245cb35",
+         "symbol": "SP",
+         "symbolLabel": "SP",
+         "quotedText": "realy",
+         "message": "Spelling.",
+         "suggestedText": "really"
+        }
+       ]
+      }
+     ],
+     "actionSteps": [
+      {
+       "id": "action_grammar",
+       "priority": 1,
+       "category": "GRAMMAR",
+       "action": "Revise the AGR/ART corrections in the highlighted passages.",
+       "reason": "3 canonical grammar issues currently affect this category.",
+       "relatedSymbols": [
+        "AGR",
+        "ART"
+       ],
+       "relatedCorrectionIds": [
+        "ai_14467f8445c25b28",
+        "ai_4f28ce7bb0bf7df2",
+        "ai_f8d03c3463fb67f9"
+       ]
+      },
+      {
+       "id": "action_mechanics",
+       "priority": 2,
+       "category": "MECHANICS",
+       "action": "Revise the SP corrections in the highlighted passages.",
+       "reason": "2 canonical mechanics issues currently affect this category.",
+       "relatedSymbols": [
+        "SP"
+       ],
+       "relatedCorrectionIds": [
+        "ai_00a053ed5aabd8c3",
+        "ai_1354345f0245cb35"
+       ]
+      }
+     ],
+     "source": "deterministic_fallback"
+    },
+    "ocrError": null,
+    "ocrErrorCode": null,
+    "ocrFailures": [],
+    "fileId": null,
+    "marksVisible": true
+   }
+  }
+ },
+ "guest: feedback": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "data": {
+    "submissionId": "0000000000000000000000e2",
+    "_id": "0000000000000000000000b2",
+    "classId": "0000000000000000000000c1",
+    "submissionMode": "guest",
+    "teacherId": "0000000000000000000000a1",
+    "assessmentVersion": "writing-rubric-100-v5-teacher-policy",
+    "maxOverallScore": 100,
+    "rubricScores": {
+     "GRAMMAR": {
+      "score": 18,
+      "maxScore": 25,
+      "comment": "",
+      "issueCount": 0
+     },
+     "CONTENT": {
+      "score": 0,
+      "maxScore": 20,
+      "comment": "",
+      "issueCount": 0
+     },
+     "ORGANIZATION": {
+      "score": 0,
+      "maxScore": 20,
+      "comment": "",
+      "issueCount": 0
+     },
+     "VOCABULARY": {
+      "score": 0,
+      "maxScore": 20,
+      "comment": "",
+      "issueCount": 0
+     },
+     "MECHANICS": {
+      "score": 0,
+      "maxScore": 10,
+      "comment": "",
+      "issueCount": 0
+     },
+     "PRESENTATION": {
+      "score": 0,
+      "maxScore": 5,
+      "comment": "",
+      "issueCount": 0
+     }
+    },
+    "overallScore": 82,
+    "evaluationSourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
+    "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
+    "evaluationRubricSourceHash": "804aa28a8608e4d036fa6d03162ed1f3d1ee00b102db1a92ef310720c50b9574",
+    "evaluationPolicyHash": "9cad237b79d82ce5e0ae570b59b7b545743579304f97a15d146402b67f8e7117",
+    "analysisInputHash": "69afd7cf497ff27b038aa371a39bb060a8c355f210919642a3c8b7ef5f2e0ad2",
+    "evaluationSource": "deterministic_fallback",
+    "evaluationStatus": "completed",
+    "grade": "F",
+    "detailedFeedback": {
+     "status": "completed",
+     "sourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
+     "evaluationVersion": "canonical-detailed-feedback-2",
+     "areasForImprovement": [
+      {
+       "id": "area_grammar",
+       "category": "GRAMMAR",
+       "title": "Grammar",
+       "issueCount": 3,
+       "score": 18,
+       "maxScore": 25,
+       "explanation": "3 distinct issues affected this category. The main recorded patterns are AGR, ART.",
+       "dominantSymbols": [
+        "AGR",
+        "ART"
+       ],
+       "examples": [
+        {
+         "correctionId": "ai_14467f8445c25b28",
+         "symbol": "AGR",
+         "symbolLabel": "AGR",
+         "quotedText": "goes",
+         "message": "Use \"go\" after \"I\".",
+         "suggestedText": "go"
+        },
+        {
+         "correctionId": "ai_4f28ce7bb0bf7df2",
+         "symbol": "AGR",
+         "symbolLabel": "AGR",
+         "quotedText": "goes",
+         "message": "Check the verb.",
+         "suggestedText": "go"
+        },
+        {
+         "correctionId": "ai_f8d03c3463fb67f9",
+         "symbol": "ART",
+         "symbolLabel": "ART",
+         "quotedText": "a",
+         "message": "Use \"an\" before a vowel sound.",
+         "suggestedText": "an"
+        }
+       ]
+      },
+      {
+       "id": "area_mechanics",
+       "category": "MECHANICS",
+       "title": "Mechanics",
+       "issueCount": 2,
+       "score": 8,
+       "maxScore": 10,
+       "explanation": "2 distinct issues affected this category. The main recorded pattern is SP.",
+       "dominantSymbols": [
+        "SP"
+       ],
+       "examples": [
+        {
+         "correctionId": "ai_00a053ed5aabd8c3",
+         "symbol": "SP",
+         "symbolLabel": "SP",
+         "quotedText": "dont",
+         "message": "Missing apostrophe.",
+         "suggestedText": "don't"
+        },
+        {
+         "correctionId": "ai_1354345f0245cb35",
+         "symbol": "SP",
+         "symbolLabel": "SP",
+         "quotedText": "realy",
+         "message": "Spelling.",
+         "suggestedText": "really"
+        }
+       ]
+      }
+     ],
+     "strengths": [],
+     "actionSteps": [
+      {
+       "id": "action_grammar",
+       "priority": 1,
+       "category": "GRAMMAR",
+       "action": "Revise the AGR/ART corrections in the highlighted passages.",
+       "reason": "3 canonical grammar issues currently affect this category.",
+       "relatedSymbols": [
+        "AGR",
+        "ART"
+       ],
+       "relatedCorrectionIds": [
+        "ai_14467f8445c25b28",
+        "ai_4f28ce7bb0bf7df2",
+        "ai_f8d03c3463fb67f9"
+       ]
+      },
+      {
+       "id": "action_mechanics",
+       "priority": 2,
+       "category": "MECHANICS",
+       "action": "Revise the SP corrections in the highlighted passages.",
+       "reason": "2 canonical mechanics issues currently affect this category.",
+       "relatedSymbols": [
+        "SP"
+       ],
+       "relatedCorrectionIds": [
+        "ai_00a053ed5aabd8c3",
+        "ai_1354345f0245cb35"
+       ]
+      }
+     ],
+     "summary": "Short paragraph."
+    },
+    "detailedFeedbackSourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
+    "teacherComments": "Teacher review complete.",
+    "rubricDesigner": null,
+    "scoringAudit": {
+     "version": "fixture",
+     "categories": [
+      {
+       "category": "GRAMMAR",
+       "maxScore": 25,
+       "wordCount": 24,
+       "totalIssueCount": 3,
+       "countedIssueCount": 3,
+       "ignoredIssueCount": 0,
+       "basePenalty": 0,
+       "repetitionAdjustedPenalty": 0,
+       "weightedPenalty": 0,
+       "density": 0,
+       "tolerance": 1,
+       "multiplier": 0.8,
+       "maximumDeduction": 12.5,
+       "cappedDeduction": 0,
+       "unroundedScore": 25,
+       "finalScore": 24.5,
+       "score": 24.5,
+       "correctionIds": [
+        "ai_14467f8445c25b28",
+        "ai_f8d03c3463fb67f9",
+        "ai_4f28ce7bb0bf7df2"
+       ],
+       "ignoredCorrectionIds": [],
+       "groups": [
+        {
+         "key": "GRAMMAR|AGR|go",
+         "symbol": "AGR",
+         "ruleId": null,
+         "count": 2,
+         "severityWeight": 0,
+         "weightedPenalty": 0,
+         "correctionIds": [
+          "ai_14467f8445c25b28",
+          "ai_4f28ce7bb0bf7df2"
+         ]
+        },
+        {
+         "key": "GRAMMAR|ART|an",
+         "symbol": "ART",
+         "ruleId": null,
+         "count": 1,
+         "severityWeight": 0,
+         "weightedPenalty": 0,
+         "correctionIds": [
+          "ai_f8d03c3463fb67f9"
+         ]
+        }
+       ]
+      },
+      {
+       "category": "MECHANICS",
+       "maxScore": 10,
+       "wordCount": 24,
+       "totalIssueCount": 2,
+       "countedIssueCount": 2,
+       "ignoredIssueCount": 0,
+       "basePenalty": 0,
+       "repetitionAdjustedPenalty": 0,
+       "weightedPenalty": 0,
+       "density": 0,
+       "tolerance": 1,
+       "multiplier": 0.8,
+       "maximumDeduction": 5,
+       "cappedDeduction": 0,
+       "unroundedScore": 10,
+       "finalScore": 9.5,
+       "score": 9.5,
+       "correctionIds": [
+        "ai_00a053ed5aabd8c3",
+        "ai_1354345f0245cb35"
+       ],
+       "ignoredCorrectionIds": [],
+       "groups": [
+        {
+         "key": "MECHANICS|SP|don't",
+         "symbol": "SP",
+         "ruleId": null,
+         "count": 1,
+         "severityWeight": 0,
+         "weightedPenalty": 0,
+         "correctionIds": [
+          "ai_00a053ed5aabd8c3"
+         ]
+        },
+        {
+         "key": "MECHANICS|SP|really",
+         "symbol": "SP",
+         "ruleId": null,
+         "count": 1,
+         "severityWeight": 0,
+         "weightedPenalty": 0,
+         "correctionIds": [
+          "ai_1354345f0245cb35"
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    "overriddenByTeacher": true,
+    "createdAt": "<volatile>",
+    "updatedAt": "<volatile>",
+    "correctionStats": {
+     "content": 0,
+     "organization": 0,
+     "grammar": 3,
+     "vocabulary": 0,
+     "mechanics": 2,
+     "total": 5
+    },
+    "aiFeedback": {
+     "overallComments": "",
+     "perCategory": []
+    },
+    "__v": "<volatile>",
+    "correctionStatistics": {
+     "content": 0,
+     "organization": 0,
+     "grammar": 3,
+     "vocabulary": 0,
+     "mechanics": 2,
+     "total": 5
+    },
+    "ocrStatus": "completed",
+    "ocrErrorCode": null,
+    "ocrFailureMessage": null,
+    "correctionStatus": "completed",
+    "correctionCurrent": true,
+    "transcriptLayoutVersion": "ocr-layout-v5-native-text",
+    "correctionStage": "complete",
+    "statisticsStatus": "complete",
+    "statisticsCompleteness": "canonical",
+    "statistics": {
+     "content": 0,
+     "grammar": 3,
+     "organization": 0,
+     "vocabulary": 0,
+     "mechanics": 2,
+     "total": 5
+    },
+    "categoryAvailability": {
+     "content": "available",
+     "organization": "available",
+     "vocabulary": "available",
+     "grammar": "available",
+     "mechanics": "available"
+    },
+    "sourceCounts": {
+     "languageTool": 0,
+     "semanticAi": 5
+    },
+    "correctionErrorCode": null,
+    "evaluationErrorCode": null,
+    "detailedFeedbackStatus": "completed",
+    "processingActive": false,
+    "automaticPollingAllowed": false,
+    "manualRetryAllowed": false,
+    "terminal": true,
+    "evaluationBlockedReason": null,
+    "detailedFeedbackBlockedReason": null,
+    "semanticStatus": "completed",
+    "semanticSucceeded": true,
+    "correctionsAvailable": true,
+    "correctionsCompleteness": "complete",
+    "semanticAttempt": 0,
+    "semanticMaxAttempts": 0,
+    "semanticNextRetryAt": null,
+    "semanticErrorCode": null,
+    "semanticCoverage": null,
+    "coverageComplete": false,
+    "retryable": false,
+    "score": 82,
+    "evaluationCurrent": true,
+    "evaluationFreshness": "overridden",
+    "requiresCanonicalReevaluation": false,
+    "reevaluationReason": null,
+    "detailedFeedbackCurrent": true,
+    "evaluationStaleReason": null,
+    "rubricFresh": true,
+    "policyFresh": true,
+    "hasValidCustomRubric": false,
+    "currentRubricSourceHash": "804aa28a8608e4d036fa6d03162ed1f3d1ee00b102db1a92ef310720c50b9574",
+    "currentPolicyHash": "9cad237b79d82ce5e0ae570b59b7b545743579304f97a15d146402b67f8e7117",
+    "processingProgress": {
+     "status": "completed",
+     "stage": "completed",
+     "percent": 100,
+     "message": "Result ready",
+     "completed": true,
+     "failed": false,
+     "active": false
+    },
+    "previousEvaluation": null,
+    "teacherReviewedAt": null,
+    "teacherReviewedBy": null,
+    "correctionSourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
+    "marksVisible": true
+   }
+  }
+ },
+ "guest: drafts": {
+  "status": 200,
+  "body": {
+   "success": true,
+   "data": {
+    "available": false,
+    "code": "FIRST_DRAFT",
+    "message": "No previous assessed draft to compare yet.",
+    "previousSubmissionId": "",
+    "currentSubmissionId": "0000000000000000000000e2"
+   }
+  }
+ }
+}

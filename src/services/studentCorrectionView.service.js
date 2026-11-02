@@ -1,0 +1,250 @@
+'use strict';
+// THE ONE PLACE that decides which corrections a student sees (Task 6A). Every student-facing surface (results API, counts, feedback,
+// PDF, draft comparison and progress, my-submission lists) and the teacher preview go through buildStudentCorrectionView or its loader;
+// tests/annotationRawReadGuard.test.js fails when a new surface reads the raw correction list instead.
+//
+// Rules (read-time, deterministic):
+//   - no overlay entry changes the visible set -> the submission and its persisted statistics are returned untouched (byte-identical);
+//   - hidden and archived entries suppress their AI correction; when the AI correction was regenerated (new id) or the OCR changed,
+//     every current correction matching the anchor (annotationAnchor.matches, any category) is suppressed: fail closed;
+//   - edited entries replace the text of the one AI correction they match (same category, best IoU); no unique match -> orphaned;
+//   - manual entries are shown where their anchor locates; otherwise orphaned;
+//   - orphaned entries are never shown to students; the teacher snapshot lists them;
+//   - counts follow the visible set; scores are never touched.
+const { ocrEvidenceHash } = require('./correctionEvidenceIdentity.service');
+const { buildCanonicalSubmissionTranscript } = require('../utils/ocrTranscriptNormalizer');
+const { statistics: canonicalStatistics } = require('./correctionCanonical.service');
+const { dominantSymbols, examples } = require('./canonicalDetailedFeedback.service');
+const anchors = require('./annotationAnchor.service');
+const { normalizeState } = require('./teacherAnnotation.service');
+
+const SUPPRESSING = ['hidden', 'archived'];
+const notLoaded = () => Object.assign(new Error('ANNOTATION_OVERLAY_NOT_LOADED'), { statusCode: 500, code: 'ANNOTATION_OVERLAY_NOT_LOADED' });
+const idOf = c => String(c?.id || c?._id || '');
+
+/** The stored overlay of a submission-like object, or a thrown error when it was not loaded (never guessed as "none"). */
+function overlayOf(submission, explicit) {
+  if (explicit !== undefined) return explicit;
+  if (typeof submission?.isSelected === 'function') {
+    if (!submission.isSelected('teacherAnnotations')) throw notLoaded();
+    return submission.get('teacherAnnotations') ?? null;
+  }
+  if (submission && Object.prototype.hasOwnProperty.call(submission, 'teacherAnnotations')) return submission.teacherAnnotations ?? null;
+  throw notLoaded();
+}
+
+/** Entries that govern the current draft. Legacy (version 1) entries carry no draft number. */
+const activeEntries = (state, draftNumber) => state.entries.filter(e => e.draftNumber == null || Number(e.draftNumber) === draftNumber);
+
+/** A teacher value placed at a located span of the current transcript, bound to the current OCR evidence. */
+function placed(value, span, canonical, hash, submission, extra) {
+  const wordIds = anchors.wordIdsFor(canonical, span);
+  const { createdAt: _createdAt, ...rest } = value;
+  return { ...rest, ...extra, fileId: String(span.fileId), page: span.page, startChar: span.startChar, endChar: span.endChar,
+    quotedText: canonical.text.slice(span.startChar, span.endChar), wordIds, evidenceWordIds: wordIds, bboxList: [],
+    ocrEvidenceHash: hash, ...(submission.ocrJobId ? { ocrRunId: String(submission.ocrJobId) } : {}), teacherGrounded: true };
+}
+
+/**
+ * Resolves the overlay against the current corrections and transcript. Pure. Returns
+ * { changed, visible, suppressedIds, editedById, orphans, rows (teacher list), aiById, entryIdByAiId, orphanIds, state, revision }.
+ */
+function resolveOverlay(submission, overlay, { corrections } = {}) {
+  const state = normalizeState(overlay);
+  const raw = Array.isArray(corrections) ? corrections : Array.isArray(submission?.writingCorrections) ? submission.writingCorrections : [];
+  const draftNumber = Math.max(1, Number(submission?.draftNumber) || 1);
+  const entries = activeEntries(state, draftNumber);
+  const aiById = new Map(raw.map(c => [idOf(c), c]));
+  const base = { state, revision: state.revision, scoringReviewRequired: Boolean(state.scoringReviewRequired), aiById,
+    entryIdByAiId: new Map(), orphanIds: new Set(), orphans: [], suppressedIds: new Set(), editedById: new Map() };
+  if (!entries.length) return { ...base, changed: false, visible: raw, manual: [], rows: raw.map(c => ({ ...c, moderationStatus: 'visible' })) };
+
+  const canonical = buildCanonicalSubmissionTranscript(submission);
+  const hash = ocrEvidenceHash(canonical, submission);
+  const suppressedBy = new Map(), editClaims = new Map(), manual = [];
+  const orphan = (entry, reason, extra = {}) => { base.orphanIds.add(entry.id);
+    base.orphans.push({ entryId: entry.id, kind: entry.kind, status: entry.status, edited: Boolean(entry.edited), reason,
+      anchor: entry.anchor || null, value: entry.value || null, ...extra }); };
+  // Legacy entries cannot tell which draft they belong to: they relocate only on the first draft, except suppressions (fail closed).
+  const mayRelocate = entry => !entry.legacy || draftNumber === 1 || SUPPRESSING.includes(entry.status);
+  const where = (anchor, entry) => anchor?.sourceHash === hash || mayRelocate(entry) ? anchors.locate(anchor, canonical, hash)
+    : { orphan: 'LEGACY_DRAFT_UNKNOWN', candidates: [] };
+
+  for (const entry of entries) {
+    if (entry.kind === 'manual') {
+      const found = where(entry.valueAnchor || entry.anchor, entry);
+      if (!found.span) { orphan(entry, found.orphan); continue; }
+      manual.push({ entry, correction: placed(entry.value, found.span, canonical, hash, submission, { id: entry.id, source: 'Teacher' }) });
+      continue;
+    }
+    // AI entry: its own correction when still present on the same evidence, else every correction at the located anchor.
+    const direct = entry.anchor?.sourceHash === hash && aiById.get(entry.targetId);
+    // A restored, unedited AI entry changes nothing: it is never an orphan.
+    const effective = SUPPRESSING.includes(entry.status) || entry.edited;
+    let targets;
+    if (direct) targets = [direct];
+    else {
+      const found = where(entry.anchor, entry);
+      const spans = found.span ? [found.span] : found.candidates;
+      targets = raw.filter(c => spans.some(span => anchors.matches(span, c)));
+      if (effective && !found.span) orphan(entry, found.orphan, { suppressing: SUPPRESSING.includes(entry.status) && targets.length > 0 });
+      else if (effective && !targets.length) orphan(entry, 'NO_MATCHING_CORRECTION');
+    }
+    if (SUPPRESSING.includes(entry.status)) {
+      for (const c of targets) { suppressedBy.set(idOf(c), entry); base.entryIdByAiId.set(idOf(c), entry.id); }
+      continue;
+    }
+    if (base.orphanIds.has(entry.id)) continue;
+    if (!entry.edited) { for (const c of targets) if (!base.entryIdByAiId.has(idOf(c))) base.entryIdByAiId.set(idOf(c), entry.id); continue; }
+    // Edited: exactly one same-category correction, the best overlap.
+    const category = entry.value?.category || entry.anchor?.category;
+    const same = direct ? targets : targets.filter(c => !category || c.category === category || c.category === entry.value?.category)
+      .sort((a, b) => anchors.overlap(entry.anchor, b).iou - anchors.overlap(entry.anchor, a).iou);
+    if (!same.length || (same.length > 1 && anchors.overlap(entry.anchor, same[0]).iou === anchors.overlap(entry.anchor, same[1]).iou)) {
+      orphan(entry, same.length ? 'AMBIGUOUS' : 'NO_MATCHING_CORRECTION'); continue;
+    }
+    const target = same[0];
+    if (editClaims.has(idOf(target))) { orphan(entry, 'CONFLICT'); orphan(editClaims.get(idOf(target)).entry, 'CONFLICT'); editClaims.delete(idOf(target)); continue; }
+    editClaims.set(idOf(target), { entry, target });
+    base.entryIdByAiId.set(idOf(target), entry.id);
+  }
+
+  const visible = [], rows = [];
+  for (const c of raw) {
+    const id = idOf(c);
+    const hider = suppressedBy.get(id);
+    if (hider) { base.suppressedIds.add(id); rows.push({ ...c, moderationStatus: hider.status, entryId: hider.id }); continue; }
+    const claim = editClaims.get(id);
+    if (claim && !base.orphanIds.has(claim.entry.id)) {
+      const found = where(claim.entry.valueAnchor, claim.entry);
+      if (!found.span) { orphan(claim.entry, found.orphan); visible.push(c); rows.push({ ...c, moderationStatus: 'visible' }); continue; }
+      const edited = placed(claim.entry.value, found.span, canonical, hash, submission, { id, source: c.source, teacherEdited: true });
+      base.editedById.set(id, edited);
+      visible.push(edited); rows.push({ ...edited, moderationStatus: 'visible', entryId: claim.entry.id });
+      continue;
+    }
+    visible.push(c); rows.push({ ...c, moderationStatus: 'visible', ...(base.entryIdByAiId.has(id) ? { entryId: base.entryIdByAiId.get(id) } : {}) });
+  }
+  for (const { entry, correction } of manual) {
+    if (entry.status === 'visible') visible.push(correction);
+    rows.push({ ...correction, moderationStatus: entry.status, entryId: entry.id });
+  }
+  const changed = base.suppressedIds.size > 0 || base.editedById.size > 0 || visible.length !== raw.length;
+  return { ...base, changed, visible: changed ? visible : raw, manual, rows };
+}
+
+/** Copy of a submission without the overlay; the object itself when it carries none (mongoose documents drop it in toJSON). */
+function withoutOverlay(submission) {
+  if (!submission || typeof submission.toJSON === 'function' || !Object.prototype.hasOwnProperty.call(submission, 'teacherAnnotations')) return submission;
+  const { teacherAnnotations: _overlay, ...rest } = submission;
+  return rest;
+}
+
+/**
+ * What a student sees of one submission's corrections.
+ *   audience 'student' (default): { changed, corrections, statistics, submission (projected: visible corrections + statistics, no overlay),
+ *     revision, scoringReviewRequired, suppressedIds, editedById }
+ *   audience 'teacher': additionally { rows (every correction with its status), orphans }.
+ * `overlay` must be given or loaded on the submission; a missing overlay throws instead of leaking hidden corrections.
+ */
+function buildStudentCorrectionView(submission, { overlay, audience = 'student', corrections } = {}) {
+  const resolution = resolveOverlay(submission, overlayOf(submission, overlay), { corrections });
+  const statistics = resolution.changed ? canonicalStatistics(resolution.visible) : submission?.correctionStatistics;
+  let projected = withoutOverlay(submission);
+  if (resolution.changed) {
+    const base = typeof submission.toJSON === 'function' ? submission.toJSON() : { ...projected };
+    delete base.teacherAnnotations;
+    projected = { ...base, writingCorrections: resolution.visible, correctionStatistics: statistics };
+  }
+  const view = { changed: resolution.changed, corrections: resolution.visible, statistics, submission: projected,
+    revision: resolution.revision, scoringReviewRequired: resolution.scoringReviewRequired,
+    suppressedIds: resolution.suppressedIds, editedById: resolution.editedById };
+  return audience === 'teacher' ? { ...view, rows: resolution.rows, orphans: resolution.orphans, resolution } : view;
+}
+
+/**
+ * Loads the overlays of submissions (or of SubmissionRevision snapshots) in one query and builds each view. Whatever the caller
+ * selected is ignored: the overlay is always read here, so no surface can forget it.
+ */
+async function loadStudentCorrectionViews(documents, { model = 'Submission', audience } = {}) {
+  const list = documents || [];
+  // An overlay the caller already loaded (select '+teacherAnnotations') is used as is; only the rest cost one query.
+  const loaded = d => typeof d.isSelected === 'function' ? d.isSelected('teacherAnnotations') : Object.prototype.hasOwnProperty.call(d, 'teacherAnnotations');
+  const missing = list.filter(d => d && !loaded(d));
+  const stored = missing.length ? await require(`../models/${model}`).find({ _id: { $in: missing.map(d => d._id) } }).select('teacherAnnotations').lean() : [];
+  const byId = new Map(stored.map(d => [String(d._id), d.teacherAnnotations ?? null]));
+  return list.map(d => d && buildStudentCorrectionView(d, { overlay: loaded(d) ? undefined : byId.get(String(d._id)) ?? null, audience }));
+}
+const loadStudentCorrectionView = async (document, options) => (await loadStudentCorrectionViews([document], options))[0];
+
+/** The visible list as the correction endpoints and the PDF send it: plain copies, each marked visible. */
+const visibleCorrectionList = view => (view.corrections || []).map(c => ({ ...JSON.parse(JSON.stringify(c)), moderationStatus: 'visible' }));
+
+const templated = {
+  explanation: (n, symbols) => `${n} distinct issue${n === 1 ? '' : 's'} affected this category. `
+    + (symbols.length ? `The main recorded pattern${symbols.length === 1 ? ' is' : 's are'} ${symbols.join(', ')}.` : 'The canonical analysis identified revision evidence.'),
+  action: (symbols, n) => `Revise the ${symbols.join('/')} correction${n === 1 ? '' : 's'} in the highlighted passages.`,
+  reason: (n, title) => `${n} canonical ${title.toLowerCase()} issue${n === 1 ? '' : 's'} currently affect this category.`,
+};
+
+/** Structured detailed feedback restated for the visible set: counts, symbols, examples and the deterministic sentences built from them. */
+function detailedFeedbackForView(detailed, view) {
+  if (!detailed || !Array.isArray(detailed.areasForImprovement)) return detailed;
+  const byCategory = new Map();
+  for (const c of view.corrections) byCategory.set(c.category, [...(byCategory.get(c.category) || []), c]);
+  const rewritten = new Map();
+  const areas = detailed.areasForImprovement.map(area => {
+    if (!area || typeof area !== 'object' || area.evidenceKind === 'holistic' || !Number.isFinite(Number(area.issueCount))) return area;
+    const items = byCategory.get(area.category) || [];
+    const count = Number(view.statistics?.[String(area.category).toLowerCase()] ?? items.length);
+    if (!count) { rewritten.set(area.category, null); return null; }
+    const symbols = dominantSymbols(items);
+    const next = { ...area, issueCount: count, dominantSymbols: symbols, examples: examples(items),
+      explanation: area.explanation === templated.explanation(area.issueCount, area.dominantSymbols || []) ? templated.explanation(count, symbols) : area.explanation };
+    rewritten.set(area.category, { before: area, after: next });
+    return next;
+  }).filter(Boolean);
+  const actionSteps = Array.isArray(detailed.actionSteps) ? detailed.actionSteps.map(step => {
+    if (!step || !rewritten.has(step.category) || step.evidenceKind === 'holistic') return step;
+    const change = rewritten.get(step.category);
+    if (!change) return null;
+    const { before, after } = change;
+    return { ...step, relatedSymbols: after.dominantSymbols, relatedCorrectionIds: after.examples.map(item => item.correctionId),
+      action: step.action === templated.action(before.dominantSymbols || [], before.issueCount) ? templated.action(after.dominantSymbols, after.issueCount) : step.action,
+      reason: step.reason === templated.reason(before.issueCount, before.title || '') ? templated.reason(after.issueCount, after.title || '') : step.reason };
+  }).filter(Boolean) : detailed.actionSteps;
+  return { ...detailed, areasForImprovement: areas, actionSteps };
+}
+
+// Correction id shapes: canonical `<source>_<16 hex>`, manual `teacher_<uuid>`, legacy LanguageTool `lt_<n>`.
+const CORRECTION_ID = /^(?:[a-z]+_[0-9a-f]{16}|teacher_[0-9a-f-]{36}|lt_\d+)$/;
+
+/**
+ * Any student-facing payload restated for the visible set. Allowlist: an object that references a correction (correctionId or
+ * evidenceId 'correction:<id>') or a correction-id string survives only when that correction is visible, so stale references (feedback
+ * written before a regenerate or OCR re-run) are dropped too. Refreshes example text of edited corrections and restates structured
+ * detailed feedback. Returns the payload itself when nothing changed.
+ */
+function studentPayload(payload, view) {
+  if (!view?.changed || payload == null) return payload;
+  const visibleIds = new Set(view.corrections.map(idOf));
+  const hiddenRef = id => Boolean(id) && !visibleIds.has(String(id));
+  const referenced = value => (typeof value?.correctionId === 'string' && hiddenRef(value.correctionId))
+    || (typeof value?.evidenceId === 'string' && value.evidenceId.startsWith('correction:') && hiddenRef(value.evidenceId.slice(11)));
+  const walk = (value, key) => {
+    if (Array.isArray(value)) return value.filter(item => !(typeof item === 'string' && CORRECTION_ID.test(item) && hiddenRef(item))
+      && !(item && typeof item === 'object' && referenced(item))).map(item => walk(item, key));
+    if (!value || typeof value !== 'object' || value instanceof Date || value._bsontype || Buffer.isBuffer(value)) return value;
+    if (key === 'detailedFeedback') value = detailedFeedbackForView(value, view);
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = walk(v, k);
+    const edited = out.correctionId && view.editedById.get(String(out.correctionId));
+    if (edited && 'quotedText' in out) Object.assign(out, { symbol: edited.symbol, quotedText: edited.quotedText,
+      ...('message' in out ? { message: edited.message } : {}), ...('suggestedText' in out ? { suggestedText: edited.suggestedText } : {}) });
+    return out;
+  };
+  return walk(typeof payload.toObject === 'function' ? payload.toObject() : payload, '');
+}
+
+module.exports = { buildStudentCorrectionView, loadStudentCorrectionView, loadStudentCorrectionViews, resolveOverlay, studentPayload,
+  detailedFeedbackForView, overlayOf, visibleCorrectionList };

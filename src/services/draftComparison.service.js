@@ -183,6 +183,13 @@ function compareDrafts(previous, current) {
     summary: { improved: delta > 0, unchanged: delta === 0, declined: delta < 0 } };
 }
 
+/** Submissions or revision snapshots as the student sees them (studentCorrectionView.service). */
+async function visibleSubmissions(list, model = 'Submission', { selected = false } = {}) {
+  // selected: the query asked for +teacherAnnotations; lean() omits an absent field, which means "no overlay", not "not loaded".
+  const withOverlay = selected ? list.map((item) => ('teacherAnnotations' in item ? item : { ...item, teacherAnnotations: null })) : list;
+  return (await require('./studentCorrectionView.service').loadStudentCorrectionViews(withOverlay, { model })).map((view) => view.submission);
+}
+
 function revisionAssessment(revision) {
   return { id: revision._id, chainId: revision.sourceSubmissionId, assignmentId: revision.assignment,
     assignmentTitle: revision.assignmentTitle || null, draftNumber: revision.draftNumber, submission: revision,
@@ -218,7 +225,9 @@ async function comparisonForSubmission(submissionId, user) {
     SubmissionFeedback.findOne({ submissionId: submission._id }).lean(),
     SubmissionRevision.findOne({ sourceSubmissionId: submission._id, draftNumber: { $lt: Number(submission.draftNumber) || 1 } }).sort({ draftNumber: -1 }).lean()
   ]);
-  return compareDrafts(previousRevision ? revisionAssessment(previousRevision) : null, liveAssessment(submission, feedback));
+  // Both drafts as the student sees them: teacher-hidden corrections are not counted.
+  const [current, previous] = await Promise.all([visibleSubmissions([submission]), visibleSubmissions(previousRevision ? [previousRevision] : [], 'SubmissionRevision')]);
+  return compareDrafts(previous[0] ? revisionAssessment(previous[0]) : null, liveAssessment(current[0], feedback));
 }
 
 function progressFromHistory(entries) {
@@ -270,13 +279,13 @@ function progressFromHistory(entries) {
 }
 
 async function historiesForFilter(filter) {
-  const submissions = await Submission.find(filter).sort({ submittedAt: 1 }).lean();
+  const submissions = await visibleSubmissions(await Submission.find(filter).select('+teacherAnnotations').sort({ submittedAt: 1 }).lean(), 'Submission', { selected: true });
   if (!submissions.length) return { submissions, grouped: new Map() };
   const ids = submissions.map((item) => item._id);
   const assignmentIds = [...new Set(submissions.map((item) => String(item.assignment)).filter(Boolean))];
   const [feedback, revisions, assignments] = await Promise.all([
     SubmissionFeedback.find({ submissionId: { $in: ids } }).lean(),
-    SubmissionRevision.find({ sourceSubmissionId: { $in: ids } }).sort({ submittedAt: 1 }).lean(),
+    SubmissionRevision.find({ sourceSubmissionId: { $in: ids } }).select('+teacherAnnotations').sort({ submittedAt: 1 }).lean().then(list => visibleSubmissions(list, 'SubmissionRevision', { selected: true })),
     Assignment.find({ _id: { $in: assignmentIds } }).select('_id title').lean()
   ]);
   const assignmentTitles = new Map(assignments.map((item) => [String(item._id), item.title]));

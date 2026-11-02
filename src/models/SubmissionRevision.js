@@ -27,6 +27,8 @@ const submissionRevisionSchema = new Schema({
   combinedOcrText: { type: String },
   ocrPages: { type: [Schema.Types.Mixed], default: undefined },
   writingCorrections: { type: [Schema.Types.Mixed], default: undefined },
+  // The teacher overlay of this draft (teacher-only; applied by studentCorrectionView.service).
+  teacherAnnotations: { type: Schema.Types.Mixed, select: false },
   correctionStatistics: { type: Schema.Types.Mixed, default: undefined },
   correctionStatus: { type: String },
   correctionSourceHash: { type: String, trim: true },

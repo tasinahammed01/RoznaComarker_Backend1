@@ -167,7 +167,8 @@ const presentation = endpoint(async (req, res) => {
     'transcriptText', 'combinedOcrText', 'ocrText', 'ocrStatus', 'correctionStatus', 'semanticStatus',
     'evaluationStatus', 'assessmentStatus', 'assessmentCompletedAt', 'correctionSourceHash',
     'evaluationSourceHash', 'transcriptLayoutVersion', 'correctionStatistics'];
-  const submission = Object.fromEntries(fields.filter(key => doc[key] != null).map(key => [key, doc[key]]));
+  const visible = (await require('../services/studentCorrectionView.service').loadStudentCorrectionView(doc)).submission;
+  const submission = Object.fromEntries(fields.filter(key => visible[key] != null).map(key => [key, visible[key]]));
   const files = await File.find({ _id: { $in: doc.files?.length ? doc.files : [doc.file] } }).lean();
   const byId = new Map(files.map(file => [String(file._id), file]));
   submission.files = (doc.files?.length ? doc.files : [doc.file]).map(id => byId.get(String(id))).filter(Boolean)
@@ -300,7 +301,9 @@ const results = endpoint(async (req, res) => {
   const assignment = await Assignment.findById(doc.assignment);
   if (!assignment?.isActive) throw access.fail(404, 'Results unavailable.');
   const feedback = await Feedback.findOne({ submissionId: doc._id }).lean();
-  const { status, state, ready } = require('../services/canonicalResultState.service').guestResultStatus({ submission: doc, feedback });
+  const corrections = require('../services/studentCorrectionView.service');
+  const view = await corrections.loadStudentCorrectionView(doc);
+  const { status, state, ready } = require('../services/canonicalResultState.service').guestResultStatus({ submission: view.submission, feedback });
   const publicFeedback = ready ? { overallScore: state.score, rubricScores: feedback.rubricScores,
     detailedFeedback: feedback.detailedFeedback, teacherComments: feedback.teacherComments || '' } : null;
   const data = { title: assignment.title, name: doc.guest.displayName, submittedAt: doc.submittedAt,
@@ -315,7 +318,8 @@ const results = endpoint(async (req, res) => {
     feedback: publicFeedback, marksVisible: showMarksToStudent(assignment),
     allowResubmission: assignment.allowResubmission === true,
     requireAdaptiveBeforeResubmission: assignment.requireAdaptiveBeforeResubmission === true };
-  ok(res, data.marksVisible ? data : redactStudentMarks(data));
+  const studentData = corrections.studentPayload(data, view);
+  ok(res, studentData.marksVisible ? studentData : redactStudentMarks(studentData));
 });
 const recover = endpoint(async (req, res) => {
   // A malformed address is a 400 about the format only. Everything else gets the same answer, sent BEFORE any lookup or email

@@ -332,10 +332,19 @@ const getOcrCorrectionsMiddleware = [
   submissionController.getOcrCorrections
 ];
 
+// Teacher annotations: the controller answers 404 to anyone but the owning teacher (no role middleware, which would say 403).
+// Writes are limited per teacher, not per IP: one essay can need dozens of edits and a school shares one address.
+// ANNOTATION_RATE_LIMIT_MAX (default 120) per ANNOTATION_RATE_LIMIT_WINDOW_MS (default 15 minutes).
 const teacherAnnotations = require('../controllers/teacherAnnotation.controller');
-router.get('/:submissionId/teacher-annotations', verifyJwtToken, requireRole('teacher'), teacherAnnotations.get);
-router.get('/:submissionId/teacher-annotations/history', verifyJwtToken, requireRole('teacher'), teacherAnnotations.history);
-router.post('/:submissionId/teacher-annotations', createSensitiveRateLimiter(), verifyJwtToken, requireRole('teacher'), teacherAnnotations.mutate);
+const annotationLimiter = createUserRateLimiter({
+  windowMs: Number(process.env.ANNOTATION_RATE_LIMIT_WINDOW_MS) > 0 ? Number(process.env.ANNOTATION_RATE_LIMIT_WINDOW_MS) : 15 * 60 * 1000,
+  limit: Number(process.env.ANNOTATION_RATE_LIMIT_MAX) > 0 ? Number(process.env.ANNOTATION_RATE_LIMIT_MAX) : 120,
+  event: 'ANNOTATION_RATE_LIMITED', reason: 'teacher_annotation_user', responseCode: 'ANNOTATION_RATE_LIMITED'
+});
+router.get('/:submissionId/teacher-annotations', verifyJwtToken, teacherAnnotations.get);
+router.get('/:submissionId/teacher-annotations/history', verifyJwtToken, teacherAnnotations.history);
+router.get('/:submissionId/teacher-annotations/preview', verifyJwtToken, teacherAnnotations.preview);
+router.post('/:submissionId/teacher-annotations', verifyJwtToken, annotationLimiter, teacherAnnotations.mutate);
 
 router.get(
   '/:submissionId/ocr-corrections',

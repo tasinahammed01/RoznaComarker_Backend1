@@ -24,6 +24,7 @@ const rendererFingerprint = digest(['../modules/submissionFeedbackPdfGenerator.j
   '../pdf/submittedImageAnnotationLayout.js', '../pdf/websiteAnnotationPresentation.js', '../pdf/websiteAnnotationRules.generated.js',
   '../pdf/sample/submissionFeedbackReportViewModel.js', './submissionFeedbackReport.service.js', './correctionLegendResolver.service.js',
   './canonicalCorrectionRender.service.js', './canonicalCorrectionResponse.service.js', './teacherComments.service.js', './teacherAnnotation.service.js',
+  './studentCorrectionView.service.js', './annotationAnchor.service.js',
   '../utils/ocrTranscriptNormalizer.js', '../utils/legacyStudentSource.js']
   .map(file => [file, sha(fs.readFileSync(path.join(__dirname, file)))]));
 const annotationFingerprint = sha(fs.readFileSync(path.join(__dirname, '../pdf/websiteAnnotationRules.generated.js')));

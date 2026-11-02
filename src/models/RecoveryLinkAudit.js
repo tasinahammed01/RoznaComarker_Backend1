@@ -15,5 +15,7 @@ const recoveryLinkAuditSchema = new mongoose.Schema({
 
 recoveryLinkAuditSchema.index({ submissionId: 1, createdAt: -1 }, { name: 'recovery_link_audit_submission_v1' });
 recoveryLinkAuditSchema.index({ issuedBy: 1, createdAt: -1 }, { name: 'recovery_link_audit_teacher_v1' });
+// Rows hold a masked address: kept one year, then removed by MongoDB.
+recoveryLinkAuditSchema.index({ createdAt: 1 }, { name: 'recovery_link_audit_ttl_v1', expireAfterSeconds: 365 * 24 * 60 * 60 });
 
 module.exports = mongoose.models.RecoveryLinkAudit || mongoose.model('RecoveryLinkAudit', recoveryLinkAuditSchema);

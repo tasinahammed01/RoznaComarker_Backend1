@@ -40,7 +40,9 @@ describe('submission result LanguageTool isolation', () => {
 
     expect(correctionRead).not.toMatch(/buildOcrCorrections|writingCorrectionsService|LanguageTool|canonicalCorrectionsPipeline|\.save\s*\(|updateOne|findOneAndUpdate/);
     expect(feedbackRead).not.toMatch(/buildSubmissionCorrectionStatistics|buildOcrCorrections|writingCorrectionsService|LanguageTool|semanticWriting|canonicalEvaluation|\.save\s*\(|updateOne|findOneAndUpdate/);
-    expect(correctionRead).toMatch(/doc\.writingCorrections/);
+    // Corrections are read through the student-visible builder (Task 6A), never the raw list.
+    expect(correctionRead).toMatch(/loadStudentCorrectionView/);
+    expect(correctionRead).not.toMatch(/doc\.writingCorrections/);
     expect(feedbackRead).toMatch(/countSubmissionCorrections/);
   });
 

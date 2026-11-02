@@ -23,6 +23,7 @@ const {
 const { buildOcrCorrections } = require("../services/ocrCorrections.service");
 const { buildSubmissionCorrectionStatistics, countSubmissionCorrections } = require("../services/submissionCorrectionStatistics.service");
 const { buildCanonicalResultState, buildPreviousEvaluation } = require("../services/canonicalResultState.service");
+const { loadStudentCorrectionView, studentPayload } = require("../services/studentCorrectionView.service");
 const { currentEvaluationSettings } = require("../services/evaluationSettingsContext.service");
 const { resolveTeacherComments } = require("../services/teacherComments.service");
 const { showMarksToStudent, redactStudentMarks } = require("../services/assignmentAccessPolicy.service");
@@ -899,8 +900,11 @@ async function getSubmissionFeedback(req, res) {
 
     // Result reads must never invoke a provider-backed legacy fallback. An empty
     // persisted canonical array is a valid zero-correction result.
+    // Counts and lists follow the corrections the student sees (teacher-hidden ones excluded); scores are never touched.
+    const view = await loadStudentCorrectionView(submission);
+    const visibleSubmission = view.submission;
     const correctionStatistics = countSubmissionCorrections(
-      Array.isArray(submission.writingCorrections) ? submission.writingCorrections : []
+      Array.isArray(view.corrections) ? view.corrections : []
     ).statistics;
     const countsFromStatistics = {
       CONTENT: correctionStatistics.content,
@@ -923,7 +927,7 @@ async function getSubmissionFeedback(req, res) {
     res.set('Cache-Control', 'private, no-store');
     res.set('Pragma', 'no-cache');
     if (!feedback) {
-      const resultState = buildCanonicalResultState({ submission, feedback: null, currentSettings });
+      const resultState = buildCanonicalResultState({ submission: visibleSubmission, feedback: null, currentSettings });
       const responseData = {
         submissionId: String(submission._id),
         teacherComments,
@@ -932,10 +936,11 @@ async function getSubmissionFeedback(req, res) {
         evaluationSourceHash: null, correctionSourceHash: submission.correctionSourceHash || null,
         marksVisible
       };
-      return sendSuccess(res, marksVisible ? responseData : redactStudentMarks(responseData));
+      const studentData = studentPayload(responseData, view);
+      return sendSuccess(res, marksVisible ? studentData : redactStudentMarks(studentData));
     }
     const currentFeedback = withCanonicalStatistics(feedback);
-    const resultState = buildCanonicalResultState({ submission, feedback: currentFeedback, currentSettings });
+    const resultState = buildCanonicalResultState({ submission: visibleSubmission, feedback: currentFeedback, currentSettings });
     const previousEvaluation = buildPreviousEvaluation(currentFeedback, resultState);
     const { teacherCommentsUpdatedBy: _internalTeacherCommentsUpdatedBy, ...publicFeedback } = currentFeedback;
     const safeFeedback = resultState.evaluationCurrent ? publicFeedback : {};
@@ -954,7 +959,8 @@ async function getSubmissionFeedback(req, res) {
       correctionSourceHash: submission.correctionSourceHash || null,
       marksVisible
     };
-    return sendSuccess(res, marksVisible ? responseData : redactStudentMarks(responseData));
+    const studentData = studentPayload(responseData, view);
+    return sendSuccess(res, marksVisible ? studentData : redactStudentMarks(studentData));
 
     await Submission.updateOne(
       { _id: submission._id },
