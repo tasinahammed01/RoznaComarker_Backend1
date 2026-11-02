@@ -5,7 +5,7 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 
-const MODELS = ['RecoveryToken', 'RecoverySession', 'RecoveryEmailWindow'];
+const MODELS = ['RecoveryToken', 'RecoverySession', 'RecoveryEmailWindow', 'RecoveryLinkAudit'];
 
 /** Creates the indexes on the given (connected) mongoose instance and returns their names and TTL settings per collection. */
 async function ensureRecoveryPortalIndexes() {

@@ -204,6 +204,15 @@ module.exports = {
       opens: 'It opens your submitted assignment with its feedback, the same page as your original link. Your earlier links keep working.',
       cta: 'Open my submission', validity: `${days} day${days === 1 ? '' : 's'}`, allSubmissions: new URL('/recover', link).href });
   },
+  // A link a teacher sent for one submission. Neutral on purpose: the address was typed by the student and may belong to someone
+  // else, so no teacher, class or assignment name, no title and no score.
+  async sendTeacherRecoveryEmail({ to, link, expiresInDays }) {
+    const days = Number.isInteger(expiresInDays) ? expiresInDays : 30;
+    return sendRecoveryAccessEmail({ to, link, event: 'teacher_recovery_email',
+      subject: 'Your teacher sent you an access link to your submission',
+      opens: 'Your teacher sent you a new private link. It opens your submitted assignment with its feedback, the same page as your original link. Your earlier links keep working.',
+      cta: 'Open my submission', validity: `${days} day${days === 1 ? '' : 's'}`, allSubmissions: new URL('/recover', link).href });
+  },
   async sendGuestSubmissionEmail({ to, assignmentTitle, returnUrl, resultReady = false }) {
     try {
       const readiness = emailReadiness();

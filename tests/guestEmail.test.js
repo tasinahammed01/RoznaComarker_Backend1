@@ -198,3 +198,18 @@ describe('dedicated recovery emails', () => {
     expect(logged).not.toContain('private-token');
   });
 });
+
+test('teacher-sent recovery email: neutral wording, the link and its validity; no teacher, class, title or score', async () => {
+  const link = 'https://school.example/guest/results/aaaaaaaaaaaaaaaaaaaaaaaa#teacher-token';
+  await expect(email.sendTeacherRecoveryEmail({ to: 'guest@example.com', link, expiresInDays: 30 })).resolves.toEqual({ success: true });
+  const message = transport.sendMail.mock.calls[0][0];
+  expect(message.subject).toBe('Your teacher sent you an access link to your submission');
+  expect(message.html).toContain(`href="${link}"`);
+  for (const part of [message.text, message.html]) {
+    expect(part).toContain('Your teacher sent you a new private link');
+    expect(part).toContain('30 days');
+    expect(part).toContain('https://school.example/recover');
+    expect(part).not.toMatch(/Mr\.|Ms\.|class|score|grade|Essay/i);
+  }
+  expect(logger.info).toHaveBeenCalledWith({ event: 'teacher_recovery_email_sent', provider: 'smtp' });
+});

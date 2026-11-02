@@ -27,6 +27,12 @@ const humanReview=require('../controllers/sourceHumanReview.controller');
 const reviewLimiter=createUserRateLimiter({windowMs:60000,limit:40,event:'SOURCE_REVIEW_RATE_LIMITED',reason:'source_human_review'});
 router.post('/:submissionId/guest-access/revoke', verifyJwtToken, requireRole('teacher'),
   param('submissionId').isMongoId(), handleValidationResult, require('../controllers/guestSubmission.controller').revoke);
+// Teacher-sent recovery link for one guest submission in the teacher's own class (always to the stored email; no input).
+router.get('/:submissionId/guest-access/recovery-link', verifyJwtToken, requireRole('teacher'),
+  param('submissionId').isMongoId(), handleValidationResult, require('../controllers/teacherRecovery.controller').status);
+router.post('/:submissionId/guest-access/recovery-link', createSensitiveRateLimiter({ limit: 30, windowMs: 15 * 60 * 1000, reason: 'teacher_recovery_link' }),
+  verifyJwtToken, requireRole('teacher'),
+  param('submissionId').isMongoId(), handleValidationResult, require('../controllers/teacherRecovery.controller').send);
 const uploadUserLimiter = createUserRateLimiter({
   windowMs: process.env.UPLOAD_USER_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000,
   limit: process.env.UPLOAD_USER_RATE_LIMIT_MAX || 30,

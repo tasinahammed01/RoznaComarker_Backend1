@@ -19,6 +19,7 @@ the resulting index list. Expected TTL indexes:
 | `recoverytokens` | `recovery_token_purge_v1` on `purgeAt` | 0 s (document removed at `purgeAt` = link expiry + 7 days) |
 | `recoverysessions` | `recovery_session_purge_v1` on `expiresAt` | 3600 s after the session expires |
 | `recoveryemailwindows` | `recovery_email_window_purge_v1` on `expiresAt` | 0 s (hourly email counters) |
+| `recoverylinkaudits` | (no TTL: the audit trail of teacher-sent links is kept) | - |
 
 Plus the unique `recovery_token_hash_v1` (`tokenHash`) and `recovery_session_hash_v1` (`sessionHash`), and lookup indexes
 `recovery_token_email_v1` and `recovery_session_token_v1`.
@@ -33,6 +34,8 @@ db.recoverysessions.createIndex({ sessionHash: 1 }, { unique: true, name: 'recov
 db.recoverysessions.createIndex({ tokenId: 1 }, { name: 'recovery_session_token_v1' });
 db.recoverysessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 3600, name: 'recovery_session_purge_v1' });
 db.recoveryemailwindows.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: 'recovery_email_window_purge_v1' });
+db.recoverylinkaudits.createIndex({ submissionId: 1, createdAt: -1 }, { name: 'recovery_link_audit_submission_v1' });
+db.recoverylinkaudits.createIndex({ issuedBy: 1, createdAt: -1 }, { name: 'recovery_link_audit_teacher_v1' });
 ```
 
 Without these the portal still works (the per-address email cap uses the `_id` primary key and is atomic either way), but expired
@@ -47,6 +50,7 @@ RECOVERY_SESSION_MINUTES=30     # 5-240
 RECOVERY_EMAILS_PER_HOUR=3      # 1-20 emails per address per clock hour, atomic (shared with the link resend)
 RECOVERY_EMAIL_COOLDOWN_SECONDS=120  # 30-3600, one recovery email per address per cool-down (shared, atomic)
 RECOVERY_REQUESTS_PER_HOUR=10   # 3-100 HTTP requests per address per hour on every recovery endpoint
+RECOVERY_TEACHER_SENDS_PER_HOUR=20  # 1-200 teacher-sent recovery links per teacher per hour (atomic)
 ```
 
 The portal follows `GUEST_SUBMISSION_ENABLED` (off means off) and needs working SMTP and an https `FRONTEND_URL` in production.

@@ -30,27 +30,39 @@ async function resendGuestLink({ emailNormalized, submissionId = null, qrToken =
 
   const slot = await quota.claim(emailNormalized, { now, env });
   if (!slot.granted) return { sent: false, reason: slot.reason };
+  // A dedicated recovery email (not the submission receipt): what the link opens and how long it works; no title, name or score.
+  const result = await deliverRecoveryLink({ submissionId: candidate._id, now, release: slot.release,
+    send: (link, expiresInDays) => require('./email.service').sendGuestRecoveryEmail({ to: emailNormalized, link, expiresInDays }) });
+  if (result.sent) logger.info({ event: 'guest_recovery_link_sent' });
+  return result;
+}
+
+/**
+ * Adds one new link to a guest submission and emails it with `send(link, expiresInDays)`. Shared by the student resend and the
+ * teacher-sent link. Existing links are never invalidated. If the submission is gone/revoked or the email cannot be sent, the
+ * unsent link is removed and `release()` gives the limits back, so nobody is locked out. Returns { sent, reason, code }.
+ */
+async function deliverRecoveryLink({ submissionId, now = new Date(), release, send }) {
   const issued = access.issueToken();
   let link;
-  try { link = access.returnUrl(candidate._id, issued.token); }    // frontend URL validated before anything is stored
-  catch (error) { await slot.release(); throw error; }
-  const added = await Submission.updateOne({ _id: candidate._id, 'guest.revokedAt': null }, {
+  try { link = access.returnUrl(submissionId, issued.token); }    // frontend URL validated before anything is stored
+  catch (error) { await release(); throw error; }
+  const added = await Submission.updateOne({ _id: submissionId, submissionMode: 'guest', 'guest.revokedAt': null }, {
     $push: { 'guest.recoveryAccess': { $each: [{ hash: issued.accessHash, expiresAt: issued.expiresAt, createdAt: now }], $slice: -MAX_RECOVERY_LINKS } },
     $set: { 'guest.recoveredAt': now } });
-  if (!added.modifiedCount) { await slot.release(); return { sent: false, reason: 'no_submission' }; }
-
-  // A dedicated recovery email (not the submission receipt): what the link opens and how long it works; no title, name or score.
-  const delivery = await require('./email.service').sendGuestRecoveryEmail({ to: emailNormalized, link,
-    expiresInDays: Math.max(1, Math.round((issued.expiresAt.getTime() - now.getTime()) / 86400000)) });
+  if (!added.modifiedCount) { await release(); return { sent: false, reason: 'no_submission' }; }
+  let delivery;
+  try { delivery = await send(link, Math.max(1, Math.round((issued.expiresAt.getTime() - now.getTime()) / 86400000))); }
+  catch { delivery = { success: false, code: 'UNKNOWN' }; }
   if (!delivery?.success) {
-    // Nobody received this link: remove it, and give the slot back so the student can ask again at once.
-    await Submission.updateOne({ _id: candidate._id }, { $pull: { 'guest.recoveryAccess': { hash: issued.accessHash } } });
-    await slot.release();
-    logger.warn({ event: 'guest_recovery_email_failed', code: /^[A-Z_]{1,40}$/.test(delivery?.code || '') ? delivery.code : 'UNKNOWN' });
-    return { sent: false, reason: 'delivery_failed' };
+    // Nobody received this link: remove it, and give the limits back so the student can be sent one again at once.
+    await Submission.updateOne({ _id: submissionId }, { $pull: { 'guest.recoveryAccess': { hash: issued.accessHash } } });
+    await release();
+    const code = /^[A-Z_]{1,40}$/.test(delivery?.code || '') ? delivery.code : 'UNKNOWN';
+    logger.warn({ event: 'guest_recovery_email_failed', code });
+    return { sent: false, reason: 'delivery_failed', code };
   }
-  logger.info({ event: 'guest_recovery_link_sent' });
   return { sent: true };
 }
 
-module.exports = { resendGuestLink, MAX_RECOVERY_LINKS };
+module.exports = { resendGuestLink, deliverRecoveryLink, MAX_RECOVERY_LINKS };

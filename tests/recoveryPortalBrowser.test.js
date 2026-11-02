@@ -150,7 +150,7 @@ const uploadRoot = path.resolve(__dirname, '..', process.env.UPLOAD_BASE_PATH);
     report.ttlIndexes = Object.fromEntries(Object.entries(summary).map(([collection, list]) =>
       [collection, list.filter(i => i.expireAfterSeconds !== undefined).map(i => `${i.name}:${i.expireAfterSeconds}s`)]));
     expect(report.ttlIndexes).toEqual({ recoverytokens: ['recovery_token_purge_v1:0s'], recoverysessions: ['recovery_session_purge_v1:3600s'],
-      recoveryemailwindows: ['recovery_email_window_purge_v1:0s'] });
+      recoveryemailwindows: ['recovery_email_window_purge_v1:0s'], recoverylinkaudits: [] });
   } finally {
     fs.writeFileSync(path.join(evidence, 'comparison.json'), JSON.stringify(report, null, 2));
     await browser.close(); api.close(); site.close(); await disconnectInMemoryMongo();
