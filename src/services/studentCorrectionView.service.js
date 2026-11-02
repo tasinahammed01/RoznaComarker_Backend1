@@ -256,7 +256,18 @@ function detailedFeedbackForView(detailed, view) {
   }).filter(Boolean) : detailed.actionSteps;
   const strengths = Array.isArray(detailed.strengths) ? detailed.strengths.map(item => COUNTED_CATEGORIES.includes(item?.category) && typeof item.explanation === 'string'
     ? { ...item, explanation: restateCount(item.explanation, visibleCount(view, item.category), item) } : item) : detailed.strengths;
-  return { ...detailed, areasForImprovement: areas, actionSteps, strengths };
+  // A category with visible corrections but no counted area (a teacher added the first one): a card from the same templates. It has no score
+  // fields: stored feedback never scored this category's corrections. A holistic card is not a count of corrections, so it stays beside it.
+  const counted = new Set(areas.filter(area => area?.evidenceKind !== 'holistic' && Number.isFinite(Number(area?.issueCount))).map(area => area.category));
+  const added = COUNTED_CATEGORIES.filter(category => !counted.has(category) && visibleCount(view, category) && byCategory.get(category)?.length).map(category => {
+    const items = byCategory.get(category), count = visibleCount(view, category), symbols = dominantSymbols(items);
+    return { id: `area_${category.toLowerCase()}`, category, title: category[0] + category.slice(1).toLowerCase(), issueCount: count,
+      explanation: templated.explanation(count, symbols), dominantSymbols: symbols, examples: examples(items) };
+  });
+  const addedSteps = added.map((area, index) => ({ id: `action_${area.category.toLowerCase()}`, priority: (actionSteps?.length || 0) + index + 1, category: area.category,
+    action: templated.action(area.dominantSymbols, area.issueCount), reason: templated.reason(area.issueCount, area.title),
+    relatedSymbols: area.dominantSymbols, relatedCorrectionIds: area.examples.map(item => item.correctionId) }));
+  return { ...detailed, areasForImprovement: [...areas, ...added], actionSteps: Array.isArray(actionSteps) ? [...actionSteps, ...addedSteps] : actionSteps, strengths };
 }
 
 // Correction id shapes: canonical `<source>_<16 hex>`, manual `teacher_<uuid>`, legacy LanguageTool `lt_<n>`.
