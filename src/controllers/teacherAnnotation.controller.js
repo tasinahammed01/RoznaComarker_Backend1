@@ -60,8 +60,7 @@ async function snapshot(doc, classClosed) {
     pages, legend: defaultLegend(), corrections: view.rows, orphans: view.orphans, archivedOrphans: view.archivedOrphans,
     readOnly: Boolean(classClosed), readOnlyReason: classClosed ? 'CLASS_CLOSED' : null,
     effective: buildCanonicalCorrectionRenderModels(view.corrections, canonical, doc.ocrPages, { submission: doc }),
-    transitions: { ...policy.TRANSITIONS, orphan: policy.ORPHAN_TRANSITIONS }, publication: 'saved-effective',
-    scorePolicy: 'Annotation changes do not change grades. Review substantive changes using the existing teacher grading controls.' };
+    transitions: { ...policy.TRANSITIONS, orphan: policy.ORPHAN_TRANSITIONS }, publication: 'saved-effective' };
 }
 
 /** Audit rows kept on the overlay (the last few, and version 1 history) that are not yet in the collection. Idempotent. */

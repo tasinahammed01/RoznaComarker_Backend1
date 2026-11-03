@@ -69,6 +69,14 @@ afterEach(() => {
 });
 afterAll(async () => { await disconnectInMemoryMongo(); fs.rmSync(uploadRoot, { recursive: true, force: true }); });
 
+describe('snapshot', () => {
+  test('the old score policy sentence is gone (it pointed at grading controls that do not exist), the review is there', async () => {
+    const data = await snap(fixture.IDS.registered);
+    expect(data).not.toHaveProperty('scorePolicy');
+    expect(data.scoreReview).toEqual(expect.objectContaining({ status: 'not_needed' }));
+  });
+});
+
 describe('score fingerprint', () => {
   const base = { overallScore: 80, grade: 'B', evaluationSourceHash: 'h', overriddenByTeacher: false, evaluationVersion: 'v',
     rubricScores: { GRAMMAR: { score: 20, maxScore: 25, comment: 'one' }, MECHANICS: { score: 8, maxScore: 10, comment: 'x' } } };
