@@ -34,8 +34,8 @@ Repository-confirmed facts:
   PDF work files use the OS temporary directory under `rozna-pdf`.
 - `/api/notifications/stream` is SSE. `/api/stripe/webhook` must remain public
   to Stripe and retains its raw-body/signature handling.
-- The public health response contains status, time, environment and versioned
-  contract identifiers, not credentials or connectivity details.
+- The public health response is the status only. The versioned contract identifiers, environment and time are returned only with the header
+  `X-Deploy-Token` matching `HEALTH_DETAIL_TOKEN` (never when it is unset or shorter than 16 characters). No credentials or connectivity details either way.
 - Angular production output is `dist/rozna-comarker-fe/browser`; production
   source maps are not enabled by the current Angular configuration.
 - `.env`, `key/`, uploads, logs, private keys and service-account JSON files are
@@ -264,6 +264,8 @@ pm2 status
 df -h
 du -sh /path/to/backend/uploads ~/.pm2/logs
 curl -fsS http://127.0.0.1:5000/api/health
+# runtime detail, for the deploy check only:
+curl -fsS -H "X-Deploy-Token: $HEALTH_DETAIL_TOKEN" http://127.0.0.1:5000/api/health
 ```
 
 From a separate authorized machine:

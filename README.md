@@ -107,11 +107,11 @@ File uploads:
 ```json
 {
   "success": true,
-  "status": "OK",
-  "environment": "development",
-  "timestamp": "2026-01-01T00:00:00.000Z"
+  "status": "OK"
 }
 ```
+
+That is the whole public answer. With the header `X-Deploy-Token` equal to `HEALTH_DETAIL_TOKEN` (at least 16 characters; unset means never) it also has `environment`, `timestamp` and `runtime` (contract versions), which `npm run verify:runtime` reads.
 ## PayPal operations
 
 PayPal environment selection and readiness are documented in:

@@ -32,8 +32,9 @@ async function main() {
       await client.db().createCollection('flashcardsets');
     } finally { await client.close(); }
     const port = await freePort();
+    // One token for the backend that is started here and for the verifier that reads its runtime detail.
     const env = { ...process.env, NODE_ENV: 'development', MONGO_URI: uri, HOST: '127.0.0.1', PORT: String(port),
-      RUNTIME_HEALTH_URL: `http://127.0.0.1:${port}/api/health` };
+      HEALTH_DETAIL_TOKEN: require('crypto').randomBytes(24).toString('hex'), RUNTIME_HEALTH_URL: `http://127.0.0.1:${port}/api/health` };
     backend = runNpm(['start'], env);
     let output = '', exited = false;
     const capture = chunk => { output = (output + String(chunk)).slice(-100000); };

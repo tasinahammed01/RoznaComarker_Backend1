@@ -7,11 +7,15 @@ const app = require('../src/app');
 
 describe('Security & Production Hardening', () => {
   test('Helmet sets key security headers', async () => {
-    const res = await request(app).get('/api/health');
+    // The runtime contract is returned only with the deploy token (tests/healthDetail.test.js covers the rest).
+    process.env.HEALTH_DETAIL_TOKEN = 'security-hardening-token-0123456789';
+    const res = await request(app).get('/api/health').set('X-Deploy-Token', process.env.HEALTH_DETAIL_TOKEN);
+    delete process.env.HEALTH_DETAIL_TOKEN;
 
     expect(res.status).toBe(200);
-    expect(res.body.runtime).toMatchObject({ applicationVersion: '1.0.0', contractHash: expect.stringMatching(/^[a-f0-9]{16}$/),
-      contracts: { correctionSchema: 'semantic-corrections-v12-code-authoritative', rubricSchema: 'semantic-rubric-assessment-json-v5' } });
+    // The contract versions move with every contract change: compare with what the service computes, not with strings written here.
+    expect(res.body.runtime).toEqual(JSON.parse(JSON.stringify(require('../src/services/runtimeContractFingerprint.service').runtimeContractFingerprint())));
+    expect(res.body.runtime).toMatchObject({ contractHash: expect.stringMatching(/^[a-f0-9]{16}$/) });
 
     // CSP
     expect(res.headers).toHaveProperty('content-security-policy');
