@@ -3,7 +3,8 @@ const mockBasic=jest.fn(),mockPages=jest.fn(),mockSource=jest.fn();
 jest.mock('../src/services/imagePreflight.service',()=>({evaluateImage:(...args)=>mockBasic(...args)}));
 jest.mock('../src/services/gptVisionExact/preflight',()=>({...jest.requireActual('../src/services/gptVisionExact/preflight'),
   pagesFor:(...args)=>mockPages(...args),checkPages:(...args)=>mockSource(...args)}));
-jest.mock('../src/middlewares/rateLimit.middleware',()=>({createSensitiveRateLimiter:()=> (_req,_res,next)=>next()}));
+// The guest routes also build email limiters at load (recovery, Tasks 2 and 3): both factories must exist in the stand-in.
+jest.mock('../src/middlewares/rateLimit.middleware',()=>({createSensitiveRateLimiter:()=> (_req,_res,next)=>next(),createEmailRateLimiter:()=> (_req,_res,next)=>next()}));
 jest.mock('../src/services/guestAccess.service',()=>({...jest.requireActual('../src/services/guestAccess.service'),requireGuestAccess:(_req,_res,next)=>next()}));
 jest.mock('../src/controllers/guestSubmission.controller',()=>new Proxy({},{get:()=> (req,res,next)=>{
   if(req.body?.earlyDenied)return res.status(503).json({success:false,code:'GUEST_INDEX_SETUP_REQUIRED',message:'PRIVATE controller failure'});
