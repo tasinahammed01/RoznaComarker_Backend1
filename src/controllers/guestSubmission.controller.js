@@ -15,6 +15,7 @@ const { pendingAnalysisState } = require('../services/submissionAnalysisLifecycl
 const { scheduleSubmissionAnalysis } = require('../services/assessmentRecovery.service');
 const { ensureActivePlan, getLimit, bytesToMB } = require('../middlewares/usage.middleware');
 const { showMarksToStudent, redactStudentMarks } = require('../services/assignmentAccessPolicy.service');
+const studentIdentity = require('../services/studentTeacherIdentity.service');
 const email = require('../services/email.service');
 const logger = require('../utils/logger');
 const { withActiveStatus } = require('../services/classLifecycle.service');
@@ -200,8 +201,8 @@ const media = endpoint(async (req, res) => {
   res.sendFile(path.resolve(__dirname, '../..', file.path));
 });
 const attempts = endpoint(async (req, res) => {
-  ok(res, await require('../services/adaptivePracticeAttempt.service').listAttempts(req.params.sessionId,
-    req.guestAccessContext, req.query.activityId, req.query.questionId));
+  ok(res, studentIdentity.withoutInternal(await require('../services/adaptivePracticeAttempt.service').listAttempts(req.params.sessionId,
+    req.guestAccessContext, req.query.activityId, req.query.questionId)));
 });
 const submit = endpoint(async (req, res) => {
   // Upload/preflight can take time; apply current availability and ownership again.
@@ -334,12 +335,12 @@ const recover = endpoint(async (req, res) => {
 });
 const practice = endpoint(async (req, res) => {
   const service = require('../services/adaptivePractice.service');
-  ok(res, await (req.method === 'POST' ? service.generateSession(req.guestSubmission._id, req.guestAccessContext, { retry: req.body?.retry === true })
-    : service.getCurrentSession(req.guestSubmission._id, req.guestAccessContext)));
+  ok(res, studentIdentity.withoutInternal(await (req.method === 'POST' ? service.generateSession(req.guestSubmission._id, req.guestAccessContext, { retry: req.body?.retry === true })
+    : service.getCurrentSession(req.guestSubmission._id, req.guestAccessContext))));
 });
 const attempt = endpoint(async (req, res) => {
-  ok(res, await require('../services/adaptivePracticeAttempt.service').checkResponse(req.params.sessionId,
-    req.params.activityId, req.guestAccessContext, req.body));
+  ok(res, studentIdentity.withoutInternal(await require('../services/adaptivePracticeAttempt.service').checkResponse(req.params.sessionId,
+    req.params.activityId, req.guestAccessContext, req.body)));
 });
 const drafts = endpoint(async (req, res) => {
   ok(res, await require('../services/draftComparison.service').comparisonForSubmission(String(req.guestSubmission._id), req.guestAccessContext));

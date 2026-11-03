@@ -1577,6 +1577,8 @@ async function getWorksheetById(req, res) {
       for (const activity of worksheet.activities || []) {
         for (const question of activity?.data?.questions || []) delete question.modelAnswer;
       }
+      // No creator, no source text of the teacher's, no share link.
+      return sendSuccess(res, require("../services/studentTeacherIdentity.service").worksheetForStudent(worksheet));
     } else {
       if (String(worksheet.createdBy) !== String(req.user._id)) {
         return sendError(res, 403, "Forbidden");

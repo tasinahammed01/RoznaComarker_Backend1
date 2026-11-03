@@ -938,7 +938,8 @@ async function getSubmissionFeedback(req, res) {
         marksVisible
       };
       const studentData = studentPayload(responseData, view);
-      return sendSuccess(res, marksVisible ? studentData : redactStudentMarks(studentData));
+      const shown = marksVisible ? studentData : redactStudentMarks(studentData);
+      return sendSuccess(res, role === "student" ? studentIdentity.withoutInternal(shown) : shown);
     }
     const currentFeedback = withCanonicalStatistics(feedback);
     const resultState = buildCanonicalResultState({ submission: visibleSubmission, feedback: currentFeedback, currentSettings });
@@ -963,7 +964,8 @@ async function getSubmissionFeedback(req, res) {
     // Who reviewed and when is for the teacher's pages (dashboards). No student page reads them.
     if (role === "student") for (const key of ["teacherId", "teacherReviewedAt", "teacherReviewedBy", ...studentIdentity.INTERNAL_FIELDS]) delete responseData[key];
     const studentData = studentPayload(responseData, view);
-    return sendSuccess(res, marksVisible ? studentData : redactStudentMarks(studentData));
+    const shown = marksVisible ? studentData : redactStudentMarks(studentData);
+    return sendSuccess(res, role === "student" ? studentIdentity.withoutInternal(shown) : shown);
 
     await Submission.updateOne(
       { _id: submission._id },

@@ -571,8 +571,10 @@ async function getSetById(req, res) {
         return sendError(res, 404, "Flashcard set not found");
       }
 
+      // No owner, no share link, no folder: a student gets the cards and the title.
+      const forStudent = require("../services/studentTeacherIdentity.service").flashcardSetForStudent;
       if (set.visibility !== "private") {
-        return sendSuccess(res, set);
+        return sendSuccess(res, forStudent(set));
       }
 
       const memberships = await Membership.find({
@@ -610,7 +612,7 @@ async function getSetById(req, res) {
         }
       }
 
-      return sendSuccess(res, set);
+      return sendSuccess(res, forStudent(set));
     }
 
     const set = await FlashcardSet.findOne({ _id: id, ownerId: req.user._id });

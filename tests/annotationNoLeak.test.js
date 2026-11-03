@@ -25,6 +25,7 @@ const { connectInMemoryMongo, disconnectInMemoryMongo } = require('./helpers/tes
 const { seedTestPlans } = require('./helpers/seedTestPlans');
 const { signTestJwt } = require('./helpers/auth');
 const { seedAnnotationFixture, rerunOcr, AI_SPECS, WORDS } = require('./helpers/annotationFixture');
+const { seedInternalFields } = require('./helpers/studentResources');
 const { surfaces } = require('./helpers/studentSurfaces');
 const { annotationApi, manualValue } = require('./helpers/annotationApi');
 
@@ -76,6 +77,8 @@ beforeAll(async () => {
   await connectInMemoryMongo(); await seedTestPlans();
   await Promise.all(['Submission', 'RecoveryToken', 'RecoverySession', 'RecoveryEmailWindow', 'AnnotationAudit'].map(m => require(`../src/models/${m}`).init()));
   fixture = await seedAnnotationFixture({ uploadRoot });
+  // What a real pipeline run leaves on a submission: providers, models, prompts, leases, job ids. Without it the checks below would pass on nothing.
+  await seedInternalFields(fixture);
   teacher = annotationApi(app, fixture.teacher);
   // Warm the PDF cache with the unannotated reports: the annotated reports must not be served from it.
   const studentJwt = signTestJwt({ id: fixture.student._id, role: 'student', firebaseUid: fixture.student.firebaseUid });
@@ -95,6 +98,8 @@ afterAll(async () => {
 
 const NOT_FOR_STUDENTS = ['annotationGradeReviewRequired', 'annotationRevision', 'teacherReviewedAt', 'teacherReviewedBy', 'teacherId', 'teacherCommentsUpdatedBy', 'teacherAnnotations',
   'teacher', 'evaluationProvider', 'evaluationModel', 'evaluationAttempts', 'evaluationPolicy', 'analysisInputHash',
+  'semanticProvider', 'semanticModel', 'semanticPromptVersion', 'correctionGenerationConfig', 'analysisLeaseOwner', 'evaluationJobId', 'assessmentRunId', 'ocrEvidenceHash', 'ocrRunId',
+  'correctionFingerprint', 'rasterHash', 'createdBy', 'ownerId',
   'scoringReviewRequired', 'scoringReview', 'scoreReview', 'totalIssueCount', 'countedIssueCount', 'ignoredCorrectionIds', 'canonicalCount', 'rawCorrectionCount', 'acceptedCorrectionCount', 'evaluationDiagnostics'];
 function keysIn(value, keys, at = '$', out = []) {
   if (Array.isArray(value)) value.forEach((v, i) => keysIn(v, keys, `${at}[${i}]`, out));
@@ -108,6 +113,14 @@ function assertClean(label, text) {
 }
 
 describe('no-leak matrix', () => {
+  test('positive control: the pipeline internals are in the stored data and in a teacher\'s response, so their absence below means something', async () => {
+    const stored = await Submission.findById(fixture.IDS.registered).lean();
+    expect(stored).toEqual(expect.objectContaining({ semanticProvider: 'fixture-provider', analysisLeaseOwner: 'worker-fixture', assessmentRunId: 'run-fixture' }));
+    const teacherJwt = signTestJwt({ id: fixture.teacher._id, role: 'teacher', firebaseUid: fixture.teacher.firebaseUid });
+    const res = await request(app).get(`/api/submissions/${fixture.IDS.registered}/ocr-corrections`).set('Authorization', `Bearer ${teacherJwt}`);
+    expect(res.body.data.assessmentRunId).toBe('run-fixture');
+  });
+
   test('the unannotated PDFs (positive control) did contain the texts now suppressed', () => {
     expect(pdfBefore.registered).toContain('before a vowel sound');
     expect(pdfBefore.guest).toContain('Check the verb');

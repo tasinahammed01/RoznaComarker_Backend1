@@ -87,11 +87,7 @@
     "isLate": false,
     "qrToken": "fixture-qr",
     "draftNumber": 1,
-    "previousRevision": null,
-    "fileContentIdentity": "fixture-registered",
-    "reusedFromRevisionId": null,
     "reusedAssessment": false,
-    "analysisAttempt": 0,
     "ocrPages": [
      {
       "fileId": "0000000000000000000000f1",
@@ -428,9 +424,6 @@
     "semanticStatus": "completed",
     "transcriptText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
     "correctionTranscriptLayoutVersion": "ocr-layout-v5-native-text",
-    "correctionGenerationConfig": {
-     "reviewIdentity": "665e2ee966619d9bbb3829bdc3af5f254134c398e7b72eafc80013de23aa83ad"
-    },
     "correctionVersion": "canonical-8-source-grounded",
     "correctionSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
     "writingCorrections": [
@@ -454,10 +447,7 @@
       "source": "AI",
       "groupKey": "GRAMMAR",
       "symbolLabel": "AGR",
-      "color": "#FFD6A5",
-      "correctionFingerprint": "3148daf8d7213ca2606db99491759bde1a3f3d9e3d02a651762d1034c8126d9d",
-      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-      "ocrRunId": "job-registered"
+      "color": "#FFD6A5"
      },
      {
       "fileId": "0000000000000000000000f1",
@@ -479,10 +469,7 @@
       "source": "AI",
       "groupKey": "GRAMMAR",
       "symbolLabel": "ART",
-      "color": "#FFD6A5",
-      "correctionFingerprint": "29d662661115f78431c3d35dc4fbc1acf4de92195a810fa70920960058d8134e",
-      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-      "ocrRunId": "job-registered"
+      "color": "#FFD6A5"
      },
      {
       "fileId": "0000000000000000000000f1",
@@ -504,10 +491,7 @@
       "source": "AI",
       "groupKey": "MECHANICS",
       "symbolLabel": "SP",
-      "color": "#FFD6A5",
-      "correctionFingerprint": "2b02463eb02358aab320b316d01579aa2fb5eda94188612dd6b5802cfe59612e",
-      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-      "ocrRunId": "job-registered"
+      "color": "#FFD6A5"
      },
      {
       "fileId": "0000000000000000000000f1",
@@ -529,10 +513,7 @@
       "source": "AI",
       "groupKey": "GRAMMAR",
       "symbolLabel": "AGR",
-      "color": "#FFD6A5",
-      "correctionFingerprint": "265acd0aed3a7c9ea5731b6994d205d9c414340b885f422e06f57cc6b2623e12",
-      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-      "ocrRunId": "job-registered"
+      "color": "#FFD6A5"
      },
      {
       "fileId": "0000000000000000000000f1",
@@ -554,10 +535,7 @@
       "source": "AI",
       "groupKey": "MECHANICS",
       "symbolLabel": "SP",
-      "color": "#FFD6A5",
-      "correctionFingerprint": "1fe96f6d88a926d0d552e88aa39bec55dcf9666de42ca992c6c1f2698f4b4eae",
-      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-      "ocrRunId": "job-registered"
+      "color": "#FFD6A5"
      }
     ],
     "correctionStatistics": {
@@ -572,8 +550,6 @@
     "assessmentStatus": "complete",
     "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
     "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
-    "correctionOcrJobId": "job-registered",
-    "correctionOcrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
     "createdAt": "<volatile>",
     "updatedAt": "<volatile>",
     "__v": "<volatile>",
@@ -665,11 +641,7 @@
      "isLate": false,
      "qrToken": "fixture-qr",
      "draftNumber": 1,
-     "previousRevision": null,
-     "fileContentIdentity": "fixture-registered",
-     "reusedFromRevisionId": null,
      "reusedAssessment": false,
-     "analysisAttempt": 0,
      "ocrPages": [
       {
        "fileId": "0000000000000000000000f1",
@@ -1006,9 +978,6 @@
      "semanticStatus": "completed",
      "transcriptText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
      "correctionTranscriptLayoutVersion": "ocr-layout-v5-native-text",
-     "correctionGenerationConfig": {
-      "reviewIdentity": "665e2ee966619d9bbb3829bdc3af5f254134c398e7b72eafc80013de23aa83ad"
-     },
      "correctionVersion": "canonical-8-source-grounded",
      "correctionSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
      "writingCorrections": [
@@ -1032,10 +1001,7 @@
        "source": "AI",
        "groupKey": "GRAMMAR",
        "symbolLabel": "AGR",
-       "color": "#FFD6A5",
-       "correctionFingerprint": "3148daf8d7213ca2606db99491759bde1a3f3d9e3d02a651762d1034c8126d9d",
-       "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-       "ocrRunId": "job-registered"
+       "color": "#FFD6A5"
       },
       {
        "fileId": "0000000000000000000000f1",
@@ -1057,10 +1023,7 @@
        "source": "AI",
        "groupKey": "GRAMMAR",
        "symbolLabel": "ART",
-       "color": "#FFD6A5",
-       "correctionFingerprint": "29d662661115f78431c3d35dc4fbc1acf4de92195a810fa70920960058d8134e",
-       "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-       "ocrRunId": "job-registered"
+       "color": "#FFD6A5"
       },
       {
        "fileId": "0000000000000000000000f1",
@@ -1082,10 +1045,7 @@
        "source": "AI",
        "groupKey": "MECHANICS",
        "symbolLabel": "SP",
-       "color": "#FFD6A5",
-       "correctionFingerprint": "2b02463eb02358aab320b316d01579aa2fb5eda94188612dd6b5802cfe59612e",
-       "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-       "ocrRunId": "job-registered"
+       "color": "#FFD6A5"
       },
       {
        "fileId": "0000000000000000000000f1",
@@ -1107,10 +1067,7 @@
        "source": "AI",
        "groupKey": "GRAMMAR",
        "symbolLabel": "AGR",
-       "color": "#FFD6A5",
-       "correctionFingerprint": "265acd0aed3a7c9ea5731b6994d205d9c414340b885f422e06f57cc6b2623e12",
-       "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-       "ocrRunId": "job-registered"
+       "color": "#FFD6A5"
       },
       {
        "fileId": "0000000000000000000000f1",
@@ -1132,10 +1089,7 @@
        "source": "AI",
        "groupKey": "MECHANICS",
        "symbolLabel": "SP",
-       "color": "#FFD6A5",
-       "correctionFingerprint": "1fe96f6d88a926d0d552e88aa39bec55dcf9666de42ca992c6c1f2698f4b4eae",
-       "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-       "ocrRunId": "job-registered"
+       "color": "#FFD6A5"
       }
      ],
      "correctionStatistics": {
@@ -1150,8 +1104,6 @@
      "assessmentStatus": "complete",
      "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
      "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
-     "correctionOcrJobId": "job-registered",
-     "correctionOcrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
      "createdAt": "<volatile>",
      "updatedAt": "<volatile>",
      "__v": "<volatile>",
@@ -1188,9 +1140,6 @@
       "groupKey": "GRAMMAR",
       "symbolLabel": "AGR",
       "color": "#FFD6A5",
-      "correctionFingerprint": "3148daf8d7213ca2606db99491759bde1a3f3d9e3d02a651762d1034c8126d9d",
-      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-      "ocrRunId": "job-registered",
       "moderationStatus": "visible",
       "renderTarget": {
        "version": 1,
@@ -1238,9 +1187,6 @@
       "groupKey": "GRAMMAR",
       "symbolLabel": "ART",
       "color": "#FFD6A5",
-      "correctionFingerprint": "29d662661115f78431c3d35dc4fbc1acf4de92195a810fa70920960058d8134e",
-      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-      "ocrRunId": "job-registered",
       "moderationStatus": "visible",
       "renderTarget": {
        "version": 1,
@@ -1288,9 +1234,6 @@
       "groupKey": "MECHANICS",
       "symbolLabel": "SP",
       "color": "#FFD6A5",
-      "correctionFingerprint": "2b02463eb02358aab320b316d01579aa2fb5eda94188612dd6b5802cfe59612e",
-      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-      "ocrRunId": "job-registered",
       "moderationStatus": "visible",
       "renderTarget": {
        "version": 1,
@@ -1338,9 +1281,6 @@
       "groupKey": "GRAMMAR",
       "symbolLabel": "AGR",
       "color": "#FFD6A5",
-      "correctionFingerprint": "265acd0aed3a7c9ea5731b6994d205d9c414340b885f422e06f57cc6b2623e12",
-      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-      "ocrRunId": "job-registered",
       "moderationStatus": "visible",
       "renderTarget": {
        "version": 1,
@@ -1388,9 +1328,6 @@
       "groupKey": "MECHANICS",
       "symbolLabel": "SP",
       "color": "#FFD6A5",
-      "correctionFingerprint": "1fe96f6d88a926d0d552e88aa39bec55dcf9666de42ca992c6c1f2698f4b4eae",
-      "ocrEvidenceHash": "ba21045d259ecc82dd9ac73f9fc8e669f0285bc7f9bfc6ba7fffee54179ae909",
-      "ocrRunId": "job-registered",
       "moderationStatus": "visible",
       "renderTarget": {
        "version": 1,
@@ -1436,7 +1373,6 @@
       },
       "pageImageUrl": null,
       "derivedImageFileId": null,
-      "rasterHash": null,
       "rasterizationVersion": null,
       "words": [
        {
@@ -2038,7 +1974,6 @@
     "correctionCurrent": true,
     "correctionSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
     "evaluationStatus": "completed",
-    "assessmentRunId": null,
     "assessmentStatus": "complete",
     "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
     "assessmentErrorCode": null,
@@ -3250,9 +3185,6 @@
       "groupKey": "GRAMMAR",
       "symbolLabel": "AGR",
       "color": "#FFD6A5",
-      "correctionFingerprint": "847ea0e7d471d0003934d12a82f0fe7ce1eff5d4d03300c50c9589a993554280",
-      "ocrEvidenceHash": "12e6a91b78fc8bf8c957817db1b5cda2ec8e4101faf301e91c2522fbe63f7d03",
-      "ocrRunId": "job-guest",
       "moderationStatus": "visible",
       "renderTarget": {
        "version": 1,
@@ -3300,9 +3232,6 @@
       "groupKey": "GRAMMAR",
       "symbolLabel": "ART",
       "color": "#FFD6A5",
-      "correctionFingerprint": "770c1095fa745eab99307b3e32cc271c6f597def48d9ff987280b1c454fd603f",
-      "ocrEvidenceHash": "12e6a91b78fc8bf8c957817db1b5cda2ec8e4101faf301e91c2522fbe63f7d03",
-      "ocrRunId": "job-guest",
       "moderationStatus": "visible",
       "renderTarget": {
        "version": 1,
@@ -3350,9 +3279,6 @@
       "groupKey": "MECHANICS",
       "symbolLabel": "SP",
       "color": "#FFD6A5",
-      "correctionFingerprint": "3a0db985969efb7b25a11ecf29d310229a8743915030cf7ed11e09cbec150b12",
-      "ocrEvidenceHash": "12e6a91b78fc8bf8c957817db1b5cda2ec8e4101faf301e91c2522fbe63f7d03",
-      "ocrRunId": "job-guest",
       "moderationStatus": "visible",
       "renderTarget": {
        "version": 1,
@@ -3400,9 +3326,6 @@
       "groupKey": "GRAMMAR",
       "symbolLabel": "AGR",
       "color": "#FFD6A5",
-      "correctionFingerprint": "0a06225d0faf2d755d30b9001c9b280be84dd5e92a17d3b39e00fe09f4ed8b84",
-      "ocrEvidenceHash": "12e6a91b78fc8bf8c957817db1b5cda2ec8e4101faf301e91c2522fbe63f7d03",
-      "ocrRunId": "job-guest",
       "moderationStatus": "visible",
       "renderTarget": {
        "version": 1,
@@ -3450,9 +3373,6 @@
       "groupKey": "MECHANICS",
       "symbolLabel": "SP",
       "color": "#FFD6A5",
-      "correctionFingerprint": "3021eb023314f917c62dcccacf18e7602a18614d4d805a56262047ca1304938a",
-      "ocrEvidenceHash": "12e6a91b78fc8bf8c957817db1b5cda2ec8e4101faf301e91c2522fbe63f7d03",
-      "ocrRunId": "job-guest",
       "moderationStatus": "visible",
       "renderTarget": {
        "version": 1,
@@ -3498,7 +3418,6 @@
       },
       "pageImageUrl": null,
       "derivedImageFileId": null,
-      "rasterHash": null,
       "rasterizationVersion": null,
       "words": [
        {
@@ -4100,7 +4019,6 @@
     "correctionCurrent": true,
     "correctionSourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
     "evaluationStatus": "completed",
-    "assessmentRunId": null,
     "assessmentStatus": "complete",
     "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
     "assessmentErrorCode": null,
