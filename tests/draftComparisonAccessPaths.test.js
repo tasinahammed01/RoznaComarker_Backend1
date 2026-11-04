@@ -155,3 +155,40 @@ describe('guest route: a submission that exists but is not yours answers like on
     expect(foreign.body).toEqual(absent.body);
   });
 });
+
+describe('the same file submitted again', () => {
+  const SubmissionFeedback = require('../src/models/SubmissionFeedback');
+  const { annotationApi } = require('./helpers/annotationApi');
+  const id = () => fixture.IDS.registered;
+  let teacherApi;
+  beforeAll(async () => {
+    teacherApi = annotationApi(app, fixture.teacher);
+    const revision = await SubmissionRevision.findOne({ sourceSubmissionId: id() }).lean();
+    await Submission.updateOne({ _id: id() }, { $set: { fileContentIdentity: revision.fileContentIdentity } });
+    await SubmissionFeedback.updateOne({ submissionId: id() }, { $set: { analysisInputHash: 'same-analysis' } });
+    await SubmissionRevision.updateOne({ _id: revision._id }, { $set: { 'feedbackSnapshot.analysisInputHash': 'same-analysis' } });
+  });
+
+  test('marks hidden: the same answer as ever, with no score and no count', async () => {
+    await Assignment.updateOne({ _id: fixture.IDS.assignment }, { $set: { showMarksToStudent: false } });
+    try {
+      const { data } = (await student()).body;
+      expect(data).toMatchObject({ available: false, code: 'MARKS_HIDDEN' });
+      expect(keysIn(data, ['overall', 'rubricCategories', 'issues', 'summary', 'previousScore', 'currentScore'])).toEqual([]);
+    } finally {
+      await Assignment.updateOne({ _id: fixture.IDS.assignment }, { $unset: { showMarksToStudent: 1 } });
+    }
+  });
+
+  test('the teacher hides every correction of the current draft: nothing remains, nothing is claimed as fixed', async () => {
+    const before = (await student()).body.data;
+    expect(before).toMatchObject({ available: true, identicalContent: true });
+    expect(before.issues.remainingCount).toBeGreaterThan(0);
+    expect(before.issues.remainingCount).toBe(before.issues.currentCount);
+    const { corrections } = (await teacherApi.snapshot(id())).body.data;
+    for (const correction of corrections.filter(c => c.moderationStatus === 'visible')) expect((await teacherApi.act(id(), { action: 'hide', id: correction.id })).status).toBe(200);
+    const { issues, identicalContent } = (await student()).body.data;
+    expect(identicalContent).toBe(true);
+    expect(issues).toEqual({ previousCount: before.issues.previousCount, currentCount: 0, correctedCount: 0, remainingCount: 0, newIssueCount: 0 });
+  });
+});

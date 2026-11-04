@@ -50,6 +50,15 @@ describe('deterministic draft comparison', () => {
     expect(result.identicalContent).toBe(true);
     expect(result.issues).toMatchObject({ previousCount: 2, currentCount: 1 });
   });
+  test.each([[2, 1, 1], [2, 0, 0], [1, 3, 3]])('same file and assessment: previous %i visible, current %i visible: remaining follows the current draft, nothing is fixed or new', (before, after, remaining) => {
+    const list = count => issues(['one', 'two', 'three'].slice(0, count).map(text => ['G', text]));
+    const previous = assessment({ draftNumber: 1, score: 80, fileContentIdentity: 'same-bytes', correctionList: list(before) });
+    const current = assessment({ draftNumber: 2, score: 80, fileContentIdentity: 'same-bytes', correctionList: list(after) });
+    previous.feedback.analysisInputHash = current.feedback.analysisInputHash = 'same-analysis';
+    const result = comparison.compareDrafts(previous, current);
+    expect(result.identicalContent).toBe(true);
+    expect(result.issues).toEqual({ previousCount: before, currentCount: after, correctedCount: 0, remainingCount: remaining, newIssueCount: 0 });
+  });
   test.each([[72, 84, 12, 'IMPROVED'], [80, 80, 0, 'UNCHANGED'], [84, 72, -12, 'DECLINED']])(
     'calculates authoritative overall delta %s -> %s', (oldScore, currentScore, delta, status) => {
       expect(comparison.compareDrafts(assessment({ score: oldScore }), assessment({ draftNumber: 2, score: currentScore })).overall)

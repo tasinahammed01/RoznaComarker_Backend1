@@ -163,7 +163,7 @@ function compareDrafts(previous, current) {
       rubricCategories, rubricChanged: false, rubricMessage: null,
       issues: { previousCount: (previous.submission.writingCorrections || []).length,
         currentCount: (current.submission.writingCorrections || []).length,
-        correctedCount: 0, remainingCount: (previous.submission.writingCorrections || []).length, newIssueCount: 0 },
+        correctedCount: 0, remainingCount: (current.submission.writingCorrections || []).length, newIssueCount: 0 },
       previousText: submissionText(previous.submission), currentText: submissionText(current.submission),
       summary: { improved: false, unchanged: true, declined: false } };
   }
