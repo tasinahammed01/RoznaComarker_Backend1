@@ -248,6 +248,25 @@ describe('draft comparison APIs and authorization', () => {
     }
   });
 
+  test('the teacher of a deactivated class gets the same answer as an id that does not exist; the student keeps access', async () => {
+    const url = id => `/api/submissions/${id}/draft-comparison`;
+    await Class.updateOne({ _id: classDoc._id }, { $set: { isActive: false } });
+    const inactive = await auth(request(app).get(url(submission._id)), teacherToken);
+    const missing = await auth(request(app).get(url(new (require('mongoose').Types.ObjectId)())), teacherToken);
+    const own = await auth(request(app).get(url(submission._id)), studentToken);
+    expect(inactive.status).toBe(404);
+    expect(inactive.body).toEqual(missing.body);
+    expect(own.status).toBe(200);
+  });
+
+  test('a deactivated teacher account is stopped by the sign-in check before the comparison runs', async () => {
+    await User.updateOne({ _id: teacher._id }, { $set: { isActive: false } });
+    const response = await auth(request(app).get(`/api/submissions/${submission._id}/draft-comparison`), teacherToken);
+    expect(response.status).toBe(403);
+    expect(response.body.code).toBe('ACCOUNT_INACTIVE');
+    expect(JSON.stringify(response.body)).not.toContain('overall');
+  });
+
   test('progress endpoint returns revision metrics and rejects foreign student access', async () => {
     const own = await auth(request(app).get(`/api/classes/${classDoc._id}/students/${student._id}/progress`), studentToken);
     const teacherView = await auth(request(app).get(`/api/classes/${classDoc._id}/students/${student._id}/progress`), teacherToken);
