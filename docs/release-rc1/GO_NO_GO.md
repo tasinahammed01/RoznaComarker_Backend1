@@ -5,8 +5,10 @@ This is the decision sheet, not a record of results. RC1's rehearsal evidence do
 ## Conditions to NOT ship
 
 - The production commit is not known (DEPLOY_RUNBOOK step 0).
-- `PAYMENT_PROVIDER` is not `paypal`, or `OCR_GPT_VISION_MODEL` selects Gemini: the server will not start.
-- `OCR_SOURCE_MODE` or `OCR_GPT_VISION_MODEL` is missing and that was not intended: the server starts on a default reader or model.
+- The check in DEPLOY_RUNBOOK step 1 reports any fatal problem, for example `AI_PRIMARY_PROVIDER`, `AI_PRIMARY_MODEL`, `OPENROUTER_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `PAYMENT_PROVIDER` not `paypal`, or `OCR_GPT_VISION_MODEL` selecting Gemini: the server will not start.
+- The flashcard indexes (DEPLOY_RUNBOOK step 4) are missing or different and have not been migrated: the server will not start.
+- The two guest indexes (step 4) are missing or different and guest submission must work: uploads answer 503.
+- `OCR_SOURCE_MODE` or `OCR_GPT_VISION_MODEL` is missing and that was not intended: the server starts on a default reader or model, and the production log does not show it.
 - `HEALTH_DETAIL_TOKEN` is not set: the deploy cannot be verified.
 - No Atlas snapshot was taken.
 - The manual checklist finds a teacher or student flow broken, in particular highlights on the source image.

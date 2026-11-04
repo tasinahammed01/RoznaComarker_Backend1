@@ -18,9 +18,151 @@ pm2 list
 
 If `git status` shows changes under `node_modules` (it is tracked in this repo), `git checkout` may refuse. Do **not** run `git reset --hard`: stop and decide first.
 
+**Baseline decision.** Find the row for what step 1 and step 4 will show. Boots below were run with fake values in `NODE_ENV=production`, except where marked.
+
+| Condition | `45e49aae` (`origin/main`) | `a64520dc` (`origin/ocr-verbatim-hardening`) | RC2 | What to do when moving to RC2 |
+|---|---|---|---|---|
+| `AI_PRIMARY_PROVIDER` / `AI_PRIMARY_MODEL` missing | stops | stops | stops | Nothing new. Set them if step 1 says missing. |
+| Flashcard indexes missing | stops | stops | stops | Nothing new. Step 4 prerequisite. |
+| `OCR_SOURCE_MODE` missing | starts, `legacy` | stops (`OCR_SOURCE_CONFIGURATION_INVALID`) | starts, `legacy` | Coming from `a64520dc`, the guard is gone: a later mistake is silent. Confirm the value in `.env`. |
+| `OCR_GPT_VISION_MODEL` missing (`gpt_vision_exact`) | starts, `openai/gpt-5.6-sol` | stops | starts, `openai/gpt-5.6-sol` | Same. |
+| `OCR_GPT_VISION_MODEL=google/gemini-3.8-flash` | stops | accepted only with the `verbatim_json` reader setting (read in code; without that setting the boot stopped) | stops | Coming from `a64520dc` on Gemini: change the model **before** the restart, or RC2 will not start. |
+| Teacher overlays version 1 in the database | cannot exist | may exist | migration available | Dry run in step 4. |
+| Recovery and annotation indexes | code does not exist | code does not exist | used, not required to start | Run both migrations in step 4. |
+| Guest submission indexes | required by guest upload (read in code; the check has no diff from RC2) | not checked; same script present | required by guest upload (run) | Step 4 prerequisite. |
+
 ## 1. Environment
 
-Read the production `.env` yourself and print names only. The startup rules that already apply and still stop the server: `PAYMENT_PROVIDER` must be `paypal` (and the PayPal runtime values must validate), `FRONTEND_URL`, `PUBLIC_API_URL`, `CORS_ALLOWED_ORIGINS`, `JWT_SECRET`, `HOST=127.0.0.1`.
+Run the check below on the VPS. It prints variable names and true or false, never a value, and changes nothing. Do not paste its output anywhere with values added.
+
+```
+cd BACKEND_DIR
+bash <<'RC2CHECK'
+# RC2 startup check. Read-only. Run in the backend folder. Prints variable NAMES and true/false only, never a value.
+set +x; ENVF="${ENVF:-.env}"; [ -r "$ENVF" ] || { echo "cannot read $ENVF"; exit 1; }
+NAMES=$(grep -E '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=' "$ENVF" | cut -d= -f1 | sed -E 's/^[[:space:]]*(export[[:space:]]+)?//; s/[[:space:]]+$//')
+has() { printf '%s\n' "$NAMES" | grep -qx "$1"; }
+# True when the last line for the name has nothing after '=' except quotes. The value is matched, never printed.
+empty() { grep -E "^[[:space:]]*(export[[:space:]]+)?$1[[:space:]]*=" "$ENVF" | tail -1 | grep -qE "=[[:space:]]*(\"\"|'')?[[:space:]]*$"; }
+state() { if ! has "$1"; then echo MISSING; elif empty "$1"; then echo EMPTY; else echo PRESENT; fi; }
+ok() { [ "$(state "$1")" = PRESENT ]; }
+# Only ever called for the non-secret names below.
+val() { grep -E "^[[:space:]]*(export[[:space:]]+)?$1[[:space:]]*=" "$ENVF" | tail -1 | cut -d= -f2- | sed -E "s/^[[:space:]]+//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"; }
+tf() { if "$@"; then echo true; else echo false; fi; }
+FATAL=0
+fatal() { s=$(state "$1"); printf '%-44s %-8s %s\n' "$1" "$s" "$([ "$s" = PRESENT ] && echo ok || echo 'FATAL: server will not start')"; [ "$s" = PRESENT ] || FATAL=$((FATAL+1)); }
+either() { if ok "$1" || ok "$2"; then printf '%-44s %-8s ok\n' "$1 or $2" PRESENT; else printf '%-44s %-8s FATAL: server will not start\n' "$1 or $2" MISSING; FATAL=$((FATAL+1)); fi; }
+opt() { s=$(state "$1"); printf '%-44s %-8s %s\n' "$1" "$s" "$([ "$s" = PRESENT ] && echo ok || echo "$2")"; }
+check() { r=$(tf eval "$2"); printf '%-44s %s\n' "$1" "$r"; [ "$r" = true ] || { [ "$3" = fatal ] && { FATAL=$((FATAL+1)); echo "    ^ FATAL: server will not start"; }; }; }
+echo "=== always required"
+for n in NODE_ENV PORT MONGO_URI JWT_SECRET FRONTEND_URL PUBLIC_API_URL BASE_URL FIREBASE_PROJECT_ID FIREBASE_CLIENT_EMAIL FIREBASE_PRIVATE_KEY GOOGLE_APPLICATION_CREDENTIALS PAYMENT_PROVIDER PAYPAL_ENV AI_PRIMARY_PROVIDER AI_PRIMARY_MODEL OPENROUTER_API_KEY; do fatal "$n"; done
+either CORS_ALLOWED_ORIGINS CORS_ORIGINS
+echo "=== PayPal, for the selected PAYPAL_ENV"
+PE=$(val PAYPAL_ENV | tr '[:lower:]' '[:upper:]'); [ -n "$PE" ] || PE=SANDBOX
+fatal "PAYPAL_${PE}_CLIENT_ID"; fatal "PAYPAL_${PE}_CLIENT_SECRET"
+if [ "$PE" = SANDBOX ]; then
+  either PAYPAL_SANDBOX_WEBHOOK_ID PAYPAL_WEBHOOK_ID; either PAYPAL_SANDBOX_PRODUCT_ID PAYPAL_PRODUCT_ID
+  either PAYPAL_SANDBOX_PLAN_ESSENTIAL_MONTHLY PAYPAL_ESSENTIAL_MONTHLY_PLAN_ID; either PAYPAL_SANDBOX_PLAN_ESSENTIAL_ANNUAL PAYPAL_ESSENTIAL_YEARLY_PLAN_ID
+  either PAYPAL_SANDBOX_PLAN_PRO_MONTHLY PAYPAL_PRO_MONTHLY_PLAN_ID; either PAYPAL_SANDBOX_PLAN_PRO_ANNUAL PAYPAL_PRO_YEARLY_PLAN_ID
+else
+  for s in WEBHOOK_ID PRODUCT_ID PLAN_ESSENTIAL_MONTHLY PLAN_ESSENTIAL_ANNUAL PLAN_PRO_MONTHLY PLAN_PRO_ANNUAL; do fatal "PAYPAL_${PE}_$s"; done
+  opt PAYPAL_LIVE_ENABLED 'live PayPal operations stay disabled (server still starts)'
+fi
+echo "=== AI chain"
+GOOGLE=false
+for p in PRIMARY FALLBACK_1 FALLBACK_2 FALLBACK_3; do
+  P=$(val "AI_${p}_PROVIDER" | tr '[:upper:]' '[:lower:]'); [ "$P" = google ] && GOOGLE=true
+  if [ -n "$P" ] && [ "$P" != google ] && [ "$P" != openrouter ]; then printf '%-44s %s\n' "AI_${p}_PROVIDER supported" false; FATAL=$((FATAL+1)); echo "    ^ FATAL: server will not start"; fi
+  if [ "$p" != PRIMARY ] && { ok "AI_${p}_PROVIDER" || ok "AI_${p}_MODEL"; } && ! { ok "AI_${p}_PROVIDER" && ok "AI_${p}_MODEL"; }; then printf '%-44s %s\n' "AI_${p}_PROVIDER and _MODEL set together" false; FATAL=$((FATAL+1)); echo "    ^ FATAL: server will not start"; fi
+done
+if [ "$GOOGLE" = true ]; then fatal GEMINI_API_KEY; else opt GEMINI_API_KEY 'not needed: no AI_*_PROVIDER is google'; fi
+echo "=== fixed values (true/false only)"
+check 'NODE_ENV is production' '[ "$(val NODE_ENV)" = production ]' warn
+check 'PAYMENT_PROVIDER is paypal' '[ "$(val PAYMENT_PROVIDER | tr "[:upper:]" "[:lower:]")" = paypal ]' fatal
+check 'PAYPAL_ENV is sandbox or live' 'case "$PE" in SANDBOX|LIVE) true;; *) false;; esac' fatal
+check 'HOST unset or 127.0.0.1' '! ok HOST || [ "$(val HOST)" = 127.0.0.1 ]' fatal
+check 'FRONTEND_URL host is correct' 'case "$(val FRONTEND_URL)" in https://comarkers.roznahub.com|https://comarkers.roznahub.com/*) true;; *) false;; esac' fatal
+check 'PUBLIC_API_URL host is correct' 'case "$(val PUBLIC_API_URL)" in https://comarkerback.roznahub.com|https://comarkerback.roznahub.com/*) true;; *) false;; esac' fatal
+check 'CORS is exactly the frontend origin' 'c=$(val CORS_ALLOWED_ORIGINS); [ -n "$c" ] || c=$(val CORS_ORIGINS); [ "$c" = https://comarkers.roznahub.com ]' fatal
+check 'OCR_SOURCE_MODE is not rejected at start' '! ok OCR_SOURCE_MODE || case "$(val OCR_SOURCE_MODE)" in legacy|hybrid_shadow|gpt_vision_exact) true;; *) false;; esac' fatal
+check 'OCR_SOURCE_MODE is gpt_vision_exact' '[ "$(val OCR_SOURCE_MODE)" = gpt_vision_exact ]' warn
+check 'OCR_GPT_VISION_MODEL has no gemini' '! val OCR_GPT_VISION_MODEL | grep -qi gemini' warn
+check 'OCR_GPT_VISION_MODEL accepted by this mode' '! ok OCR_GPT_VISION_MODEL || [ "$(val OCR_SOURCE_MODE)" != gpt_vision_exact ] || case "$(val OCR_GPT_VISION_MODEL)" in openai/gpt-5.6-sol|openai/gpt-6-astra|deepseek/deepseek-v4.1-flash-1017|qwen/qwen3.8-27b) true;; *) false;; esac' fatal
+check 'OCR_SOURCE_VERIFICATION_MODE allowed' '! ok OCR_SOURCE_VERIFICATION_MODE || [ "$(val OCR_SOURCE_MODE)" = gpt_vision_exact ] || [ "$(val OCR_SOURCE_VERIFICATION_MODE)" = first_pass ]' fatal
+check 'GUEST_SUBMISSION_ENABLED is literally true' '[ "$(val GUEST_SUBMISSION_ENABLED)" = true ]' warn
+echo "=== optional: the server starts without these, but behaviour changes"
+opt OCR_SOURCE_MODE 'SILENT: legacy reader, and the log does not show it'
+opt OCR_GPT_VISION_MODEL 'SILENT with gpt_vision_exact: openai/gpt-5.6-sol, and the log does not show it'
+opt HEALTH_DETAIL_TOKEN 'verify:runtime cannot run; set it (min 16 chars)'
+opt GUEST_SUBMISSION_ENABLED 'guest submission answers 403'
+opt APP_DEPLOYMENT_REVISION 'health detail cannot name the release'
+for n in SMTP_USER SMTP_PASS SMTP_HOST SMTP_PORT SMTP_SECURE MAIL_FROM_EMAIL; do opt "$n" 'email may fail; run node scripts/checkGuestEmailReadiness.js'; done
+opt MAIL_FROM_NAME 'default sender name is used'
+opt GROQ_API_KEY 'only a startup warning'
+opt UNSPLASH_ACCESS_KEY 'only a startup warning'
+opt GOOGLE_CLOUD_KEY_FILE 'GOOGLE_APPLICATION_CREDENTIALS is used for Vision instead'
+opt ANNOTATION_AUDIT_TTL_DAYS 'audit rows are kept (default)'
+echo "=== result"
+echo "fatal problems found: $FATAL"
+echo "NOT checked here: JWT_SECRET length and wording, MONGO_URI not localhost, file at GOOGLE_APPLICATION_CREDENTIALS, values PM2 injects outside .env, ASSESSMENT_* and AI_* timing values, PDF_REPORT_ENGINE, Chromium, indexes."
+RC2CHECK
+```
+
+It was tested on fake `.env` files in 23 cases against the real `src/server.js`: its fatal count and the boot result agreed in all 23, and no fake secret appeared in its output. It was run with Git Bash on Windows, not on the VPS. It reads `.env` only: dotenv does not override variables already in the process, so anything PM2 injects wins and is not seen here. Check that with `pm2 env <id>` yourself, without pasting values.
+
+### Startup requirements
+
+Every row was booted on both trees with the same fake values, one broken condition at a time, unless marked "read in code". 80 conditions in all. **None is new in RC2**: the startup code (`config/env.js`, `paypal.js`, `db.js`, `ocr.js`, `server.js`, the AI gateway, the flashcard index contract) has no diff against `origin/main`. So if the server restarted successfully on `45e49aae` with this `.env` and this database, these rows already held, unless the `.env` changed since.
+
+**Stops the server (exit 1):**
+
+| Requirement | Rule | RC2 | `origin/main` | New in RC2? |
+|---|---|---|---|---|
+| `NODE_ENV`, `PORT` | Not empty | stops | stops | No |
+| `HOST` | Unset, or exactly `127.0.0.1` | stops | stops | No |
+| `MONGO_URI` | Not empty, no `localhost` or `127.0.0.1`, reachable | stops | stops | No |
+| `JWT_SECRET` | At least 32 characters; no `replace`, `change_me`, `your_`, `your-`, `example`, `placeholder` | stops | stops | No |
+| `FRONTEND_URL` | HTTPS, host `comarkers.roznahub.com` | stops | stops | No |
+| `PUBLIC_API_URL` | HTTPS, host `comarkerback.roznahub.com` | stops | stops | No |
+| `BASE_URL` | Not empty | stops | stops | No |
+| `CORS_ALLOWED_ORIGINS` (or `CORS_ORIGINS`) | Exactly `https://comarkers.roznahub.com` | stops | stops | No |
+| `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` | Not empty. The key's format is not checked at start, see below | stops | stops | No |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Not empty. `GOOGLE_CLOUD_KEY_FILE` does **not** replace it, although `.env.example` lists only that one | stops | stops | No |
+| `PAYMENT_PROVIDER` | `paypal`, any case | stops | stops | No |
+| `PAYPAL_ENV` | `sandbox` or `live` | stops | stops | No |
+| `PAYPAL_<ENV>_CLIENT_ID`, `_CLIENT_SECRET` | Not empty, no legacy name | stops | stops | No |
+| `PAYPAL_<ENV>_WEBHOOK_ID`, `_PRODUCT_ID` | Not empty. Sandbox also accepts `PAYPAL_WEBHOOK_ID`, `PAYPAL_PRODUCT_ID` | stops | stops | No |
+| `PAYPAL_<ENV>_PLAN_ESSENTIAL_MONTHLY`, `_ESSENTIAL_ANNUAL`, `_PRO_MONTHLY`, `_PRO_ANNUAL` | Not empty. Sandbox also accepts `PAYPAL_ESSENTIAL_MONTHLY_PLAN_ID`, `PAYPAL_ESSENTIAL_YEARLY_PLAN_ID`, `PAYPAL_PRO_MONTHLY_PLAN_ID`, `PAYPAL_PRO_YEARLY_PLAN_ID`. The `..._ANNUAL_PLAN_ID` names in `.env.example` do **not** count | stops | stops | No |
+| `PAYPAL_RETURN_URL` and the other five redirect variables, `APP_PUBLIC_URL` | Optional. If set: the frontend origin and the exact route. Tested on `PAYPAL_RETURN_URL` and `APP_PUBLIC_URL`; the rest read in code | stops | stops | No |
+| `AI_PRIMARY_PROVIDER`, `AI_PRIMARY_MODEL` | Both set; provider `google` or `openrouter`. The model name itself is not checked | stops | stops | No |
+| `AI_FALLBACK_1..3_PROVIDER`, `_MODEL` | Optional, but each pair set together | stops | stops | No |
+| `OPENROUTER_API_KEY` | Always, even with a Google primary and the `legacy` OCR mode: the assessment chain needs it | stops | stops | No |
+| `GEMINI_API_KEY` | Only if an `AI_*_PROVIDER` is `google` | stops | stops | No |
+| `AI_ATTEMPT_TIMEOUT_MS`, `AI_RETRIES_PER_MODEL` (0-2) | Optional, if set must be valid. `AI_TOTAL_BUDGET_MS`, `AI_PRIMARY_RETRIES`, `AI_FALLBACK_RETRIES`, `AI_RETRY_DELAY_MS` follow the same code (read in code) | stops | stops | No |
+| `ASSESSMENT_AI_MODEL` | Optional: `google/gemini-3.8-flash` or `openai/gpt-6-astra` | stops | stops | No |
+| `GEMINI_RUBRIC_REASONING_EFFORT`, `ASSESSMENT_AI_PRIMARY_RETRIES` | Optional: `low`, `medium`, `high`; at most 1 retry | stops | stops | No |
+| `ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS`, `ASSESSMENT_RUBRIC_RESERVED_BUDGET_MS`, `SEMANTIC_AI_MAX_OUTPUT_TOKENS` | Optional: positive integers that fit together; output limit at least 1536. `ASSESSMENT_AI_TOTAL_BUDGET_MS`, `ASSESSMENT_CORRECTION_BUDGET_MS`, `ASSESSMENT_RUBRIC_BUDGET_MS`, `ASSESSMENT_AI_SAFE_OUTPUT_TOKENS` follow the same code (read in code) | stops | stops | No |
+| `OCR_SOURCE_MODE` | Optional, but these stop it: unknown value, `hybrid`, `astra_verified`, `astra_human_confirm` without its own settings | stops | stops | No |
+| `OCR_GPT_VISION_MODEL` (with `gpt_vision_exact`) | Optional, if set one of `openai/gpt-5.6-sol`, `openai/gpt-6-astra`, `deepseek/deepseek-v4.1-flash-1017`, `qwen/qwen3.8-27b` | stops | stops | No |
+| `OCR_GPT_VISION_ATTEMPT_TIMEOUT_MS` (with Qwen) | Optional: 100000 to 180000 | stops | stops | No |
+| `OCR_SOURCE_VERIFICATION_MODE` | Optional, and not read with `gpt_vision_exact`. Otherwise only `first_pass` | stops | stops | No |
+| `PDF_REPORT_ENGINE`, `PUPPETEER_EXECUTABLE_PATH` | Optional: `puppeteer`; an existing file. A usable Chromium must be found either way | stops | stops | No |
+| Flashcard indexes | Step 4 | stops | stops | No |
+| MongoDB user may create indexes (with `gpt_vision_exact`) | Startup creates two `sourcefidelity*` indexes. Read in code, a restricted user was not tried | not run | not run | No |
+| Upload folders can be created | `src/app.js` creates them on load. Read in code, not tried | not run | not run | No |
+
+**Starts, then fails when used:**
+
+| Condition | What happens | Evidence |
+|---|---|---|
+| `FIREBASE_PRIVATE_KEY` malformed | Health is fine; `POST /api/auth/login` answers 503 `AUTH_PROVIDER_UNAVAILABLE`, the process stays up | Run on both trees |
+| File at `GOOGLE_APPLICATION_CREDENTIALS` absent | Starts. The legacy reader's Vision client needs it later | Boot run on both trees; the later failure read in code |
+| `GUEST_SUBMISSION_ENABLED` absent or not literally `true` | Guest upload answers 403 `GUEST_SUBMISSION_UNAVAILABLE` | Run on RC2; code unchanged from `origin/main` |
+| Guest indexes missing | Guest upload answers 503 `GUEST_INDEX_SETUP_REQUIRED` | Run on RC2; check unchanged from `origin/main` |
+| `credittransactions` unique `idempotencyKey` index missing | Credit changes answer 503 `CREDIT_INDEX_REQUIRED` | Read in code |
+| `paymentcheckoutattempts` unique partial `activeOperationKey` index missing | Checkout answers 503 `PAYMENT_INDEX_REQUIRED` | Read in code |
+| No active Free plan in `plans` | `Free plan is not configured` on the paths that need it | Read in code |
+| `SMTP_*`, `MAIL_FROM_*` missing or inconsistent | Starts; email fails. `node scripts/checkGuestEmailReadiness.js` reports without values and without sending | Read in code, script not run |
 
 **RC2 has no startup guard for OCR variables.** A missing value does not stop the server, it silently selects a default:
 
@@ -29,7 +171,7 @@ Read the production `.env` yourself and print names only. The startup rules that
 | `OCR_SOURCE_MODE` | `legacy` reader |
 | `OCR_GPT_VISION_MODEL` (with `gpt_vision_exact`) | `openai/gpt-5.6-sol`, not the Qwen model |
 
-So check both are set. **`OCR_GPT_VISION_MODEL=google/gemini-3.8-flash` stops RC2 at startup** (`OCR_GPT_SOURCE_CONFIGURATION_INVALID`): the Gemini reader is not in RC2. `OCR_GPT_VISION_READER` and `OCR_GPT_VISION_SECOND_READER` are not read by RC2; remove them or leave them.
+**The production log does not show which reader or model is active.** The `ocr_source_configuration` line is logged at `info`, and `info` is off when `NODE_ENV=production` (`src/utils/logger.js`); it did not appear in any production-mode boot here. So verify `OCR_SOURCE_MODE` and `OCR_GPT_VISION_MODEL` from `.env`, not from `pm2 logs`. So check both are set. **`OCR_GPT_VISION_MODEL=google/gemini-3.8-flash` stops RC2 at startup** (`OCR_GPT_SOURCE_CONFIGURATION_INVALID`): the Gemini reader is not in RC2. `OCR_GPT_VISION_READER` and `OCR_GPT_VISION_SECOND_READER` are not read by RC2; remove them or leave them.
 
 ```
 grep -cE '^PAYMENT_PROVIDER=["'"'"']?paypal' .env          # must be 1
@@ -75,6 +217,70 @@ Never deploy `origin/ocr-verbatim-hardening`. On the VPS: `cd BACKEND_DIR && git
 
 ## 4. Migrations (with the new code on disk, before the restart)
 
+### Index prerequisites: look first
+
+Compare with the real database first. This is read-only; it was not run in `mongosh` (no `mongosh` here), so treat the snippet as untested.
+
+```
+['flashcardsubmissions','flashcardsets','submissions','credittransactions','paymentcheckoutattempts','recoverytokens','recoverysessions','recoveryemailwindows','recoverylinkaudits','annotationaudits'].forEach(function (c) { print('== ' + c); try { db.getCollection(c).getIndexes().forEach(function (i) { print(i.name, JSON.stringify(i.key), i.unique ? 'unique' : '-', JSON.stringify(i.partialFilterExpression || '-'), i.expireAfterSeconds === undefined ? '-' : 'ttl ' + i.expireAfterSeconds); }); } catch (e) { print('(no collection)'); } });
+```
+
+Names, keys and options below are the real output of the scripts on a test database, except where marked. The checks that block compare key, unique and partial filter; they do **not** compare the name, so a different name with the same shape is fine.
+
+**Blocks startup if missing or different:**
+
+| Collection | Name | Key | Options | Created by |
+|---|---|---|---|---|
+| `flashcardsubmissions` | `flashcardSetId_1_userId_1` | `{flashcardSetId:1,userId:1}` | unique, partial `{assignmentId:null}` | `npm run migrate:flashcard-indexes` |
+| `flashcardsubmissions` | `assignmentId_1_userId_1` | `{assignmentId:1,userId:1}` | unique, partial `{assignmentId:{$type:"objectId"}}` | same |
+| `flashcardsets` | `shareToken_1` | `{shareToken:1}` | unique, partial `{shareToken:{$type:"string"}}` | same |
+
+A same-key index with other options also stops the server. Run `npm run migrate:flashcard-indexes` **only if the comparison shows a difference**: it is not read-only. It first refuses if there are duplicates (`Duplicate data prevents index ...`), then drops same-key indexes with other options, creates the missing ones, and removes `shareToken: null` from `flashcardsets` documents. It needs the Atlas snapshot from step 2.
+
+**Blocks guest upload if missing or different (503 `GUEST_INDEX_SETUP_REQUIRED`):**
+
+| Collection | Name | Key | Options |
+|---|---|---|---|
+| `submissions` | `student_1_assignment_1` | `{student:1,assignment:1}` | unique, partial `{student:{$type:"objectId"}}` |
+| `submissions` | `assignment_1_guestRequestKey_1` | `{assignment:1,guestRequestKey:1}` | unique, partial `{guestRequestKey:{$type:"string"}}` |
+
+Both were tested separately: a non-partial student index blocks, and a missing guest index blocks. The server starts in all these cases; only guest upload fails. Created by `node scripts/ensureGuestSubmissionIndexes.js` (no npm script):
+
+```
+node scripts/ensureGuestSubmissionIndexes.js                              # dry run
+node scripts/ensureGuestSubmissionIndexes.js --apply --writers-stopped    # maintenance window, app stopped
+```
+
+- The dry run only looks at the **student** index. `requiresMaintenanceWindow:false` does not prove the guest index exists: use the comparison above.
+- If the student index is the old non-partial one, `--apply` **drops and rebuilds a unique index on student submissions**. Nothing protects uniqueness in between, so stop the app first.
+- It uses the app's connection, so it needs the full `.env` and the flashcard indexes. Every failure prints the same line, `Guest index setup failed. Keep writers stopped...`, even on a dry run that wrote nothing; in the test that line appeared when the flashcard indexes were missing, when `--writers-stopped` was left out, and when `submissions` did not exist.
+
+**Blocks only the feature at first use (read in code, not run):** `credittransactions` unique `{idempotencyKey:1}` (`idempotencyKey_1`); `paymentcheckoutattempts` unique `{activeOperationKey:1}`, partial `{activeOperationKey:{$type:"string"}}`.
+
+**Does not block anything.** With all of these absent, a teacher hide, a recovery request, the link exchange and portal results all answered normally:
+
+| Collection | Name | Key | Options | Effect if missing |
+|---|---|---|---|---|
+| `submissions` | `guest_recovery_lookup_v1` | `{assignment:1,"guest.normalizedEmail":1,submittedAt:-1}` | partial `{submissionMode:"guest"}` | Slower lookup (read in code) |
+| `submissions` | `guest_result_email_queue_v1` | `{submissionMode:1,assessmentStatus:1,"guest.resultEmailSentAt":1,"guest.resultEmailNextAttemptAt":1}` | | Slower queue (read in code) |
+| `submissions` | `assessment_recovery_scan_v1` | `{ocrStatus:1,analysisNextRetryAt:1,analysisLeaseExpiresAt:1,updatedAt:1}` | `npm run migrate:assessment-recovery-index` | Slower scan (read in code) |
+| `recoverytokens` | `recovery_token_hash_v1` | `{tokenHash:1}` | unique | No uniqueness guarantee |
+| `recoverytokens` | `recovery_token_email_v1` | `{emailNormalized:1,createdAt:-1}` | | Slower lookup |
+| `recoverytokens` | `recovery_token_purge_v1` | `{purgeAt:1}` | TTL 0 | Old tokens stay |
+| `recoverysessions` | `recovery_session_hash_v1` | `{sessionHash:1}` | unique | No uniqueness guarantee |
+| `recoverysessions` | `recovery_session_token_v1` | `{tokenId:1}` | | Slower lookup |
+| `recoverysessions` | `recovery_session_purge_v1` | `{expiresAt:1}` | TTL 3600 | Old sessions stay |
+| `recoveryemailwindows` | `recovery_email_window_purge_v1` | `{expiresAt:1}` | TTL 0 | Old windows stay |
+| `recoverylinkaudits` | `recovery_link_audit_submission_v1` | `{submissionId:1,createdAt:-1}` | | Slower lookup |
+| `recoverylinkaudits` | `recovery_link_audit_teacher_v1` | `{issuedBy:1,createdAt:-1}` | | Slower lookup |
+| `recoverylinkaudits` | `recovery_link_audit_ttl_v1` | `{createdAt:1}` | TTL 31536000 | Old rows stay |
+| `annotationaudits` | `annotation_audit_request_v1` | `{submissionId:1,requestId:1}` | unique | No uniqueness guarantee on the audit |
+| `annotationaudits` | `annotation_audit_submission_v1` | `{submissionId:1,newRevision:-1}` | | Slower history |
+
+With `gpt_vision_exact` the server creates two more at start: `sourcefidelityevidences` `expiresAt_1` (TTL 0) and `sourcefidelitysnapshots` `submissionId_1`. `annotation_audit_ttl_v2` exists only if `ANNOTATION_AUDIT_TTL_DAYS` is set.
+
+### Run for RC2
+
 The app connects with `autoIndex: false, autoCreate: false`, so it never creates these itself. Both only add indexes to new, empty collections and are safe to repeat.
 
 ```
@@ -104,7 +310,7 @@ pm2 restart RoznaComarker_Backend --update-env
 pm2 logs RoznaComarker_Backend --lines 100 --nostream
 ```
 
-If it exits at start, read the config error: it names the problem. Then upload the frontend build (`dist/rozna-comarker-fe/browser`) to where the site is served from. **(unverified: whether the VPS serves it with Nginx directly or through `serve`; see `RoznaComarker/DEPLOYMENT.md`.)**
+If it exits at start, read the config error. Most name the problem, but **the AI ones do not**: `AI configuration validation failed` and `Global AI model chain configuration is invalid` do not say which variable. Go back to the step 1 check, the AI chain section. `pm2 logs` shows nothing about the OCR mode in any case (step 1). Then upload the frontend build (`dist/rozna-comarker-fe/browser`) to where the site is served from. **(unverified: whether the VPS serves it with Nginx directly or through `serve`; see `RoznaComarker/DEPLOYMENT.md`.)**
 
 ## 6. Verification
 

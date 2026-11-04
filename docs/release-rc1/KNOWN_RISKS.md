@@ -17,12 +17,14 @@
 
 | # | Risk | Recommendation |
 |---|---|---|
-| 9 | RC2 has no startup guard: a missing `OCR_SOURCE_MODE` silently selects `legacy`, a missing `OCR_GPT_VISION_MODEL` selects `openai/gpt-5.6-sol`. `OCR_GPT_VISION_MODEL=google/gemini-3.8-flash` stops the server. The production `.env` was not inspected. | FIX FIRST: confirm in the env before deploying. |
+| 9 | RC2 has no startup guard: a missing `OCR_SOURCE_MODE` silently selects `legacy`, a missing `OCR_GPT_VISION_MODEL` selects `openai/gpt-5.6-sol`. `OCR_GPT_VISION_MODEL=google/gemini-3.8-flash` stops the server. The production log does not show the active reader or model (`info` is off in production), so a wrong default stays invisible. The production `.env` was not inspected. | FIX FIRST: confirm from `.env` with the DEPLOY_RUNBOOK step 1 check. |
 | 10 | Rolling the backend back to `45e49aae` re-shows corrections the teacher hid. | Owner's decision; tell teachers if a rollback is ever needed. |
 | 11 | Nothing was run against a real production dump, real Firebase sign-in, real SMTP, iPad Safari, a real browser for RC2, or a real AI provider. | Do MANUAL_QA_CHECKLIST.md right after the deploy on a test account. |
 | 12 | `node_modules` is tracked in the backend repo although `.gitignore` lists it, and the frontend has no lockfile, so `npm audit` cannot run there and an install on the server can bring other versions. | No `npm` on the VPS for the backend; build the frontend locally. Backlog. |
 | 13 | From RC1, not re-measured on RC2: `npm audit --omit=dev` found 44 vulnerabilities (25 high, 2 critical: `proxy-addr`, `tar`); 300-correction essays take about 2.5-3.2 s; student corrections with a teacher decision +53% (35.8 vs 23.4 ms median); the `StudentFlashcardProgress` partial index is not supported on MongoDB 6.0. | Check the Atlas version (`db.version()`). Backlog for the rest. |
 | 14 | Old frontend tab against the new backend shows "Student" as the teacher's name until refreshed (seen on RC1). | Ship. |
+| 15 | The production database's indexes are not known. Missing flashcard indexes stop the server; missing guest indexes make guest upload answer 503. Rebuilding an old non-partial student index needs the app stopped. | FIX FIRST: compare with DEPLOY_RUNBOOK step 4. |
+| 16 | `.env.example` misleads in two places: it lists `GOOGLE_CLOUD_KEY_FILE` but not the required `GOOGLE_APPLICATION_CREDENTIALS`, and it lists `PAYPAL_*_ANNUAL_PLAN_ID`, which the code ignores (it reads `PAYPAL_*_YEARLY_PLAN_ID`). Both are the same on `origin/main`. | Rely on the step 1 check. Backlog: correct `.env.example`. |
 
 ## Test suites that fail, also on `origin/main`
 
