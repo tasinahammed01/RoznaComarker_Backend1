@@ -445,36 +445,22 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
       body.provider={require_parameters:true,allow_fallbacks:false};
     }
     if (requestProfile) {
-      // Plain-first Qwen reader: plain-text output at temperature 0, otherwise the Qwen JSON profile's routing.
-      const plainSource=requestProfile==='gpt_vision_exact_plain_v1';
-      // Gemini verbatim reader: strict JSON schema, temperature 0 or omitted, reasoning from the environment, Google AI Studio standard tier only.
-      const verbatimSource=requestProfile==='gpt_vision_exact_verbatim_v1';
       const profileModelAllowed=requestProfile==='gpt_vision_exact_v1'
         ? require('./gptVisionExact/contract').models().includes(entry.model)
-        : verbatimSource ? entry.model===require('./gptVisionExact/contract').GEMINI_MODEL&&responseFormat==='json'&&Boolean(responseSchema)&&(temperature===0||temperature===undefined)
-        : plainSource ? entry.model===require('./gptVisionExact/contract').QWEN_MODEL&&responseFormat!=='json'&&temperature===0
         : requestProfile==='source_fidelity_v1'&&['openai/gpt-6-astra','anthropic/claude-fable-5.1'].includes(entry.model);
       if (!profileModelAllowed || google
         || base !== 'https://openrouter.ai/api/v1') throw attemptError('OCR_SOURCE_PROFILE_INVALID', 'Invalid source reader profile.');
       delete body.temperature; delete body.max_tokens;
       // DeepSeek and Qwen approved routes advertise max_tokens. Keep legacy request
       // profiles unchanged and never send both token-limit aliases.
-      if (plainSource || verbatimSource || requestProfile==='gpt_vision_exact_v1' && [require('./gptVisionExact/contract').DEEPSEEK_MODEL,require('./gptVisionExact/contract').QWEN_MODEL].includes(entry.model))
+      if (requestProfile==='gpt_vision_exact_v1' && [require('./gptVisionExact/contract').DEEPSEEK_MODEL,require('./gptVisionExact/contract').QWEN_MODEL].includes(entry.model))
         body.max_tokens = 16000;
       else body.max_completion_tokens = requestProfile==='gpt_vision_exact_v1'?16000:12000;
       body.provider = { require_parameters: true, allow_fallbacks: false };
-      if(plainSource||requestProfile==='gpt_vision_exact_v1'&&entry.model===require('./gptVisionExact/contract').QWEN_MODEL){
+      if(requestProfile==='gpt_vision_exact_v1'&&entry.model===require('./gptVisionExact/contract').QWEN_MODEL){
         body.reasoning={effort:'none'};
         // Supported-parameter/schema filtering remains mandatory; never pin a provider blindly.
         body.provider.sort='latency';
-      }
-      if(plainSource)body.temperature=0;
-      if(verbatimSource){
-        const settings=require('./gptVisionExact/verbatimReader').settings(env);
-        body.reasoning={effort:settings.reasoning};
-        // Exact tier policy, owned here and never by the caller: AI Studio standard only, no sort, no other provider.
-        body.provider={require_parameters:true,allow_fallbacks:false,only:['google-ai-studio'],ignore:['google-ai-studio/flex','google-ai-studio/priority']};
-        if(temperature===0)body.temperature=0;
       }
     }
     const options = {
@@ -556,9 +542,7 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
     } : null);
     accountingOutcome='completed';
     return { ...extracted, usage, durationMs: now() - started,transportTimings:{requestToHeadersMs:headersMs,responseBodyMs:bodyMs},
-      ...(requestProfile || isCorrectionFeature(feature) || isAssessmentFeature(feature) ? { returnedModel: payload.model, httpStatus: response.status } : {}),
-      // Which provider actually served the call (a short name only), for the production log.
-      ...(requestProfile && typeof payload.provider === 'string' ? { provider: payload.provider.slice(0, 80) } : {}) };
+      ...(requestProfile || isCorrectionFeature(feature) || isAssessmentFeature(feature) ? { returnedModel: payload.model, httpStatus: response.status } : {}) };
   } catch (error) {
     if(isAssessmentFeature(feature)&&diagnosticUsage)Object.assign(error,rubricUsage(diagnosticUsage));
     accountingOutcome=controller.signal.aborted?'AI_ATTEMPT_TIMEOUT':safeCode(error);

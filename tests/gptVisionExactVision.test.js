@@ -13,8 +13,7 @@ const text='Society always expect\npowerfull Say , society society';
 const payload={version:contract.VERSION,activeTranscript:text,physicalLines:text.split('\n').map(text=>({segments:[{text,classification:'STUDENT_ACTIVE_TEXT',confidence:.99}]})),uncertainties:[]};
 beforeAll(async()=>{
   original=await sharp({create:{width:40,height:80,channels:3,background:{r:220,g:30,b:90}}}).jpeg().withMetadata({orientation:6}).toBuffer();
-  // A rotated JPEG is re-encoded as a high-quality JPEG (lossless PNG was 5-9x larger and could pass the 20 MB source limit).
-  fs.writeFileSync(filename,original);normalized=await sharp(original,{failOn:'error'}).rotate().jpeg({quality:92,chromaSubsampling:'4:4:4'}).toBuffer();
+  fs.writeFileSync(filename,original);normalized=await sharp(original,{failOn:'error'}).rotate().png().toBuffer();
 });
 beforeEach(()=>{
   process.env.OCR_SOURCE_MODE='gpt_vision_exact';process.env.OCR_GPT_VISION_MODEL='openai/gpt-5.6-sol';process.env.OPENROUTER_API_KEY='mock-only';process.env.OCR_PREPROCESS='handwriting';

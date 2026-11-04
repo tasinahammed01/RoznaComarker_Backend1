@@ -5,7 +5,7 @@ function classify(code, status) {
   if (['OCR_GPT_SOURCE_CHECKING', 'OCR_GPT_CIRCUIT_OPEN'].includes(code)) return 'waiting';
   // One internally inconsistent response is not proof of broken model access.
   // It remains rejected; only a fresh response after bounded backoff may pass.
-  if (['OCR_GPT_SOURCE_CANCELLED','OCR_GPT_PROVIDER_NETWORK', 'OCR_GPT_PROVIDER_RATE_LIMIT', 'OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH', 'OCR_GPT_SOURCE_SCHEMA', 'OCR_GPT_SOURCE_TRUNCATED'].includes(code)
+  if (['OCR_GPT_SOURCE_CANCELLED','OCR_GPT_PROVIDER_NETWORK', 'OCR_GPT_PROVIDER_RATE_LIMIT', 'OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH', 'OCR_GPT_SOURCE_SCHEMA'].includes(code)
     || status === 408 || status === 429 || [500, 502, 503, 504].includes(status)) return 'retryable';
   return 'operator';
 }
@@ -15,16 +15,11 @@ function delay(attempt, random = Math.random) {
 // Source retry eligibility is not provider health. These errors are emitted
 // after a completed response passes model identity, but never accept its text.
 function classifyProviderHealth(code, status) {
-  if (['OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH', 'OCR_GPT_SOURCE_SCHEMA', 'OCR_GPT_SOURCE_TRUNCATED'].includes(code))
+  if (['OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH', 'OCR_GPT_SOURCE_SCHEMA'].includes(code))
     return status == null || status >= 200 && status < 300 ? 'source_evidence' : classify('OCR_GPT_PROVIDER_FAILED', status);
   return classify(code, status);
 }
 // Billing is not an automatic transient retry. A later inbound request may
 // probe after this cooldown; auth/access/configuration failures stay terminal.
 const isPaymentFailure = code => code === 'OCR_GPT_PROVIDER_PAYMENT_REQUIRED';
-// A reply that arrived (and was paid for) but could not be used. For the Gemini reader a second read is the only retry: a repeat is paid again.
-const PAID_UNUSABLE = ['OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH', 'OCR_GPT_SOURCE_SCHEMA', 'OCR_GPT_SOURCE_TRUNCATED'];
-function maxAttempts(code, model) {
-  return PAID_UNUSABLE.includes(code) && model === require('./gptVisionExact/contract').GEMINI_MODEL ? 2 : 5;
-}
-module.exports = { classify, maxAttempts, classifyProviderHealth, delay, isPaymentFailure, PAYMENT_COOLDOWN_MS: 60000, MAX_ATTEMPTS: 5 };
+module.exports = { classify, classifyProviderHealth, delay, isPaymentFailure, PAYMENT_COOLDOWN_MS: 60000, MAX_ATTEMPTS: 5 };
