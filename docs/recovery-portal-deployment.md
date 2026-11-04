@@ -19,7 +19,7 @@ the resulting index list. Expected TTL indexes:
 | `recoverytokens` | `recovery_token_purge_v1` on `purgeAt` | 0 s (document removed at `purgeAt` = link expiry + 7 days) |
 | `recoverysessions` | `recovery_session_purge_v1` on `expiresAt` | 3600 s after the session expires |
 | `recoveryemailwindows` | `recovery_email_window_purge_v1` on `expiresAt` | 0 s (hourly email counters) |
-| `recoverylinkaudits` | (no TTL: the audit trail of teacher-sent links is kept) | - |
+| `recoverylinkaudits` | `recovery_link_audit_ttl_v1` on `createdAt`, created by `npm run migrate:annotation-indexes` and this script | 1 year (teacher-sent link audit rows are removed after 365 days) |
 
 Plus the unique `recovery_token_hash_v1` (`tokenHash`) and `recovery_session_hash_v1` (`sessionHash`), and lookup indexes
 `recovery_token_email_v1` and `recovery_session_token_v1`.

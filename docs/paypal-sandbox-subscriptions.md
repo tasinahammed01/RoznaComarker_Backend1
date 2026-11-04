@@ -1,6 +1,6 @@
 # PayPal Sandbox subscriptions
 
-PayPal remains opt-in. Stripe is used when `PAYMENT_PROVIDER` is absent or set to `stripe`.
+PayPal is the only payment provider. `PAYMENT_PROVIDER` must be `paypal`: a missing or different value stops startup (`src/config/env.js`), and Stripe execution is disabled.
 
 ## Local configuration
 
