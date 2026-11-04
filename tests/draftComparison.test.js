@@ -42,6 +42,14 @@ describe('deterministic draft comparison', () => {
       overall: { previousScore: 73, currentScore: 100, delta: 27, status: 'IMPROVED' },
       issues: { correctedCount: 2, newIssueCount: 0 } });
   });
+  test('same file and assessment: currentCount comes from the visible corrections of the current draft', () => {
+    const previous = assessment({ draftNumber: 1, score: 80, fileContentIdentity: 'same-bytes', correctionList: issues([['G', 'one'], ['V', 'two']]) });
+    const current = assessment({ draftNumber: 2, score: 80, fileContentIdentity: 'same-bytes', correctionList: issues([['G', 'one']]) });
+    previous.feedback.analysisInputHash = current.feedback.analysisInputHash = 'same-analysis';
+    const result = comparison.compareDrafts(previous, current);
+    expect(result.identicalContent).toBe(true);
+    expect(result.issues).toMatchObject({ previousCount: 2, currentCount: 1 });
+  });
   test.each([[72, 84, 12, 'IMPROVED'], [80, 80, 0, 'UNCHANGED'], [84, 72, -12, 'DECLINED']])(
     'calculates authoritative overall delta %s -> %s', (oldScore, currentScore, delta, status) => {
       expect(comparison.compareDrafts(assessment({ score: oldScore }), assessment({ draftNumber: 2, score: currentScore })).overall)
