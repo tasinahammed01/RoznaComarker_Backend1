@@ -52,12 +52,7 @@
      "_id": "0000000000000000000000f1",
      "originalName": "essay.png",
      "filename": "0000000000000000000000f1.png",
-     "path": "annotation-golden/submissions/0000000000000000000000f1.png",
-     "url": "<host>/uploads/submissions/0000000000000000000000f1.png",
-     "uploadedBy": "0000000000000000000000a3",
-     "role": "student",
-     "type": "submissions",
-     "createdAt": "<volatile>"
+     "url": "<host>/uploads/submissions/0000000000000000000000f1.png"
     },
     "fileUrl": "<host>/uploads/submissions/0000000000000000000000f1.png",
     "files": [
@@ -65,12 +60,7 @@
       "_id": "0000000000000000000000f1",
       "originalName": "essay.png",
       "filename": "0000000000000000000000f1.png",
-      "path": "annotation-golden/submissions/0000000000000000000000f1.png",
-      "url": "<host>/uploads/submissions/0000000000000000000000f1.png",
-      "uploadedBy": "0000000000000000000000a3",
-      "role": "student",
-      "type": "submissions",
-      "createdAt": "<volatile>"
+      "url": "<host>/uploads/submissions/0000000000000000000000f1.png"
      }
     ],
     "fileOrder": [
@@ -97,10 +87,7 @@
       "width": 1200,
       "height": 900,
       "coordinateSpace": "display-image",
-      "ocrImageWidth": 1200,
-      "ocrImageHeight": 900,
       "text": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
-      "rawText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
       "words": [
        {
         "id": "word_0000000000000000000000f1_1_1",
@@ -606,12 +593,7 @@
       "_id": "0000000000000000000000f1",
       "originalName": "essay.png",
       "filename": "0000000000000000000000f1.png",
-      "path": "annotation-golden/submissions/0000000000000000000000f1.png",
-      "url": "<host>/uploads/submissions/0000000000000000000000f1.png",
-      "uploadedBy": "0000000000000000000000a3",
-      "role": "student",
-      "type": "submissions",
-      "createdAt": "<volatile>"
+      "url": "<host>/uploads/submissions/0000000000000000000000f1.png"
      },
      "fileUrl": "<host>/uploads/submissions/0000000000000000000000f1.png",
      "files": [
@@ -619,12 +601,7 @@
        "_id": "0000000000000000000000f1",
        "originalName": "essay.png",
        "filename": "0000000000000000000000f1.png",
-       "path": "annotation-golden/submissions/0000000000000000000000f1.png",
-       "url": "<host>/uploads/submissions/0000000000000000000000f1.png",
-       "uploadedBy": "0000000000000000000000a3",
-       "role": "student",
-       "type": "submissions",
-       "createdAt": "<volatile>"
+       "url": "<host>/uploads/submissions/0000000000000000000000f1.png"
       }
      ],
      "fileOrder": [
@@ -651,10 +628,7 @@
        "width": 1200,
        "height": 900,
        "coordinateSpace": "display-image",
-       "ocrImageWidth": 1200,
-       "ocrImageHeight": 900,
        "text": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
-       "rawText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
        "words": [
         {
          "id": "word_0000000000000000000000f1_1_1",
@@ -1373,7 +1347,6 @@
       },
       "pageImageUrl": null,
       "derivedImageFileId": null,
-      "rasterizationVersion": null,
       "words": [
        {
         "id": "word_0000000000000000000000f1_1_1",
@@ -1976,7 +1949,6 @@
     "evaluationStatus": "completed",
     "assessmentStatus": "complete",
     "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
-    "assessmentErrorCode": null,
     "evaluationSource": "deterministic_fallback",
     "evaluationFreshness": "overridden",
     "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
@@ -1984,7 +1956,6 @@
     "evaluationErrorCode": null,
     "detailedFeedbackStatus": "completed",
     "detailedFeedbackSourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
-    "detailedFeedbackVersion": null,
     "detailedFeedback": {
      "status": "completed",
      "sourceHash": "8e88bfe20c820457c55fb550b7af8da55aa2e22d778a0b289b4eacdbdf5b7e2f",
@@ -2854,10 +2825,7 @@
        "width": 1200,
        "height": 900,
        "coordinateSpace": "display-image",
-       "ocrImageWidth": 1200,
-       "ocrImageHeight": 900,
        "text": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
-       "rawText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
        "words": [
         {
          "id": "word_0000000000000000000000f2_1_1",
@@ -3417,7 +3385,6 @@
       },
       "pageImageUrl": null,
       "derivedImageFileId": null,
-      "rasterizationVersion": null,
       "words": [
        {
         "id": "word_0000000000000000000000f2_1_1",
@@ -4020,7 +3987,6 @@
     "evaluationStatus": "completed",
     "assessmentStatus": "complete",
     "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
-    "assessmentErrorCode": null,
     "evaluationSource": "deterministic_fallback",
     "evaluationFreshness": "overridden",
     "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
@@ -4028,7 +3994,6 @@
     "evaluationErrorCode": null,
     "detailedFeedbackStatus": "completed",
     "detailedFeedbackSourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",
-    "detailedFeedbackVersion": null,
     "detailedFeedback": {
      "status": "completed",
      "sourceHash": "77ce33b6d1728705052538cc6ff8eb0f2515344110fe19837c7042295276fb25",

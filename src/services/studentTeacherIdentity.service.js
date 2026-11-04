@@ -21,7 +21,23 @@ const STUDENT_HIDDEN_KEYS = new Set([...INTERNAL_FIELDS,
   'reusedFromRevisionId', 'previousRevision', 'fileContentIdentity', 'transcriptFingerprint', 'sourceFingerprint', 'responseFingerprint', 'guestRequestKey', 'guestRevisionLease',
   'guestAcceptedRevisionKey',
   // Who created a worksheet or flashcard set, and what only they see
-  'createdBy', 'ownerId', 'sourceContent', 'shareToken', 'isPublic', 'isPublished', 'generationSource', 'answerKey']);
+  'createdBy', 'ownerId', 'sourceContent', 'shareToken', 'isPublic', 'isPublished', 'generationSource', 'answerKey',
+  // Task 9: searched in the student pages, none reads them. evaluationErrorCode is NOT here: canonical-result-state.util.ts reads it.
+  'sourcePrimaryProvider', 'sourcePrimaryModel', 'sourceSecondaryProvider', 'sourceSecondaryModel', 'ocrProvider', 'ocrApi', 'ocrPipelineVersion', 'sourceVerificationSummary',
+  'correctionJobId', 'correctionError', 'analysisErrorCode', 'assessmentErrorCode', 'sourceHumanReviewSummary', 'sourceRubric', 'detailedFeedbackVersion', 'overrideReason',
+  'ocrExifOrientation', 'rasterizationVersion', 'idempotencyKey', 'qrCodeUrl']);
+
+// ALLOWLISTS (Task 9). A field not named here does not reach a student, so a field added to a schema or written by a provider cannot leak on these shapes.
+// One page of the transcript. Read by my-submission-page.ts and transcript-page-views.util.ts (fileId, pageNumber, page, width, height, sourceGeometry, pageImageUrl,
+// status, ocrStatus, text, words), annotation-image-geometry.ts (coordinateSpace), annotation-geometry.ts (lines). The rest are kept until a browser check shows them unused.
+const OCR_PAGE_FIELDS = new Set(['_id', 'fileId', 'fileOrder', 'pageNumber', 'pageIndex', 'page', 'width', 'height', 'coordinateSpace', 'sourceGeometry', 'text', 'words', 'lines',
+  'pageImageUrl', 'derivedImageFileId', 'status', 'ocrStatus']);
+// One correction: what studentCorrectionView.service.js and canonicalCorrectionRender.service.js produce for display, and what transcript-page-views.util.ts,
+// my-submission-page.ts, handwritten-ocr-page.ts and correction-overlay.ts read. Marks of a correction (deductions) and pipeline identities are not displayed.
+const CORRECTION_FIELDS = new Set(['id', '_id', 'fileId', 'page', 'pageNumber', 'startChar', 'endChar', 'quotedText', 'originalText', 'suggestedText', 'message', 'category', 'group', 'groupKey',
+  'symbol', 'symbolLabel', 'color', 'source', 'editable', 'wordIds', 'evidenceWordIds', 'visualTarget', 'renderTarget', 'bboxList', 'bboxCoordinateSpace', 'ocrConfidence', 'ocrSuspect', 'moderationStatus']);
+// One uploaded file. my-submission-page.ts reads _id, id and url; originalName and filename name the file.
+const FILE_FIELDS = new Set(['_id', 'id', 'originalName', 'filename', 'url']);
 
 const plain = value => (typeof value?.toJSON === 'function' ? value.toJSON() : value);
 const isObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value) && !value._bsontype;
@@ -76,6 +92,22 @@ function withoutInternal(value) {
   return out;
 }
 
+/** The named fields of an object, in their stored order. Anything that is not an object (a bare id, null) is returned as it is. */
+function picked(value, fields) {
+  const object = plain(value);
+  return isObject(object) ? Object.fromEntries(Object.entries(object).filter(([key]) => fields.has(key))) : value;
+}
+const ocrPageForStudent = value => picked(value, OCR_PAGE_FIELDS);
+const correctionForStudent = value => picked(value, CORRECTION_FIELDS);
+const fileForStudent = value => picked(value, FILE_FIELDS);
+const each = (list, sanitize) => (Array.isArray(list) ? list.map(sanitize) : list);
+
+/** The ocr-corrections response as a student or guest gets it. */
+function ocrCorrectionsForStudent(value) {
+  const out = withoutInternal(value);
+  return isObject(out) ? { ...out, ...('corrections' in out ? { corrections: each(out.corrections, correctionForStudent) } : {}), ...('ocr' in out ? { ocr: each(out.ocr, ocrPageForStudent) } : {}) } : out;
+}
+
 /** A worksheet as a student gets it: no creator, no source text, no share link. (The answer key and model answers are removed by the handler.) */
 const worksheetForStudent = value => withoutInternal(value);
 /** A flashcard set as a student gets it: no owner, no share link or folder. */
@@ -92,6 +124,8 @@ function submissionForStudent(value) {
   const out = withoutInternal(submission);
   if (isObject(out.assignment)) out.assignment = assignmentForStudent(out.assignment);
   if (isObject(out.class)) out.class = classForStudent(out.class, owner);
+  for (const [key, sanitize] of [['ocrPages', ocrPageForStudent], ['writingCorrections', correctionForStudent], ['files', fileForStudent]]) if (key in out) out[key] = each(out[key], sanitize);
+  if ('file' in out) out.file = fileForStudent(out.file);
   return out;
 }
 
@@ -103,12 +137,13 @@ function membershipForStudent(value) {
 
 /** The legacy feedback document (populateFeedback): teacher, class, assignment, submission, and who overrode it. */
 function legacyFeedbackForStudent(value) {
-  const { teacher, overriddenBy: _overriddenBy, ...rest } = plain(value);
+  const { teacher, overriddenBy: _overriddenBy, overrideReason: _overrideReason, ...rest } = plain(value);
   const owner = isObject(teacher) ? teacher : undefined;
   return { ...rest, teacherDisplayName: teacherDisplayName(owner),
     ...(isObject(rest.assignment) ? { assignment: assignmentForStudent(rest.assignment, owner) } : {}),
     ...(isObject(rest.class) ? { class: classForStudent(rest.class, owner) } : {}),
-    ...(isObject(rest.submission) ? { submission: submissionForStudent(rest.submission) } : {}) };
+    ...(isObject(rest.submission) ? { submission: submissionForStudent(rest.submission) } : {}),
+    ...(isObject(rest.evaluation) ? { evaluation: withoutInternal(rest.evaluation) } : {}) };
 }
 
 /** A notification as its student recipient sees it: the sender by name only. */
@@ -119,5 +154,5 @@ function notificationForStudent(value) {
   return { ...rest, ...(isObject(actor) ? { actor: { displayName: actor.role === 'teacher' ? teacherDisplayName(actor) : actor.displayName } } : {}) };
 }
 
-module.exports = { FALLBACK_NAME, INTERNAL_FIELDS, STUDENT_HIDDEN_KEYS, withoutInternal, worksheetForStudent, flashcardSetForStudent, teacherDisplayName, classForStudent, assignmentForStudent, submissionForStudent,
+module.exports = { FALLBACK_NAME, INTERNAL_FIELDS, STUDENT_HIDDEN_KEYS, OCR_PAGE_FIELDS, CORRECTION_FIELDS, FILE_FIELDS, ocrPageForStudent, correctionForStudent, fileForStudent, ocrCorrectionsForStudent, withoutInternal, worksheetForStudent, flashcardSetForStudent, teacherDisplayName, classForStudent, assignmentForStudent, submissionForStudent,
   membershipForStudent, legacyFeedbackForStudent, notificationForStudent, withoutInternalFields };

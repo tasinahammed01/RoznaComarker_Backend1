@@ -35,6 +35,7 @@ const RAW_READERS = {
   'services/submissionFeedbackReport.service.js': 'PDF: builds from the view',
   'pdf/sample/submissionFeedbackReportViewModel.js': 'PDF view model of the projected submission',
   'services/draftComparison.service.js': 'compares projected submissions/revisions',
+  'services/studentTeacherIdentity.service.js': 'names the list only to apply the field allowlist to the submission it is GIVEN (already the visible set)',
   'controllers/feedback.controller.js': 'feedback endpoint uses the view (plus the unreachable legacy block listed in the report)',
   'controllers/submission.controller.js': 'writers (upload/resubmit), student endpoints via the view, teacher retry (scoring)',
   'controllers/guestSubmission.controller.js': 'presentation picks statistics from view.submission',

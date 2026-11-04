@@ -173,9 +173,9 @@ const presentation = endpoint(async (req, res) => {
   const files = await File.find({ _id: { $in: doc.files?.length ? doc.files : [doc.file] } }).lean();
   const byId = new Map(files.map(file => [String(file._id), file]));
   submission.files = (doc.files?.length ? doc.files : [doc.file]).map(id => byId.get(String(id))).filter(Boolean)
-    .map(file => ({ _id: String(file._id), originalName: file.originalName,
+    .map(file => studentIdentity.fileForStudent({ _id: String(file._id), originalName: file.originalName,
       url: `/api/guest/submissions/${doc._id}/media/${file._id}/${encodeURIComponent(file.originalName)}` }));
-  submission.ocrPages = (doc.toJSON().ocrPages || []).map(({ studentSourceEvidence, pageImageUrl, ...page }) => ({ ...page,
+  submission.ocrPages = (doc.toJSON().ocrPages || []).map(({ pageImageUrl, ...page }) => studentIdentity.ocrPageForStudent({ ...page,
     ...(page.derivedImageFileId ? { pageImageUrl: `/api/guest/submissions/${doc._id}/media/${page.derivedImageFileId}/page.png` } : {}) }));
   submission.file = submission.files[0];
   submission.fileUrls = submission.files.map(file => file.url);
@@ -320,7 +320,7 @@ const results = endpoint(async (req, res) => {
     allowResubmission: assignment.allowResubmission === true,
     requireAdaptiveBeforeResubmission: assignment.requireAdaptiveBeforeResubmission === true };
   const studentData = corrections.studentPayload(data, view);
-  ok(res, studentData.marksVisible ? studentData : redactStudentMarks(studentData));
+  ok(res, studentIdentity.withoutInternal(studentData.marksVisible ? studentData : redactStudentMarks(studentData)));
 });
 const recover = endpoint(async (req, res) => {
   // A malformed address is a 400 about the format only. Everything else gets the same answer, sent BEFORE any lookup or email

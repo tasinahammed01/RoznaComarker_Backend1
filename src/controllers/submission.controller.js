@@ -34,7 +34,7 @@ const logger = require('../utils/logger');
 const { bytesToMB, ensureActivePlan, getLimit, incrementUsage } = require('../middlewares/usage.middleware');
 const { getPublicApiUrl, buildPublicUploadUrl } = require('../utils/publicApiUrl');
 const { showMarksToStudent, redactStudentMarks } = require('../services/assignmentAccessPolicy.service');
-const { submissionForStudent, withoutInternal } = require('../services/studentTeacherIdentity.service');
+const { submissionForStudent, ocrCorrectionsForStudent } = require('../services/studentTeacherIdentity.service');
 const { scopeCanonicalPages, scopeCanonicalCorrections } = require('../services/canonicalCorrectionResponse.service');
 const { buildCanonicalCorrectionRenderModels } = require('../services/canonicalCorrectionRender.service');
 const { annotationImageGeometry } = require('../services/annotationImageGeometry.service');
@@ -1332,7 +1332,7 @@ async function getOcrCorrections(req, res) {
     const studentData = studentCorrectionView.studentPayload(responseData, view);
     const shown = marksVisible ? studentData : redactStudentMarks(studentData);
     // A teacher's own page reads this endpoint too and is unchanged; a student or guest gets it without the pipeline's internals.
-    return sendSuccess(res, user?.role === 'teacher' ? shown : withoutInternal(shown));
+    return sendSuccess(res, user?.role === 'teacher' ? shown : ocrCorrectionsForStudent(shown));
   } catch (err) {
     logger.error({ message: 'Failed to fetch OCR corrections', ...logContext, error: err?.message, stack: err?.stack });
     const message =
