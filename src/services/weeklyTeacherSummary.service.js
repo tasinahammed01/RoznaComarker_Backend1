@@ -81,7 +81,7 @@ async function progressForWindow({ teacherId, classIds, assignmentIds, start, en
   });
   return { studentsImproved: new Set(improved.map((x) => x.studentId)).size, improvedRevisions: improved.length,
     averageRevisionScoreDelta: comparisons.length ? round(comparisons.reduce((sum, x) => sum + x.comparison.overall.delta, 0) / comparisons.length) : null,
-    issuesCorrected: comparisons.reduce((sum, x) => sum + x.comparison.issues.correctedCount, 0),
+    issuesCorrected: comparisons.reduce((sum, x) => sum + Number(x.comparison.issues?.correctedCount || 0), 0),
     strongestImprovedCategory: strongest, improvedByClass };
 }
 
