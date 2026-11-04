@@ -228,10 +228,24 @@ describe('draft comparison APIs and authorization', () => {
     const studentResponse = await auth(request(app).get(`/api/submissions/${submission._id}/draft-comparison`), studentToken);
     const foreignResponse = await auth(request(app).get(`/api/submissions/${submission._id}/draft-comparison`), otherToken);
     expect(teacherResponse.status).toBe(200); expect(teacherResponse.body.data.overall.delta).toBe(12);
-    expect(studentResponse.status).toBe(200); expect(foreignResponse.status).toBe(403);
+    expect(studentResponse.status).toBe(200); expect(foreignResponse.status).toBe(404);
     expect(await CreditTransaction.countDocuments()).toBe(before);
     expect(await Submission.findById(submission._id).lean()).toEqual(submissionBefore);
     expect(await SubmissionFeedback.findOne({ submissionId: submission._id }).lean()).toEqual(feedbackBefore);
+  });
+
+  test('a non-owner student or teacher gets the same answer as an id that does not exist', async () => {
+    const otherTeacher = await User.create({ firebaseUid: 'progress-other-teacher', email: 'pot@example.com', role: 'teacher' });
+    const otherTeacherToken = signTestJwt({ id: otherTeacher._id, firebaseUid: otherTeacher.firebaseUid, role: 'teacher' });
+    const url = id => `/api/submissions/${id}/draft-comparison`;
+    const missingId = new (require('mongoose').Types.ObjectId)();
+    for (const token of [otherToken, otherTeacherToken]) {
+      const missing = await auth(request(app).get(url(missingId)), token);
+      const foreign = await auth(request(app).get(url(submission._id)), token);
+      expect(missing.status).toBe(404);
+      expect(foreign.status).toBe(404);
+      expect(foreign.body).toEqual(missing.body);
+    }
   });
 
   test('progress endpoint returns revision metrics and rejects foreign student access', async () => {

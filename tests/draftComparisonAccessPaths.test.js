@@ -136,3 +136,22 @@ describe('with a previous draft', () => {
     });
   });
 });
+
+describe('guest route: a submission that exists but is not yours answers like one that does not exist', () => {
+  let otherId;
+  beforeAll(async () => {
+    const own = await Submission.findById(fixture.IDS.guest).lean();
+    otherId = new (require('mongoose').Types.ObjectId)();
+    await Submission.collection.insertOne({ ...own, _id: otherId, guest: { ...own.guest, normalizedEmail: 'someone.else@example.com', accessHash: access.hash('H'.repeat(43)) } });
+  });
+  const missing = () => new (require('mongoose').Types.ObjectId)();
+  const drafts = (id, header) => request(app).get(`/api/guest/submissions/${id}/drafts`).set(...header);
+
+  test.each([['own link token', () => ['X-Guest-Token', fixture.guestToken], 410], ['recovery portal session', () => ['X-Recovery-Session', portalSession], 404]])('%s', async (_name, header, status) => {
+    const foreign = await drafts(otherId, header());
+    const absent = await drafts(missing(), header());
+    expect(foreign.status).toBe(status);
+    expect(absent.status).toBe(status);
+    expect(foreign.body).toEqual(absent.body);
+  });
+});

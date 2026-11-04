@@ -218,7 +218,7 @@ async function comparisonForSubmission(submissionId, user) {
   if (!mongoose.Types.ObjectId.isValid(submissionId)) throw Object.assign(new Error('Invalid submission id'), { statusCode: 400 });
   const submission = await Submission.findById(submissionId).lean();
   if (!submission) throw Object.assign(new Error('Submission not found'), { statusCode: 404 });
-  if (!await authorizeSubmission(submission, user)) throw Object.assign(new Error('Forbidden'), { statusCode: 403 });
+  if (!await authorizeSubmission(submission, user)) throw Object.assign(new Error('Submission not found'), { statusCode: 404 });
   const studentView = user?.role === 'student' || accessContext.isGuest(user);
   if (studentView) {
     const assignment = await Assignment.findById(submission.assignment).select('showMarksToStudent').lean();
