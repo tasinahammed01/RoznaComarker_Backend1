@@ -208,16 +208,23 @@ async function authorizeSubmission(submission, user) {
   return false;
 }
 
+/** What a student or guest receives: no revision id and no category matching detail. Teachers get the comparison as computed. */
+function forStudent({ previousSubmissionId: _revisionId, ...result }) {
+  if (!result.rubricCategories) return result;
+  return { ...result, rubricCategories: result.rubricCategories.map(({ matchStrategy: _strategy, ...row }) => row) };
+}
+
 async function comparisonForSubmission(submissionId, user) {
   if (!mongoose.Types.ObjectId.isValid(submissionId)) throw Object.assign(new Error('Invalid submission id'), { statusCode: 400 });
   const submission = await Submission.findById(submissionId).lean();
   if (!submission) throw Object.assign(new Error('Submission not found'), { statusCode: 404 });
   if (!await authorizeSubmission(submission, user)) throw Object.assign(new Error('Forbidden'), { statusCode: 403 });
-  if (user?.role === 'student' || accessContext.isGuest(user)) {
+  const studentView = user?.role === 'student' || accessContext.isGuest(user);
+  if (studentView) {
     const assignment = await Assignment.findById(submission.assignment).select('showMarksToStudent').lean();
     if (!showMarksToStudent(assignment)) {
       return unavailable('MARKS_HIDDEN', 'Your teacher has not released marks for this assignment yet.', {
-        currentSubmissionId: String(submission._id), previousSubmissionId: ''
+        currentSubmissionId: String(submission._id)
       });
     }
   }
@@ -227,7 +234,8 @@ async function comparisonForSubmission(submissionId, user) {
   ]);
   // Both drafts as the student sees them: teacher-hidden corrections are not counted.
   const [current, previous] = await Promise.all([visibleSubmissions([submission]), visibleSubmissions(previousRevision ? [previousRevision] : [], 'SubmissionRevision')]);
-  return compareDrafts(previous[0] ? revisionAssessment(previous[0]) : null, liveAssessment(current[0], feedback));
+  const result = compareDrafts(previous[0] ? revisionAssessment(previous[0]) : null, liveAssessment(current[0], feedback));
+  return studentView ? forStudent(result) : result;
 }
 
 function progressFromHistory(entries) {

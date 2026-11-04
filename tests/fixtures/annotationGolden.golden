@@ -2637,7 +2637,6 @@
     "available": false,
     "code": "FIRST_DRAFT",
     "message": "No previous assessed draft to compare yet.",
-    "previousSubmissionId": "",
     "currentSubmissionId": "0000000000000000000000e1"
    }
   }
@@ -4681,7 +4680,6 @@
     "available": false,
     "code": "FIRST_DRAFT",
     "message": "No previous assessed draft to compare yet.",
-    "previousSubmissionId": "",
     "currentSubmissionId": "0000000000000000000000e2"
    }
   }
