@@ -12,7 +12,7 @@ This phase provisions only the shared PayPal Catalog Product and fixed recurring
 Required/provisioned backend variables:
 
 ```dotenv
-PAYMENT_PROVIDER=stripe
+PAYMENT_PROVIDER=paypal
 PAYPAL_ENV=sandbox
 PAYPAL_CLIENT_ID=
 PAYPAL_CLIENT_SECRET=
@@ -24,7 +24,7 @@ PAYPAL_PRO_ANNUAL_PLAN_ID=
 PAYPAL_WEBHOOK_ID=
 ```
 
-The plan variable names are derived from active paid MongoDB `Plan.slug` values. If those values differ in a deployment, the command prints the exact derived names. Keep `PAYMENT_PROVIDER=stripe` for this phase.
+The plan variable names are derived from active paid MongoDB `Plan.slug` values. If those values differ in a deployment, the command prints the exact derived names. `PAYMENT_PROVIDER` must be `paypal`: the server accepts no other value.
 
 ## Review without creating anything
 
