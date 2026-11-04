@@ -204,7 +204,7 @@ function liveAssessment(submission, feedback) {
 async function authorizeSubmission(submission, user) {
   if (accessContext.isGuest(user)) return accessContext.ownsSubmission(submission, user);
   if (user?.role === 'student') return String(submission.student) === String(user._id);
-  if (user?.role === 'teacher') return Boolean(await Class.exists({ _id: submission.class, teacher: user._id, isActive: true }));
+  if (user?.role === 'teacher') return Boolean(await Class.exists({ _id: submission.class, teacher: user._id, isActive: { $ne: false } }));
   return false;
 }
 

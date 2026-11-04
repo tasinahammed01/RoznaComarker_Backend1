@@ -268,6 +268,19 @@ describe('draft comparison APIs and authorization', () => {
     expect(own.status).toBe(200);
   });
 
+  test('a class stored before isActive existed still lets its teacher compare; an explicit false does not', async () => {
+    const url = `/api/submissions/${submission._id}/draft-comparison`;
+    const legacyClassId = new (require('mongoose').Types.ObjectId)();
+    await Class.collection.insertOne({ _id: legacyClassId, name: 'Legacy', teacher: teacher._id, joinCode: `LEGACY${Date.now()}` });
+    expect(await Class.collection.findOne({ _id: legacyClassId })).not.toHaveProperty('isActive');
+    await Submission.updateOne({ _id: submission._id }, { $set: { class: legacyClassId } });
+    const legacy = await auth(request(app).get(url), teacherToken);
+    expect(legacy.status).toBe(200);
+    expect(legacy.body.data.available).toBe(true);
+    await Class.collection.updateOne({ _id: legacyClassId }, { $set: { isActive: false } });
+    expect((await auth(request(app).get(url), teacherToken)).status).toBe(404);
+  });
+
   test('a deactivated teacher account is stopped by the sign-in check before the comparison runs', async () => {
     await User.updateOne({ _id: teacher._id }, { $set: { isActive: false } });
     const response = await auth(request(app).get(`/api/submissions/${submission._id}/draft-comparison`), teacherToken);
