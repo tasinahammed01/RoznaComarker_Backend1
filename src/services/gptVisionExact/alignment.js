@@ -42,8 +42,10 @@ function alignGeometry(text,google,identity,{excludedTexts=[]}={}){
   }
   // Line by line, for what uniqueness on the whole page could not place. Only when the layout is usable: the same condition as the first pass.
   const lineAlignment=require('./lineAlignment'),keyOf=value=>normalized(value)||value;
-  const lineBoundTokenCount=geometry.length?lineAlignment.bindByLine(tokens,geometry,keyOf):0;
-  const bandBoundTokenCount=geometry.length?lineAlignment.bindInBands(tokens,(google?.words||[]).filter(word=>word?.bbox&&typeof word.text==='string'),keyOf):0;
+  // The provider also saw this word somewhere it could not locate: the reader's word may be that one, so no box is certain.
+  const unlocated=new Set((google?.words||[]).filter(word=>!word?.bbox&&typeof word?.text==='string').map(word=>keyOf(word.text)));
+  const lineBoundTokenCount=geometry.length?lineAlignment.bindByLine(tokens,geometry,keyOf,unlocated):0;
+  const bandBoundTokenCount=geometry.length?lineAlignment.bindInBands(tokens,(google?.words||[]).filter(word=>word?.bbox&&typeof word.text==='string'),keyOf,unlocated):0;
   const possibleMissedLineCount=geometry.length?lineAlignment.missedProviderLines(tokens,geometry,keyOf,excludedTexts):0;
   return {words:tokens,coverage:tokens.length?tokens.filter(w=>w.bbox).length/tokens.length:0,textSha256:sha(text),
     diagnostics:{strategy:'gpt-monotonic-partial-geometry-v3',layoutDegraded:layout?.layoutDegraded!==false,lineBoundTokenCount,bandBoundTokenCount,possibleMissedLineCount,

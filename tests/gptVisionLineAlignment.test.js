@@ -153,6 +153,15 @@ describe('possible missed lines', () => {
   test('punctuation the provider counts as words does not lower the score', () => {
     expect(missed('way people see negatively', [['way', 'people', '.', ',', ';', 'see', 'negatively', '.']])).toBe(0);
   });
+  test('a word the provider also saw without a box stays without one; its neighbours still bind', () => {
+    const page = provider([['alpha', 'beta', 'gamma', 'delta'], ['zeta', 'common', 'theta', 'iota']]);
+    page.words.push({ id: 'gx', text: 'common', bbox: null, page: 1 });
+    const result = alignGeometry('alpha beta gamma delta\nzeta common theta iota', page, identity);
+    expect(boxOf(result, 5)).toBeFalsy();
+    expect(result.words[5].bbox).toBeNull();
+    expect(boxOf(result, 4)).toBe('g1_0');
+    expect(boxOf(result, 6)).toBe('g1_2');
+  });
   test('it never changes the text', () => {
     const result = alignGeometry('zeta eta theta iota', lines([['kappa', 'lambda', 'sigma', 'omega'], ['zeta', 'eta', 'theta', 'iota']]), identity);
     expect(result.words.map(w => w.text).join(' ')).toBe('zeta eta theta iota');

@@ -93,7 +93,7 @@ function positionalPairs(pairs, readerLength, providerLength) {
  * Gives boxes to the tokens the first pass left without one. `key` is a word's normalized text. Tokens are changed in place; returns how many were bound.
  * A line whose first-pass words point at another provider line is left alone: the two passes disagree, so neither is trusted further there.
  */
-function bindByLine(tokens, geometry, key) {
+function bindByLine(tokens, geometry, key, unlocated = new Set()) {
   const group = (items, lineOf) => {
     const lines = [], index = new Map();
     items.forEach((value, position) => {
@@ -115,7 +115,7 @@ function bindByLine(tokens, geometry, key) {
     if (readerWords.some(({ value }) => value.geometryWordId && lineOfProviderWord.get(value.geometryWordId) !== providerLine)) continue;
     for (const [left, right] of [...pairs, ...positionalPairs(pairs, readerWords.length, providerWords.length)]) {
       const token = readerWords[left].value, word = providerWords[right].value;
-      if (token.bbox || !word.bbox || (word.id && taken.has(word.id))) continue;
+      if (token.bbox || !word.bbox || (word.id && taken.has(word.id)) || unlocated.has(readerWords[left].key)) continue;
       token.bbox = word.bbox; token.geometryWordId = word.id || null;
       if (word.id) taken.add(word.id);
       bound++;
@@ -139,7 +139,7 @@ const MIN_BAND_SIMILARITY = 0.7;
  * the provider's unused words, all of them, between the lines above and below it that are placed. There a word takes a box only if it reads nearly the same, in the
  * same left-to-right order, and no other word in that band reads as well. A page with no placed line has no band and nothing happens.
  */
-function bindInBands(tokens, providerWords, key) {
+function bindInBands(tokens, providerWords, key, unlocated = new Set()) {
   const lines = [];
   tokens.forEach((token, position) => { if (!position || token.separatorBefore.includes('\n')) lines.push([]); lines[lines.length - 1].push(token); });
   const centerOf = line => { const centers = line.map(token => boxOf(token.bbox)?.center).filter(Number.isFinite); return centers.length ? median(centers) : null; };
@@ -160,6 +160,7 @@ function bindInBands(tokens, providerWords, key) {
     for (const [left, right, value] of alignWords(open.map(token => key(token.text)), candidateKeys)) {
       if (value < MIN_BAND_SIMILARITY) continue;
       const wanted = key(open[left].text);
+      if (unlocated.has(wanted)) continue;
       if (candidateKeys.some((other, position) => position !== right && similarity(wanted, other) >= value)) continue;
       const word = candidates[right];
       if (word.id && taken.has(word.id)) continue;
