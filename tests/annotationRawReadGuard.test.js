@@ -41,6 +41,7 @@ const RAW_READERS = {
   'controllers/guestSubmission.controller.js': 'presentation picks statistics from view.submission',
   'utils/sourceFidelity.js': 'source-review eligibility',
   'app.js': 'route name only (writing-corrections legend)',
+  'services/legacyFeedbackWording.service.js': 'names the list only to leave it untouched while rewording our own fields; reads nothing from it',
   'routes/writingCorrections.routes.js': 'route name only',
 };
 // Every file allowed to name the teacher overlay.
