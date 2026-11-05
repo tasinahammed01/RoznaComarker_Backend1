@@ -25,10 +25,10 @@ describe('Content and Organization in the PDF', () => {
     data.evaluation.rubricScores = { ...data.evaluation.rubricScores, CONTENT: { score: 16, maxScore: 20 }, ORGANIZATION: { score: 14, maxScore: 20 } };
     return renderSubmissionFeedbackReportHtml(buildSubmissionFeedbackReportViewModel({ ...data, ...patch })); };
   const cell = (html, category) => html.match(new RegExp('<div class="stat[^"]*">((?:(?!</div>).)*?<span>' + category + '</span>)</div>'))[1];
-  test('with no counted correction and marks lost: the real count beside the rubric score, and no other wording', () => {
+  test('statistics: the plain count only, with no rubric fraction and none of the old wording', () => {
     const html = render();
-    expect(cell(html, 'organization')).toContain('<b>0</b>'); expect(cell(html, 'organization')).toContain('14/20'); expect(html).not.toMatch(/holistic|whole piece/i);
-    expect(cell(html, 'content')).toContain('16/20');
+    expect(cell(html, 'organization')).toBe('<b>0</b><span>organization</span>'); expect(html).toContain('<div class="stat"><b>0</b><span>content</span></div>');
+    expect(html).not.toMatch(/holistic|whole piece/i);
    
     expect(html).not.toContain('Assessed on the whole piece');
     expect(html).toMatch(/ORGANIZATION<\/b><small>0 issues/);
@@ -42,6 +42,12 @@ describe('Content and Organization in the PDF', () => {
     const html = render({ marksVisible: false });
     expect(cell(html, 'organization')).toContain('<b>0</b>');
     expect(html).not.toContain('14/20');
+  });
+  test('each count lists the codes that make it up, most frequent first', () => {
+    const data = fixture(); const base = data.submission.writingCorrections[0];
+    data.submission.writingCorrections = ['SP', 'P', 'SP', 'CAP', 'SP'].map((symbol, i) => ({ ...base, id: 'm' + i, category: 'MECHANICS', symbol }));
+    const html = renderSubmissionFeedbackReportHtml(buildSubmissionFeedbackReportViewModel(data));
+    expect(cell(html, 'mechanics')).toBe('<b>5</b><small>SP 3 · CAP 1 · P 1</small><span>mechanics</span>');
   });
   test('a category with real corrections shows its count', () => {
     const data = fixture(); data.submission.writingCorrections = [{ ...data.submission.writingCorrections[0], id: 'o1', category: 'ORGANIZATION', symbol: 'ORG' }];

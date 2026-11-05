@@ -33,15 +33,11 @@ function correctionBody(correction) {
 function correctionRows(page) { return page.corrections.map((correction) => `<tr data-correction-id="${esc(correction.reportId || correction.id || '')}"><td>${correctionBody(correction)}</td></tr>`).join(''); }
 /** The same stroke colour as the website: the legend's hue, strong (annotation-stroke.ts). */
 const strokeColor = color => require('./websiteAnnotationRules.generated').annotationStrokeColor(color);
-const RUBRIC_ONLY_CATEGORIES = ['content', 'organization'];
-/** No counted finding, while the rubric still took marks here: the two are shown together, so that a zero does not read as full marks. */
-const countWithScore = (category, count) => RUBRIC_ONLY_CATEGORIES.includes(String(category).toLowerCase()) && Number(count) === 0;
+/** The number of distinct corrections, and the codes that make it up. */
 function statisticCell(vm, category) {
-  const count = vm.statistics[category];
-  // Marks hidden: the view model has no category scores, so no score appears.
-  const scored = countWithScore(category, count) ? (vm.categoryScores || []).find((item) => String(item.category).toLowerCase() === category) : null;
-  const score = scored && scored.maxScore && Number(scored.score) < Number(scored.maxScore) ? `<small>${scored.score}/${scored.maxScore}</small>` : '';
-  return `<div class="stat"><b>${count}</b>${score}<span>${esc(category)}</span></div>`;
+  const count = Number.isInteger(vm.statistics[category]) ? vm.statistics[category] : 0;
+  const codes = (vm.statisticsBySymbol?.[category] || []).map(({ symbol, count: n }) => `${esc(symbol)} ${n}`).join(' · ');
+  return `<div class="stat"><b>${count}</b>${codes ? `<small>${codes}</small>` : ''}<span>${esc(category)}</span></div>`;
 }
 function scoreRows(vm) { return vm.categoryScores.map((item) => `<div class="score-row"><div><b>${esc(item.category)}</b><small>${item.issueCount == null ? 'Provisional' : `${item.issueCount} issues`}</small></div><div class="bar"><i style="width:${item.percentage}%"></i></div><strong>${item.score}/${item.maxScore}</strong></div>`).join(''); }
 function feedbackCard(item, type, correctionRefs) {

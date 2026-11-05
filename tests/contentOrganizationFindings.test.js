@@ -66,7 +66,7 @@ describe('the PDF', () => {
       submission: { _id: 's', files: ['f'], canonicalText: text, correctionStatus: 'completed', correctionSourceHash: 'h',
         writingCorrections: [{ id: 'c', fileId: 'f', page: 1, category: 'CONTENT', symbol: 'DEV', quotedText: text, message: 'Add an example.', suggestedText: 'Give one reason.', startChar: 0, endChar: text.length, wordIds: [] }],
         transcriptPages: [{ fileId: 'f', pageNumber: 1, startChar: 0, endChar: text.length, text, imageWidth: 1000, imageHeight: 1000, words: [] }] } }));
-    expect(html).toMatch(/<b>1<\/b>[^<]*<span>content/i);
+    expect(html).toContain('<b>1</b><small>DEV 1</small><span>content</span>');
     expect(html).not.toMatch(/holistic/i);
   });
 });
