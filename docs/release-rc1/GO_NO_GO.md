@@ -22,7 +22,7 @@ Twelve handwriting samples, on the final code. Dropped lines: 0 (pass). Word box
 
 ## Content and Organization findings, as measured
 
-The detector rarely returns Content or Organization findings (0 on most of 11 samples, also on samples that lost marks in these categories). A rewritten detector prompt was tried and dropped: it did not produce them where marks were lost, its run-to-run difference reached 26%, and 3 of 25 calls failed. So teachers see counts of 0 with the rubric score beside them on many essays. This is a known limit, KNOWN_RISKS number 23.
+The detector rarely returns Content or Organization findings (0 on most of 11 samples, also on samples that lost marks in these categories). A rewritten detector prompt was tried and dropped: it did not produce them where marks were lost, its run-to-run difference reached 26%, and 3 of 25 calls failed. So teachers and students see a count of 0 for these two categories on many essays, while the rubric score in the score panel shows the marks lost. This is a known limit, KNOWN_RISKS number 23.
 
 ## Not proven by any automated check
 
