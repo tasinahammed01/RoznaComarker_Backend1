@@ -20,6 +20,10 @@ This is the decision sheet, not a record of results. RC3 is RC2 plus the Gemini 
 
 Twelve handwriting samples, on the final code. Dropped lines: 0 (pass). Word boxes: at least 91.1% per sample (pass). Differences between runs: 0 (pass). **Silently corrected words: overall 3.3%, but above the 3% limit on 5 of 12 samples, worst 15.7%, and most of those are capital letters (fail).** Shipping means accepting this limit; KNOWN_RISKS number 17 says what a teacher sees. The alternative is the Qwen reader, on the same code, by the env change in DEPLOY_RUNBOOK step 7. Qwen was not measured on these samples.
 
+## Content and Organization findings, as measured
+
+The detector rarely returns Content or Organization findings (0 on most of 11 samples, also on samples that lost marks in these categories). A rewritten detector prompt was tried and dropped: it did not produce them where marks were lost, its run-to-run difference reached 26%, and 3 of 25 calls failed. So teachers see counts of 0 with the rubric score beside them on many essays. This is a known limit, KNOWN_RISKS number 23.
+
 ## Not proven by any automated check
 
 A real browser, a real device (iPad Safari, touch), real AI providers, real email delivery, real PayPal calls, real Firebase sign-in, the VPS and the real Atlas (data volume, timings, MongoDB version).

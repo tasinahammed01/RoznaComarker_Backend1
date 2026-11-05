@@ -37,6 +37,9 @@
 | 21 | **Highlights do not cover every correction.** A word error with no word box is not drawn on the image; the page says how many, and the row says "Not located on image". Boxes matched at least 91.1% per sample. A sentence-level correction with no box gets a bracket only on lines the boxes prove. | Task 15 tally and browser checks. | Ship. The transcript view shows them all. |
 | 22 | **A possible missed line is a warning to the teacher only,** inside the review panel, seen once the panel is opened. A line is not recovered automatically. | `possibleMissedLines`; never in student, guest or PDF payloads. | Tell teachers to compare with the image when they see it. |
 
+| 23 | **Content and Organization findings are rare.** The detector returned none on most samples, also where the rubric took marks. The statistics then show 0 with the rubric score beside it, and the feedback card shows the rubric's quoted evidence as a "Rubric note". A stronger detector prompt was tried and did not pass its gate. | Task 17 measurements, 11 samples. | Tell teachers. A later release can work on the detector. |
+| 24 | **The rubric no longer sees Content or Organization findings.** This keeps their scores independent of the findings. Measured on 3 samples × 3 runs: totals stayed within the usual run-to-run range. | Task 17. | Ship. |
+
 Worksheet answer visibility is number 1 above and dialog text loss on resize is number 3: both still apply.
 
 ## Test suites that fail, also on `origin/main`

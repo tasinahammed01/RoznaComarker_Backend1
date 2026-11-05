@@ -22,6 +22,15 @@ These files keep the `docs/release-rc1/` path they were brought from. **RC3 is t
 
 Everything below was written for RC2 and still applies unless this section says otherwise. Nothing here has been run on production. Replace `BACKEND_DIR`, `FRONTEND_DIR` and `APP_USER` with the real values. Steps marked **(unverified)** depend on the VPS, which could not be reached when this was written.
 
+## RC3, final changes (Task 17)
+
+- **Image markers:** underlines and chips have the colour of their error type, a chip sits on its own word, and a line is exactly the word's box. The PDF uses the same rules.
+- **Content and Organization:** the statistics show the real count; a zero with marks lost shows the rubric score beside it. The word "Holistic" is gone everywhere. Results stored earlier are shown with the same wording when they are read; nothing in the database changes.
+- **Scores:** the rubric no longer receives Content or Organization findings, so they cannot move a score. The formula is unchanged.
+- **Runtime contract fingerprint:** unchanged. The correction prompt, the rubric prompt and the schemas are the same as before Task 17.
+- **PDF cache:** the PDF renderer files changed, so every report is generated again on its first download after the deploy (a few seconds each). Nothing to run.
+- **New environment variables:** none.
+
 ## 0. Which commit is production on?
 
 ```
