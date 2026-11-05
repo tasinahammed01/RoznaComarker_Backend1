@@ -143,6 +143,7 @@ const BUBBLE_DIAMETERS_MM = Object.freeze([
   MINIMUM_BUBBLE_DIAMETER_MM,
 ]);
 const LOCAL_MARKER_GAP_MM = cssPxToMm(0.1);
+const CHIP_TOUCH_MM = cssPxToMm(2), CHIP_GAP_MM = cssPxToMm(2), CHIP_ROWS = 3;
 
 function markerDimensions(diameter = 3.8) {
   const safeDiameter =
@@ -793,56 +794,20 @@ function chooseCollisionFreeBubblePosition(
   return null;
 }
 
-function buildWordEdgeMarkerCandidates(
-  entry,
-  dimensions,
-  imageBounds,
-  placedMarkers = [],
-) {
-  const target = entry.target;
-  const anchorX = target.x + target.w;
-  const originalX = anchorX - dimensions.width / 2;
-  const baseX = clamp(
-    originalX,
-    imageBounds.x,
-    imageBounds.x + imageBounds.w - dimensions.width,
-  );
-  const originalY =
-    target.y +
-    target.h * MARKER_ANCHOR_Y_RATIO -
-    dimensions.height / 2;
-  const protectedTargetTop =
-    target.y + target.h * OWN_TARGET_TOP_ALLOWANCE_RATIO;
-  const requiredBottom = protectedTargetTop - MARKER_WORD_SAFE_GAP_MM;
-  const overlapCorrection = Math.max(
-    0,
-    originalY + dimensions.height - requiredBottom,
-  );
-  const correctedY = Math.max(
-    imageBounds.y,
-    originalY - Math.min(overlapCorrection, MAX_TARGET_RAISE_MM),
-  );
-  const slightlyHigherY = Math.max(
-    imageBounds.y,
-    correctedY - LOCAL_MARKER_EXTRA_RAISE_MM,
-  );
-  const widestPlacedMarker = placedMarkers.reduce(
-    (widest, placed) => Math.max(widest, placed.w || 0),
-    dimensions.width,
-  );
-  const localShift = Math.min(
-    (dimensions.width + widestPlacedMarker) / 2 + MARKER_COLLISION_GAP_MM,
-    MAX_LOCAL_HORIZONTAL_SHIFT_MM,
-  );
-
-  return [
-    { x: baseX, y: correctedY, variant: "above", level: 0 },
-    { x: baseX - localShift, y: correctedY, variant: "above-left", level: 1 },
-    { x: baseX + localShift, y: correctedY, variant: "above-right", level: 1 },
-    { x: baseX, y: slightlyHigherY, variant: "above", level: 1 },
-    { x: baseX - localShift, y: slightlyHigherY, variant: "above-left", level: 2 },
-    { x: baseX + localShift, y: slightlyHigherY, variant: "above-right", level: 2 },
-  ];
+/** The same rule as the website (annotation-layout.ts), in millimetres: on the word's top edge at its start; taken, further along the word, then stacked above it. */
+function buildWordEdgeMarkerCandidates(entry, dimensions, imageBounds) {
+  const target = entry.target, candidates = [];
+  const edgeY = target.y - dimensions.height + CHIP_TOUCH_MM;
+  for (let row = 0; row < CHIP_ROWS; row += 1) {
+    for (let step = 0; !step || target.x + step * (dimensions.width + CHIP_GAP_MM) < target.x + target.w; step += 1) {
+      candidates.push({
+        x: clamp(target.x + step * (dimensions.width + CHIP_GAP_MM), imageBounds.x, imageBounds.x + imageBounds.w - dimensions.width),
+        y: clamp(edgeY - row * (dimensions.height + CHIP_GAP_MM), imageBounds.y, imageBounds.y + imageBounds.h - dimensions.height),
+        variant: row ? 'stacked' : step ? 'along-word' : 'word-start', level: row,
+      });
+    }
+  }
+  return candidates;
 }
 
 function markerRectIsSafe(rect, imageBounds, protectedRects, ownTarget, placedMarkers) {
@@ -899,7 +864,7 @@ function createSubmittedImageLayout(page, options = {}) {
     const boxes = wordBoxes.length ? wordBoxes : presentation.annotations
       .filter(annotation => group.correctionIds.includes(annotation._id))
       .flatMap(annotation => annotation.renderTarget?.boxes || annotation.bboxList || []).filter(Boolean);
-    const mappedBoxes = boxes.length ? boxes.map(box => mapPercentBoxToStage(box, geometry)).filter(Boolean) : group.segments.map(mapSegment);
+    const mappedBoxes = boxes.length && !group.segments.some(segment => segment.semantic) ? boxes.map(box => mapPercentBoxToStage(box, geometry)).filter(Boolean) : group.segments.map(mapSegment);
     entries.push({correction,boxes,mappedBoxes,target:mappedBoxes[0]});
   }
   for(const correction of presentation.unmapped)omitted.push({annotationId:String(correction.reportId||correction.id||''),
@@ -949,119 +914,22 @@ for (const entry of entries) {
   let chosenRect = null;
   let chosenDimensions = null;
   let chosenCandidate = null;
-
-  // Try the existing marker sizes, largest first.
+  const free = (rect) => inside(rect, imageBounds) && !placedMarkers.some((placed) => intersects(rect, placed));
+  // The existing marker sizes, largest first. A chip never leaves its word: with no free spot it stays on the word's start.
   for (const diameter of BUBBLE_DIAMETERS_MM) {
-    const dimensions = anchoredMarkerDimensions(
-      entry.correction,
-      diameter,
-    );
-
-    const candidates = buildWordEdgeMarkerCandidates(
-      entry,
-      dimensions,
-      imageBounds,
-      placedMarkers,
-    );
-
-    for (const candidate of candidates) {
-      const rect = {
-        x: round(candidate.x),
-        y: round(candidate.y),
-        w: dimensions.width,
-        h: dimensions.height,
-      };
-
-      // Validate the complete pill rectangle, including its own target word.
-      if (!markerRectIsSafe(
-        rect,
-        imageBounds,
-        protectedRects,
-        entry.target,
-        placedMarkers,
-      )) {
-        continue;
-      }
-
-      chosenRect = rect;
-      chosenDimensions = dimensions;
-      chosenCandidate = candidate;
+    const dimensions = anchoredMarkerDimensions(entry.correction, diameter);
+    for (const candidate of buildWordEdgeMarkerCandidates(entry, dimensions, imageBounds)) {
+      const rect = { x: round(candidate.x), y: round(candidate.y), w: dimensions.width, h: dimensions.height };
+      if (!free(rect)) continue;
+      chosenRect = rect; chosenDimensions = dimensions; chosenCandidate = candidate;
       break;
     }
-
-    if (chosenRect) {
-      break;
-    }
+    if (chosenRect) break;
   }
-
-  if (!chosenRect || !chosenDimensions || !chosenCandidate) {
-    const dimensions = anchoredMarkerDimensions(
-      entry.correction,
-      MINIMUM_BUBBLE_DIAMETER_MM,
-    );
-    const localCandidates = buildWordEdgeMarkerCandidates(
-      entry,
-      dimensions,
-      imageBounds,
-      placedMarkers,
-    );
-
-    // If conservative OCR padding occupies every local candidate, remain at
-    // the word edge rather than searching for distant empty page space.
-    for (const candidate of localCandidates) {
-      const rect = {
-        x: round(candidate.x),
-        y: round(candidate.y),
-        w: dimensions.width,
-        h: dimensions.height,
-      };
-      if (!markerRectIsLocallyAcceptable(
-        rect,
-        imageBounds,
-        entry.target,
-        placedMarkers,
-      )) continue;
-      chosenRect = rect;
-      chosenDimensions = dimensions;
-      chosenCandidate = candidate;
-      break;
-    }
-
-    if (!chosenRect) {
-      const scoredCandidates = localCandidates.map((candidate) => ({
-        candidate,
-        rect: {
-          x: round(clamp(
-            candidate.x,
-            imageBounds.x,
-            imageBounds.x + imageBounds.w - dimensions.width,
-          )),
-          y: round(clamp(
-            candidate.y,
-            imageBounds.y,
-            imageBounds.y + imageBounds.h - dimensions.height,
-          )),
-          w: dimensions.width,
-          h: dimensions.height,
-        },
-      }));
-      const primaryRect = scoredCandidates[0].rect;
-      const bestFallback = scoredCandidates.reduce((best, current) => {
-        const score = scoreFallbackCandidate(
-          current.rect,
-          primaryRect,
-          entry.target,
-          protectedRects,
-          placedMarkers,
-        );
-        return !best || score < best.score
-          ? { ...current, score }
-          : best;
-      }, null);
-      chosenRect = bestFallback.rect;
-      chosenDimensions = dimensions;
-      chosenCandidate = bestFallback.candidate;
-    }
+  if (!chosenRect) {
+    chosenDimensions = anchoredMarkerDimensions(entry.correction, MINIMUM_BUBBLE_DIAMETER_MM);
+    chosenCandidate = buildWordEdgeMarkerCandidates(entry, chosenDimensions, imageBounds)[0];
+    chosenRect = { x: round(chosenCandidate.x), y: round(chosenCandidate.y), w: chosenDimensions.width, h: chosenDimensions.height };
   }
 
   placedMarkers.push({ ...chosenRect });
