@@ -21,7 +21,7 @@ test('exact dedicated model, low effort, closed schema, private route and usage;
   const body=JSON.parse(fetchImpl.mock.calls[0][1].body);
   expect(body.model).toBe(model);expect(body.reasoning).toEqual({effort:'low'});expect(body.provider).toEqual({require_parameters:true,allow_fallbacks:false});
   expect(body.response_format).toMatchObject({type:'json_schema',json_schema:{strict:true}});expect(body.max_tokens).toBe(8000);
-  expect(body).not.toHaveProperty('temperature');expect(body).not.toHaveProperty('models');expect(body).not.toHaveProperty('max_completion_tokens');
+  expect(body.temperature).toBe(0);expect(body.seed).toBe(20261105);expect(body).not.toHaveProperty('models');expect(body).not.toHaveProperty('max_completion_tokens');
   expect(result.model).toBe(model);expect(result.usage).toMatchObject({prompt_tokens:100,completion_tokens:50});expect(fetchImpl).toHaveBeenCalledTimes(1);
   expect(client.getAssessmentAIConfig(env).model).toBe('google/gemini-3.8-flash');
   expect(client.getAssessmentAIConfig({...env,ASSESSMENT_AI_MODEL:'openai/gpt-6-astra'}).model).toBe('openai/gpt-6-astra');

@@ -23,6 +23,7 @@ const CORRECTION_MODEL = 'openai/gpt-4.1-mini';
 const DEEPSEEK_CORRECTION_MODEL = 'deepseek/deepseek-v4.1-flash';
 const GPT54_MINI_CORRECTION_MODEL = 'openai/gpt-5.4-mini';
 const GEMINI_CORRECTION_MODEL = 'google/gemini-3.8-flash';
+const CORRECTION_SEED = 20261105;
 const CLAUDE_CORRECTION_MODEL = 'anthropic/claude-haiku-5.5';
 const CORRECTION_MODELS = Object.freeze([CORRECTION_MODEL, DEEPSEEK_CORRECTION_MODEL, GPT54_MINI_CORRECTION_MODEL, GEMINI_CORRECTION_MODEL, CLAUDE_CORRECTION_MODEL, ASSESSMENT_MODEL]);
 const isStrictCorrectionModel = model => [CORRECTION_MODEL, DEEPSEEK_CORRECTION_MODEL, GPT54_MINI_CORRECTION_MODEL, GEMINI_CORRECTION_MODEL, CLAUDE_CORRECTION_MODEL].includes(model);
@@ -442,6 +443,7 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
       if(google||base!=='https://openrouter.ai/api/v1'||!responseSchema||responseFormat!=='json')
         throw attemptError('AI_CORRECTION_AUTHORITY_INVALID','Invalid correction request profile.');
       delete body.temperature;
+      if(entry.model===GEMINI_CORRECTION_MODEL){body.temperature=0;body.seed=CORRECTION_SEED;}
       body.provider={require_parameters:true,allow_fallbacks:false};
     }
     if (requestProfile) {
