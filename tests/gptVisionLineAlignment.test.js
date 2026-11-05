@@ -102,3 +102,59 @@ describe('alignGeometry', () => {
     expect(Object.keys(result.words[0]).sort()).toEqual(['bbox', 'fileId', 'geometryWordId', 'id', 'page', 'separatorBefore', 'sourceEnd', 'sourceStart', 'text']);
   });
 });
+
+describe('third pass: pages whose lines the layout could not separate', () => {
+  const { bindInBands } = require('../src/services/gptVisionExact/lineAlignment');
+  const key = value => value.toLowerCase().replace(/[^a-z0-9]/g, '') || value;
+  const token = (text, y, line = false) => ({ text, separatorBefore: line ? '\n' : ' ', bbox: y === null ? null : { x: 10, y, w: 5, h: 2 }, geometryWordId: y === null ? null : `t${text}` });
+  const word = (id, text, x, y) => ({ id, text, bbox: { x, y, w: 5, h: 2 } });
+
+  test('a word takes a nearly identical unused word between the placed lines around it', () => {
+    const tokens = [token('above', 10), token('strict', null, true), token('limits', null), token('below', 30, true)];
+    expect(bindInBands(tokens, [word('a', 'strict', 10, 20), word('b', 'limits', 20, 20)], key)).toBe(2);
+    expect(tokens.slice(1, 3).map(t => t.geometryWordId)).toEqual(['a', 'b']);
+  });
+  test('nothing outside the band', () => {
+    const tokens = [token('above', 10), token('strict', null, true), token('below', 30, true)];
+    expect(bindInBands(tokens, [word('a', 'strict', 10, 40)], key)).toBe(0);
+  });
+  test('two equal candidates in the band: neither', () => {
+    const tokens = [token('above', 10), token('strict', null, true), token('below', 30, true)];
+    expect(bindInBands(tokens, [word('a', 'strict', 10, 18), word('b', 'strict', 30, 22)], key)).toBe(0);
+    expect(tokens[1].bbox).toBeNull();
+  });
+  test('a word that reads differently is not placed: position does not count here', () => {
+    const tokens = [token('above', 10), token('strict', null, true), token('below', 30, true)];
+    expect(bindInBands(tokens, [word('a', 'wholly', 10, 20)], key)).toBe(0);
+  });
+  test('no placed line on the page: no band, nothing happens', () => {
+    const tokens = [token('strict', null), token('limits', null)];
+    expect(bindInBands(tokens, [word('a', 'strict', 10, 20)], key)).toBe(0);
+  });
+});
+
+describe('possible missed lines', () => {
+  const lines = texts => provider(texts);
+  const missed = (text, written, options) => alignGeometry(text, lines(written), identity, options).diagnostics.possibleMissedLineCount;
+  test('a written line the reader does not have is counted', () => {
+    expect(missed('alpha beta gamma delta\nzeta eta theta iota', [['alpha', 'beta', 'gamma', 'delta'], ['kappa', 'lambda', 'sigma', 'omega'], ['zeta', 'eta', 'theta', 'iota']])).toBe(1);
+  });
+  test('words scattered over other lines do not cover it', () => {
+    expect(missed('alpha beta one two\ngamma delta three four', [['alpha', 'gamma', 'kappa', 'lambda', 'sigma'], ['alpha', 'beta', 'one', 'two'], ['gamma', 'delta', 'three', 'four']])).toBe(1);
+  });
+  test('a copied question or crossed-out text set aside by the reader is not missed', () => {
+    const written = [['kappa', 'lambda', 'sigma', 'omega'], ['zeta', 'eta', 'theta', 'iota']];
+    expect(missed('zeta eta theta iota', written, { excludedTexts: ['kappa lambda sigma omega'] })).toBe(0);
+    expect(missed('zeta eta theta iota', written)).toBe(1);
+  });
+  test('short lines are ignored: usually a name, a date or a note', () => {
+    expect(missed('zeta eta theta iota', [['Saeed', 'Date'], ['zeta', 'eta', 'theta', 'iota']])).toBe(0);
+  });
+  test('punctuation the provider counts as words does not lower the score', () => {
+    expect(missed('way people see negatively', [['way', 'people', '.', ',', ';', 'see', 'negatively', '.']])).toBe(0);
+  });
+  test('it never changes the text', () => {
+    const result = alignGeometry('zeta eta theta iota', lines([['kappa', 'lambda', 'sigma', 'omega'], ['zeta', 'eta', 'theta', 'iota']]), identity);
+    expect(result.words.map(w => w.text).join(' ')).toBe('zeta eta theta iota');
+  });
+});

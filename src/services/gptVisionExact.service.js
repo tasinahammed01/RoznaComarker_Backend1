@@ -71,7 +71,9 @@ async function readPage({bytes,mimeType,identity,assignment,google,isCurrentJob=
     // Geometry is optional evidence, obtained only after valid active source.
     const geometryStarted=Date.now();
     let geometry;try{geometry=google?await google():null;}catch{geometry={words:[],geometryFailureCode:'GEOMETRY_PROVIDER_UNAVAILABLE'};/* No lexical fallback. */}
-    alignment=alignGeometry(value.activeTranscript,geometry,identity);
+    // What the reader set aside on purpose (the copied question, crossed-out words) is not a missed line.
+    const setAside=[...(value.physicalLines||[]).flatMap(line=>(line.segments||[]).filter(s=>s.classification!=='STUDENT_ACTIVE_TEXT'&&typeof s.text==='string').map(s=>s.text)),...(review?.struck||[]).map(item=>item.text)];
+    alignment=alignGeometry(value.activeTranscript,geometry,identity,{excludedTexts:setAside});
     geometryMs=Date.now()-geometryStarted;
     if(signal?.aborted||!await isCurrentJob())throw fail('OCR_JOB_SUPERSEDED');
     validationStage='ACCEPTED';

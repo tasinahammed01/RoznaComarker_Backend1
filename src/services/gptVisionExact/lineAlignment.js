@@ -124,4 +124,73 @@ function bindByLine(tokens, geometry, key) {
   return bound;
 }
 
-module.exports = { similarity, alignWords, pairLines, positionalPairs, bindByLine };
+const boxOf = box => {
+  if (!box) return null;
+  const left = 'x0' in box ? box.x0 : box.x, top = 'y0' in box ? box.y0 : box.y;
+  const right = 'x1' in box ? box.x1 : box.x + box.w, bottom = 'y1' in box ? box.y1 : box.y + box.h;
+  return [left, top, right, bottom].every(Number.isFinite) ? { left, right, center: (top + bottom) / 2 } : null;
+};
+const median = values => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+/** In this pass a word must be close to its box's word: position does not help here. */
+const MIN_BAND_SIMILARITY = 0.7;
+
+/**
+ * Third pass, for pages the layout could not split into lines (a tilted page: words of two lines mixed, others left unplaced). A reader line without boxes looks at
+ * the provider's unused words, all of them, between the lines above and below it that are placed. There a word takes a box only if it reads nearly the same, in the
+ * same left-to-right order, and no other word in that band reads as well. A page with no placed line has no band and nothing happens.
+ */
+function bindInBands(tokens, providerWords, key) {
+  const lines = [];
+  tokens.forEach((token, position) => { if (!position || token.separatorBefore.includes('\n')) lines.push([]); lines[lines.length - 1].push(token); });
+  const centerOf = line => { const centers = line.map(token => boxOf(token.bbox)?.center).filter(Number.isFinite); return centers.length ? median(centers) : null; };
+  const taken = new Set(tokens.map(token => token.geometryWordId).filter(Boolean));
+  let bound = 0;
+  lines.forEach((line, index) => {
+    const open = line.filter(token => !token.bbox);
+    if (!open.length) return;
+    let above = null, below = null;
+    for (let i = index - 1; i >= 0 && above === null; i--) above = centerOf(lines[i]);
+    for (let i = index + 1; i < lines.length && below === null; i++) below = centerOf(lines[i]);
+    if (above === null && below === null) return;
+    const candidates = providerWords.filter(word => {
+      const box = boxOf(word.bbox);
+      return box && !(word.id && taken.has(word.id)) && (above === null || box.center > above) && (below === null || box.center < below);
+    }).sort((a, b) => boxOf(a.bbox).left - boxOf(b.bbox).left);
+    const candidateKeys = candidates.map(word => key(word.text));
+    for (const [left, right, value] of alignWords(open.map(token => key(token.text)), candidateKeys)) {
+      if (value < MIN_BAND_SIMILARITY) continue;
+      const wanted = key(open[left].text);
+      if (candidateKeys.some((other, position) => position !== right && similarity(wanted, other) >= value)) continue;
+      const word = candidates[right];
+      if (word.id && taken.has(word.id)) continue;
+      open[left].bbox = word.bbox; open[left].geometryWordId = word.id || null;
+      if (word.id) taken.add(word.id);
+      bound++;
+    }
+  });
+  return bound;
+}
+
+/**
+ * Provider lines of real text that agree with no line of the reader, nor with text the reader set aside on purpose (the copied question, crossed-out words):
+ * probably a line the reader missed. A flag for the teacher, never a change to the text. Short lines are ignored: they are usually a name, a date or a margin note.
+ */
+const MIN_MISSED_LINE_WORDS = 4;
+function missedProviderLines(tokens, geometry, key, excludedTexts = []) {
+  const groups = new Map();
+  // The provider counts punctuation as words; only words with a letter or a digit say whether a line was read.
+  for (const word of geometry) { if (!/[\p{L}\p{N}]/u.test(word.text)) continue; if (!groups.has(word.line)) groups.set(word.line, []); groups.get(word.line).push(key(word.text)); }
+  const readerWords = [];
+  tokens.forEach((token, position) => { if (!position || token.separatorBefore.includes('\n')) readerWords.push([]); readerWords[readerWords.length - 1].push(key(token.text)); });
+  for (const text of excludedTexts) readerWords.push(String(text).split(/\s+/u).filter(Boolean).map(key));
+  const missed = [];
+  for (const [line, words] of groups) {
+    if (words.length < MIN_MISSED_LINE_WORDS) continue;
+    // One reader line must cover it. Common words on a page would otherwise add up to a line that nobody read.
+    const best = Math.max(0, ...readerWords.map(reader => alignWords(reader, words).length));
+    if (best / words.length < MIN_LINE_AGREEMENT) missed.push(line);
+  }
+  return missed.length;
+}
+
+module.exports = { similarity, alignWords, pairLines, positionalPairs, bindByLine, bindInBands, missedProviderLines };

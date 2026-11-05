@@ -56,7 +56,9 @@ async function snapshot(doc, classClosed) {
     return { ...page, words, sourceGeometry, pageImageUrl: stored?.pageImageUrl };
   }));
   const { current } = await evaluateReview(doc);
-  return { revision: view.revision, sourceHash, scoringReviewRequired: Boolean(view.scoringReviewRequired), scoreReview: reviewPayload(current, doc, view.statistics),
+  // Teacher only: the reader may have skipped a written line. This endpoint is the only place it leaves the server; students never get sourceVerificationSummary.
+  const possibleMissedLines = (doc.ocrPages || []).reduce((sum, page) => sum + (Number(page?.sourceVerificationSummary?.performance?.geometry?.possibleMissedLineCount) || 0), 0);
+  return { possibleMissedLines, revision: view.revision, sourceHash, scoringReviewRequired: Boolean(view.scoringReviewRequired), scoreReview: reviewPayload(current, doc, view.statistics),
     pages, legend: defaultLegend(), corrections: view.rows, orphans: view.orphans, archivedOrphans: view.archivedOrphans,
     readOnly: Boolean(classClosed), readOnlyReason: classClosed ? 'CLASS_CLOSED' : null,
     effective: buildCanonicalCorrectionRenderModels(view.corrections, canonical, doc.ocrPages, { submission: doc }),
