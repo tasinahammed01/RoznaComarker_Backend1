@@ -135,7 +135,7 @@ It was tested on fake `.env` files in 23 cases against the real `src/server.js`:
 
 ### Startup requirements
 
-Every row was booted on both trees with the same fake values, one broken condition at a time, unless marked "read in code". 80 conditions in all. **None is new in RC2**: the startup code (`config/env.js`, `paypal.js`, `db.js`, `ocr.js`, `server.js`, the AI gateway, the flashcard index contract) has no diff against `origin/main`. So if the server restarted successfully on `45e49aae` with this `.env` and this database, these rows already held, unless the `.env` changed since.
+Every row was booted on both trees with the same fake values, one broken condition at a time, unless marked "read in code". 80 conditions in all, on RC2. The columns below say RC2 and `origin/main`. **RC3 differs in exactly the two OCR rows marked RC3**, because `src/config/ocr.js` changed. Those rows are what a `.env` that worked on `45e49aae` can now fail on.
 
 **Stops the server (exit 1):**
 
@@ -165,8 +165,8 @@ Every row was booted on both trees with the same fake values, one broken conditi
 | `ASSESSMENT_AI_MODEL` | Optional: `google/gemini-3.8-flash` or `openai/gpt-6-astra` | stops | stops | No |
 | `GEMINI_RUBRIC_REASONING_EFFORT`, `ASSESSMENT_AI_PRIMARY_RETRIES` | Optional: `low`, `medium`, `high`; at most 1 retry | stops | stops | No |
 | `ASSESSMENT_AI_ATTEMPT_TIMEOUT_MS`, `ASSESSMENT_RUBRIC_RESERVED_BUDGET_MS`, `SEMANTIC_AI_MAX_OUTPUT_TOKENS` | Optional: positive integers that fit together; output limit at least 1536. `ASSESSMENT_AI_TOTAL_BUDGET_MS`, `ASSESSMENT_CORRECTION_BUDGET_MS`, `ASSESSMENT_RUBRIC_BUDGET_MS`, `ASSESSMENT_AI_SAFE_OUTPUT_TOKENS` follow the same code (read in code) | stops | stops | No |
-| `OCR_SOURCE_MODE` | Optional, but these stop it: unknown value, `hybrid`, `astra_verified`, `astra_human_confirm` without its own settings | stops | stops | No |
-| `OCR_GPT_VISION_MODEL` (with `gpt_vision_exact`) | Optional, if set one of `openai/gpt-5.6-sol`, `openai/gpt-6-astra`, `deepseek/deepseek-v4.1-flash-1017`, `qwen/qwen3.8-27b` | stops | stops | No |
+| `OCR_SOURCE_MODE` | **RC3: required in production.** On RC2 and `origin/main` optional. On all: these stop it: unknown value, `hybrid`, `astra_verified`, `astra_human_confirm` without its own settings | stops | stops | **Yes, RC3** |
+| `OCR_GPT_VISION_MODEL` (with `gpt_vision_exact`) | **RC3: required in production, and `google/gemini-3.8-flash` is allowed, only with `OCR_GPT_VISION_READER=verbatim_json`.** Otherwise one of `openai/gpt-5.6-sol`, `openai/gpt-6-astra`, `deepseek/deepseek-v4.1-flash-1017`, `qwen/qwen3.8-27b` | stops | stops | **Yes, RC3** |
 | `OCR_GPT_VISION_ATTEMPT_TIMEOUT_MS` (with Qwen) | Optional: 100000 to 180000 | stops | stops | No |
 | `OCR_SOURCE_VERIFICATION_MODE` | Optional, and not read with `gpt_vision_exact`. Otherwise only `first_pass` | stops | stops | No |
 | `PDF_REPORT_ENGINE`, `PUPPETEER_EXECUTABLE_PATH` | Optional: `puppeteer`; an existing file. A usable Chromium must be found either way | stops | stops | No |
@@ -194,23 +194,27 @@ Every row was booted on both trees with the same fake values, one broken conditi
 | `OCR_SOURCE_MODE` | `legacy` reader |
 | `OCR_GPT_VISION_MODEL` (with `gpt_vision_exact`) | `openai/gpt-5.6-sol`, not the Qwen model |
 
-**The production log does not show which reader or model is active.** The `ocr_source_configuration` line is logged at `info`, and `info` is off when `NODE_ENV=production` (`src/utils/logger.js`); it did not appear in any production-mode boot here. So verify `OCR_SOURCE_MODE` and `OCR_GPT_VISION_MODEL` from `.env`, not from `pm2 logs`. So check both are set. **`OCR_GPT_VISION_MODEL=google/gemini-3.8-flash` stops RC2 at startup** (`OCR_GPT_SOURCE_CONFIGURATION_INVALID`): the Gemini reader is not in RC2. `OCR_GPT_VISION_READER` and `OCR_GPT_VISION_SECOND_READER` are not read by RC2; remove them or leave them.
+**The production log does not show which reader or model is active.** The `ocr_source_configuration` line is logged at `info`, and `info` is off when `NODE_ENV=production` (`src/utils/logger.js`); it did not appear in any production-mode boot here. So verify `OCR_SOURCE_MODE` and `OCR_GPT_VISION_MODEL` from `.env`, not from `pm2 logs`. So check both are set. **On a rollback to RC2, `OCR_GPT_VISION_MODEL=google/gemini-3.8-flash` stops the server** (`OCR_GPT_SOURCE_CONFIGURATION_INVALID`): the Gemini reader is not in RC2, so restore the backed-up `.env` too. RC2 does not read `OCR_GPT_VISION_READER` or `OCR_GPT_VISION_SECOND_READER`.
 
 ```
 grep -cE '^PAYMENT_PROVIDER=["'"'"']?paypal' .env          # must be 1
 grep -cE '^OCR_GPT_VISION_MODEL=' .env                     # must be 1: more than one means a duplicate, and the last wins
 ```
 
-New variables, none of which stops the server:
+New variables against `origin/main` that the running server reads. All optional. A bad value in the first three `OCR_GPT_VISION_*` rows stops the server; the rest fall back or do nothing:
 
 | Variable | Default | Note |
 |---|---|---|
+| `OCR_GPT_VISION_READER` | `json_contract` | Set `verbatim_json` for Gemini, see the top of this file. A wrong pair stops the server. |
+| `OCR_GPT_VISION_REASONING` | `low` | `low`, `medium` or `high`. Leave it. |
+| `OCR_GPT_VISION_TEMPERATURE` | `0` | `0` or `omit`. Leave it. |
+| `OCR_GPT_VISION_SECOND_READER` | off | Leave it off. |
 | `HEALTH_DETAIL_TOKEN` | unset | Min 16 characters (`openssl rand -hex 32`). Unset: `/api/health` never shows detail and `npm run verify:runtime` reports `HEALTH_DETAIL_TOKEN_MISSING`. Set it, step 6 needs it. |
 | `ANNOTATION_RATE_LIMIT_MAX` / `ANNOTATION_RATE_LIMIT_WINDOW_MS` | 120 / 900000 | optional |
 | `ANNOTATION_AUDIT_TTL_DAYS` | unset (kept) | If you set it, run the index migration after setting it. |
 | `RECOVERY_LINK_TTL_HOURS`, `RECOVERY_LINK_MAX_USES`, `RECOVERY_SESSION_MINUTES`, `RECOVERY_EMAILS_PER_HOUR`, `RECOVERY_EMAIL_COOLDOWN_SECONDS`, `RECOVERY_REQUESTS_PER_HOUR`, `RECOVERY_TEACHER_SENDS_PER_HOUR` | 24 / 10 / 30 / 3 / 120 / 10 / 20 | optional |
 
-Recovery and guest pages also need `GUEST_SUBMISSION_ENABLED=true` (literally), working `SMTP_*` and `MAIL_FROM_*`.
+Recovery and guest pages also need `GUEST_SUBMISSION_ENABLED=true` (literally), working `SMTP_*` and `MAIL_FROM_*`. `OCR_EVAL_DIR` and `OCR_EVAL_OUT` are new names too, read only by the offline `scripts/ocr-eval` tools; do not set them on the VPS.
 
 ## 2. Backup
 
@@ -225,16 +229,16 @@ du -sh "$BK"/*
 
 ## 3. Get the code
 
-The RC2 branches may exist only on the developer's machine. The VPS cannot fetch them until one of these is done on that machine:
+The RC3 branches may exist only on the developer's machine. The VPS cannot fetch them until one of these is done on that machine:
 
 ```
 git push origin release-candidate-3          # backend repo; or:
 git bundle create rc3.bundle release-candidate-3   # copy rc3.bundle to the VPS, then: git fetch rc3.bundle release-candidate-3
 ```
 
-Never deploy `origin/ocr-verbatim-hardening`. On the VPS: `cd BACKEND_DIR && git fetch && git checkout <RC3 commit>`.
+Never deploy `origin/ocr-verbatim-hardening`. On the VPS: `cd BACKEND_DIR && git fetch && git checkout <RC3 commit>`. `release-candidate-3` is a fast-forward of `origin/main` (`45e49aae`), so nothing on the server is lost. The VPS working tree has modified `node_modules` files; RC3 changes no tracked file under `node_modules`, so they are left alone. Never use `git reset --hard` or `git clean` there.
 
-**Do NOT run `npm` on the VPS for the backend.** RC2 adds no dependency: `package-lock.json` and the tracked `node_modules` are unchanged from `origin/main`, and `package.json` only gains four scripts. `npm ci` would delete and rebuild `node_modules`, including the Puppeteer browser and native modules.
+**Do NOT run `npm install` or `npm ci` on the VPS for the backend.** RC3 adds no dependency: `package-lock.json`, `pnpm-lock.yaml` and the tracked `node_modules` are unchanged from `origin/main`, and `package.json` only gains four scripts (`npm run <script>` is fine). `npm ci` would delete and rebuild `node_modules`, including the Puppeteer browser and native modules.
 
 **Build the frontend locally and upload it** (`RoznaComarker/DEPLOYMENT.md`): the repo has no lockfile, so an `npm install` on the VPS can bring different versions.
 
@@ -302,9 +306,9 @@ node scripts/ensureGuestSubmissionIndexes.js --apply --writers-stopped    # main
 
 With `gpt_vision_exact` the server creates two more at start: `sourcefidelityevidences` `expiresAt_1` (TTL 0) and `sourcefidelitysnapshots` `submissionId_1`. `annotation_audit_ttl_v2` exists only if `ANNOTATION_AUDIT_TTL_DAYS` is set.
 
-### Run for RC2
+### Run for RC3, in this order
 
-The app connects with `autoIndex: false, autoCreate: false`, so it never creates these itself. Both only add indexes to new, empty collections and are safe to repeat.
+The app connects with `autoIndex: false, autoCreate: false`, so it never creates these itself. Both index scripts touch only new collections (`recovery*`, `annotationaudits`), add what is missing and are safe to repeat. **They have no dry run: running them without a flag creates the indexes.** The one exception to "only adds": `migrate:annotation-indexes` drops `annotation_audit_ttl_v1` if a pre-release database has it. It does not exist on `45e49aae`.
 
 ```
 cd BACKEND_DIR
@@ -314,6 +318,13 @@ npm run report:score-review              # read-only counts
 ```
 
 Without them the app still runs, but expired recovery links and sessions are never removed, lookups scan, and the uniqueness of `annotation_audit_request_v1` is missing.
+
+| Script | Without a flag | Repeat safe |
+|---|---|---|
+| `migrate:recovery-portal-indexes` | **applies** | yes |
+| `migrate:annotation-indexes` | **applies** | yes |
+| `report:score-review` | read-only, it has no write mode | yes |
+| `migrate:teacher-annotations` | dry run, counts only | yes: version 2 overlays are skipped |
 
 **Optional data migration (version 1 teacher overlays to version 2).** Only relevant if the database has them (on `45e49aae` it cannot). Count them in mongosh: `db.submissions.countDocuments({teacherAnnotations:{$exists:true},'teacherAnnotations.version':{$ne:2}})`. The code reads both formats.
 
@@ -325,10 +336,10 @@ npm run migrate:teacher-annotations -- --reverse --backup-confirmed --backup=/ho
 
 ## 5. Deploy order: backend first, then frontend
 
-Reason: the new frontend calls routes the old backend does not have (annotations, recovery portal), so those screens would fail; the old frontend on the new backend was seen in the RC1 rehearsal only to show "Student" instead of the teacher's name until refreshed. **(unverified for RC2: the compatibility check was done on RC1.)**
+Reason: the new frontend calls routes the old backend does not have (annotations, recovery portal), so those screens would fail; the old frontend on the new backend was seen in the RC1 rehearsal only to show "Student" instead of the teacher's name until refreshed. **(unverified for RC3: the compatibility check was done on RC1.)**
 
 ```
-# set APP_DEPLOYMENT_REVISION in .env to the RC2 commit, then:
+# set APP_DEPLOYMENT_REVISION in .env to the RC3 commit, then:
 pm2 restart RoznaComarker_Backend --update-env
 pm2 logs RoznaComarker_Backend --lines 100 --nostream
 ```
@@ -355,9 +366,27 @@ Smoke test on a test account, never a real student's work: follow MANUAL_QA_CHEC
 
 **Triggers:** the backend is not up within 2 minutes or restarts in a loop; `verify:runtime` fails; a correction the teacher hid is visible to a student, or anyone sees another person's data; highlights are broken with no fix within 15 minutes; uploads or assessment stop working that worked before; 5xx responses clearly increase (`/api/subscription/me` aside, see KNOWN_RISKS).
 
-Frontend: restore `frontend-dist.tgz` from the backup.
+**Frontend** (restore the dist backup; do this first if the backend rolls back too):
 
-Backend: `git checkout "$(cat $BK/backend.commit)"`, restore `backend.env` if changed, `pm2 restart RoznaComarker_Backend --update-env`. Leave the new indexes: the old code ignores them.
+```
+tar -xzf "$BK/frontend-dist.tgz" -C FRONTEND_DIR
+curl -s https://comarkers.roznahub.com/version.json    # must show the old releaseId
+```
+
+**Backend** (reset to the previous commit and restart):
+
+```
+cd BACKEND_DIR
+cp "$BK/backend.env" .env                     # the RC3 .env selects Gemini, which older code refuses
+git reset --keep "$(cat "$BK/backend.commit")"  # --keep, not --hard: the modified node_modules files must stay
+pm2 restart RoznaComarker_Backend --update-env
+pm2 logs RoznaComarker_Backend --lines 100 --nostream
+curl -s https://comarkerback.roznahub.com/api/health
+```
+
+`--keep` stops with an error rather than overwrite a locally modified file that differs between the two commits. RC3 has none under `node_modules`. If the branch on the VPS is detached at the RC3 commit, `git checkout "$(cat "$BK/backend.commit")"` does the same. Leave the new indexes: the old code ignores them. These commands were not run on a VPS.
+
+**Reader only** (the code stays on RC3, for transcription problems): set `OCR_GPT_VISION_MODEL=qwen/qwen3.8-27b` and `OCR_GPT_VISION_READER=json_contract`, then `pm2 restart RoznaComarker_Backend --update-env`.
 
 Known cost of a backend rollback to `45e49aae`: the old code has no teacher-review filter, so corrections teachers hid become visible to students again, and the recovery portal and teacher recovery links stop working. The saved decisions stay in the database and apply again when you roll forward. If you ran the data migration, run `--reverse` first only if you need the old format back.
 

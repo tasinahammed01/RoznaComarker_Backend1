@@ -1,4 +1,4 @@
-# Known issues and risks for RC2, ranked
+# Known issues and risks for RC3, ranked
 
 ## Known issues in the product
 
@@ -26,6 +26,19 @@
 | 15 | The production database's indexes are not known. Missing flashcard indexes stop the server; missing guest indexes make guest upload answer 503. Rebuilding an old non-partial student index needs the app stopped. | FIX FIRST: compare with DEPLOY_RUNBOOK step 4. |
 | 16 | `.env.example` misleads in two places: it lists `GOOGLE_CLOUD_KEY_FILE` but not the required `GOOGLE_APPLICATION_CREDENTIALS`, and it lists `PAYPAL_*_ANNUAL_PLAN_ID`, which the code ignores (it reads `PAYPAL_*_YEARLY_PLAN_ID`). Both are the same on `origin/main`. | Rely on the step 1 check. Backlog: correct `.env.example`. |
 
+## Known limits of transcription and marking in RC3
+
+| # | Limit | Evidence | Recommendation |
+|---|---|---|---|
+| 17 | **The reader sometimes fixes what the student wrote.** About 3% of words overall, mostly capital letters; per page it reached 15.7% on one sample and 6.3% on another. A fixed error is not marked, so the score can be slightly too high. | 12 samples, 50 of 1517 words. Some are real word changes, not only capitals. | Tell teachers: check capitalisation on the page image. |
+| 18 | **`[?]` in the transcript.** The reader writes it for a word it cannot read at all. It shows as plain text to the teacher, student and guest and in the PDF, and counts as one word. A finding on that word alone, or a short one that includes it, is removed and never counts as an error. A sentence or whole-piece finding that contains it stays. The rubric model also sees the mark, unexplained; its effect on Content and Organization was not measured. A student who really writes `[?]` gets the same treatment. | `tests/unreadableWordPlaceholder.test.js`. Reader outputs in the final tally (image4, image7, image12) had none, so it has not been seen on a real page in that run. | Tell teachers what it means. |
+| 19 | **The number of corrections varies between runs.** With temperature 0 and a seed, the same text still gave 14/16/16 and 21/24/24. The rubric call has no temperature or seed. A resubmitted page can get a slightly different score. | Task 15 control runs. | Tell teachers. Do not compare single points. |
+| 20 | **First open of a result can sit on the provisional page for about 3 seconds** before it moves on. | Audit only, not fixed. | Later release. |
+| 21 | **Highlights do not cover every correction.** A word error with no word box is not drawn on the image; the page says how many, and the row says "Not located on image". Boxes matched at least 91.1% per sample. A sentence-level correction with no box gets a bracket only on lines the boxes prove. | Task 15 tally and browser checks. | Ship. The transcript view shows them all. |
+| 22 | **A possible missed line is a warning to the teacher only,** inside the review panel, seen once the panel is opened. A line is not recovered automatically. | `possibleMissedLines`; never in student, guest or PDF payloads. | Tell teachers to compare with the image when they see it. |
+
+Worksheet answer visibility is number 1 above and dialog text loss on resize is number 3: both still apply.
+
 ## Test suites that fail, also on `origin/main`
 
 They are not regressions, but they are not all understood.
@@ -39,4 +52,4 @@ They are not regressions, but they are not all understood.
 | `assignmentDuplicate` | `submitted` expected 1, received 0; the test has no membership. Cause not confirmed. |
 | Others | Stale model defaults, missing `.gitignore`d fixtures, paths outside the repo. See the verification reports. |
 
-Time-dependent tests: `teacherRecoveryLink` and `recoveryPortal` fail when they run across the top of an hour. Under load, in-memory Mongo may miss its 10 s start, `submissionFeedbackPdfAssets` its 30 s limit, and `adaptivePractice`, `identicalReupload.release` and `annotationGolden` have failed once and passed on rerun.
+Time-dependent tests: `recoveryPortal` fails when it runs across the top of an hour. `teacherRecoveryLink` no longer does (RC3 test fix). Under load, in-memory Mongo may miss its 10 s start, `submissionFeedbackPdfAssets` its 30 s limit, and `adaptivePractice`, `identicalReupload.release` and `annotationGolden` have failed once and passed on rerun.

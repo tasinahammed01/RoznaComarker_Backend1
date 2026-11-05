@@ -14,7 +14,11 @@ This is the decision sheet, not a record of results. RC3 is RC2 plus the Gemini 
 - No Atlas snapshot was taken.
 - The manual checklist finds a teacher or student flow broken, in particular highlights on the source image.
 - The new backend fails to boot against the real Atlas.
-- The client has not been told about the known issues in KNOWN_RISKS.md numbers 1 to 3.
+- The client has not been told about the known issues in KNOWN_RISKS.md numbers 1 to 3, and the transcription limits in numbers 17 to 22.
+
+## The fidelity gate, as measured
+
+Twelve handwriting samples, on the final code. Dropped lines: 0 (pass). Word boxes: at least 91.1% per sample (pass). Differences between runs: 0 (pass). **Silently corrected words: overall 3.3%, but above the 3% limit on 5 of 12 samples, worst 15.7%, and most of those are capital letters (fail).** Shipping means accepting this limit; KNOWN_RISKS number 17 says what a teacher sees. The alternative is the Qwen reader, on the same code, by the env change in DEPLOY_RUNBOOK step 7. Qwen was not measured on these samples.
 
 ## Not proven by any automated check
 
