@@ -34,6 +34,70 @@ Everything below was written for RC2 and still applies unless this section says 
 - **Adaptive practice (Task 18):** becomes available by itself when the final evaluation matches the corrections; no teacher action is needed. Practice items are still generated only when the student clicks.
 - **New environment variables:** none.
 
+## The deploy, in order (VPS)
+
+**Before you start, on the developer's machine:** the final RC3 commit must be on GitHub. The release-freeze check (Task 19) found `origin/release-candidate-3` at `385be7b2`, 9 commits behind the final local commit, and `origin/highlight-sync` 7 behind. Push both branches first, then compare the commit below with the one you were given.
+
+**Never switch the `.env` to Gemini before the new code is merged.** The code on production (`45e49aae`) refuses `OCR_GPT_VISION_MODEL=google/gemini-3.8-flash` and the server would not start. The new code accepts the current Qwen settings, so the code goes first and the env second.
+
+```
+cd BACKEND_DIR
+
+# 1. Backup (Atlas snapshot first, note its name)
+TS=$(date +%Y%m%d-%H%M%S); BK=~/backups/rc3-$TS; mkdir -p "$BK"; chmod 700 "$BK"
+git rev-parse HEAD > "$BK/backend.commit"
+cp .env "$BK/backend.env"; chmod 600 "$BK/backend.env"
+tar -czf "$BK/frontend-dist.tgz" -C FRONTEND_DIR dist
+
+# 2. Code: fast-forward only (RC3 contains origin/main; nothing on the server is lost)
+git status --short | grep -v ' node_modules/'           # must print nothing
+git fetch origin release-candidate-3
+git merge --ff-only FETCH_HEAD
+git log -1 --format='%h %s'                              # must be the RC3 commit you were given
+
+# 3. Env, only now. Duplicate keys first: the last one wins.
+grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' .env | sort | uniq -d    # remove every duplicate this prints, keeping one line
+#   then set (one line each, edit with nano):
+#   OCR_SOURCE_MODE=gpt_vision_exact
+#   OCR_GPT_VISION_MODEL=google/gemini-3.8-flash
+#   OCR_GPT_VISION_READER=verbatim_json
+#   HEALTH_DETAIL_TOKEN=<output of: openssl rand -hex 32>
+#   APP_DEPLOYMENT_REVISION=<the short commit hash from step 2>
+#   then run the startup check in section 1; it must report no fatal line.
+
+# 4. Migrations (see section 4 for what each does)
+npm run migrate:recovery-portal-indexes     # applies (no dry run); safe to repeat
+npm run migrate:annotation-indexes          # applies (no dry run); safe to repeat
+npm run report:score-review                 # read-only counts
+npm run migrate:teacher-annotations         # dry run; apply only if it reports overlays to convert
+
+# 5. Restart and look
+pm2 restart RoznaComarker_Backend --update-env
+pm2 logs RoznaComarker_Backend --lines 100 --nostream
+
+# 6. Verify
+TOKEN=$(grep -E '^HEALTH_DETAIL_TOKEN=' .env | cut -d= -f2-)
+HEALTH_DETAIL_TOKEN="$TOKEN" RUNTIME_HEALTH_URL=https://comarkerback.roznahub.com/api/health npm run verify:runtime; unset TOKEN
+#   upload the frontend build (section 5), then the curl checks in section 6
+
+# 7. Smoke tests: MANUAL_QA_CHECKLIST.md on a test account, never a real student's work.
+
+# 8. Guest submission, last: set GUEST_SUBMISSION_ENABLED=true, then pm2 restart RoznaComarker_Backend --update-env.
+#    Rollback of this step alone: set it to false and restart the same way.
+```
+
+**Rollback** (also section 7):
+
+```
+cd BACKEND_DIR
+cp "$BK/backend.env" .env                          # first: the old code refuses the Gemini settings
+git reset --keep "$(cat "$BK/backend.commit")"     # --keep, never --hard: the modified node_modules files stay
+pm2 restart RoznaComarker_Backend --update-env
+tar -xzf "$BK/frontend-dist.tgz" -C FRONTEND_DIR    # frontend: the dist backup
+```
+
+The rehearsal of this sequence used a throwaway database; the commands themselves were not run on the VPS.
+
 ## 0. Which commit is production on?
 
 ```

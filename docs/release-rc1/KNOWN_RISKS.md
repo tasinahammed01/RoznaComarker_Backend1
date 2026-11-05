@@ -40,6 +40,11 @@
 | 23 | **Content and Organization findings are rare.** The detector returned none on most samples, also where the rubric took marks. The statistics then show 0, while the rubric score in the score panel shows the marks lost, and the feedback card shows the rubric's quoted evidence as a "Rubric note". A stronger detector prompt was tried and did not pass its gate. | Task 17 measurements, 11 samples. | Tell teachers. A later release can work on the detector. |
 | 24 | **The rubric no longer sees Content or Organization findings.** This keeps their scores independent of the findings. Measured on 3 samples × 3 runs: totals stayed within the usual run-to-run range. | Task 17. | Ship. |
 
+| 25 | **A chip can sit above the wrong line when a word's box is wrong.** Seen once (an ART chip): the word's box itself was placed on another line by the geometry's third pass; the chip follows its box. | Task 17 fresh submission. | Ship; the row and the transcript are right. |
+| 26 | **Adaptive practice is not offered when the final evaluation is an AI partial result.** Practice requires a completed evaluation that matches the corrections; a partial one keeps the studio on "unavailable". | Task 18 audit, server gate unchanged. | Later release, if wanted. |
+
+Summary of the limits to tell the client: Content and Organization detection is conservative (number 23; the detector prompt change was dropped by its gate); capital letters are silently corrected in about 3% of words (17); correction counts vary slightly between runs (19); highlight coverage depends on the word boxes (21, 25); dialog text loss on resize (3); worksheet answer visibility (1); no practice on an AI partial evaluation (26).
+
 Worksheet answer visibility is number 1 above and dialog text loss on resize is number 3: both still apply.
 
 ## Test suites that fail, also on `origin/main`

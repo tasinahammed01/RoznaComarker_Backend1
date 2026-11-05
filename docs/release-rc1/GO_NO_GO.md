@@ -5,6 +5,8 @@ This is the decision sheet, not a record of results. RC3 is RC2 plus the Gemini 
 ## Conditions to NOT ship
 
 - The production commit is not known (DEPLOY_RUNBOOK step 0).
+- `origin/release-candidate-3` on GitHub is not the final RC3 commit (the freeze check found it 9 commits behind).
+- The `.env` was switched to Gemini before the new code was merged: the old code will not start with it.
 - The check in DEPLOY_RUNBOOK step 1 reports any fatal problem, for example `AI_PRIMARY_PROVIDER`, `AI_PRIMARY_MODEL`, `OPENROUTER_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `PAYMENT_PROVIDER` not `paypal`, a missing `OCR_SOURCE_MODE` or `OCR_GPT_VISION_MODEL`, or a model and reader that do not belong together (Gemini needs `verbatim_json`; Qwen needs `json_contract` or `plain_text`): the server will not start.
 - `.env` has a duplicate key the check lists: the last occurrence wins, which may not be the value you meant.
 - The flashcard indexes (DEPLOY_RUNBOOK step 4) are missing or different and have not been migrated: the server will not start.
