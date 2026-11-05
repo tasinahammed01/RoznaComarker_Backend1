@@ -59,6 +59,11 @@ function advance(ms) {
   jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'clearImmediate', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'queueMicrotask', 'hrtime', 'performance'] });
   jest.setSystemTime(now);
 }
+/** The same instant on every run, ten minutes before an hour starts: the hourly limits and the one-hour login token no longer depend on when the test runs. */
+function fixedClock() {
+  advance(Date.UTC(2030, 0, 7, 9, 50) - Date.now());
+  tokenA = signTestJwt({ id: teacherA._id, role: teacherA.role, firebaseUid: teacherA.firebaseUid });
+}
 async function guestSubmission(assignment = assignmentA, address = STUDENT) {
   const res = await request(app).post(`/api/guest/assignments/${assignment.qrToken}/submit`).set('Idempotency-Key', crypto.randomUUID())
     .field('name', 'Jane').field('email', address).attach('files', png, { filename: 'essay.png', contentType: 'image/png' });
@@ -136,6 +141,7 @@ describe('limits', () => {
     expect(email.sendTeacherRecoveryEmail).toHaveBeenCalledTimes(1);
   });
   test('per-address hourly cap: at most RECOVERY_EMAILS_PER_HOUR (3) per address, then 429 until the next hour', async () => {
+    fixedClock();
     const sub = await guestSubmission();
     advance(Math.ceil(Date.now() / 3600000) * 3600000 + 1000 - Date.now());
     const codes = [];
@@ -144,6 +150,7 @@ describe('limits', () => {
   });
   test('per-teacher cap: RECOVERY_TEACHER_SENDS_PER_HOUR across different students', async () => {
     process.env.RECOVERY_TEACHER_SENDS_PER_HOUR = '2';
+    fixedClock();
     const subs = [];
     for (let i = 0; i < 3; i++) subs.push(await guestSubmission(assignmentA, `student${i}@example.com`));
     advance(Math.ceil(Date.now() / 3600000) * 3600000 + 1000 - Date.now());
