@@ -16,6 +16,8 @@ const REQUEST_PROFILE='gpt_vision_exact_verbatim_v1';
 const SCHEMA_NAME='verbatim_page_v2';
 const MAX_LINE_CHARS=2000,MAX_ANSWER_LINES=300,MAX_QUESTION_LINES=40,MAX_TOTAL_LINES=300,MAX_ITEMS=300,MAX_WORD_CHARS=200;
 const REASONING_EFFORTS=['low','medium','high'];
+// Fixed, so the same page asks the provider for the same reply. The provider treats a seed as best effort, never as a guarantee.
+const SEED=20261105;
 const PROMPT=`You are a forensic handwriting transcription reader. You copy; you never grade, edit, proofread or improve.
 Read the page image and return only JSON that matches the schema.
 1. Copy every handwritten word exactly as the strokes show. Keep spelling mistakes, wrong word forms, wrong tense or agreement, missing or extra letters, capitalisation, punctuation, repeated words and unfinished sentences. Never correct, normalise, complete or paraphrase. Example: "powerfull" stays "powerfull"; "she go" stays "she go"; "becaus" stays "becaus".
@@ -130,4 +132,4 @@ async function read({model,bytes,mimeType,assignmentReference,env,signal,onDiagn
     }:fetchImpl,env,now:Date.now,signal,requestProfile:REQUEST_PROFILE,onDiagnostic});
 }
 
-module.exports={VERBATIM_READER,VERSION,SCHEMA_VERSION,REQUEST_PROFILE,SCHEMA_NAME,PROMPT,SCHEMA,REASONING_EFFORTS,settings,userText,promptSha256,parse,convert,read};
+module.exports={SEED,VERBATIM_READER,VERSION,SCHEMA_VERSION,REQUEST_PROFILE,SCHEMA_NAME,PROMPT,SCHEMA,REASONING_EFFORTS,settings,userText,promptSha256,parse,convert,read};

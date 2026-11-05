@@ -475,6 +475,7 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
         // Exact tier policy, owned here and never by the caller: AI Studio standard only, no sort, no other provider.
         body.provider={require_parameters:true,allow_fallbacks:false,only:['google-ai-studio'],ignore:['google-ai-studio/flex','google-ai-studio/priority']};
         if(temperature===0)body.temperature=0;
+        body.seed=require('./gptVisionExact/verbatimReader').SEED;
       }
     }
     const options = {

@@ -136,7 +136,8 @@ describe('gateway profile gpt_vision_exact_verbatim_v1 and the request', () => {
     expect(body.messages[0]).toEqual({ role: 'system', content: verbatim().PROMPT });
     expect(JSON.parse(body.messages[1].content[0].text).assignmentReference).toEqual(source.reference(assignment));
     expect(body.messages[1].content[1].image_url.url).toBe('data:image/jpeg;base64,/9j/');
-    for (const key of ['top_p', 'seed', 'models', 'transforms']) expect(body).not.toHaveProperty(key);
+    expect(body.seed).toBe(verbatim().SEED);
+    for (const key of ['top_p', 'models', 'transforms']) expect(body).not.toHaveProperty(key);
   });
   test('temperature omit and reasoning from the environment are honoured', async () => {
     const o = options(undefined, { ...env, OCR_GPT_VISION_TEMPERATURE: 'omit', OCR_GPT_VISION_REASONING: 'medium' });
