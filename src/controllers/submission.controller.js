@@ -1332,7 +1332,7 @@ async function getOcrCorrections(req, res) {
     const studentData = studentCorrectionView.studentPayload(responseData, view);
     const shown = marksVisible ? studentData : redactStudentMarks(studentData);
     // A teacher's own page reads this endpoint too and is unchanged; a student or guest gets it without the pipeline's internals.
-    return sendSuccess(res, user?.role === 'teacher' ? shown : ocrCorrectionsForStudent(shown));
+    return sendSuccess(res, require('../services/legacyFeedbackWording.service').withoutLegacyWording(user?.role === 'teacher' ? shown : ocrCorrectionsForStudent(shown)));
   } catch (err) {
     logger.error({ message: 'Failed to fetch OCR corrections', ...logContext, error: err?.message, stack: err?.stack });
     const message =

@@ -240,7 +240,7 @@ async function buildPersistedSubmissionFeedbackReport({ submission, submissionFe
       { ...page, ...persisted }, async fileId => files.find(file => objectId(file) === fileId));
     return { ...page, ...(assets.metadataByPageKey[`${objectId(page.fileId)}:${Number(page.pageNumber)}`] || {}), annotationSourceGeometry };
   }));
-  const feedbackObject = studentView.studentPayload(submissionFeedback?.toObject ? submissionFeedback.toObject() : { ...(submissionFeedback || {}) }, view); const teacherObject = feedback?.toObject ? feedback.toObject() : { ...(feedback || {}) };
+  const feedbackObject = require('./legacyFeedbackWording.service').withoutLegacyWording(studentView.studentPayload(submissionFeedback?.toObject ? submissionFeedback.toObject() : { ...(submissionFeedback || {}) }, view)); const teacherObject = feedback?.toObject ? feedback.toObject() : { ...(feedback || {}) };
   const teacherComments = resolveTeacherComments({ submissionFeedback: feedbackObject, legacyFeedback: teacherObject });
   const legend = resolvedLegend || await resolveLegend();
   const vm = buildSubmissionFeedbackReportViewModel({ generatedAt, identity, legend, marksVisible,

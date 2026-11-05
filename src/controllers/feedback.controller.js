@@ -52,7 +52,8 @@ const {
   incrementUsage,
 } = require("../middlewares/usage.middleware");
 
-function sendSuccess(res, data) {
+function sendSuccess(res, value) {
+  const data = require("../services/legacyFeedbackWording.service").withoutLegacyWording(value);
   return res.json({
     success: true,
     data,

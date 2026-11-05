@@ -48,6 +48,11 @@ function synchronizedRubricScores(scores, stats) {
   return result;
 }
 
+// Content and Organization findings inform the student; the rubric judges these two categories from the writing alone, so a finding never moves their score.
+function rubricInputCorrections(corrections) {
+  return corrections.filter(item => !['CONTENT', 'ORGANIZATION'].includes(item.category));
+}
+
 function hasValidRubricScores(scores) {
   const required = ['CONTENT', 'ORGANIZATION', 'GRAMMAR', 'VOCABULARY', 'MECHANICS', 'PRESENTATION'];
   return Boolean(scores && required.every((key) => Number.isFinite(Number(scores[key]?.score))
@@ -194,9 +199,10 @@ async function prepareRubricAssessment({ submission, assignment, sourceHash, dea
   const transcript = normalizedTranscript(submission);
   logger.info({ message: 'Assessment pipeline timing', submissionId: String(submission._id), stage: 'rubricStartedAt',
     timestamp: new Date(rubricStartedAt).toISOString(), sourceHash });
+  const rubricCorrections = authoritativeCorrections ? rubricInputCorrections(correctionsAllowedByPolicy(submission.writingCorrections || [], policy)) : [];
   const semantic = await semanticRubricAssessment.assess({ submissionId: String(submission._id), transcript, sourceHash,
-    assignment, corrections: authoritativeCorrections ? correctionsAllowedByPolicy(submission.writingCorrections || [], policy) : [],
-    statistics: authoritativeCorrections ? computeCanonicalCorrectionStatistics(correctionsAllowedByPolicy(submission.writingCorrections || [], policy)) : {}, pageManifest: submission.ocrPages || [],
+    assignment, corrections: rubricCorrections,
+    statistics: authoritativeCorrections ? computeCanonicalCorrectionStatistics(rubricCorrections) : {}, pageManifest: submission.ocrPages || [],
     transcriptComplete: submission.ocrStatus === 'completed' && Boolean(transcript.trim()), policy,
     customRubric: customRubricResult.rubric, includeLanguageCategories: true, deadlineAt });
   for (const category of ['CONTENT', 'ORGANIZATION', 'VOCABULARY']) {
@@ -774,7 +780,7 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
   }
 }
 
-module.exports = { VERSION, analysisInputHash, stable, hashRubric, hashBuiltInContext, synchronizedRubricScores, hasValidRubricScores,
+module.exports = { VERSION, analysisInputHash, stable, hashRubric, hashBuiltInContext, synchronizedRubricScores, rubricInputCorrections, hasValidRubricScores,
   resolveAssessmentPolicy,
   correctionCoverageState,
   rubricCoverageDiagnostics,
