@@ -40,8 +40,10 @@ function alignGeometry(text,google,identity){
       }
     }
   }
+  // Line by line, for what uniqueness on the whole page could not place. Only when the layout is usable: the same condition as the first pass.
+  const lineBoundTokenCount=geometry.length?require('./lineAlignment').bindByLine(tokens,geometry,value=>normalized(value)||value):0;
   return {words:tokens,coverage:tokens.length?tokens.filter(w=>w.bbox).length/tokens.length:0,textSha256:sha(text),
-    diagnostics:{strategy:'gpt-monotonic-partial-geometry-v2',layoutDegraded:layout?.layoutDegraded!==false,
+    diagnostics:{strategy:'gpt-monotonic-partial-geometry-v3',layoutDegraded:layout?.layoutDegraded!==false,lineBoundTokenCount,
       safeOutcomeCode:['GEOMETRY_PROVIDER_UNAVAILABLE','GEOMETRY_DIMENSIONS_MISMATCH'].includes(google?.geometryFailureCode)?google.geometryFailureCode
         :!google?'GEOMETRY_UNAVAILABLE':layout?.layoutDegraded?'GEOMETRY_LAYOUT_WITHHELD':layout?.unresolvedWordCount?'GEOMETRY_PARTIAL':'GEOMETRY_ORDERED',
       mappedTokenCount:tokens.filter(w=>w.bbox).length,unmappedTokenCount:tokens.filter(w=>!w.bbox).length}};
