@@ -4,12 +4,17 @@ const { websiteAnnotationPresentation } = require('../src/pdf/websiteAnnotationP
 
 const word = (line, index, y) => ({ id: `w${line}_${index}`, text: `word${line}x${index}`, bbox: y === null ? null : { x: 20 + index * 10, y: y - 2, w: 8, h: 4 }, separatorBefore: line && !index ? '\n' : index ? ' ' : '' });
 const WORDS = [10, 15, 20, null, 30].flatMap((y, line) => [word(line, 0, y), word(line, 1, null)]);
-const correction = (id, wordId, renderTarget = { version: 1, source: 'none', wordIds: [], anchors: [], boxes: [], textRanges: [{ start: 0, end: 4 }] }) => ({ id, symbol: 'SP', category: 'MECHANICS', page: 1, wordIds: [wordId],
+const correction = (id, wordId, renderTarget = { version: 1, source: 'none', wordIds: [], anchors: [], boxes: [], textRanges: [{ start: 0, end: 4 }] }, symbol = 'FRAG') => ({ id, symbol, category: 'GRAMMAR', page: 1, wordIds: [wordId],
   quotedText: WORDS.find(w => w.id === wordId).text, renderTarget });
 const present = corrections => websiteAnnotationPresentation({ fileId: 'f', pageNumber: 1, imageWidth: 1000, imageHeight: 1000, annotationWords: WORDS, corrections });
 
 describe('line-level markers in the PDF', () => {
-  test('a checked correction on a proven line gets a line-level rail and stays in the groups', () => {
+  test('a one-word error on a proven line: nothing drawn, and it stays in the notes', () => {
+    const result = present([correction('c0', 'w1_1', undefined, 'SP')]);
+    expect(result.strokes).toEqual([]);
+    expect(result.unmapped.map(item => item.id)).toEqual(['c0']);
+  });
+  test('a checked sentence correction on a proven line gets a line-level bracket and stays in the groups', () => {
     const result = present([correction('c1', 'w1_1')]);
     expect(result.unmapped).toEqual([]);
     expect(result.groups.map(group => group.correctionIds)).toEqual([['c1']]);
