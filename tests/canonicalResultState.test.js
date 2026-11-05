@@ -33,6 +33,35 @@ const completedSubmission = (overrides = {}) => ({
 });
 
 describe('canonical result state contract', () => {
+  describe('a provisional score while the same assessment run is still finishing', () => {
+    const provisionalFeedback = () => currentEvaluation({ evaluationSource: 'provisional', evaluationStatus: 'partial', overallScore: 65.8, grade: 'D',
+      detailedFeedbackSourceHash: null, detailedFeedback: {} });
+    const running = (overrides = {}) => completedSubmission({ evaluationStatus: 'partial', evaluationJobId: 'job-1', assessmentStatus: 'processing', ...overrides });
+    test('keeps polling, shows the provisional score, and waits for detailed feedback: never terminal, never out of date', () => {
+      const state = buildCanonicalResultState({ submission: running(), feedback: provisionalFeedback() });
+      expect(state).toMatchObject({ terminal: false, processingActive: true, automaticPollingAllowed: true, detailedFeedbackStatus: 'processing',
+        evaluationFreshness: 'processing', evaluationStaleReason: null, score: 65.8, evaluationSource: 'provisional' });
+      expect(state.manualRetryAllowed).toBe(false);
+    });
+    test('the same while the run is only started', () => {
+      expect(buildCanonicalResultState({ submission: running({ assessmentStatus: 'started' }), feedback: provisionalFeedback() }).terminal).toBe(false);
+    });
+    test('the run is over: the provisional result is final and terminal, as before', () => {
+      for (const assessmentStatus of ['complete', 'failed']) {
+        const state = buildCanonicalResultState({ submission: running({ assessmentStatus }), feedback: provisionalFeedback() });
+        expect(state.terminal).toBe(true);
+        expect(state.processingActive).toBe(false);
+      }
+    });
+    test('no run id, or an AI partial result: unchanged, terminal', () => {
+      expect(buildCanonicalResultState({ submission: running({ evaluationJobId: null }), feedback: provisionalFeedback() }).terminal).toBe(true);
+      expect(buildCanonicalResultState({ submission: running(), feedback: { ...provisionalFeedback(), evaluationSource: 'ai' } }).terminal).toBe(true);
+    });
+    test('a teacher override is never treated as running', () => {
+      expect(buildCanonicalResultState({ submission: running(), feedback: { ...provisionalFeedback(), overriddenByTeacher: true } }).processingActive).toBe(false);
+    });
+  });
+
   test('an explicit incomplete review overrides a misleading completed flag',()=>{
     const state=buildCanonicalResultState({submission:completedSubmission({semanticMetrics:{coverage:{coverageComplete:false}},correctionStatistics:{grammar:0,total:0}})});
     expect(state.semanticStatus).toBe('failed');expect(state.correctionsAvailable).toBe(false);

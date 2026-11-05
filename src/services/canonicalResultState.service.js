@@ -93,7 +93,12 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
   const evaluationJobActive = (semanticComplete || degradedEvaluationEligible)
     && persistedEvaluationStatus === 'processing' && Boolean(submission.evaluationJobId);
   const evaluationPending = (semanticComplete || degradedEvaluationEligible) && persistedEvaluationStatus === 'pending';
-  const evaluationProcessing = evaluationJobActive || evaluationPending
+  // The provisional score is saved as "partial" while the same assessment run is still writing the final score and detailed feedback. That is work in
+  // progress, not a finished partial result: the page must keep waiting for it, never call it out of date.
+  const provisionalRunning = !teacherOverride && semanticComplete && persistedEvaluationStatus === 'partial'
+    && feedback?.evaluationSource === 'provisional' && Boolean(submission.evaluationJobId)
+    && ['started', 'processing'].includes(String(submission.assessmentStatus || ''));
+  const evaluationProcessing = evaluationJobActive || evaluationPending || provisionalRunning
     || (semanticComplete && persistedEvaluationStatus === 'processing');
   const evaluationLifecycleComplete = ['completed', 'partial'].includes(persistedEvaluationStatus);
   const storedRubricHash = feedback?.evaluationRubricSourceHash || submission.evaluationRubricSourceHash || null;
