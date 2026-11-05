@@ -17,7 +17,7 @@
 
 | # | Risk | Recommendation |
 |---|---|---|
-| 9 | RC2 has no startup guard: a missing `OCR_SOURCE_MODE` silently selects `legacy`, a missing `OCR_GPT_VISION_MODEL` selects `openai/gpt-5.6-sol`. `OCR_GPT_VISION_MODEL=google/gemini-3.8-flash` stops the server. The production log does not show the active reader or model (`info` is off in production), so a wrong default stays invisible. The production `.env` was not inspected. | FIX FIRST: confirm from `.env` with the DEPLOY_RUNBOOK step 1 check. |
+| 9 | Fixed in RC3 for the reader: a missing `OCR_SOURCE_MODE` or `OCR_GPT_VISION_MODEL` stops startup. The production log still does not show which reader is active. On a rollback to RC2 the old silent default returns. | Verify from `.env` with the check in DEPLOY_RUNBOOK step 1. |
 | 10 | Rolling the backend back to `45e49aae` re-shows corrections the teacher hid. | Owner's decision; tell teachers if a rollback is ever needed. |
 | 11 | Nothing was run against a real production dump, real Firebase sign-in, real SMTP, iPad Safari, a real browser for RC2, or a real AI provider. | Do MANUAL_QA_CHECKLIST.md right after the deploy on a test account. |
 | 12 | `node_modules` is tracked in the backend repo although `.gitignore` lists it, and the frontend has no lockfile, so `npm audit` cannot run there and an install on the server can bring other versions. | No `npm` on the VPS for the backend; build the frontend locally. Backlog. |

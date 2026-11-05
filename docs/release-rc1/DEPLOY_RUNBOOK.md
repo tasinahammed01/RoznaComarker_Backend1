@@ -1,6 +1,26 @@
-# Release Candidate 2 - deploy runbook (Linux VPS, PM2, Nginx/CloudPanel)
+# Release Candidate 3 - deploy runbook (Linux VPS, PM2, Nginx/CloudPanel)
 
-These files keep the `docs/release-rc1/` path they were brought from; their content is for RC2. Backend branch `release-candidate-2`, frontend branch `highlight-sync`. RC2 is RC1 without the OCR reader work. Nothing here has been run on production. Replace `BACKEND_DIR`, `FRONTEND_DIR` and `APP_USER` with the real values. Steps marked **(unverified)** depend on the VPS, which could not be reached when this was written.
+These files keep the `docs/release-rc1/` path they were brought from. **RC3 is the release these files now describe:** backend branch `release-candidate-3`, frontend branch `highlight-sync`. RC3 is RC2 plus the Gemini reader and the line-by-line word boxes. The rollback for transcription is RC2's Qwen reader, on the same code, by the env change below.
+
+## RC3: what changes from RC2
+
+**Reader settings. Model and reader go together; any other pair stops the server.**
+
+| Setup | `OCR_GPT_VISION_MODEL` | `OCR_GPT_VISION_READER` |
+|---|---|---|
+| Gemini (RC3 default) | `google/gemini-3.8-flash` | `verbatim_json` |
+| Qwen (fallback) | `qwen/qwen3.8-27b` | `json_contract` (or `plain_text`) |
+
+- `OCR_SOURCE_MODE=gpt_vision_exact` and `OCR_GPT_VISION_MODEL` **must be set**: in production a missing one stops startup with `OCR_SOURCE_CONFIGURATION_INVALID`. RC2 started silently on a default.
+- `OPENROUTER_API_KEY` and `GOOGLE_APPLICATION_CREDENTIALS` are required. Gemini reads through OpenRouter; word boxes come from Google Vision.
+- Optional: `OCR_GPT_VISION_REASONING` (leave at the default `low`: `medium` measured 37 to 108 seconds per page against about 5, and one read timed out), `OCR_GPT_VISION_TEMPERATURE` (default 0), `OCR_GPT_VISION_SECOND_READER` (default off: it only flags words, about half of its flags were false, and it does not recover a lost line).
+- `AI_FALLBACK_n_MODEL` with provider `openrouter` needs the provider prefix, for example `google/gemini-3.6-flash`. The server starts without it, and the fallback then fails when it is needed.
+
+**Check for duplicate keys in `.env`.** The last occurrence of a key wins, so an old line further down silently overrides the one you just changed. The check in step 1 lists them. Remove them before starting.
+
+**Student data.** Page images go to Google AI Studio through OpenRouter, and to Google Vision.
+
+Everything below was written for RC2 and still applies unless this section says otherwise. Nothing here has been run on production. Replace `BACKEND_DIR`, `FRONTEND_DIR` and `APP_USER` with the real values. Steps marked **(unverified)** depend on the VPS, which could not be reached when this was written.
 
 ## 0. Which commit is production on?
 
@@ -86,13 +106,14 @@ check 'PUBLIC_API_URL host is correct' 'case "$(val PUBLIC_API_URL)" in https://
 check 'CORS is exactly the frontend origin' 'c=$(val CORS_ALLOWED_ORIGINS); [ -n "$c" ] || c=$(val CORS_ORIGINS); [ "$c" = https://comarkers.roznahub.com ]' fatal
 check 'OCR_SOURCE_MODE is not rejected at start' '! ok OCR_SOURCE_MODE || case "$(val OCR_SOURCE_MODE)" in legacy|hybrid_shadow|gpt_vision_exact) true;; *) false;; esac' fatal
 check 'OCR_SOURCE_MODE is gpt_vision_exact' '[ "$(val OCR_SOURCE_MODE)" = gpt_vision_exact ]' warn
-check 'OCR_GPT_VISION_MODEL has no gemini' '! val OCR_GPT_VISION_MODEL | grep -qi gemini' warn
-check 'OCR_GPT_VISION_MODEL accepted by this mode' '! ok OCR_GPT_VISION_MODEL || [ "$(val OCR_SOURCE_MODE)" != gpt_vision_exact ] || case "$(val OCR_GPT_VISION_MODEL)" in openai/gpt-5.6-sol|openai/gpt-6-astra|deepseek/deepseek-v4.1-flash-1017|qwen/qwen3.8-27b) true;; *) false;; esac' fatal
+check 'OCR model and reader belong together' 'case "$(val OCR_GPT_VISION_MODEL)" in google/gemini-3.8-flash) [ "$(val OCR_GPT_VISION_READER)" = verbatim_json ];; qwen/qwen3.8-27b) case "$(val OCR_GPT_VISION_READER)" in ""|json_contract|plain_text) true;; *) false;; esac;; *) case "$(val OCR_GPT_VISION_READER)" in ""|json_contract) true;; *) false;; esac;; esac' fatal
+check 'AI fallback models have a provider prefix' 'r=true; for p in 1 2 3; do [ "$(val AI_FALLBACK_${p}_PROVIDER)" = openrouter ] && ok AI_FALLBACK_${p}_MODEL && ! val AI_FALLBACK_${p}_MODEL | grep -q / && r=false; done; [ "$r" = true ]' warn
+check 'OCR_GPT_VISION_MODEL accepted by this mode' '! ok OCR_GPT_VISION_MODEL || [ "$(val OCR_SOURCE_MODE)" != gpt_vision_exact ] || case "$(val OCR_GPT_VISION_MODEL)" in openai/gpt-5.6-sol|openai/gpt-6-astra|deepseek/deepseek-v4.1-flash-1017|qwen/qwen3.8-27b|google/gemini-3.8-flash) true;; *) false;; esac' fatal
 check 'OCR_SOURCE_VERIFICATION_MODE allowed' '! ok OCR_SOURCE_VERIFICATION_MODE || [ "$(val OCR_SOURCE_MODE)" = gpt_vision_exact ] || [ "$(val OCR_SOURCE_VERIFICATION_MODE)" = first_pass ]' fatal
 check 'GUEST_SUBMISSION_ENABLED is literally true' '[ "$(val GUEST_SUBMISSION_ENABLED)" = true ]' warn
 echo "=== optional: the server starts without these, but behaviour changes"
-opt OCR_SOURCE_MODE 'SILENT: legacy reader, and the log does not show it'
-opt OCR_GPT_VISION_MODEL 'SILENT with gpt_vision_exact: openai/gpt-5.6-sol, and the log does not show it'
+fatal OCR_SOURCE_MODE
+fatal OCR_GPT_VISION_MODEL
 opt HEALTH_DETAIL_TOKEN 'verify:runtime cannot run; set it (min 16 chars)'
 opt GUEST_SUBMISSION_ENABLED 'guest submission answers 403'
 opt APP_DEPLOYMENT_REVISION 'health detail cannot name the release'
@@ -102,6 +123,8 @@ opt GROQ_API_KEY 'only a startup warning'
 opt UNSPLASH_ACCESS_KEY 'only a startup warning'
 opt GOOGLE_CLOUD_KEY_FILE 'GOOGLE_APPLICATION_CREDENTIALS is used for Vision instead'
 opt ANNOTATION_AUDIT_TTL_DAYS 'audit rows are kept (default)'
+echo "=== duplicate keys (the last one wins; remove the others)"
+printf '%s\n' "$NAMES" | sort | uniq -d
 echo "=== result"
 echo "fatal problems found: $FATAL"
 echo "NOT checked here: JWT_SECRET length and wording, MONGO_URI not localhost, file at GOOGLE_APPLICATION_CREDENTIALS, values PM2 injects outside .env, ASSESSMENT_* and AI_* timing values, PDF_REPORT_ENGINE, Chromium, indexes."
@@ -164,7 +187,7 @@ Every row was booted on both trees with the same fake values, one broken conditi
 | No active Free plan in `plans` | `Free plan is not configured` on the paths that need it | Read in code |
 | `SMTP_*`, `MAIL_FROM_*` missing or inconsistent | Starts; email fails. `node scripts/checkGuestEmailReadiness.js` reports without values and without sending | Read in code, script not run |
 
-**RC2 has no startup guard for OCR variables.** A missing value does not stop the server, it silently selects a default:
+**RC3 stops at startup when `OCR_SOURCE_MODE` or `OCR_GPT_VISION_MODEL` is missing.** RC2 had no such guard; a missing value there silently selected a default:
 
 | Variable | If missing |
 |---|---|
@@ -175,7 +198,7 @@ Every row was booted on both trees with the same fake values, one broken conditi
 
 ```
 grep -cE '^PAYMENT_PROVIDER=["'"'"']?paypal' .env          # must be 1
-grep -cE '^OCR_GPT_VISION_MODEL=.*gemini' .env             # must be 0
+grep -cE '^OCR_GPT_VISION_MODEL=' .env                     # must be 1: more than one means a duplicate, and the last wins
 ```
 
 New variables, none of which stops the server:
@@ -205,11 +228,11 @@ du -sh "$BK"/*
 The RC2 branches may exist only on the developer's machine. The VPS cannot fetch them until one of these is done on that machine:
 
 ```
-git push origin release-candidate-2          # backend repo; or:
-git bundle create rc2.bundle release-candidate-2   # copy rc2.bundle to the VPS, then: git fetch rc2.bundle release-candidate-2
+git push origin release-candidate-3          # backend repo; or:
+git bundle create rc3.bundle release-candidate-3   # copy rc3.bundle to the VPS, then: git fetch rc3.bundle release-candidate-3
 ```
 
-Never deploy `origin/ocr-verbatim-hardening`. On the VPS: `cd BACKEND_DIR && git fetch && git checkout <RC2 commit>`.
+Never deploy `origin/ocr-verbatim-hardening`. On the VPS: `cd BACKEND_DIR && git fetch && git checkout <RC3 commit>`.
 
 **Do NOT run `npm` on the VPS for the backend.** RC2 adds no dependency: `package-lock.json` and the tracked `node_modules` are unchanged from `origin/main`, and `package.json` only gains four scripts. `npm ci` would delete and rebuild `node_modules`, including the Puppeteer browser and native modules.
 
