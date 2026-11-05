@@ -31,7 +31,7 @@ describe('prompt and schema (v2)', () => {
     expect(Object.keys(v.SCHEMA.properties)).toEqual(['version', 'name_present', 'question_lines', 'struck_through', 'answer_lines', 'uncertain']);
     expect(Object.keys(v.SCHEMA.properties.struck_through.items.properties)).toEqual(['text', 'after_word']);
     expect(v.SCHEMA_VERSION).toBe('verbatim-page-v2');
-    expect(v.VERSION).toBe('gemini-verbatim-reader-v2');
+    expect(v.VERSION).toBe('gemini-verbatim-reader-v3');
   });
   test('the prompt keeps rules 1-7 and has the crossed-out rule and the whole-page rules', () => {
     const p = verbatim().PROMPT;
@@ -214,10 +214,10 @@ describe('harness: with and without rule 14', () => {
   test('verbatim-json-v2 is the production prompt; -no14 is the same text minus rule 14 only', () => {
     const full = prompts.promptSpec('verbatim-json-v2'), lean = prompts.promptSpec('verbatim-json-v2-no14');
     expect(full.system).toBe(verbatim().PROMPT);
-    expect(full.system).toContain('14. Before answering');
-    expect(lean.system).not.toContain('14. Before answering');
-    expect(lean.system).toBe(full.system.replace(/\n14\. .*$/m, ''));
-    expect(lean.system).toContain('13. Write in the same language');
+    expect(full.system).toContain('16. Before answering');
+    expect(lean.system).not.toContain('16. Before answering');
+    expect(lean.system).toBe(full.system.replace(/\n16\. .*$/m, ''));
+    expect(lean.system).toContain('15. Small mistakes');
     expect(lean.responseSchema).toEqual(full.responseSchema);
     expect(lean.parser).toBe(full.parser);
   });

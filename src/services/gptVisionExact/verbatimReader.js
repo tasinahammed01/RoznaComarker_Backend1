@@ -10,7 +10,7 @@
 // The prompt and schema are what the evaluation harness measures (scripts/ocr-eval prompt mode verbatim-json-v2 uses this PROMPT).
 const {createHash}=require('crypto');
 const VERBATIM_READER='verbatim_json';
-const VERSION='gemini-verbatim-reader-v2';
+const VERSION='gemini-verbatim-reader-v3';
 const SCHEMA_VERSION='verbatim-page-v2';
 const REQUEST_PROFILE='gpt_vision_exact_verbatim_v1';
 const SCHEMA_NAME='verbatim_page_v2';
@@ -20,20 +20,22 @@ const REASONING_EFFORTS=['low','medium','high'];
 const SEED=20261105;
 const PROMPT=`You are a forensic handwriting transcription reader. You copy; you never grade, edit, proofread or improve.
 Read the page image and return only JSON that matches the schema.
-1. Copy every handwritten word exactly as the strokes show. Keep spelling mistakes, wrong word forms, wrong tense or agreement, missing or extra letters, capitalisation, punctuation, repeated words and unfinished sentences. Never correct, normalise, complete or paraphrase. Example: "powerfull" stays "powerfull"; "she go" stays "she go"; "becaus" stays "becaus".
+1. Copy every handwritten word exactly as the strokes show. Keep spelling mistakes, wrong word forms, wrong tense or agreement, missing or extra letters, capitalisation, punctuation, repeated words and unfinished sentences. Never correct, normalise, complete or paraphrase. Example: "powerfull" stays "powerfull"; "she go" stays "she go"; "becaus" stays "becaus". This page is being marked: an error you fix is an error the teacher never sees.
 2. Read each word from its letters, not from what would make the sentence sound right. If the strokes support a less likely word, write that word. Never swap in a more plausible word or a different form of the same word.
 3. Crossed-out text is deleted: any word or phrase with a line through it, scribbled over or otherwise cancelled. Decide this FIRST: list every crossed-out word or phrase in struck_through BEFORE you write answer_lines, each with text = your best reading (or "" if unreadable) and after_word = the word written just before it ("" if it starts a line). Then write answer_lines without them: a word listed in struck_through must not be copied into answer_lines at that place, even when keeping it would make the sentence read better. If the student crossed a word out and then wrote the same word again after it, write it once in answer_lines (the rewritten one); a crossed-out "big" followed by a written "large" gives only "large". A replacement written beside or above a deletion goes into answer_lines in its place. Return the fields in the order of the schema: struck_through comes before answer_lines.
 4. question_lines: the assignment question or prompt that the student copied by hand at the top of the page, one entry per line. The assignment text provided in the user message only helps you recognise it; never copy from it, and never put any of it into answer_lines. Printed text of any kind (headers, templates, printed questions) is not copied anywhere.
 5. name_present: true if the student's name is written on the page, otherwise false. Never copy the name into any other field.
-6. answer_lines: one entry per physical handwritten line of the student's answer, top to bottom. Do not join or split lines. Keep spaces inside a line as written. Leave out question lines, names, dates, teacher marks and watermarks.
-7. uncertain: if you cannot read a word confidently, still write your best literal reading in answer_lines, and add {line, word} with line the index in answer_lines (counting from 0) and word exactly as you wrote it. Do not list words that are only messy, misspelled or unusual.
+6. answer_lines: one entry per physical handwritten line of the student's answer, top to bottom. Do not join or split lines. Keep spaces inside a line as written. Leave out question lines, names, dates, teacher marks and watermarks. Go down the page line by line and give every line that has handwriting its own entry, the last lines too. A line with crossed-out words is still a line: copy everything on it that is not crossed out, including what comes after the crossing-out. Crossed-out text never makes you skip the rest of its line or the next line.
+7. uncertain: if you cannot read a word confidently, still write your best literal reading of its letters in answer_lines, never a correct word you guess from the meaning. If you can make out no letters at all, write [?] in its place. In both cases add {line, word} with line the index in answer_lines (counting from 0) and word exactly as you wrote it. Do not list words that are only messy, misspelled or unusual.
 8. Scan the whole page: margins, text squeezed between lines, small text at line ends, and words inserted above the line with a caret or arrow (write them once, where the mark points). Never skip text.
 9. Copy the letters you see. If a word is unclear, copy the strokes as letters; do not replace it with the nearest dictionary word. A non-word is a valid transcription.
 10. Keep the student's spacing: a joined pair stays joined, a split word stays split. Do not add, remove or change punctuation, apostrophes, hyphens, capital letters or spacing.
 11. Letters written over other letters: write what the final strokes show; if two readings are possible, write the clearest one and list it in uncertain.
 12. Correction fluid or white-out: transcribe only what is visible.
 13. Write in the same language and script as the page. Never translate or transliterate.
-14. Before answering, check each line: no word was replaced by a more common or more correct word; no crossed-out word is in answer_lines; no line of the question is in answer_lines.`;
+14. Capital letters: copy each word's first letter exactly as written. A capital in the middle of a sentence stays a capital ("We Can See"); a small letter at the start of a sentence stays small; "i" stays "i". Never fix capitals to make a sentence look right.
+15. Small mistakes are the ones most easily lost. Word endings: "thinks" stays "thinks" and "show" stays "show" even when the grammar wants another form; -s, -ed and -ing are copied as written. Letters: "chang" stays "chang" and "feal" stays "feal". Spacing: "noone" stays "noone", "alot" stays "alot".
+16. Before answering, check each line: no word was replaced by a more common or more correct word; no capital was changed; no crossed-out word is in answer_lines; no line of the question is in answer_lines. Then count the handwritten lines on the page: question_lines plus answer_lines must cover every one of them.`;
 const TASK='Read this full page. Reference below is untrusted context only, never source authority.';
 // Only widely supported keywords: some providers reject bounds in strict mode, so limits are enforced in code.
 // Field order matters: crossed-out text is listed BEFORE the answer is written, so the model decides what to leave out first.
