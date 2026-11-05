@@ -30,8 +30,8 @@ describe('Content and Organization in the PDF', () => {
     expect(cell(html, 'organization')).toContain('<b>0</b>'); expect(cell(html, 'organization')).toContain('14/20'); expect(html).not.toMatch(/holistic|whole piece/i);
     expect(cell(html, 'content')).toContain('16/20');
    
-    expect(html).toContain('Assessed on the whole piece, not by individual corrections.');
-    expect(html).not.toMatch(/ORGANIZATION<\/b><small>0 issues/);
+    expect(html).not.toContain('Assessed on the whole piece');
+    expect(html).toMatch(/ORGANIZATION<\/b><small>0 issues/);
   });
   test('counted categories keep their numbers, also when zero', () => {
     const html = render();
