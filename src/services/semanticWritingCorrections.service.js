@@ -449,10 +449,25 @@ function preferStrongerAuditConfig(config) {
   return config; // Category audits retain the same configured correction model.
 }
 
-function validateCorrections(corrections, { transcript, legend, spans = [], env = process.env,
+// The reader writes this for a word it could not read at all. It is the reader's mark, not the student's writing.
+const UNREADABLE_WORD = '[?]';
+const MAX_WORD_LEVEL_WORDS = 4;
+/** A finding about the unreadable word itself. A finding about a whole sentence, or about the whole piece, may contain the mark and stays. */
+function targetsUnreadableWord(item, legendObject) {
+  if (typeof item?.quotedText !== 'string' || !item.quotedText.includes(UNREADABLE_WORD)) return false;
+  const words = item.quotedText.trim().split(/\s+/u);
+  if (words.every(word => word.includes(UNREADABLE_WORD))) return true;
+  const symbol = String(item.symbol || '').trim().toUpperCase();
+  if (['FRAG', 'RO'].includes(symbol) || ['CONTENT', 'ORGANIZATION'].includes(canonical.getCanonicalCategoryForCorrectionCode(symbol, legendObject))) return false;
+  return words.length <= MAX_WORD_LEVEL_WORDS;
+}
+
+function validateCorrections(found, { transcript, legend, spans = [], env = process.env,
   provider = null, model = null, attemptIndex = null, policy: policyInput, transcriptComplete } = {}) {
   const legendObject = { groups: (legend || []).map((group) => ({ key: group.category, label: group.label,
     color: group.color, symbols: group.symbols })) };
+  // Removed before anything else: a reply holding only such findings is an empty result, not a reply with nothing acceptable.
+  const corrections = found.filter(item => !targetsUnreadableWord(item, legendObject));
   const allowedSymbols = new Set((legend || []).flatMap((group) => (group.symbols || [])
     .map((item) => String(item.symbol || '').trim().toUpperCase())));
   const policySnapshot = teacherPolicy.normalizeTeacherEvaluationPolicy(policyInput);
@@ -556,6 +571,7 @@ function validateCorrections(corrections, { transcript, legend, spans = [], env 
     responseJsonParsed: true, transcriptHashMatch: true, schemaValidated: true, groundingValidated: true,
     rawCorrectionCount: corrections.length, acceptedCorrectionCount: accepted.length,
     rejectedCorrectionCount: corrections.length - accepted.length, rejectionReasons, thresholds,
+    unreadableWordFindingCount: found.length - corrections.length,
     rawSymbolCounts, acceptedSymbolCounts, rejectionReasonsBySymbol,
     returnedByCategory, acceptedByCategory: Object.fromEntries(Object.keys(returnedByCategory)
       .map((key) => [key, perCategory[key] || 0])), rejectedByCategory, rejectionReasonsByCategory
