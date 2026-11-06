@@ -245,7 +245,24 @@ function forStudent({ previousSubmissionId: _revisionId, ...result }) {
   return { ...result, rubricCategories: result.rubricCategories.map(({ matchStrategy: _strategy, ...row }) => row) };
 }
 
-async function comparisonForSubmission(submissionId, user) {
+/** ?againstDraft=<n> (v2 only): a whole draft number from 1, or null when absent. Anything else is a 400. */
+function parseAgainstDraft(value) {
+  if (value === undefined || value === null || value === '' || !v2Enabled()) return null;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1 || number > 1000) throw Object.assign(new Error('Invalid draft number'), { statusCode: 400, code: 'INVALID_DRAFT_NUMBER' });
+  return number;
+}
+
+/** v2 draft selector: the chain's earlier drafts as the student may see them (number, date, final score). No ids. */
+function earlierDraftsOf(revisions, currentDraftNumber) {
+  return revisions.filter(r => Number(r.draftNumber) < currentDraftNumber).sort((a, b) => b.draftNumber - a.draftNumber).map(r => {
+    const feedback = finalFeedback(r.feedbackSnapshot || null, r);
+    return { draftNumber: Number(r.draftNumber), submittedAt: r.submittedAt || null,
+      score: isAssessed(r, feedback) ? number(feedback.overallScore) : null };
+  });
+}
+
+async function comparisonForSubmission(submissionId, user, { againstDraft = null } = {}) {
   if (!mongoose.Types.ObjectId.isValid(submissionId)) throw Object.assign(new Error('Invalid submission id'), { statusCode: 400 });
   const submission = await Submission.findById(submissionId).lean();
   if (!submission) throw Object.assign(new Error('Submission not found'), { statusCode: 404 });
@@ -261,15 +278,24 @@ async function comparisonForSubmission(submissionId, user) {
   }
   const [feedback, previousRevision] = await Promise.all([
     SubmissionFeedback.findOne({ submissionId: submission._id }).select('+teacherEvaluation').lean(),
-    SubmissionRevision.findOne({ sourceSubmissionId: submission._id, draftNumber: { $lt: Number(submission.draftNumber) || 1 } }).sort({ draftNumber: -1 }).lean()
+    SubmissionRevision.findOne({ sourceSubmissionId: submission._id,
+      draftNumber: againstDraft ? againstDraft : { $lt: Number(submission.draftNumber) || 1 } }).sort({ draftNumber: -1 }).lean()
   ]);
+  // A chosen draft must be an earlier draft of this same chain (the lookup is already limited to it).
+  if (againstDraft && (!previousRevision || againstDraft >= (Number(submission.draftNumber) || 1))) {
+    throw Object.assign(new Error('Draft not found'), { statusCode: 404, code: 'DRAFT_NOT_FOUND' });
+  }
   // Both drafts as the student sees them: teacher-hidden corrections are not counted.
   const [current, previous] = await Promise.all([visibleSubmissions([submission]), visibleSubmissions(previousRevision ? [previousRevision] : [], 'SubmissionRevision')]);
   // v2: the earlier draft's snapshot has no overlay although the teacher changed that draft's corrections (snapshots made before overlays
   // were kept with them). Its list falls back to the raw corrections, so it is marked.
   const overlayMissing = v2Enabled() && previousRevision && !('teacherAnnotations' in previousRevision)
     && Boolean(await require('../models/AnnotationAudit').exists({ submissionId: submission._id, draftNumber: Number(previousRevision.draftNumber) }));
-  const result = compareDrafts(previous[0] ? revisionAssessment(previous[0]) : null, liveAssessment(current[0], feedback), { v2: true, overlayMissing });
+  let result = compareDrafts(previous[0] ? revisionAssessment(previous[0]) : null, liveAssessment(current[0], feedback), { v2: true, overlayMissing });
+  if (result.comparisonVersion === 2) {
+    const revisions = await SubmissionRevision.find({ sourceSubmissionId: submission._id }).select('draftNumber submittedAt evaluationStatus assessmentStatus feedbackSnapshot').lean();
+    result = { ...result, earlierDrafts: earlierDraftsOf(revisions, Number(submission.draftNumber) || 1) };
+  }
   return studentView ? forStudent(result) : result;
 }
 
@@ -364,5 +390,5 @@ async function studentProgress(classId, studentId, user) {
   return progressFromHistory(grouped.get(String(studentId)) || []);
 }
 
-module.exports = { v2Enabled, withV2, ISSUES_OVERLAY_MISSING, normalize, issueFingerprint, compareIssues, categoryScores, matchCategories, compareDrafts,
+module.exports = { parseAgainstDraft, earlierDraftsOf, v2Enabled, withV2, ISSUES_OVERLAY_MISSING, normalize, issueFingerprint, compareIssues, categoryScores, matchCategories, compareDrafts,
   correctionSetReliable, progressFromHistory, comparisonForSubmission, classProgressSummaries, studentProgress, isAssessed };

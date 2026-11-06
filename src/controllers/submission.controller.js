@@ -1517,9 +1517,12 @@ async function retryCanonicalEvaluation(req, res) {
 
 async function getDraftComparison(req, res) {
   try {
-    return sendSuccess(res, await draftComparison.comparisonForSubmission(req.params.submissionId, req.user));
+    const againstDraft = draftComparison.parseAgainstDraft(req.query?.againstDraft);
+    return sendSuccess(res, await draftComparison.comparisonForSubmission(req.params.submissionId, req.user, { againstDraft }));
   } catch (error) {
-    return sendError(res, error?.statusCode || 500, error?.message || 'Failed to compare drafts');
+    // The draft selector's codes (INVALID_DRAFT_NUMBER, DRAFT_NOT_FOUND) only; other errors answer as before (no code).
+    const code = ['INVALID_DRAFT_NUMBER', 'DRAFT_NOT_FOUND'].includes(error?.code) ? error.code : undefined;
+    return sendError(res, error?.statusCode || 500, error?.message || 'Failed to compare drafts', code);
   }
 }
 

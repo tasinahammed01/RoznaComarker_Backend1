@@ -345,7 +345,8 @@ const attempt = endpoint(async (req, res) => {
     req.params.activityId, req.guestAccessContext, req.body)));
 });
 const drafts = endpoint(async (req, res) => {
-  ok(res, await require('../services/draftComparison.service').comparisonForSubmission(String(req.guestSubmission._id), req.guestAccessContext));
+  const comparison = require('../services/draftComparison.service');
+  ok(res, await comparison.comparisonForSubmission(String(req.guestSubmission._id), req.guestAccessContext, { againstDraft: comparison.parseAgainstDraft(req.query?.againstDraft) }));
 });
 const revoke = endpoint(async (req, res) => {
   const submission = await Submission.findOne({ _id: req.params.submissionId, submissionMode: 'guest' });
