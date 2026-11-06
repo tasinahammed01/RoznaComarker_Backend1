@@ -230,6 +230,17 @@ describe('the visible retry: student, guest and owning teacher; nobody else', ()
   });
 });
 
+test('Task 22: the ocr-corrections payload carries the same retry flags as the feedback payload (the page merges both)', async () => {
+  await Submission.updateMany({}, { $set: { 'correctionRetry.status': 'failed' } });
+  const studentJwt = jwtFor(fixture.student);
+  const feedback = (await request(app).get(`/api/feedback/${fixture.IDS.registered}`).set('Authorization', `Bearer ${studentJwt}`)).body.data;
+  const ocr = (await request(app).get(`/api/submissions/${fixture.IDS.registered}/ocr-corrections`).set('Authorization', `Bearer ${studentJwt}`)).body.data;
+  expect(feedback.correctionRetryAllowed).toBe(true);
+  expect(ocr.correctionRetryAllowed).toBe(true);
+  const guest = (await request(app).get(`/api/guest/submissions/${fixture.IDS.guest}/ocr-corrections`).set('X-Guest-Token', fixture.guestToken)).body.data;
+  expect(guest.correctionRetryAllowed).toBe(true);
+});
+
 test('students and guests see the two booleans, never the retry job, counters or error codes', async () => {
   const studentJwt = jwtFor(fixture.student);
   const out = await capture(surfaces({ app, ids: fixture.IDS, studentJwt, guestToken: fixture.guestToken }));

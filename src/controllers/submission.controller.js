@@ -1273,6 +1273,10 @@ async function getOcrCorrections(req, res) {
       processingActive: resultState.processingActive,
       automaticPollingAllowed: resultState.automaticPollingAllowed,
       manualRetryAllowed: resultState.manualRetryAllowed,
+      // Task 20/22: the same retry state as the feedback payload (the page merges both); present only when true, so normal payloads do not change.
+      ...(resultState.correctionRetryActive ? { correctionRetryActive: true } : {}),
+      ...(resultState.correctionRetryAllowed ? { correctionRetryAllowed: true } : {}),
+      ...(resultState.scoreBeforeCorrections ? { scoreBeforeCorrections: true } : {}),
       terminal: resultState.terminal,
       evaluationBlockedReason: resultState.evaluationBlockedReason,
       detailedFeedbackBlockedReason: resultState.detailedFeedbackBlockedReason,
