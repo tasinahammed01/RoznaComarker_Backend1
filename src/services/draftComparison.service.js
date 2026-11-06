@@ -13,6 +13,20 @@ const { finalFeedback } = require('./teacherEvaluation.service');
 // Draft comparison v2 (DRAFT_COMPARISON_V2_ENABLED, default off): per-error tracking, an honest result when the rubric changed, and a note
 // when an earlier draft's snapshot predates the teacher overlay. Off: the payload is exactly the v1 payload.
 const v2Enabled = () => String(process.env.DRAFT_COMPARISON_V2_ENABLED || '').trim().toLowerCase() === 'true';
+// Unrelated drafts (v2): a cheap local word-set similarity (Jaccard of normalized words). Below this the two drafts are treated as different
+// texts and nothing is claimed: no improved/declined, no per-category change, no issue counts or lists. Drafts with fewer distinct words than
+// MIN_SIMILARITY_WORDS on either side are too short to judge (no flag).
+const UNRELATED_SIMILARITY = 0.25;
+const MIN_SIMILARITY_WORDS = 12;
+const TEXTS_UNRELATED_MESSAGE = 'These drafts look like different texts, so the comparison is limited.';
+function textSimilarity(previousText, currentText) {
+  const words = text => new Set(normalize(text).split(' ').filter(Boolean));
+  const a = words(previousText), b = words(currentText);
+  if (a.size < MIN_SIMILARITY_WORDS || b.size < MIN_SIMILARITY_WORDS) return null;
+  let shared = 0;
+  for (const word of a) if (b.has(word)) shared += 1;
+  return shared / (a.size + b.size - shared);
+}
 const ISSUES_OVERLAY_MISSING = 'The earlier draft was saved before your teacher\'s changes to its corrections were kept with it, so this list may include corrections your teacher hid.';
 const normalize = (value) => String(value || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
@@ -153,6 +167,15 @@ function submissionText(submission) {
 /** v2 additions to an available comparison: per-error lists (replacing the counts with the matcher's), the rubric-changed rule, the overlay note. */
 function withV2(result, previous, current, { overlayMissing = false } = {}) {
   const out = { ...result, comparisonVersion: 2 };
+  const similarity = textSimilarity(out.previousText, out.currentText);
+  if (similarity !== null && similarity < UNRELATED_SIMILARITY) {
+    // Different texts: scores stay visible, every change and claim is withheld.
+    return { ...out, textsUnrelated: true,
+      overall: { ...out.overall, delta: null, status: 'TEXTS_UNRELATED' },
+      summary: { improved: false, unchanged: false, declined: false, limited: true },
+      rubricCategories: (out.rubricCategories || []).map(item => ({ ...item, delta: null, available: false, reason: 'The drafts look like different texts.' })),
+      issuesAvailable: false, issues: null, issuesMessage: TEXTS_UNRELATED_MESSAGE };
+  }
   if (out.rubricChanged) {
     // Scores stay visible; the overall change and any improved/declined claim are withheld.
     out.overall = { ...out.overall, delta: null, status: 'RUBRIC_CHANGED' };
@@ -390,5 +413,5 @@ async function studentProgress(classId, studentId, user) {
   return progressFromHistory(grouped.get(String(studentId)) || []);
 }
 
-module.exports = { parseAgainstDraft, earlierDraftsOf, v2Enabled, withV2, ISSUES_OVERLAY_MISSING, normalize, issueFingerprint, compareIssues, categoryScores, matchCategories, compareDrafts,
+module.exports = { textSimilarity, UNRELATED_SIMILARITY, MIN_SIMILARITY_WORDS, TEXTS_UNRELATED_MESSAGE, parseAgainstDraft, earlierDraftsOf, v2Enabled, withV2, ISSUES_OVERLAY_MISSING, normalize, issueFingerprint, compareIssues, categoryScores, matchCategories, compareDrafts,
   correctionSetReliable, progressFromHistory, comparisonForSubmission, classProgressSummaries, studentProgress, isAssessed };
