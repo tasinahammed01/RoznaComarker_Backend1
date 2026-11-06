@@ -1,4 +1,5 @@
 'use strict';
+const { CORRECTION_RETRY_SAMPLING } = require('./aiGateway.service');
 
 const crypto = require('crypto');
 const semanticWriting = require('./semanticWritingCorrections.service');
@@ -138,6 +139,15 @@ function splitChunk(chunk) {
     { ...chunk, index: `${chunk.index}a`, endChar: chunk.startChar + midpoint, text: chunk.text.slice(0, midpoint) },
     { ...chunk, index: `${chunk.index}b`, startChar: chunk.startChar + midpoint, text: chunk.text.slice(midpoint) }
   ];
+}
+
+/** Worth one more identical request with different sampling: a malformed reply, or a provider that was briefly unavailable. Never auth, credit or configuration. */
+const SAME_REQUEST_RETRY_CODES = Object.freeze(['AI_OUTPUT_VALIDATION_FAILED', 'AI_RESPONSE_INVALID', 'AI_RESPONSE_EMPTY', 'AI_PROVIDER_UNAVAILABLE', 'AI_RATE_LIMITED']);
+function sameRequestRetryable(error) {
+  const codes = [error?.finalFailureCode, ...(error?.attempts || []).map(attempt => attempt?.code), error?.code].filter(Boolean).map(String);
+  if (codes.some(code => /AUTH|CREDIT|CONFIGURATION|NOT_CONFIGURED|AUTHORITY|FORBIDDEN|PAYMENT|QUOTA_EXCEEDED|UNAUTHORIZED/.test(code))) return false;
+  const last = String(error?.attempts?.at(-1)?.code || error?.finalFailureCode || error?.code || '');
+  return SAME_REQUEST_RETRY_CODES.includes(last);
 }
 
 function recoverableFailure(error) {
@@ -392,6 +402,25 @@ async function analyze(input, dependencies = {}) {
       if(shortAstraReview && failureCode==='AI_ATTEMPT_TIMEOUT' && !shortPolicy.shortCorrectionAutoRecoveryEnabled){
         recoveryStrategy='short_timeout_no_auto_recovery';recoveryOutcome='not_attempted';failWithMetrics(error);
       }
+      // At most one retry of the same request, with different sampling, inside the correction budget.
+      if (sameRequestRetryable(error) && canFundAdditionalRequest()) {
+        recoveryUsed = true;
+        recoveryStrategy = 'same_request_varied_sampling'; recoveryOutcome = 'processing';
+        logger.warn({ event: 'correction_retry', submissionId: input.submissionId || null, assessmentRunId: input.assessmentRunId || null,
+          attempt: 2, maxAttempts: 2, reason: failureCode, validationCode: error.attempts?.at(-1)?.validationCode || null,
+          validationStage: error.attempts?.at(-1)?.validationStage || null });
+        try {
+          result = await run({ ...input, categories: enabledCategories }, 'recovery', { ...primaryConfig, samplingVariant: CORRECTION_RETRY_SAMPLING,
+            attemptTimeoutMs: executionPolicy.correctionRecoveryTimeout(Number(primaryConfig.attemptTimeoutMs) || 90000, deadlineAt - now()) });
+          recoveryOutcome = 'completed';
+        } catch (reason) {
+          recoveryOutcome = reason.finalFailureCode || reason.attempts?.at(-1)?.code || reason.code || 'failed';
+          logger.warn({ event: 'correction_retry_failed', submissionId: input.submissionId || null, attempt: 2, maxAttempts: 2, reason: recoveryOutcome,
+            validationCode: reason.attempts?.at(-1)?.validationCode || null });
+          failWithMetrics(reason);
+        }
+      }
+      if (!result) {
       if (!recoverableFailure(error) || deadlineAt-now()<Math.min((Number(primaryConfig.attemptTimeoutMs)||90000)/3,30000))failWithMetrics(error);
       const compactInput={...input,categories:enabledCategories,analysisMode:'compact_recovery'};
       const originalRequest=semanticWriting.buildSemanticRequest({...input,categories:enabledCategories});
@@ -410,6 +439,7 @@ async function analyze(input, dependencies = {}) {
       catch (reason) {
         recoveryOutcome=reason.finalFailureCode||reason.attempts?.at(-1)?.code||reason.code||'failed';
         failWithMetrics(reason);
+      }
       }
     }
     const reviewed = categoryReviewCoverage(result, enabledCategories);
@@ -628,7 +658,7 @@ async function analyze(input, dependencies = {}) {
       expectedTextRangesCovered, finalMergeCompleted: true, categoryCoverageComplete } };
 }
 
-module.exports = { VERSION, config, preferredBoundary, buildChunks, localSpans, localPages, remapCorrections,
+module.exports = { sameRequestRetryable, VERSION, config, preferredBoundary, buildChunks, localSpans, localPages, remapCorrections,
   categoryReviewCoverage,
   chunkIdentity, splitChunk, recoverableFailure, deterministicLanguageCandidateCount, runBounded, aggregateMetrics,
   aggregateValidationDiagnostics, coveredCharactersForSuccessfulChunks, assessOutputRisk, analyze };

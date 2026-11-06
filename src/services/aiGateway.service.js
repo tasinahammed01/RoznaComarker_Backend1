@@ -24,6 +24,8 @@ const DEEPSEEK_CORRECTION_MODEL = 'deepseek/deepseek-v4.1-flash';
 const GPT54_MINI_CORRECTION_MODEL = 'openai/gpt-5.4-mini';
 const GEMINI_CORRECTION_MODEL = 'google/gemini-3.8-flash';
 const CORRECTION_SEED = 20261105;
+/** A correction retry: a small positive temperature and no seed, so it is not the same sample as the attempt that failed. */
+const CORRECTION_RETRY_SAMPLING = 'correction_retry', CORRECTION_RETRY_TEMPERATURE = 0.3;
 const CLAUDE_CORRECTION_MODEL = 'anthropic/claude-haiku-5.5';
 const CORRECTION_MODELS = Object.freeze([CORRECTION_MODEL, DEEPSEEK_CORRECTION_MODEL, GPT54_MINI_CORRECTION_MODEL, GEMINI_CORRECTION_MODEL, CLAUDE_CORRECTION_MODEL, ASSESSMENT_MODEL]);
 const isStrictCorrectionModel = model => [CORRECTION_MODEL, DEEPSEEK_CORRECTION_MODEL, GPT54_MINI_CORRECTION_MODEL, GEMINI_CORRECTION_MODEL, CLAUDE_CORRECTION_MODEL].includes(model);
@@ -400,7 +402,7 @@ function abortable(promise,signal){
 }
 async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temperature, responseFormat,
   responseSchema, schemaName, attemptTimeoutMs, fetchImpl, env, now, googleThinkingLevel, feature, onDiagnostic,
-  requestProfile, signal, timeoutScope='local_attempt_timeout' }) {
+  requestProfile, signal, timeoutScope='local_attempt_timeout', samplingVariant=null }) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener('abort', abort, { once: true });
@@ -443,7 +445,11 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
       if(google||base!=='https://openrouter.ai/api/v1'||!responseSchema||responseFormat!=='json')
         throw attemptError('AI_CORRECTION_AUTHORITY_INVALID','Invalid correction request profile.');
       delete body.temperature;
-      if(entry.model===GEMINI_CORRECTION_MODEL){body.temperature=0;body.seed=CORRECTION_SEED;}
+      // The first attempt is reproducible (temperature 0, fixed seed). Its retry must not ask for the same sample again, or a malformed reply comes back.
+      if(entry.model===GEMINI_CORRECTION_MODEL){
+        if(samplingVariant===CORRECTION_RETRY_SAMPLING){body.temperature=CORRECTION_RETRY_TEMPERATURE;}
+        else {body.temperature=0;body.seed=CORRECTION_SEED;}
+      }
       body.provider={require_parameters:true,allow_fallbacks:false};
     }
     if (requestProfile) {
@@ -596,7 +602,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
   env = process.env, fetchImpl = global.fetch,
   now = Date.now, sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   randomFn = Math.random, config = getAIConfig(env), onAttempt, onRetry, deadlineAt = null,
-  retryableSameModelCodes = [], terminalCodes = [], onDiagnostic } = {}) {
+  retryableSameModelCodes = [], terminalCodes = [], onDiagnostic, samplingVariant = null } = {}) {
   if (!Array.isArray(messages) || typeof fetchImpl !== 'function') {
     throw new TypeError('AI gateway requires messages and fetch.');
   }
@@ -653,7 +659,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
       try {
         const result = await providerAttempt({ entry, messages, maxOutputTokens, temperature,
           responseFormat, responseSchema, schemaName, attemptTimeoutMs: timeout, fetchImpl, env, now,
-          googleThinkingLevel, feature, onDiagnostic,
+          googleThinkingLevel, feature, onDiagnostic, samplingVariant,
           timeoutScope:deadlineAt&&timeout<config.attemptTimeoutMs?'shared_stage_deadline':'local_attempt_timeout' });
         let value = result.content;
         if (typeof validate === 'function') {
@@ -782,7 +788,7 @@ function validateAIConfig(env = process.env) {
   }
 }
 
-module.exports = {
+module.exports = { CORRECTION_RETRY_SAMPLING, CORRECTION_RETRY_TEMPERATURE,
   GEMINI_RUBRIC_MODEL, ASSESSMENT_MODELS, assessmentModel, assessmentAuthority, rubricReasoningEffort,
   CLAUDE_CORRECTION_MODEL, GEMINI_CORRECTION_MODEL, GPT54_MINI_CORRECTION_MODEL, isStrictCorrectionModel, geminiCorrectionReasoningEffort, gpt54MiniCorrectionReasoningEffort, getTeacherCommentAIConfig,
   correctionReasoningEffort,
