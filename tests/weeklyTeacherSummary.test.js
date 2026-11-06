@@ -58,6 +58,12 @@ describe('weekly teacher summary', () => {
       studentsImproved: 1, waitingForReview: 1 });
   });
 
+  test('a draft without reliable correction analysis has no issue count: the summary is still built and keeps its score progress', async () => {
+    await Submission.updateOne({ _id: submission._id }, { $set: { semanticStatus: 'failed' } });
+    const result = await weekly.getWeeklySummary(teacher, now);
+    expect(result.progress).toMatchObject({ studentsImproved: 1, improvedRevisions: 1, averageRevisionScoreDelta: 10, issuesCorrected: 0 });
+  });
+
   test('foreign teacher data is excluded and no persisted accounting state is changed', async () => {
     const foreign = await User.create({ firebaseUid: 'foreign-weekly', email: 'foreign-weekly@example.test', role: 'teacher' });
     const result = await weekly.getWeeklySummary(foreign, now);

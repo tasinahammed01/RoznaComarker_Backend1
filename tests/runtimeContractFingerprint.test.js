@@ -44,9 +44,12 @@ describe('runtime contract fingerprint', () => {
     const unreachable = await verifyRuntime({ env: { NODE_ENV: 'test' },
       fetchImpl: async () => { throw new Error('contains-secret-that-must-not-escape'); } });
     expect(unreachable).toEqual({ ok: false, code: 'BACKEND_UNREACHABLE', message: 'Backend health endpoint is unreachable.' });
-    const malformed = await verifyRuntime({ env: { NODE_ENV: 'test' },
+    const malformed = await verifyRuntime({ env: { NODE_ENV: 'test', HEALTH_DETAIL_TOKEN: 'a-token-of-sixteen-or-more' },
       fetchImpl: async () => ({ ok: true, json: async () => ({ success: true }) }) });
     expect(malformed).toMatchObject({ ok: false, code: 'MALFORMED_HEALTH_RESPONSE' });
+    // The public answer is the status only: without the deploy token the check says what to set.
+    const noToken = await verifyRuntime({ env: { NODE_ENV: 'test' }, fetchImpl: async () => ({ ok: true, json: async () => ({ success: true, status: 'OK' }) }) });
+    expect(noToken).toMatchObject({ ok: false, code: 'HEALTH_DETAIL_TOKEN_MISSING' });
     expect(JSON.stringify({ unreachable, malformed })).not.toContain('contains-secret');
   });
 });

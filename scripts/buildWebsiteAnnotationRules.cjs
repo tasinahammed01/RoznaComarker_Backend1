@@ -4,7 +4,7 @@
 const fs = require('fs'), path = require('path'), crypto = require('crypto'), ts = require('typescript');
 const sourceRoot = path.resolve(__dirname, '../../RoznaComarker/src/app');
 const entries = ['components/correction-overlay/annotation-geometry', 'components/correction-overlay/annotation-layout',
-    'components/correction-overlay/annotation-image-geometry'];
+    'components/correction-overlay/annotation-image-geometry', 'components/correction-overlay/annotation-stroke'];
 function build() {
     const sources = {}, factories = {}, dependencies = {};
     function visit(id) {
@@ -30,7 +30,7 @@ function build() {
         + Object.entries(factories).map(([id, code]) => JSON.stringify(id) + ':function(module,exports,require){\n' + code + '\n}').join(',\n')
         + '\n};\nconst cache={};function load(id){if(cache[id])return cache[id].exports;const module={exports:{}};cache[id]=module;'
         + 'factories[id](module,module.exports,name=>load(dependencies[id][name]));return module.exports;}\n'
-        + 'module.exports={sourceHashes,...load(' + JSON.stringify(entries[0]) + '),...load(' + JSON.stringify(entries[1]) + '),...load(' + JSON.stringify(entries[2]) + ')};\n';
+        + 'module.exports={sourceHashes,' + entries.map(id => '...load(' + JSON.stringify(id) + ')').join(',') + '};\n';
 }
 if (require.main === module) {
     fs.writeFileSync(path.resolve(__dirname, '../src/pdf/websiteAnnotationRules.generated.js'), build());

@@ -366,7 +366,8 @@ describe('isolated canonical two-image HTTP lifecycle', () => {
       .toBe(canonicalOcr.ocr.flatMap((page) => page.words).length);
     expect(canonicalOcr.transcript).not.toContain('\n\n');
     const teacherCanonicalOcr = await getOcrCorrections(successId, teacherToken);
-    expect(teacherCanonicalOcr.ocr).toEqual(canonicalOcr.ocr);
+    // The teacher keeps the page raster hash; a student does not get it (studentTeacherIdentity.withoutInternal). Same pages and words otherwise.
+    expect(require('../src/services/studentTeacherIdentity.service').withoutInternal(teacherCanonicalOcr.ocr)).toEqual(canonicalOcr.ocr);
     expect(teacherCanonicalOcr.transcript).toBe(canonicalOcr.transcript);
     const successStudent = await getResult(successId, studentToken);
     const successTeacher = await getResult(successId, teacherToken);

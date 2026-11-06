@@ -93,7 +93,12 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
   const evaluationJobActive = (semanticComplete || degradedEvaluationEligible)
     && persistedEvaluationStatus === 'processing' && Boolean(submission.evaluationJobId);
   const evaluationPending = (semanticComplete || degradedEvaluationEligible) && persistedEvaluationStatus === 'pending';
-  const evaluationProcessing = evaluationJobActive || evaluationPending
+  // The provisional score is saved as "partial" while the same assessment run is still writing the final score and detailed feedback. That is work in
+  // progress, not a finished partial result: the page must keep waiting for it, never call it out of date.
+  const provisionalRunning = !teacherOverride && semanticComplete && persistedEvaluationStatus === 'partial'
+    && feedback?.evaluationSource === 'provisional' && Boolean(submission.evaluationJobId)
+    && ['started', 'processing'].includes(String(submission.assessmentStatus || ''));
+  const evaluationProcessing = evaluationJobActive || evaluationPending || provisionalRunning
     || (semanticComplete && persistedEvaluationStatus === 'processing');
   const evaluationLifecycleComplete = ['completed', 'partial'].includes(persistedEvaluationStatus);
   const storedRubricHash = feedback?.evaluationRubricSourceHash || submission.evaluationRubricSourceHash || null;
@@ -142,14 +147,23 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
     : detailedCurrent
     ? String(feedback?.detailedFeedback?.status || 'completed')
     : feedback?.detailedFeedback ? 'stale' : 'blocked';
-  const processingActive = !ocrFailed && (['pending', 'processing'].includes(String(submission.ocrStatus || 'completed'))
+  const analysisProcessing = !ocrFailed && (['pending', 'processing'].includes(String(submission.ocrStatus || 'completed'))
     || correctionPending || semanticProcessing || evaluationProcessing);
+  // Task 20: a correction-only retry after a failed correction stage. The page keeps polling for the corrections; the score is not being changed.
+  const correctionStageRetry = require('./correctionStageRetry.service');
+  const correctionRetryActive = layoutCurrent && !ocrFailed && correctionStageRetry.active(submission);
+  const correctionRetryAllowed = layoutCurrent && !ocrFailed && !analysisProcessing && correctionStageRetry.manualAllowed(submission);
+  const processingActive = analysisProcessing || correctionRetryActive;
+  // C.3b: the corrections arrived through a correction-only retry AFTER this score was calculated (the score is never recomputed for it). Only
+  // then may the counts disagree with the rubric, so only then the page says so. A later full assessment clears it (a later completion time).
+  const retryFinishedAt = new Date(submission.correctionRetry?.finishedAt || 0).getTime();
+  const assessedAt = new Date(submission.assessmentCompletedAt || 0).getTime();
   const terminal = !processingActive && (teacherOverride || evaluationCurrent || ocrFailed || semanticFailed
     || ['failed', 'stale'].includes(evaluationStatus));
   const automaticPollingAllowed = processingActive && !terminal;
   const semanticErrorCode = submission.semanticErrorCode || safeErrorCode(submission.correctionError);
   const nonRetryableConfigurationFailure = semanticErrorCode === 'AI_PROVIDER_NOT_CONFIGURED';
-  const manualRetryAllowed = !nonRetryableConfigurationFailure && (semanticFailed
+  const manualRetryAllowed = !nonRetryableConfigurationFailure && !correctionRetryActive && (semanticFailed
     || ['failed', 'stale'].includes(evaluationStatus) || invalidCanonicalFeedback);
   const staleReason = !teacherOverride && !evaluationProcessing && semanticComplete
     && ['completed', 'partial', 'stale'].includes(persistedEvaluationStatus)
@@ -170,7 +184,7 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
             : null;
   const evaluationFreshness = teacherOverride
     ? 'overridden'
-    : evaluationProcessing || processingActive
+    : evaluationProcessing || analysisProcessing
       ? 'processing'
       : persistedEvaluationStatus === 'failed'
         ? 'failed'
@@ -204,6 +218,10 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
     processingActive,
     automaticPollingAllowed,
     manualRetryAllowed,
+    correctionRetryActive,
+    correctionRetryAllowed,
+    ...(submission.correctionRetry?.status === 'completed' && retryFinishedAt > assessedAt && assessedAt > 0
+      && semanticComplete && !teacherOverride ? { scoreBeforeCorrections: true } : {}),
     terminal,
     evaluationBlockedReason: evaluationStatus === 'blocked' ? 'corrections_incomplete' : null,
     detailedFeedbackBlockedReason: detailedFeedbackStatus === 'blocked' ? (semanticFailed ? 'evaluation_unavailable' : 'evaluation_unavailable') : null,
@@ -266,4 +284,15 @@ function detailedFeedbackForResult(feedback, state) {
     state.categoryAvailability?.[String(area.category).toLowerCase()] === 'available' ? area
       : { ...area, issueCount: null, examples: [], dominantSymbols: [] }) };
 }
-module.exports = { buildCanonicalResultState, buildPreviousEvaluation, countSources, safeErrorCode, detailedFeedbackForResult };
+/**
+ * The one status a guest sees for a submission: the result page and the recovery-portal list both use it, so the list never says
+ * "ready" for something the page shows as still processing. 'complete' | 'failed' | 'blocked' | 'processing'. Also returns the state.
+ */
+function guestResultStatus({ submission, feedback }) {
+  const state = buildCanonicalResultState({ submission, feedback });
+  const ready = submission.assessmentStatus === 'complete' && state.evaluationCurrent && state.detailedFeedbackCurrent;
+  const failed = [submission.assessmentStatus, submission.ocrStatus, submission.correctionStatus, submission.semanticStatus, submission.evaluationStatus].includes('failed');
+  return { status: ready ? 'complete' : failed ? 'failed' : submission.evaluationStatus === 'blocked' ? 'blocked' : 'processing', state, ready };
+}
+
+module.exports = { buildCanonicalResultState, buildPreviousEvaluation, countSources, safeErrorCode, detailedFeedbackForResult, guestResultStatus };

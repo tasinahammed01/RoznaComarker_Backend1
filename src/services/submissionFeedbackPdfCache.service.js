@@ -23,13 +23,14 @@ const pick = (value, keys) => Object.fromEntries(keys.map(key => [key, value?.[k
 const rendererFingerprint = digest(['../modules/submissionFeedbackPdfGenerator.js', '../pdf/submissionFeedbackReportTemplate.js',
   '../pdf/submittedImageAnnotationLayout.js', '../pdf/websiteAnnotationPresentation.js', '../pdf/websiteAnnotationRules.generated.js',
   '../pdf/sample/submissionFeedbackReportViewModel.js', './submissionFeedbackReport.service.js', './correctionLegendResolver.service.js',
-  './canonicalCorrectionRender.service.js', './canonicalCorrectionResponse.service.js', './teacherComments.service.js',
+  './canonicalCorrectionRender.service.js', './canonicalCorrectionResponse.service.js', './teacherComments.service.js', './teacherAnnotation.service.js',
+  './studentCorrectionView.service.js', './annotationAnchor.service.js',
   '../utils/ocrTranscriptNormalizer.js', '../utils/legacyStudentSource.js']
   .map(file => [file, sha(fs.readFileSync(path.join(__dirname, file)))]));
 const annotationFingerprint = sha(fs.readFileSync(path.join(__dirname, '../pdf/websiteAnnotationRules.generated.js')));
 const pending = new Map();
 function cacheIdentity({ submission, submissionFeedback, feedback, identity, marksVisible, audience, legendIdentity, fileIdentity }) {
-  const pdfCorrectionIdentity = digest(pick(submission, ['writingCorrections', 'correctionSourceHash', 'correctionStatus',
+  const pdfCorrectionIdentity = digest(pick(submission, ['teacherAnnotations', 'writingCorrections', 'correctionSourceHash', 'correctionStatus',
     'correctionTranscriptLayoutVersion', 'correctionUpdatedAt', 'ocrStatus', 'ocrJobId', 'ocrPages', 'canonicalText', 'transcriptPages']));
   const pdfEvaluationIdentity = digest({ submissionFeedback, feedback,
     status: submission.evaluationStatus, teacherAssessmentVersion: submission.teacherAssessmentVersion });

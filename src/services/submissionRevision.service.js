@@ -12,6 +12,8 @@ async function captureCurrentRevision(submission) {
   const existing = await SubmissionRevision.findOne({ sourceSubmissionId: submission._id, draftNumber });
   if (existing) return existing;
   const feedback = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
+  // The overlay is read here, not from the caller's document, so a draft snapshot always keeps the teacher's decisions.
+  const overlay = (await require('../models/Submission').findById(submission._id).select('teacherAnnotations').lean())?.teacherAnnotations;
   return SubmissionRevision.findOneAndUpdate(
     { sourceSubmissionId: submission._id, draftNumber },
     { $setOnInsert: {
@@ -26,6 +28,7 @@ async function captureCurrentRevision(submission) {
       rawTranscriptText: submission.rawTranscriptText || submission.rawCombinedOcrText || submission.rawOcrText || '',
       combinedOcrText: submission.combinedOcrText || '', ocrPages: plain(submission.ocrPages),
       writingCorrections: plain(submission.writingCorrections),
+      ...(overlay ? { teacherAnnotations: plain(overlay) } : {}),
       correctionStatistics: plain(submission.correctionStatistics), correctionStatus: submission.correctionStatus,
       correctionSourceHash: submission.correctionSourceHash, ocrJobId: submission.ocrJobId,
       correctionJobId: submission.correctionJobId, correctionVersion: submission.correctionVersion,

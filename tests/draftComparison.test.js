@@ -42,6 +42,23 @@ describe('deterministic draft comparison', () => {
       overall: { previousScore: 73, currentScore: 100, delta: 27, status: 'IMPROVED' },
       issues: { correctedCount: 2, newIssueCount: 0 } });
   });
+  test('same file and assessment: currentCount comes from the visible corrections of the current draft', () => {
+    const previous = assessment({ draftNumber: 1, score: 80, fileContentIdentity: 'same-bytes', correctionList: issues([['G', 'one'], ['V', 'two']]) });
+    const current = assessment({ draftNumber: 2, score: 80, fileContentIdentity: 'same-bytes', correctionList: issues([['G', 'one']]) });
+    previous.feedback.analysisInputHash = current.feedback.analysisInputHash = 'same-analysis';
+    const result = comparison.compareDrafts(previous, current);
+    expect(result.identicalContent).toBe(true);
+    expect(result.issues).toMatchObject({ previousCount: 2, currentCount: 1 });
+  });
+  test.each([[2, 1, 1], [2, 0, 0], [1, 3, 3]])('same file and assessment: previous %i visible, current %i visible: remaining follows the current draft, nothing is fixed or new', (before, after, remaining) => {
+    const list = count => issues(['one', 'two', 'three'].slice(0, count).map(text => ['G', text]));
+    const previous = assessment({ draftNumber: 1, score: 80, fileContentIdentity: 'same-bytes', correctionList: list(before) });
+    const current = assessment({ draftNumber: 2, score: 80, fileContentIdentity: 'same-bytes', correctionList: list(after) });
+    previous.feedback.analysisInputHash = current.feedback.analysisInputHash = 'same-analysis';
+    const result = comparison.compareDrafts(previous, current);
+    expect(result.identicalContent).toBe(true);
+    expect(result.issues).toEqual({ previousCount: before, currentCount: after, correctedCount: 0, remainingCount: remaining, newIssueCount: 0 });
+  });
   test.each([[72, 84, 12, 'IMPROVED'], [80, 80, 0, 'UNCHANGED'], [84, 72, -12, 'DECLINED']])(
     'calculates authoritative overall delta %s -> %s', (oldScore, currentScore, delta, status) => {
       expect(comparison.compareDrafts(assessment({ score: oldScore }), assessment({ draftNumber: 2, score: currentScore })).overall)
@@ -220,10 +237,56 @@ describe('draft comparison APIs and authorization', () => {
     const studentResponse = await auth(request(app).get(`/api/submissions/${submission._id}/draft-comparison`), studentToken);
     const foreignResponse = await auth(request(app).get(`/api/submissions/${submission._id}/draft-comparison`), otherToken);
     expect(teacherResponse.status).toBe(200); expect(teacherResponse.body.data.overall.delta).toBe(12);
-    expect(studentResponse.status).toBe(200); expect(foreignResponse.status).toBe(403);
+    expect(studentResponse.status).toBe(200); expect(foreignResponse.status).toBe(404);
     expect(await CreditTransaction.countDocuments()).toBe(before);
     expect(await Submission.findById(submission._id).lean()).toEqual(submissionBefore);
     expect(await SubmissionFeedback.findOne({ submissionId: submission._id }).lean()).toEqual(feedbackBefore);
+  });
+
+  test('a non-owner student or teacher gets the same answer as an id that does not exist', async () => {
+    const otherTeacher = await User.create({ firebaseUid: 'progress-other-teacher', email: 'pot@example.com', role: 'teacher' });
+    const otherTeacherToken = signTestJwt({ id: otherTeacher._id, firebaseUid: otherTeacher.firebaseUid, role: 'teacher' });
+    const url = id => `/api/submissions/${id}/draft-comparison`;
+    const missingId = new (require('mongoose').Types.ObjectId)();
+    for (const token of [otherToken, otherTeacherToken]) {
+      const missing = await auth(request(app).get(url(missingId)), token);
+      const foreign = await auth(request(app).get(url(submission._id)), token);
+      expect(missing.status).toBe(404);
+      expect(foreign.status).toBe(404);
+      expect(foreign.body).toEqual(missing.body);
+    }
+  });
+
+  test('the teacher of a deactivated class gets the same answer as an id that does not exist; the student keeps access', async () => {
+    const url = id => `/api/submissions/${id}/draft-comparison`;
+    await Class.updateOne({ _id: classDoc._id }, { $set: { isActive: false } });
+    const inactive = await auth(request(app).get(url(submission._id)), teacherToken);
+    const missing = await auth(request(app).get(url(new (require('mongoose').Types.ObjectId)())), teacherToken);
+    const own = await auth(request(app).get(url(submission._id)), studentToken);
+    expect(inactive.status).toBe(404);
+    expect(inactive.body).toEqual(missing.body);
+    expect(own.status).toBe(200);
+  });
+
+  test('a class stored before isActive existed still lets its teacher compare; an explicit false does not', async () => {
+    const url = `/api/submissions/${submission._id}/draft-comparison`;
+    const legacyClassId = new (require('mongoose').Types.ObjectId)();
+    await Class.collection.insertOne({ _id: legacyClassId, name: 'Legacy', teacher: teacher._id, joinCode: `LEGACY${Date.now()}` });
+    expect(await Class.collection.findOne({ _id: legacyClassId })).not.toHaveProperty('isActive');
+    await Submission.updateOne({ _id: submission._id }, { $set: { class: legacyClassId } });
+    const legacy = await auth(request(app).get(url), teacherToken);
+    expect(legacy.status).toBe(200);
+    expect(legacy.body.data.available).toBe(true);
+    await Class.collection.updateOne({ _id: legacyClassId }, { $set: { isActive: false } });
+    expect((await auth(request(app).get(url), teacherToken)).status).toBe(404);
+  });
+
+  test('a deactivated teacher account is stopped by the sign-in check before the comparison runs', async () => {
+    await User.updateOne({ _id: teacher._id }, { $set: { isActive: false } });
+    const response = await auth(request(app).get(`/api/submissions/${submission._id}/draft-comparison`), teacherToken);
+    expect(response.status).toBe(403);
+    expect(response.body.code).toBe('ACCOUNT_INACTIVE');
+    expect(JSON.stringify(response.body)).not.toContain('overall');
   });
 
   test('progress endpoint returns revision metrics and rejects foreign student access', async () => {

@@ -369,7 +369,7 @@ describe('semantic rubric assessment validation', () => {
     const result = validateAssessment(payload, { sourceHash: 'hash', transcript,
       corrections: corrections.filter((item) => item.category !== 'VOCABULARY') });
     expect(result.categories.VOCABULARY.score).toBe(15);
-    expect(result.categories.VOCABULARY.comment).toBe('This category was assessed holistically from the submitted writing. No validated canonical vocabulary corrections were recorded.');
+    expect(result.categories.VOCABULARY.comment).toBe('This category was assessed from the submitted writing.');
     expect(result.categories.VOCABULARY.improvementEvidence[0].evidenceId).toBe(evidence[1].evidenceId);
     expect(result.diagnostics.commentNormalizations).toEqual([expect.objectContaining({ category: 'VOCABULARY',
       commentNormalized: true, commentNormalizationReason: 'ZERO_CANONICAL_COUNT_CONTRADICTION', canonicalCount: 0 })]);

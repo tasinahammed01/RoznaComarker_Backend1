@@ -107,6 +107,7 @@ async function runSemanticCompletion({ messages, config = getSemanticAIConfig(),
     temperature: ASSESSMENT_TEMPERATURE, responseFormat: ASSESSMENT_RESPONSE_FORMAT,
     responseSchema, schemaName, googleThinkingLevel: ASSESSMENT_THINKING_LEVEL,
     validate, metadata, fetchImpl, env, now, sleepFn, onAttempt, onRetry, deadlineAt, onDiagnostic,
+    samplingVariant: config.samplingVariant || null,
     // Correction detection also uses this compatibility facade. Keep its
     // established retry policy unchanged; these classifications belong only
     // to the canonical rubric-assessment stage.

@@ -15,6 +15,7 @@ const { pendingAnalysisState } = require('../services/submissionAnalysisLifecycl
 const { scheduleSubmissionAnalysis } = require('../services/assessmentRecovery.service');
 const { ensureActivePlan, getLimit, bytesToMB } = require('../middlewares/usage.middleware');
 const { showMarksToStudent, redactStudentMarks } = require('../services/assignmentAccessPolicy.service');
+const studentIdentity = require('../services/studentTeacherIdentity.service');
 const email = require('../services/email.service');
 const logger = require('../utils/logger');
 const { withActiveStatus } = require('../services/classLifecycle.service');
@@ -167,13 +168,14 @@ const presentation = endpoint(async (req, res) => {
     'transcriptText', 'combinedOcrText', 'ocrText', 'ocrStatus', 'correctionStatus', 'semanticStatus',
     'evaluationStatus', 'assessmentStatus', 'assessmentCompletedAt', 'correctionSourceHash',
     'evaluationSourceHash', 'transcriptLayoutVersion', 'correctionStatistics'];
-  const submission = Object.fromEntries(fields.filter(key => doc[key] != null).map(key => [key, doc[key]]));
+  const visible = (await require('../services/studentCorrectionView.service').loadStudentCorrectionView(doc)).submission;
+  const submission = Object.fromEntries(fields.filter(key => visible[key] != null).map(key => [key, visible[key]]));
   const files = await File.find({ _id: { $in: doc.files?.length ? doc.files : [doc.file] } }).lean();
   const byId = new Map(files.map(file => [String(file._id), file]));
   submission.files = (doc.files?.length ? doc.files : [doc.file]).map(id => byId.get(String(id))).filter(Boolean)
-    .map(file => ({ _id: String(file._id), originalName: file.originalName,
+    .map(file => studentIdentity.fileForStudent({ _id: String(file._id), originalName: file.originalName,
       url: `/api/guest/submissions/${doc._id}/media/${file._id}/${encodeURIComponent(file.originalName)}` }));
-  submission.ocrPages = (doc.toJSON().ocrPages || []).map(({ studentSourceEvidence, pageImageUrl, ...page }) => ({ ...page,
+  submission.ocrPages = (doc.toJSON().ocrPages || []).map(({ pageImageUrl, ...page }) => studentIdentity.ocrPageForStudent({ ...page,
     ...(page.derivedImageFileId ? { pageImageUrl: `/api/guest/submissions/${doc._id}/media/${page.derivedImageFileId}/page.png` } : {}) }));
   submission.file = submission.files[0];
   submission.fileUrls = submission.files.map(file => file.url);
@@ -199,8 +201,8 @@ const media = endpoint(async (req, res) => {
   res.sendFile(path.resolve(__dirname, '../..', file.path));
 });
 const attempts = endpoint(async (req, res) => {
-  ok(res, await require('../services/adaptivePracticeAttempt.service').listAttempts(req.params.sessionId,
-    req.guestAccessContext, req.query.activityId, req.query.questionId));
+  ok(res, studentIdentity.withoutInternal(await require('../services/adaptivePracticeAttempt.service').listAttempts(req.params.sessionId,
+    req.guestAccessContext, req.query.activityId, req.query.questionId)));
 });
 const submit = endpoint(async (req, res) => {
   // Upload/preflight can take time; apply current availability and ownership again.
@@ -300,10 +302,9 @@ const results = endpoint(async (req, res) => {
   const assignment = await Assignment.findById(doc.assignment);
   if (!assignment?.isActive) throw access.fail(404, 'Results unavailable.');
   const feedback = await Feedback.findOne({ submissionId: doc._id }).lean();
-  const state = require('../services/canonicalResultState.service').buildCanonicalResultState({ submission: doc, feedback });
-  const ready = doc.assessmentStatus === 'complete' && state.evaluationCurrent && state.detailedFeedbackCurrent;
-  const failed = [doc.assessmentStatus, doc.ocrStatus, doc.correctionStatus, doc.semanticStatus, doc.evaluationStatus].includes('failed');
-  const status = ready ? 'complete' : failed ? 'failed' : doc.evaluationStatus === 'blocked' ? 'blocked' : 'processing';
+  const corrections = require('../services/studentCorrectionView.service');
+  const view = await corrections.loadStudentCorrectionView(doc);
+  const { status, state, ready } = require('../services/canonicalResultState.service').guestResultStatus({ submission: view.submission, feedback });
   const publicFeedback = ready ? { overallScore: state.score, rubricScores: feedback.rubricScores,
     detailedFeedback: feedback.detailedFeedback, teacherComments: feedback.teacherComments || '' } : null;
   const data = { title: assignment.title, name: doc.guest.displayName, submittedAt: doc.submittedAt,
@@ -318,46 +319,28 @@ const results = endpoint(async (req, res) => {
     feedback: publicFeedback, marksVisible: showMarksToStudent(assignment),
     allowResubmission: assignment.allowResubmission === true,
     requireAdaptiveBeforeResubmission: assignment.requireAdaptiveBeforeResubmission === true };
-  ok(res, data.marksVisible ? data : redactStudentMarks(data));
+  const studentData = corrections.studentPayload(data, view);
+  ok(res, studentIdentity.withoutInternal(studentData.marksVisible ? studentData : redactStudentMarks(studentData)));
 });
 const recover = endpoint(async (req, res) => {
-  // Always acknowledge before lookup/provider work; no timing or existence oracle.
-  ok(res, { message: 'If a matching submission exists, a new link will be emailed.' });
-  setImmediate(async () => {
-    try {
-      const guest = access.identity({ name: 'Recovery', email: req.body?.email });
-      let qrToken = req.params.qrToken;
-      if (req.params.submissionId) {
-        if (!mongoose.isValidObjectId(req.params.submissionId)) return;
-        const original = await Submission.findOne({ _id: req.params.submissionId, submissionMode: 'guest',
-          'guest.normalizedEmail': guest.normalizedEmail, 'guest.revokedAt': null }).select('qrToken');
-        if (!original) return;
-        qrToken = original.qrToken;
-      }
-      const { assignment } = await assignmentFor(qrToken);
-      const cutoff = new Date(Date.now() - 15 * 60 * 1000);
-      // Recover only the latest submission. Rotation is atomic and throttled per submission.
-      const candidate = await Submission.findOne({ ...(req.params.submissionId ? { _id: req.params.submissionId } : {}), assignment: assignment._id, submissionMode: 'guest',
-        'guest.normalizedEmail': guest.normalizedEmail, 'guest.revokedAt': null }).sort({ submittedAt: -1 }).select('_id');
-      if (!candidate) return;
-      const issued = access.issueToken();
-      const link = access.returnUrl(candidate._id, issued.token);
-      const rotated = await Submission.findOneAndUpdate({ _id: candidate._id, 'guest.revokedAt': null,
-        $or: [{ 'guest.recoveredAt': { $exists: false } }, { 'guest.recoveredAt': { $lte: cutoff } }] },
-      { $set: { 'guest.accessHash': issued.accessHash, 'guest.expiresAt': issued.expiresAt, 'guest.recoveredAt': new Date() },
-        $unset: { 'guest.resultAccessHash': 1, 'guest.resultExpiresAt': 1 } });
-      if (rotated) await email.sendGuestSubmissionEmail({ to: guest.normalizedEmail, assignmentTitle: assignment.title, returnUrl: link });
-    } catch { logger.warn({ event: 'guest_recovery_failed' }); }
+  // A malformed address is a 400 about the format only. Everything else gets the same answer, sent BEFORE any lookup or email
+  // work, so neither the body, the headers nor the timing tells anything about the address.
+  const guest = access.identity({ name: 'Recovery', email: req.body?.email });
+  ok(res, require('../services/recoveryEmailQuota.service').publicAnswer());
+  const { submissionId = null, qrToken = null } = req.params;
+  setImmediate(() => {
+    require('../services/guestRecovery.service').resendGuestLink({ emailNormalized: guest.normalizedEmail, submissionId, qrToken })
+      .catch(() => logger.warn({ event: 'guest_recovery_failed' }));
   });
 });
 const practice = endpoint(async (req, res) => {
   const service = require('../services/adaptivePractice.service');
-  ok(res, await (req.method === 'POST' ? service.generateSession(req.guestSubmission._id, req.guestAccessContext, { retry: req.body?.retry === true })
-    : service.getCurrentSession(req.guestSubmission._id, req.guestAccessContext)));
+  ok(res, studentIdentity.withoutInternal(await (req.method === 'POST' ? service.generateSession(req.guestSubmission._id, req.guestAccessContext, { retry: req.body?.retry === true })
+    : service.getCurrentSession(req.guestSubmission._id, req.guestAccessContext))));
 });
 const attempt = endpoint(async (req, res) => {
-  ok(res, await require('../services/adaptivePracticeAttempt.service').checkResponse(req.params.sessionId,
-    req.params.activityId, req.guestAccessContext, req.body));
+  ok(res, studentIdentity.withoutInternal(await require('../services/adaptivePracticeAttempt.service').checkResponse(req.params.sessionId,
+    req.params.activityId, req.guestAccessContext, req.body)));
 });
 const drafts = endpoint(async (req, res) => {
   ok(res, await require('../services/draftComparison.service').comparisonForSubmission(String(req.guestSubmission._id), req.guestAccessContext));
@@ -366,7 +349,7 @@ const revoke = endpoint(async (req, res) => {
   const submission = await Submission.findOne({ _id: req.params.submissionId, submissionMode: 'guest' });
   if (!submission) throw access.fail(404, 'Submission unavailable.');
   await require('../services/upload.service').assertTeacherOwnsClassOrThrow(req.user._id, submission.class);
-  await Submission.updateOne({ _id: submission._id }, { $set: { 'guest.revokedAt': new Date() }, $unset: { 'guest.accessHash': 1 } });
+  await Submission.updateOne({ _id: submission._id }, { $set: { 'guest.revokedAt': new Date() }, $unset: { 'guest.accessHash': 1, 'guest.recoveryAccess': 1 } });
   ok(res, { revoked: true });
 });
 module.exports = { entry, prepare, prepareRevision, prepareRevisionPreview, bindRevisionIdentity, revise, submit, results, recover, practice, attempt, attempts, presentation, media, drafts, revoke, assignmentFor, requireIndexes };

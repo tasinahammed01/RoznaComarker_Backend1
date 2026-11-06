@@ -6,8 +6,9 @@ const escapeHtml = value => String(value == null ? '' : value).replace(/[&<>"']/
 
 // Presentation only: the CTA retains the caller's canonical capability URL.
 function guestEmailHtml({ assignmentTitle, returnUrl, resultReady }) {
-  const recovery = new URL(returnUrl);
-  recovery.hash = '';
+  // The secondary link opens the recovery page (ask for a new link by email). It used to be the result page WITHOUT its token,
+  // which can only show "link unavailable" - students clicked "Recover Link" and landed on an error.
+  const recovery = new URL('/recover', returnUrl);
   const heading = resultReady ? 'Your Feedback Is Ready' : 'Assignment Submitted Successfully';
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -30,7 +31,7 @@ function guestEmailHtml({ assignmentTitle, returnUrl, resultReady }) {
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:24px;"><tr><td align="center" bgcolor="#008081" style="background-color:#008081;border-radius:12px;mso-padding-alt:16px 20px;">
 <a href="${escapeHtml(returnUrl)}" style="display:block;padding:16px 20px;color:#ffffff;font-size:17px;line-height:24px;font-weight:bold;text-decoration:none;border-radius:12px;">Open My Return Link <span aria-hidden="true">&nbsp; &#8594;</span></a>
 </td></tr></table>
-<p style="margin:16px 0 20px;text-align:center;font-size:14px;line-height:22px;"><a href="${escapeHtml(recovery.href)}" style="color:#008081;font-weight:bold;text-decoration:underline;">Recover Link</a></p>
+<p style="margin:16px 0 20px;text-align:center;font-size:14px;line-height:22px;color:#59657d;">Lost this email later? <a href="${escapeHtml(recovery.href)}" style="color:#008081;font-weight:bold;text-decoration:underline;">Get a new link</a></p>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#fff8e7" style="background-color:#fff8e7;border-radius:12px;"><tr><td style="padding:18px 20px;">
 <strong style="color:#a96700;font-size:14px;line-height:22px;">Keep this link private.</strong>
 <p style="margin:3px 0 0;color:#59657d;font-size:13px;line-height:21px;">Anyone with it can view your feedback. Do not share it. It expires; request a new link from the assignment page if needed.</p>
@@ -42,6 +43,45 @@ function guestEmailHtml({ assignmentTitle, returnUrl, resultReady }) {
 </td></tr></table>
 <!--[if mso]></td></tr></table><![endif]-->
 </td></tr></table></body></html>`;
+}
+
+/**
+ * Shared body of both recovery emails: a heading, what the link opens, the button, how long it works, a privacy note, and
+ * (single-submission email) where to get one link to all submissions. Nothing else; never a title, name, score or feedback.
+ */
+function recoveryAccessMessage({ to, link, subject, opens, cta, validity, allSubmissions = null }) {
+  const from = `"${process.env.MAIL_FROM_NAME || 'CoMarker'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`;
+  const privacy = 'Keep this link private: anyone with it can see your work. If you did not ask for it, you can ignore this email.';
+  const text = ['Rozna Co-Marker', '', 'Here is your new private access link.', opens, '', link, '', `The link works for ${validity}.`, privacy,
+    ...(allSubmissions ? ['', `Submitted more than one assignment? Get one link to all of them: ${allSubmissions}`] : [])].join('\n');
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(subject)}</title></head>`
+    + `<body style="margin:0;padding:24px 12px;background-color:#f2f6f8;font-family:Arial,Helvetica,sans-serif;color:#14264d;">`
+    + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center">`
+    + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;background-color:#ffffff;border-radius:16px;border-top:5px solid #008081;"><tr><td style="padding:28px;">`
+    + `<p style="margin:0 0 18px;font-size:18px;font-weight:bold;">Rozna Co-Marker</p>`
+    + `<h1 style="margin:0 0 12px;font-size:26px;line-height:32px;">Your access link</h1>`
+    + `<p style="margin:0 0 20px;font-size:16px;line-height:24px;color:#59657d;">${escapeHtml(opens)}</p>`
+    + `<p style="margin:0 0 20px;"><a href="${escapeHtml(link)}" style="display:inline-block;padding:14px 22px;background-color:#008081;color:#ffffff;font-weight:bold;text-decoration:none;border-radius:12px;">${escapeHtml(cta)}</a></p>`
+    + `<p style="margin:0 0 8px;font-size:14px;line-height:21px;color:#59657d;">The link works for ${escapeHtml(validity)}.</p>`
+    + `<p style="margin:0;font-size:13px;line-height:20px;color:#a96700;">${escapeHtml(privacy)}</p>`
+    + (allSubmissions ? `<p style="margin:18px 0 0;font-size:14px;line-height:21px;color:#59657d;">Submitted more than one assignment? <a href="${escapeHtml(allSubmissions)}" style="color:#008081;font-weight:bold;">Get one link to all of them</a></p>` : '')
+    + `</td></tr></table></td></tr></table></body></html>`;
+  return { from, to, subject, text, html };
+}
+
+async function sendRecoveryAccessEmail({ event, ...content }) {
+  try {
+    const readiness = emailReadiness();
+    if (!readiness.ready) throw Object.assign(new Error('Email configuration unavailable'), { code: readiness.code });
+    const result = await getTransporter().sendMail(recoveryAccessMessage(content));
+    if (result?.rejected?.length && !result?.accepted?.length) throw Object.assign(new Error('Email rejected'), { code: 'PROVIDER_REJECTED' });
+    logger.info({ event: `${event}_sent`, provider: 'smtp' });
+    return { success: true };
+  } catch (error) {
+    const code = safeEmailFailure(error);
+    logger.warn({ event: `${event}_failed`, code });
+    return { success: false, code };
+  }
 }
 
 // Create transporter using environment variables
@@ -147,6 +187,32 @@ module.exports = {
       return { success: false };
     }
   },
+  // Recovery portal link (all submissions of an address). Neutral: no assignment titles, names, scores or feedback.
+  async sendRecoveryPortalEmail({ to, link, expiresInHours }) {
+    const hours = Number.isInteger(expiresInHours) ? expiresInHours : 24;
+    return sendRecoveryAccessEmail({ to, link, event: 'recovery_portal_email',
+      subject: 'Your Co-Marker access link to your submissions',
+      opens: 'It opens a list of all the assignments you submitted with this email address, so you can choose one and see your work and feedback.',
+      cta: 'See my submissions', validity: `${hours} hour${hours === 1 ? '' : 's'}` });
+  },
+  // A new link to ONE submission, sent by "Lost your feedback link?". Its own wording (it is not a submission receipt) and neutral:
+  // no assignment titles, names, scores or feedback.
+  async sendGuestRecoveryEmail({ to, link, expiresInDays }) {
+    const days = Number.isInteger(expiresInDays) ? expiresInDays : 30;
+    return sendRecoveryAccessEmail({ to, link, event: 'guest_recovery_email',
+      subject: 'Your Co-Marker access link to your submission',
+      opens: 'It opens your submitted assignment with its feedback, the same page as your original link. Your earlier links keep working.',
+      cta: 'Open my submission', validity: `${days} day${days === 1 ? '' : 's'}`, allSubmissions: new URL('/recover', link).href });
+  },
+  // A link a teacher sent for one submission. Neutral on purpose: the address was typed by the student and may belong to someone
+  // else, so no teacher, class or assignment name, no title and no score.
+  async sendTeacherRecoveryEmail({ to, link, expiresInDays }) {
+    const days = Number.isInteger(expiresInDays) ? expiresInDays : 30;
+    return sendRecoveryAccessEmail({ to, link, event: 'teacher_recovery_email',
+      subject: 'Your teacher sent you an access link to your submission',
+      opens: 'Your teacher sent you a new private link. It opens your submitted assignment with its feedback, the same page as your original link. Your earlier links keep working.',
+      cta: 'Open my submission', validity: `${days} day${days === 1 ? '' : 's'}`, allSubmissions: new URL('/recover', link).href });
+  },
   async sendGuestSubmissionEmail({ to, assignmentTitle, returnUrl, resultReady = false }) {
     try {
       const readiness = emailReadiness();
@@ -173,6 +239,7 @@ module.exports = {
     }
   },
   sendInvitationEmail,
+  recoveryAccessMessage,
   testEmailConfig,
   emailReadiness
 };

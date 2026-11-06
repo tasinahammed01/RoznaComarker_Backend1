@@ -214,5 +214,6 @@ module.exports = {
   partitionCategoryCorrections,
   scoreFromWeightedIssues,
   scoringAudit,
+  languageComment,
   gradeFromOverallScore
 };

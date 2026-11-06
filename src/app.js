@@ -95,6 +95,13 @@ app.disable("x-powered-by");
 // This avoids stale submission payloads after students upload and are redirected to the submission page.
 app.set("etag", false);
 
+// API responses are user-specific: never stored by browsers or shared caches by default. Routes that set their own
+// Cache-Control (PDF downloads, event streams) overwrite this default later in the request.
+app.use("/api", (req, res, next) => {
+  res.set("Cache-Control", "private, no-store");
+  next();
+});
+
 const uploadBasePath =
   (process.env.UPLOAD_BASE_PATH || "uploads").trim() || "uploads";
 const uploadsRoot = path.join(__dirname, "..", uploadBasePath);
@@ -194,6 +201,7 @@ app.use("/api/files", fileRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/submissions", submissionRoutes);
 app.use('/api/guest', require('./routes/guestSubmission.routes'));
+app.use('/api/recovery', require('./routes/recoveryPortal.routes'));
 app.use("/api/feedback", feedbackRoutes);
 app.use("/api/pdf", pdfRoutes);
 app.use("/api/plans", plansRoutes);

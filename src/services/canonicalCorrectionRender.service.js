@@ -52,6 +52,16 @@ function buildCanonicalCorrectionRenderModels(corrections, canonical, storedPage
     }
     const page = pageByKey.get(`${normalizedId(correction.fileId)}:${Number(correction.page || 1)}`);
     const words = wordsByPage.get(page) || new Map();
+    if (correction.teacherGrounded && correction.ocrEvidenceHash === require('./correctionEvidenceIdentity.service').ocrEvidenceHash(canonical, options.submission || {})) {
+      const exact = canonical.text.slice(correction.startChar, correction.endChar) === correction.quotedText;
+      const requestedIds = correction.wordIds || [];
+      const ids = exact && requestedIds.every(id => validBox(words.get(id)?.bbox)) ? requestedIds : [];
+      const stored = storedPages.find(p => normalizedId(p.fileId) === normalizedId(correction.fileId) && Number(p.pageNumber || 1) === Number(correction.page || 1));
+      return { ...correction, renderTarget: { version:1, source:ids.length ? 'wordIds' : 'none',
+        wordIds:ids, boxes:ids.map(id => ({...words.get(id).bbox})), anchors:[], textAnchors:[],
+        textRanges:exact ? [{start:correction.startChar,end:correction.endChar}] : [],
+        ...(stored?.coordinateSpace ? {coordinateSpace:stored.coordinateSpace} : {}) } };
+    }
     const semantic = semanticCodes.has(correction.symbol) || ['CON', 'ORG'].includes(correction.symbol)
       || (!knownCodes.has(correction.symbol) && ['CONTENT', 'ORGANIZATION'].includes(correction.category));
     const target = correction.visualTarget;

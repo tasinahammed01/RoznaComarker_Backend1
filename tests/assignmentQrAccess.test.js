@@ -53,7 +53,8 @@ describe('assignment QR access', () => {
       user: { _id: 'student-1', role: 'student' } }, res);
 
     expect(res.statusCode).toBe(200);
-    expect(res.body.data).toBe(assignment);
+    // A student gets the teacher's display name, never the teacher object.
+    expect(res.body.data).toEqual({ ...assignment, class: { ...assignment.class, teacherDisplayName: 'Your teacher' }, teacherDisplayName: 'Your teacher' });
     expect(Membership.findOne).toHaveBeenCalledWith({ student: 'student-1', class: 'class-1', status: 'active' });
     expect(Assignment.updateMany).not.toHaveBeenCalled();
   });

@@ -6,7 +6,7 @@ unless the operator has explicitly approved provider usage and cost.
 
 ## Platform and access
 
-1. Confirm `/api/health` returns `200` without authentication.
+1. Confirm `/api/health` returns `200` without authentication and only `{ "success": true, "status": "OK" }` (no `runtime`); with `X-Deploy-Token: $HEALTH_DETAIL_TOKEN` it also returns `runtime`.
 2. Confirm the configured frontend origin passes CORS and an unapproved origin is rejected.
 3. Sign in as a teacher and a student; confirm invalid and expired tokens return `401`.
 4. Confirm a student cannot read or modify another student's submission.

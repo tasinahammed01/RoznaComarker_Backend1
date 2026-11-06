@@ -7,7 +7,7 @@ function near(a,b){
   for(let i=1;i<=a.length;i++){const next=[i];for(let j=1;j<=b.length;j++)next[j]=Math.min(next[j-1]+1,row[j]+1,row[j-1]+(a[i-1]===b[j-1]?0:1));row=next;}
   return row[b.length]<=1&&Math.min(a.length,b.length)>=4;
 }
-function alignGeometry(text,google,identity){
+function alignGeometry(text,google,identity,{excludedTexts=[]}={}){
   let cursor=0;
   const tokens=[...text.matchAll(/\S+/gu)].map((m,i)=>{
     const separatorBefore=text.slice(cursor,m.index);cursor=m.index+m[0].length;
@@ -40,8 +40,15 @@ function alignGeometry(text,google,identity){
       }
     }
   }
+  // Line by line, for what uniqueness on the whole page could not place. Only when the layout is usable: the same condition as the first pass.
+  const lineAlignment=require('./lineAlignment'),keyOf=value=>normalized(value)||value;
+  // The provider also saw this word somewhere it could not locate: the reader's word may be that one, so no box is certain.
+  const unlocated=new Set((google?.words||[]).filter(word=>!word?.bbox&&typeof word?.text==='string').map(word=>keyOf(word.text)));
+  const lineBoundTokenCount=geometry.length?lineAlignment.bindByLine(tokens,geometry,keyOf,unlocated):0;
+  const bandBoundTokenCount=geometry.length?lineAlignment.bindInBands(tokens,(google?.words||[]).filter(word=>word?.bbox&&typeof word.text==='string'),keyOf,unlocated):0;
+  const possibleMissedLineCount=geometry.length?lineAlignment.missedProviderLines(tokens,geometry,keyOf,excludedTexts):0;
   return {words:tokens,coverage:tokens.length?tokens.filter(w=>w.bbox).length/tokens.length:0,textSha256:sha(text),
-    diagnostics:{strategy:'gpt-monotonic-partial-geometry-v2',layoutDegraded:layout?.layoutDegraded!==false,
+    diagnostics:{strategy:'gpt-monotonic-partial-geometry-v3',layoutDegraded:layout?.layoutDegraded!==false,lineBoundTokenCount,bandBoundTokenCount,possibleMissedLineCount,
       safeOutcomeCode:['GEOMETRY_PROVIDER_UNAVAILABLE','GEOMETRY_DIMENSIONS_MISMATCH'].includes(google?.geometryFailureCode)?google.geometryFailureCode
         :!google?'GEOMETRY_UNAVAILABLE':layout?.layoutDegraded?'GEOMETRY_LAYOUT_WITHHELD':layout?.unresolvedWordCount?'GEOMETRY_PARTIAL':'GEOMETRY_ORDERED',
       mappedTokenCount:tokens.filter(w=>w.bbox).length,unmappedTokenCount:tokens.filter(w=>!w.bbox).length}};

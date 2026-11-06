@@ -16,6 +16,8 @@ const correctionStatisticsSchema = new Schema(
 
 const submissionSchema = new Schema(
   {
+    // Downstream teacher overrides and audit are atomic; never part of AI persistence.
+    teacherAnnotations: { type: Schema.Types.Mixed, select: false },
     student: {
       type: Schema.Types.ObjectId,
       ref: 'User',
@@ -34,7 +36,10 @@ const submissionSchema = new Schema(
       resultEmailNextAttemptAt: Date,
       expiresAt: Date,
       revokedAt: Date,
-      recoveredAt: Date
+      recoveredAt: Date,
+      // Links issued by email recovery. A resend ADDS a link and never invalidates the student's other links, so a third party
+      // who knows the email cannot cut off a working link. Hashes only; the newest 10 are kept.
+      recoveryAccess: { type: [{ _id: false, hash: String, expiresAt: Date, createdAt: Date }], select: false, default: undefined }
     },
     guestRequestKey: { type: String, select: false },
     registeredRequestKey: { type: String, select: false },
@@ -240,6 +245,18 @@ const submissionSchema = new Schema(
     semanticMaxAttempts: { type: Number, min: 0, default: undefined },
     semanticNextRetryAt: { type: Date, default: undefined },
     semanticErrorCode: { type: String, trim: true },
+    // Task 20: a retry of the correction stage alone, after it failed (correctionStageRetry.service.js). Never re-scores, never charges a credit.
+    // Kept apart from correctionStatus/semanticStatus so the recovery sweeper never mistakes it for a stuck full analysis. Teacher/server only.
+    correctionRetry: {
+      jobId: { type: String, trim: true },
+      status: { type: String, enum: ['scheduled', 'processing', 'completed', 'failed'] },
+      trigger: { type: String, enum: ['automatic', 'manual'] },
+      startedAt: { type: Date },
+      finishedAt: { type: Date },
+      automaticCount: { type: Number, min: 0 },
+      manualCount: { type: Number, min: 0 },
+      lastErrorCode: { type: String, trim: true }
+    },
     semanticSourceKey: { type: String, trim: true, index: true },
     semanticProvider: { type: String, trim: true },
     semanticModel: { type: String, trim: true },
@@ -302,6 +319,7 @@ submissionSchema.index({ ocrStatus: 1, analysisNextRetryAt: 1, analysisLeaseExpi
 require('../services/sourceFidelity/immutability').install(submissionSchema);
 submissionSchema.set('toJSON',{transform(_doc,ret){
   delete ret.registeredRequestKey;
+  delete ret.teacherAnnotations; // teacher-only, even when a query selected it
   for(const page of ret.ocrPages||[])delete page.studentSourceEvidence;
   const source=require('../utils/sourceFidelity').payload(ret);if(source)ret.sourceFidelity=source;return ret;
 }});

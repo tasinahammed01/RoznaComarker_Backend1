@@ -1,9 +1,13 @@
 'use strict';
-const {VERSION,sha,fail,config,PROMPT,validate,diagnostics}=require('./gptVisionExact/contract');
+const {VERSION,sha,fail,config,validate,diagnostics}=require('./gptVisionExact/contract');
 const attempts=require('./gptVisionExact/attempt');
 const {alignGeometry}=require('./gptVisionExact/alignment');
 function reference(assignment={}){return Object.fromEntries(['title','prompt','question','instructions','description'].filter(k=>typeof assignment[k]==='string').map(k=>[k,assignment[k].slice(0,10000)]));}
-async function reader({model,bytes,mimeType,prompt,assignmentReference,env,signal,onDiagnostic,onObservation,fetchImpl=global.fetch}){
+async function reader({model,bytes,mimeType,prompt,assignmentReference,env,signal,onDiagnostic,onObservation,fetchImpl=global.fetch,readerMode}){
+  if(readerMode===require('./gptVisionExact/plainReader').PLAIN_READER)
+    return require('./gptVisionExact/plainReader').read({model,bytes,mimeType,env,signal,onDiagnostic,onObservation,fetchImpl});
+  if(readerMode===require('./gptVisionExact/verbatimReader').VERBATIM_READER)
+    return require('./gptVisionExact/verbatimReader').read({model,bytes,mimeType,assignmentReference,env,signal,onDiagnostic,onObservation,fetchImpl});
   const wire=require('./gptVisionExact/contract').wireContract(model);
   const policy=model===require('./gptVisionExact/contract').QWEN_MODEL?require('./gptVisionExact/contract').requestPolicy(env):{maxOutputTokens:16000,attemptTimeoutMs:180000};
   return require('./aiGateway.service').providerAttempt({entry:{provider:'openrouter',model},messages:[{role:'system',content:model===require('./gptVisionExact/contract').QWEN_MODEL?wire.prompt:prompt},
@@ -16,38 +20,48 @@ async function reader({model,bytes,mimeType,prompt,assignmentReference,env,signa
     }:fetchImpl,env,now:Date.now,signal,requestProfile:'gpt_vision_exact_v1',onDiagnostic});
 }
 const safeCode=v=>typeof v==='string'&&/^(AI_|OCR_)[A-Z0-9_]{1,75}$/.test(v)?v:null;
-function failureCode(error){const map={AI_PROVIDER_AUTH_ERROR:'OCR_GPT_PROVIDER_AUTH',AI_PROVIDER_PAYMENT_REQUIRED:'OCR_GPT_PROVIDER_PAYMENT_REQUIRED',
+function failureCode(error,truncatedCode=false){const map={AI_PROVIDER_AUTH_ERROR:'OCR_GPT_PROVIDER_AUTH',AI_PROVIDER_PAYMENT_REQUIRED:'OCR_GPT_PROVIDER_PAYMENT_REQUIRED',
   AI_PROVIDER_PERMISSION_DENIED:'OCR_GPT_PROVIDER_ACCESS',AI_PROVIDER_RATE_LIMIT:'OCR_GPT_PROVIDER_RATE_LIMIT',AI_PROVIDER_UNAVAILABLE:'OCR_GPT_PROVIDER_NETWORK',AI_ATTEMPT_TIMEOUT:'OCR_GPT_PROVIDER_NETWORK'};
+  // A reply cut off at the token limit: only the Gemini reader treats it as a retryable, coded reader failure (other models keep their behaviour).
+  if(truncatedCode&&error?.code==='AI_RESPONSE_TRUNCATED')return 'OCR_GPT_SOURCE_TRUNCATED';
   // Direct providerAttempt throws native fetch errors; unlike generate(), it does not wrap them.
   for(let cause=error,depth=0;cause&&depth<4;cause=cause.cause,depth++)
     if(['ETIMEDOUT','ECONNRESET','ECONNREFUSED','ENOTFOUND','EAI_AGAIN','EPIPE','UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT','UND_ERR_SOCKET'].includes(cause.code)
       ||['AbortError','TimeoutError'].includes(cause.name))return 'OCR_GPT_PROVIDER_NETWORK';
   return map[error?.code]||(safeCode(error?.code)&&/^OCR_(GPT_|SOURCE_MODEL_IDENTITY)/.test(error.code)?error.code:'OCR_GPT_PROVIDER_FAILED');}
-async function readPage({bytes,mimeType,identity,assignment,google,isCurrentJob=async()=>true,signal,env=process.env,read=reader,reservation=attempts,onObservation}){
+async function readPage({bytes,mimeType,identity,assignment,google,isCurrentJob=async()=>true,signal,env=process.env,read=reader,reservation=attempts,onObservation,fetchImpl=global.fetch}){
   const observe=value=>{if(typeof onObservation==='function')try{onObservation(value);}catch{/* Observation only. */}};
   const {model}=config(env),started=Date.now();
   const actualMime=bytes?.[0]===255&&bytes?.[1]===216&&bytes?.[2]===255?'image/jpeg':Buffer.isBuffer(bytes)&&bytes.subarray(0,8).equals(Buffer.from('89504e470d0a1a0a','hex'))?'image/png':Buffer.isBuffer(bytes)&&bytes.toString('ascii',0,4)==='RIFF'&&bytes.toString('ascii',8,12)==='WEBP'?'image/webp':null;
   if(!Buffer.isBuffer(bytes)||!bytes.length||bytes.length>20*1024*1024||actualMime!==mimeType)throw fail('OCR_GPT_SOURCE_IMAGE_INVALID');
   if(signal?.aborted||!await isCurrentJob())throw fail('OCR_JOB_SUPERSEDED');
-  const wire=require('./gptVisionExact/contract').wireContract(model);
+  const contract=require('./gptVisionExact/contract'),wire=contract.wireContract(model),plainReader=require('./gptVisionExact/plainReader'),verbatimReader=require('./gptVisionExact/verbatimReader');
+  const readerMode=[contract.QWEN_MODEL,contract.GEMINI_MODEL].includes(model)?contract.readerMode(env):null;
+  const plain=readerMode===plainReader.PLAIN_READER,verbatimMode=readerMode===verbatimReader.VERBATIM_READER;
   const assignmentReference=reference(assignment),bound={...identity,inputSha256:sha(bytes),model,promptSha256:sha(wire.prompt+JSON.stringify(assignmentReference)),mimeType,
-    ...(model===require('./gptVisionExact/contract').QWEN_MODEL?{legacyPromptSha256:sha(PROMPT+JSON.stringify(assignmentReference)),
-      previousPromptSha256:sha(require('./gptVisionExact/contract').PREVIOUS_QWEN_PROMPT+JSON.stringify(assignmentReference)),
-      qwenPromptVersion:wire.promptVersion,wireVersion:wire.version}:{})};
+    ...(readerMode?contract.sourceBinding(model,assignmentReference,env):{})};
   const attempt=await reservation.acquire(bound);
   observe({cacheUsed:attempt.cached===true,stage:attempt.cached?'cache_validation':'provider_request'});
   let result,value,diagnostic,rejectionDiagnostic,alignment={coverage:0,words:[]},validationStage='PROVIDER_REQUEST',code=null;
   let geometryMs=0,sourceReuseMs=0,preflightSourceMs=0;
   let sourceValidationMs=0,sourcePersistMs=0,sourceProviderMs=0;
   let transcriptDiagnostic={};
-  const validateSource=content=>(model===require('./gptVisionExact/contract').QWEN_MODEL?require('./gptVisionExact/contract').validateWire:validate)(content,{onDiagnostic:d=>{transcriptDiagnostic=safeSourceDiagnostic(d);}});
+  // Review flags of a verbatim page (crossed-out text, uncertain words, second reader). Flags only: never part of the graded text.
+  let review=null;
+  const evidenceModel=attempt.cached&&attempt.evidence?.identity?.model||model;   // reused evidence is reported as the model that really read it
+  const validateSource=content=>{
+    const options={onDiagnostic:d=>{transcriptDiagnostic=safeSourceDiagnostic(d);}};
+    if(verbatimMode){const converted=verbatimReader.convert(content);review=converted.review;return contract.validateWire(converted.wire,options);}
+    return (model===contract.QWEN_MODEL?contract.validateWire:validate)(plain?plainReader.toWire(content,assignmentReference):content,options);
+  };
   try{
-    if(attempt.cached){const validationStarted=Date.now();value=require('./gptVisionExact/contract').validateCanonical(JSON.stringify(attempt.evidence.payload.primary));sourceValidationMs=Date.now()-validationStarted;result={returnedModel:model};
+    if(attempt.cached){const validationStarted=Date.now();value=contract.validateCanonical(JSON.stringify(attempt.evidence.payload.primary));sourceValidationMs=Date.now()-validationStarted;result={returnedModel:evidenceModel};
+      review=attempt.evidence.payload.review||null;
       sourceReuseMs=Date.now()-started;preflightSourceMs=Number(attempt.evidence.payload.sourceReadMs
         ??attempt.evidence.payload.readers?.[0]?.durationMs)||0;}
     else{
       const providerStarted=Date.now();
-      result=await read({model,bytes,mimeType,prompt:wire.prompt,assignmentReference,env,signal,onObservation:typeof onObservation==='function'?observe:undefined,onDiagnostic:d=>{diagnostic=d;
+      result=await read({model,bytes,mimeType,prompt:wire.prompt,assignmentReference,env,signal,readerMode,onObservation:typeof onObservation==='function'?observe:undefined,onDiagnostic:d=>{diagnostic=d;
         observe({validationStage:d.failureStage,providerHttpStatus:d.httpStatus,timeoutOrigin:d.timeoutOrigin});}});
       sourceProviderMs=Date.now()-providerStarted;
       validationStage='MODEL_IDENTITY_VALIDATION';if(result.returnedModel!==model)throw fail('OCR_SOURCE_MODEL_IDENTITY');
@@ -57,24 +71,41 @@ async function readPage({bytes,mimeType,identity,assignment,google,isCurrentJob=
     // Geometry is optional evidence, obtained only after valid active source.
     const geometryStarted=Date.now();
     let geometry;try{geometry=google?await google():null;}catch{geometry={words:[],geometryFailureCode:'GEOMETRY_PROVIDER_UNAVAILABLE'};/* No lexical fallback. */}
-    alignment=alignGeometry(value.activeTranscript,geometry,identity);
+    // What the reader set aside on purpose (the copied question, crossed-out words) is not a missed line.
+    const setAside=[...(value.physicalLines||[]).flatMap(line=>(line.segments||[]).filter(s=>s.classification!=='STUDENT_ACTIVE_TEXT'&&typeof s.text==='string').map(s=>s.text)),...(review?.struck||[]).map(item=>item.text)];
+    alignment=alignGeometry(value.activeTranscript,geometry,identity,{excludedTexts:setAside});
     geometryMs=Date.now()-geometryStarted;
     if(signal?.aborted||!await isCurrentJob())throw fail('OCR_JOB_SUPERSEDED');
     validationStage='ACCEPTED';
-    const sourceProfile={...transcriptDiagnostic,wireVersion:wire.version,...(wire.promptVersion?{qwenPromptVersion:wire.promptVersion}:{}),sourceImagePrepareMs:Number(identity.sourceImagePrepareMs)||0,sourceProviderMs,sourceValidationMs,
-      imageWidth:identity.width||null,imageHeight:identity.height||null,encodedImageBytes:bytes.length,imageDetail:'provider_default',reasoningControl:model===require('./gptVisionExact/contract').QWEN_MODEL?'none':'not_set',
-      promptTokenEstimate:Math.ceil((wire.prompt.length+JSON.stringify(assignmentReference).length)/4),responseSchemaTokenEstimate:Math.ceil(JSON.stringify(wire.schema).length/4),
-      requestedOutputTokens:16000,attemptTimeoutMs:model===require('./gptVisionExact/contract').QWEN_MODEL?require('./gptVisionExact/contract').requestPolicy(env).attemptTimeoutMs:180000,
+    const sourceProfile={...transcriptDiagnostic,wireVersion:wire.version,...(wire.promptVersion&&!plain?{qwenPromptVersion:wire.promptVersion}:{}),
+      ...(readerMode?{readerMode,readerVersion:bound.readerVersion}:{}),sourceImagePrepareMs:Number(identity.sourceImagePrepareMs)||0,sourceProviderMs,sourceValidationMs,
+      // Counts and names of settings only: never page text, question text, crossed-out text or a student name.
+      ...(verbatimMode&&review?{struckCount:review.struckCount,struckDropped:review.struckDropped??0,questionLineCount:review.questionLineCount,uncertainCount:review.uncertainCount,uncertainDropped:review.uncertainDropped??0}:{}),
+      servedProvider:typeof result.provider==='string'?result.provider:null,
+      imageWidth:identity.width||null,imageHeight:identity.height||null,encodedImageBytes:bytes.length,imageDetail:'provider_default',
+      reasoningControl:model===contract.QWEN_MODEL?'none':verbatimMode?verbatimReader.settings(env).reasoning:'not_set',
+      promptTokenEstimate:Math.ceil((verbatimMode?verbatimReader.PROMPT.length+verbatimReader.userText(assignmentReference).length:plain?plainReader.PROMPT.length+plainReader.USER_TEXT.length:wire.prompt.length+JSON.stringify(assignmentReference).length)/4),
+      responseSchemaTokenEstimate:plain?0:Math.ceil(JSON.stringify(verbatimMode?verbatimReader.SCHEMA:wire.schema).length/4),
+      requestedOutputTokens:16000,attemptTimeoutMs:[contract.QWEN_MODEL,contract.GEMINI_MODEL].includes(model)?contract.requestPolicy(env).attemptTimeoutMs:180000,
       usage:require('./sourceFidelityOcr.service').safeUsage(result.usage),
       requestToHeadersMs:result.transportTimings?.requestToHeadersMs??null,responseBodyMs:result.transportTimings?.responseBodyMs??null};
     const persistStarted=Date.now();
-    if(!attempt.cached)await reservation.complete(attempt._id,{status:'GPT_SOURCE_ACCEPTED',payload:{primary:value,sourceReadMs:Date.now()-started-geometryMs,sourceProfile,...safeSourceDiagnostic(diagnostics(value)),
+    if(!attempt.cached)await reservation.complete(attempt._id,{status:'GPT_SOURCE_ACCEPTED',payload:{primary:value,...(review?{review}:{}),sourceReadMs:Date.now()-started-geometryMs,sourceProfile,...safeSourceDiagnostic(diagnostics(value)),
       ...transcriptDiagnostic,readers:[{requestedModel:model,returnedModel:result.returnedModel,usage:require('./sourceFidelityOcr.service').safeUsage(result.usage),durationMs:result.durationMs}]}});
     sourcePersistMs=Date.now()-persistStarted;
     if(!attempt.cached)require('../utils/logger').info({event:'gpt_source_performance',...sourceProfile,sourcePersistMs,sourceMode:'gpt_vision_exact',model,safeOutcomeCode:'GPT_SOURCE_ACCEPTED'});
+    // Optional second reader: a fresh read only, after the page is accepted. It flags differences for review and can never fail or change the page.
+    const secondModel=!attempt.cached&&verbatimMode&&review?contract.secondReaderModel(env):null;
+    if(secondModel){
+      const questionLines=value.physicalLines.flatMap(l=>l.segments.filter(s=>s.classification==='PROMPT_OR_INSTRUCTION'&&typeof s.text==='string').map(s=>s.text));
+      const secondary=await require('./gptVisionExact/secondReader').run({model:secondModel,bytes,mimeType,assignmentReference,primaryLines:value.activeTranscript.split('\n'),questionLines,env,signal,fetchImpl});
+      review={...review,secondReader:secondary};
+      try{await reservation.annotate?.(attempt._id,{secondReader:secondary});}catch{/* Flags only. */}
+      require('../utils/logger').info({event:'gpt_second_reader',model:secondModel,status:secondary.status,comparedWords:secondary.comparedWords??null,differingWords:secondary.differingWords??null});
+    }
   }catch(error){
     rejectionDiagnostic=safeSourceDiagnostic(error.sourceDiagnostic);
-    code=signal?.aborted?(signal.reason==='source_preflight_deadline'?'OCR_GPT_PROVIDER_NETWORK':'OCR_GPT_SOURCE_CANCELLED'):failureCode(error);if(error.code==='OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH')validationStage='SOURCE_CONTRACT_VALIDATION';
+    code=signal?.aborted?(signal.reason==='source_preflight_deadline'?'OCR_GPT_PROVIDER_NETWORK':'OCR_GPT_SOURCE_CANCELLED'):failureCode(error,verbatimMode);if(error.code==='OCR_GPT_SOURCE_TRANSCRIPT_MISMATCH')validationStage='SOURCE_CONTRACT_VALIDATION';
     if(error.code==='OCR_GPT_SOURCE_UNCERTAIN')validationStage='SOURCE_AMBIGUITY_VALIDATION';
     if(!attempt.cached)await reservation.complete(attempt._id,{status:'GPT_SOURCE_FAILED',payload:{safeFailureCode:code,validationStage:diagnostic?.failureStage||validationStage,
       requestedModel:model,httpStatus:Number.isInteger(diagnostic?.httpStatus)?diagnostic.httpStatus:null,...safeTransportDiagnostic(diagnostic),...rejectionDiagnostic}});
@@ -97,13 +128,17 @@ async function readPage({bytes,mimeType,identity,assignment,google,isCurrentJob=
     }
   }
   const text=value.activeTranscript,source={sourceTextExact:text,sourceTextSha256:sha(text),sourceFidelityMode:'gpt_vision_exact',sourceFidelityVersion:VERSION,
-    sourceFidelityStatus:'GPT_SOURCE_ACCEPTED',sourcePrimaryProvider:'openrouter',sourcePrimaryModel:model,sourceInputSha256:bound.inputSha256,
+    sourceFidelityStatus:'GPT_SOURCE_ACCEPTED',sourcePrimaryProvider:'openrouter',sourcePrimaryModel:evidenceModel,sourceInputSha256:bound.inputSha256,
     sourceSha256:identity.sourceSha256,ocrInputSha256:bound.inputSha256,sourceMimeType:mimeType,sourceDisagreementCount:0,
     sourceVerificationSummary:{performance:{preflightSourceMs,sourceReuseMs,geometryMs,sourceMs:Date.now()-started-geometryMs,
       sourceImagePrepareMs:Number(identity.sourceImagePrepareMs)||0,sourceProviderMs,sourceValidationMs,sourcePersistMs,
       preflightProfile:attempt.cached?attempt.evidence.payload.sourceProfile||null:null,
       sourceProviderCallCount:attempt.cached?0:1,geometryProviderCallCount:google?1:0,sourceReused:attempt.cached===true,
-      provider:'openrouter',model,safeOutcomeCode:'GPT_SOURCE_ACCEPTED',geometry:alignment.diagnostics}}};
+      provider:'openrouter',model,safeOutcomeCode:'GPT_SOURCE_ACCEPTED',geometry:alignment.diagnostics},
+    // What a teacher-facing screen can read per page: counts, and the uncertain words to double-check. Crossed-out text stays in the evidence only.
+    ...(review?{review:{readerMode:review.readerMode,namePresent:review.namePresent,questionLineCount:review.questionLineCount,struckCount:review.struckCount,
+      uncertainCount:review.uncertainCount,uncertainDropped:review.uncertainDropped??0,uncertain:review.uncertain,
+      ...(review.secondReader?{secondReader:{model:review.secondReader.model,status:review.secondReader.status,differingWords:review.secondReader.differingWords??null}}:{})}}:{})}};
   return {fullText:text,transcriptText:text,words:alignment.words,pages:[{pageNumber:identity.pageNumber,words:alignment.words,...source}],source};
 }
 function safeTransportDiagnostic(value){

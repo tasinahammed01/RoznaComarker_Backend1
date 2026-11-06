@@ -56,15 +56,41 @@ const assertSafe = (layout, expectedIds) => {
 };
 
 describe('submitted image annotation layout', () => {
+  test('a chip touches the top edge of the word its underline is under, at the word start', () => {
+    const layout = createSubmittedImageLayout(page([correction('c1', 30, 30)]));
+    const [marker] = layout.markers, [line] = layout.underlines, target = marker.boxes[0];
+    expect(marker.rect.x).toBeCloseTo(target.x, 3);
+    expect(marker.rect.y + marker.rect.h).toBeGreaterThanOrEqual(target.y);
+    expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(target.y + 1);
+    expect(line.box.x).toBeCloseTo(target.x, 2);
+    expect(line.box.w).toBeCloseTo(target.w, 2);
+  });
+  test('chips that would overlap stay on their own word: along it, then stacked', () => {
+    const layout = createSubmittedImageLayout(page([correction('c1', 30, 30), correction('c2', 31, 30, { symbol: 'SP' }), correction('c3', 32, 30, { symbol: 'WC' })]));
+    assertNoMarkerOverlap(layout.markers);
+    for (const marker of layout.markers) {
+      const target = marker.boxes[0];
+      expect(marker.rect.x).toBeGreaterThanOrEqual(target.x - 0.01);
+      expect(marker.rect.x).toBeLessThan(target.x + target.w);
+    }
+    assertInsideImage(layout);
+  });
+  test('the underline has the colour of its error type, in the same hue as the legend', () => {
+    const { annotationStrokeColor } = require('../src/pdf/websiteAnnotationRules.generated');
+    expect(annotationStrokeColor('#B7E4C7')).toBe('rgb(11,203,79)');
+    expect(annotationStrokeColor('#E4C1F9')).toBe('rgb(131,11,203)');
+    expect(annotationStrokeColor('#FFF3BF')).toBe('rgb(203,167,11)');
+    expect(annotationStrokeColor('#808080')).toBe('#808080');
+    expect(annotationStrokeColor('not-a-colour')).toBe('not-a-colour');
+  });
   test('maps one correction to one protected above-target bubble and one exact underline', () => {
     const layout = createSubmittedImageLayout(page([correction('c1', 30, 30)]));
     expect(layout.density).toBe('sparse'); expect(layout.markers).toHaveLength(1); expect(layout.underlines).toHaveLength(1);
     expect(layout.markers[0].correction.displayNumber).toBe(1); expect(layout.gutterMm).toBe(0);
     expect(layout.imageWidthMm).toBeGreaterThan(165);
-    expect(layout.markers[0].placement).toBe('above');
+    expect(layout.markers[0].placement).toBe('word-start');
     const target = unionBoxes(layout.markers[0].boxes);
-    expect(layout.markers[0].rect.x + layout.markers[0].rect.w / 2)
-      .toBeCloseTo(target.x + target.w, 3);
+    expect(layout.markers[0].rect.x).toBeCloseTo(target.x, 3);
     expect(layout.markers[0].rect.y + layout.markers[0].rect.h)
       .toBeLessThanOrEqual(target.y + target.h + 0.001);
   });
@@ -137,7 +163,7 @@ describe('submitted image annotation layout', () => {
     const layout = createSubmittedImageLayout(page(corrections, { imageWidth, imageHeight, annotationObstacles }));
     layout.markers.forEach((marker) => {
       const target = unionBoxes(marker.boxes);
-      expect(marker.rect.x + marker.rect.w / 2).toBeCloseTo(target.x + target.w, 3);
+      expect(marker.rect.x).toBeCloseTo(target.x, 3);
       expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(target.y + target.h + 0.001);
     });
     expect(layout.markers.map((marker) => marker.correction.displayNumber)).toEqual([1, 2]);
@@ -152,8 +178,7 @@ describe('submitted image annotation layout', () => {
     const layout = createSubmittedImageLayout(page([correction('c1', 45, 45)], { annotationObstacles }));
     expect(layout.markers).toHaveLength(1);
     const target = unionBoxes(layout.markers[0].boxes);
-    expect(Math.abs(layout.markers[0].rect.x + layout.markers[0].rect.w / 2 - (target.x + target.w)))
-      .toBeLessThanOrEqual(10);
+    expect(Math.abs(layout.markers[0].rect.x - target.x)).toBeLessThanOrEqual(10);
     expect(layout.markers[0].rect.y + layout.markers[0].rect.h)
       .toBeLessThanOrEqual(target.y + target.h + 0.001);
     expect(layout.gutterMm).toBe(0);
@@ -175,9 +200,8 @@ describe('submitted image annotation layout', () => {
     ]));
     for (const marker of layout.markers) {
       const target = unionBoxes(marker.boxes);
-      expect(['above', 'above-right', 'above-left', 'right', 'left', 'below-right', 'below-left', 'below']).toContain(marker.placement);
-      expect(Math.abs(marker.rect.x + marker.rect.w / 2 - (target.x + target.w)))
-        .toBeLessThanOrEqual(10);
+      expect(['word-start', 'along-word', 'stacked']).toContain(marker.placement);
+      expect(Math.abs(marker.rect.x - target.x)).toBeLessThanOrEqual(10);
       expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(target.y + target.h + 0.001);
     }
     expect(layout.gutterMm).toBe(0);
@@ -294,8 +318,8 @@ describe('submitted image annotation layout', () => {
     ]));
     for (const marker of layout.markers) {
       const target = unionBoxes(marker.boxes);
-      expect(marker).toMatchObject({ side: null, placement: 'above' });
-      expect(marker.rect.x + marker.rect.w / 2).toBeCloseTo(target.x + target.w, 3);
+      expect(marker).toMatchObject({ side: null, placement: 'word-start' });
+      expect(marker.rect.x).toBeCloseTo(target.x, 3);
       expect(marker.rect.y + marker.rect.h).toBeLessThanOrEqual(target.y + target.h + 0.001);
     }
   });
@@ -358,7 +382,7 @@ describe('submitted image annotation layout', () => {
     const first = createSubmittedImageLayout(input);
     const second = createSubmittedImageLayout(input);
     expect(first.markers.map((marker) => marker.placement)).toEqual(second.markers.map((marker) => marker.placement));
-    expect(first.markers.find((marker) => marker.correction.id === 'c2').placement).toBe('above');
+    expect(first.markers.find((marker) => marker.correction.id === 'c2').placement).toBe('word-start');
   });
 
   test('transforms percentage and explicit pixel coordinates correctly', () => {
@@ -413,13 +437,11 @@ describe('submitted image annotation layout', () => {
     const layout = createSubmittedImageLayout(page([
       correction('c1', 45, 55), correction('c2', 50, 55)
     ]));
-    expect(layout.markers.map((marker) => marker.placement)).toEqual(['above', 'above']);
-    expect(layout.markers[0].localVariant).toBe('above');
+    expect(layout.markers.map((marker) => marker.placement)).toEqual(['word-start', 'word-start']);
+    expect(layout.markers[0].localVariant).toBe('word-start');
     expect(layout.markers[1].localLevel).toBeLessThanOrEqual(2);
     layout.markers.forEach((marker) => {
-      const targetCenter = unionBoxes(marker.boxes).x + unionBoxes(marker.boxes).w / 2;
-      expect(Math.abs(marker.rect.x + marker.rect.w / 2 - targetCenter))
-        .toBeLessThanOrEqual(marker.rect.w * 1.5);
+      expect(marker.rect.x).toBeCloseTo(unionBoxes(marker.boxes).x, 3);
     });
     assertSafe(layout, ['c1', 'c2']);
   });
@@ -436,10 +458,11 @@ describe('submitted image annotation layout', () => {
       symbols.map((symbol, index) => correction(`c${index + 1}`, 45, 70, { symbol })),
       { annotationObstacles }
     ));
-    expect(layout.markers).toHaveLength(1);
-    expect(layout.markers[0].label).toBe('REP\u00b7P+1');
-    const target = unionBoxes(layout.markers[0].boxes);
+    // Task 21: FRAG is sentence-level, so it is a margin bracket with its own chip; the word-level REP and P still share one chip.
+    expect(layout.markers).toHaveLength(2);
+    expect(layout.markers.map((marker) => marker.label).sort()).toEqual(['FRAG', 'REP\u00b7P']);
     layout.markers.forEach((marker) => {
+      const target = unionBoxes(marker.boxes);
       const centerX = marker.rect.x + marker.rect.w / 2;
       expect(Math.abs(centerX - (target.x + target.w / 2)))
         .toBeLessThanOrEqual(marker.rect.w * 1.2);
@@ -454,7 +477,7 @@ describe('submitted image annotation layout', () => {
     const layout = createSubmittedImageLayout(page(corrections));
     expect(layout.markers).toHaveLength(30);
     expect(layout.markers.every((marker) =>
-      ['above', 'above-right', 'above-left', 'right', 'left', 'below-right', 'below-left', 'below'].includes(marker.placement))).toBe(true);
+      ['word-start', 'along-word', 'stacked'].includes(marker.placement))).toBe(true);
     expect(layout.omitted.filter((item) => item.reason === 'NO_LOCAL_SPACE')).toHaveLength(0);
     expect(layout.gutterMm).toBe(0);
     expect(layout.overflowMarkers).toHaveLength(0);

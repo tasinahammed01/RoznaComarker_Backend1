@@ -9,7 +9,7 @@ jest.mock('../src/services/assessmentRecovery.service', () => ({ scheduleSubmiss
 jest.mock('../src/services/visionOcr.service', () => ({ extractOcrFromImageFile: jest.fn() }));
 jest.mock('../src/services/canonicalCorrectionsPipeline.service', () => ({ ...jest.requireActual('../src/services/canonicalCorrectionsPipeline.service'), generateAndPersist: jest.fn(async () => {}) }));
 jest.mock('../src/services/email.service', () => ({ sendGuestSubmissionEmail: jest.fn(async () => ({ success: true })),
-  sendTeacherSubmissionEmail: jest.fn(async () => ({ success: true })) }));
+  sendTeacherSubmissionEmail: jest.fn(async () => ({ success: true })), sendGuestRecoveryEmail: jest.fn(async () => ({ success: true })) }));
 jest.mock('../src/services/assessmentCreditRouter.service', () => ({ canRunAssessment: jest.fn(async () => ({ allowed: true })) }));
 jest.mock('../src/services/imagePreflight.service', () => ({ evaluateImage: jest.fn(async () => ({ ready: true, checks: [] })) }));
 jest.mock('../src/middlewares/rateLimit.middleware', () => {
@@ -34,6 +34,8 @@ const access = require('../src/services/guestAccess.service');
 const context = require('../src/services/submissionAccessContext.service');
 const dispatch = require('../src/services/assessmentRecovery.service').scheduleSubmissionAnalysis;
 const email = require('../src/services/email.service').sendGuestSubmissionEmail;
+// Recovery sends its own email (Task 4), not the submission receipt.
+const recoveryEmail = require('../src/services/email.service').sendGuestRecoveryEmail;
 const accounting = require('../src/services/assessmentCreditRouter.service');
 const preflight = require('../src/services/imagePreflight.service').evaluateImage;
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6FYQAAAAASUVORK5CYII=', 'base64');
@@ -56,7 +58,7 @@ beforeEach(async () => {
   jest.restoreAllMocks();
   await clearDatabase(); jest.clearAllMocks(); await seedTestPlans();
   accounting.canRunAssessment.mockResolvedValue({ allowed: true });
-  preflight.mockResolvedValue({ ready: true, checks: [] }); email.mockResolvedValue({ success: true });
+  preflight.mockResolvedValue({ ready: true, checks: [] }); email.mockResolvedValue({ success: true }); recoveryEmail.mockResolvedValue({ success: true });
   teacher = await User.create({ firebaseUid: crypto.randomUUID(), email: 'teacher@example.com', role: 'teacher' });
   classDoc = await Class.create({ name: 'Writing', teacher: teacher._id, joinCode: 'GUEST-TEST' });
   assignment = await Assignment.create({ title: 'Guest essay', class: classDoc._id, teacher: teacher._id,
@@ -224,20 +226,20 @@ test('teacher disabling guest permission blocks every scoped return resource', a
   }
 });
 
-test('expired submission-specific recovery requires matching email and rotates only that submission', async () => {
+test('expired submission-specific recovery requires matching email and issues a new link for only that submission', async () => {
   const accepted = await send(); const link = new URL(accepted.body.data.returnUrl);
   const id = link.pathname.split('/').pop();
   await Submission.updateOne({ _id: id }, { $set: { 'guest.expiresAt': new Date(0) } });
-  email.mockClear();
+  recoveryEmail.mockClear();
   const endpoint = '/api/guest/submissions/' + id + '/recover';
   const missing = await request(app).post(endpoint).send({ email: 'unrelated@example.com' });
   await new Promise(resolve => setTimeout(resolve, 60));
-  expect(email).not.toHaveBeenCalled();
+  expect(recoveryEmail).not.toHaveBeenCalled();
   const matching = await request(app).post(endpoint).send({ email: 'guest@example.com' });
   expect(matching.body).toEqual(missing.body);
-  for (let i = 0; i < 30 && !email.mock.calls.length; i++) await new Promise(resolve => setTimeout(resolve, 20));
-  expect(email).toHaveBeenCalledTimes(1);
-  const rotated = new URL(email.mock.calls[0][0].returnUrl);
+  for (let i = 0; i < 30 && !recoveryEmail.mock.calls.length; i++) await new Promise(resolve => setTimeout(resolve, 20));
+  expect(recoveryEmail).toHaveBeenCalledTimes(1);
+  const rotated = new URL(recoveryEmail.mock.calls[0][0].link);
   expect(rotated.pathname).toBe(link.pathname);
   expect(rotated.hash).not.toBe(link.hash);
   expect((await request(app).get('/api/guest/submissions/' + id + '/presentation').set('X-Guest-Token', rotated.hash.slice(1))).status).toBe(200);
@@ -287,7 +289,7 @@ test('expired submission-specific recovery requires matching email and rotates o
     await page.click('.submit-button');
     stage = 'accepted';
     await page.waitForSelector('.confirmation a');
-    expect(email).toHaveBeenCalledTimes(1);
+    expect(recoveryEmail).toHaveBeenCalledTimes(1);
     const link = new URL(await page.$eval('.confirmation a', anchor => anchor.href));
     const doc = await Submission.findOne();
     const teacherList = await request(app).get(`/api/submissions/assignment/${assignment.id}`).set('Authorization', `Bearer ${signTestJwt(teacher)}`);
@@ -465,24 +467,25 @@ test('marks and draft progress respect teacher visibility without exposing guest
   const drafts = await request(app).get(`/api/guest/submissions/${doc.id}/drafts`).set('X-Guest-Token', token);
   expect(drafts.body.data.code).toBe('MARKS_HIDDEN');
 });
-test('recovery acknowledges generically, rotates once, and cannot restore revoked access', async () => {
+test('recovery acknowledges generically, adds a link WITHOUT invalidating the existing one, and holds an immediate repeat', async () => {
   const response = await send(); const doc = await Submission.findOne();
   const creditsBefore = await require('../src/models/CreditTransaction').countDocuments();
   const oldToken = new URL(response.body.data.returnUrl).hash.slice(1);
-  email.mockClear();
+  recoveryEmail.mockClear();
   const recovered = await request(app).post(url('/recover')).send({ email: 'GUEST@example.com' });
   expect(recovered.status).toBe(200);
-  for (let i = 0; i < 100 && !email.mock.calls.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
-  expect(email).toHaveBeenCalledTimes(1);
-  const newToken = new URL(email.mock.calls[0][0].returnUrl).hash.slice(1);
+  for (let i = 0; i < 100 && !recoveryEmail.mock.calls.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  expect(recoveryEmail).toHaveBeenCalledTimes(1);
+  const newToken = new URL(recoveryEmail.mock.calls[0][0].link).hash.slice(1);
   expect(newToken).not.toBe(oldToken);
-  await expect(access.authorize(doc.id, oldToken)).rejects.toMatchObject({ statusCode: 410 });
+  // Task 3: a resend never cuts off a working link (a third party who knows the email could otherwise do it).
+  await expect(access.authorize(doc.id, oldToken)).resolves.toBeTruthy();
   await expect(access.authorize(doc.id, newToken)).resolves.toBeTruthy();
   const unknown = await request(app).post(url('/recover')).send({ email: 'unknown@example.com' });
   expect(unknown.body).toEqual(recovered.body);
   await request(app).post(url('/recover')).send({ email: 'guest@example.com' });
   await new Promise(resolve => setTimeout(resolve, 100));
-  expect(email).toHaveBeenCalledTimes(1);
+  expect(recoveryEmail).toHaveBeenCalledTimes(1);
   expect(dispatch).toHaveBeenCalledTimes(1);
   expect(accounting.canRunAssessment).toHaveBeenCalledTimes(1);
   expect(await Submission.countDocuments()).toBe(1);
@@ -589,17 +592,24 @@ test.each(['blocked', 'failed', 'stale'])('guest results expose safe %s processi
 });
 test('recovery cannot reissue revoked access, and provider failure never changes its generic response', async () => {
   const created = await send(); const doc = await Submission.findOne();
-  email.mockClear(); email.mockResolvedValue({ success: false });
+  recoveryEmail.mockClear(); recoveryEmail.mockResolvedValue({ success: false });
   await Submission.updateOne({ _id: doc._id }, { $set: { 'guest.revokedAt': new Date() } });
   const revoked = await request(app).post(url('/recover')).send({ email: 'guest@example.com' });
-  const invalid = await request(app).post(url('/recover')).send({ email: 'invalid' });
+  const unknown = await request(app).post(url('/recover')).send({ email: 'nobody@example.com' });
+  // A malformed address is answered about its format only (400), never about existence.
+  expect((await request(app).post(url('/recover')).send({ email: 'invalid' })).status).toBe(400);
   await new Promise(resolve => setTimeout(resolve, 100));
-  expect(revoked.body).toEqual(invalid.body); expect(email).not.toHaveBeenCalled();
+  expect(revoked.body).toEqual(unknown.body); expect(recoveryEmail).not.toHaveBeenCalled();
   await expect(access.authorize(doc.id, new URL(created.body.data.returnUrl).hash.slice(1))).rejects.toMatchObject({ statusCode: 410 });
   await Submission.updateOne({ _id: doc._id }, { $unset: { 'guest.revokedAt': 1 } });
   const failedDelivery = await request(app).post(url('/recover')).send({ email: 'guest@example.com' });
-  for (let i = 0; i < 100 && !email.mock.calls.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
-  expect(failedDelivery.body).toEqual(invalid.body); expect(email).toHaveBeenCalledTimes(1);
+  for (let i = 0; i < 100 && !recoveryEmail.mock.calls.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  expect(failedDelivery.body).toEqual(unknown.body); expect(recoveryEmail).toHaveBeenCalledTimes(1);
+  // The failed send did not consume the cool-down: an immediate retry sends again.
+  recoveryEmail.mockResolvedValue({ success: true });
+  await request(app).post(url('/recover')).send({ email: 'guest@example.com' });
+  for (let i = 0; i < 100 && recoveryEmail.mock.calls.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  expect(recoveryEmail).toHaveBeenCalledTimes(2);
   expect(await Submission.countDocuments()).toBe(1);
 });
 test.each(['missing', 'extra-key', 'narrow-partial'])('guest submission fails closed with %s uniqueness index', async mode => {

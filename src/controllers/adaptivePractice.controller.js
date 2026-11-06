@@ -3,10 +3,13 @@
 const service = require('../services/adaptivePractice.service');
 const attemptService = require('../services/adaptivePracticeAttempt.service');
 const teacherService = require('../services/teacherAdaptivePractice.service');
+const { withoutInternal } = require('../services/studentTeacherIdentity.service');
 
 function send(res, status, data) {
   return res.status(status).json({ success: true, data });
 }
+// What a student gets of a practice session or an attempt: no provider, model, prompt, fingerprint (see studentTeacherIdentity.service).
+const sendToStudent = (res, status, data) => send(res, status, withoutInternal(data));
 
 function handleError(res, error) {
   const status = Number(error?.status) || 500;
@@ -19,7 +22,7 @@ function handleError(res, error) {
 
 async function getSession(req, res) {
   try {
-    return send(res, 200, await service.getCurrentSession(req.params.submissionId, req.user._id));
+    return sendToStudent(res, 200, await service.getCurrentSession(req.params.submissionId, req.user._id));
   } catch (error) {
     return handleError(res, error);
   }
@@ -35,7 +38,7 @@ async function generateSession(req, res) {
       retry: req.body?.retry === true,
       requestReceivedAt
     });
-    return send(res, data.state === 'generating' ? 202 : 200, data);
+    return sendToStudent(res, data.state === 'generating' ? 202 : 200, data);
   } catch (error) {
     return handleError(res, error);
   }
@@ -44,12 +47,12 @@ async function generateSession(req, res) {
 async function checkResponse(req, res) {
   try {
     const data = await attemptService.checkResponse(req.params.sessionId, req.params.activityId, req.user._id, req.body);
-    return send(res, data.state === 'checking' ? 202 : 200, data);
+    return sendToStudent(res, data.state === 'checking' ? 202 : 200, data);
   } catch (error) { return handleError(res, error); }
 }
 
 async function listAttempts(req, res) {
-  try { return send(res, 200, await attemptService.listAttempts(req.params.sessionId, req.user._id, req.query.activityId, req.query.questionId)); }
+  try { return sendToStudent(res, 200, await attemptService.listAttempts(req.params.sessionId, req.user._id, req.query.activityId, req.query.questionId)); }
   catch (error) { return handleError(res, error); }
 }
 

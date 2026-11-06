@@ -22,7 +22,7 @@ function websiteAnnotationPresentation(page) {
     // A fixed desktop reference freezes membership/label decisions before static
     // mm scaling. PDF thumbnail size must not create additional collision groups.
     const referenceWidth = 900, referenceHeight = referenceWidth * height / width;
-    const placed = rules.layoutAnnotationGroups(visuals, referenceWidth, referenceHeight, 110, undefined, presentation.words);
+    const placed = rules.layoutAnnotationGroups(visuals, referenceWidth, referenceHeight, 110);
     const groups = placed.map(group => {
         const correctionIds = group.annotations.map(a => a._id), members = correctionIds.map(key => byId.get(key));
         const segments = visuals.filter(v => correctionIds.includes(v.annotation._id)).flatMap(v => v.segments.map(s => ({ ...s, semantic: v.semantic })));

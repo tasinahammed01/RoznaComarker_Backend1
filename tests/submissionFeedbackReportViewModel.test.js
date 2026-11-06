@@ -20,6 +20,41 @@ function verifiedImageFixture() {
   return data;
 }
 
+describe('Content and Organization in the PDF', () => {
+  const render = (patch = {}) => { const data = fixture(); data.submission.writingCorrections = data.submission.writingCorrections.filter(c => c.category === 'GRAMMAR');
+    data.evaluation.rubricScores = { ...data.evaluation.rubricScores, CONTENT: { score: 16, maxScore: 20 }, ORGANIZATION: { score: 14, maxScore: 20 } };
+    return renderSubmissionFeedbackReportHtml(buildSubmissionFeedbackReportViewModel({ ...data, ...patch })); };
+  const cell = (html, category) => html.match(new RegExp('<div class="stat[^"]*">((?:(?!</div>).)*?<span>' + category + '</span>)</div>'))[1];
+  test('statistics: the plain count only, with no rubric fraction and none of the old wording', () => {
+    const html = render();
+    expect(cell(html, 'organization')).toBe('<b>0</b><span>organization</span>'); expect(html).toContain('<div class="stat"><b>0</b><span>content</span></div>');
+    expect(html).not.toMatch(/holistic|whole piece/i);
+   
+    expect(html).not.toContain('Assessed on the whole piece');
+    expect(html).toMatch(/ORGANIZATION<\/b><small>0 issues/);
+  });
+  test('counted categories keep their numbers, also when zero', () => {
+    const html = render();
+    expect(cell(html, 'grammar')).toMatch(/<b>[1-9]\d*<\/b>/);
+    expect(cell(html, 'mechanics')).toContain('<b>0</b>');
+  });
+  test('marks hidden: the count without a score', () => {
+    const html = render({ marksVisible: false });
+    expect(cell(html, 'organization')).toContain('<b>0</b>');
+    expect(html).not.toContain('14/20');
+  });
+  test('each count lists the codes that make it up, most frequent first', () => {
+    const data = fixture(); const base = data.submission.writingCorrections[0];
+    data.submission.writingCorrections = ['SP', 'P', 'SP', 'CAP', 'SP'].map((symbol, i) => ({ ...base, id: 'm' + i, category: 'MECHANICS', symbol }));
+    const html = renderSubmissionFeedbackReportHtml(buildSubmissionFeedbackReportViewModel(data));
+    expect(cell(html, 'mechanics')).toBe('<b>5</b><small>SP 3 · CAP 1 · P 1</small><span>mechanics</span>');
+  });
+  test('a category with real corrections shows its count', () => {
+    const data = fixture(); data.submission.writingCorrections = [{ ...data.submission.writingCorrections[0], id: 'o1', category: 'ORGANIZATION', symbol: 'ORG' }];
+    expect(cell(renderSubmissionFeedbackReportHtml(buildSubmissionFeedbackReportViewModel(data)), 'organization')).toContain('<b>1</b>');
+  });
+});
+
 describe('sample submission report view model',()=>{
   test('uses one A4 portrait page contract for cover, evidence, and feedback',()=>{const html=renderSubmissionFeedbackReportHtml(buildSubmissionFeedbackReportViewModel(fixture())); expect(html).not.toContain('@page evidence'); expect(html).toContain('@page{size:A4'); expect(html).not.toMatch(/A4 landscape|landscape\s*:/i);});
   test('orders every page once and filters corrections by file and page',()=>{const vm=buildSubmissionFeedbackReportViewModel(fixture()); expect(vm.submittedPages.map(p=>p.fileId)).toEqual(['a','b']); expect(vm.submittedPages[0].corrections.map(c=>c.id)).toEqual(['c1']); expect(vm.submittedPages[1].corrections.map(c=>c.id)).toEqual(['c2']);});

@@ -27,6 +27,12 @@ const humanReview=require('../controllers/sourceHumanReview.controller');
 const reviewLimiter=createUserRateLimiter({windowMs:60000,limit:40,event:'SOURCE_REVIEW_RATE_LIMITED',reason:'source_human_review'});
 router.post('/:submissionId/guest-access/revoke', verifyJwtToken, requireRole('teacher'),
   param('submissionId').isMongoId(), handleValidationResult, require('../controllers/guestSubmission.controller').revoke);
+// Teacher-sent recovery link for one guest submission in the teacher's own class (always to the stored email; no input).
+router.get('/:submissionId/guest-access/recovery-link', verifyJwtToken, requireRole('teacher'),
+  param('submissionId').isMongoId(), handleValidationResult, require('../controllers/teacherRecovery.controller').status);
+router.post('/:submissionId/guest-access/recovery-link', createSensitiveRateLimiter({ limit: 30, windowMs: 15 * 60 * 1000, reason: 'teacher_recovery_link' }),
+  verifyJwtToken, requireRole('teacher'),
+  param('submissionId').isMongoId(), handleValidationResult, require('../controllers/teacherRecovery.controller').send);
 const uploadUserLimiter = createUserRateLimiter({
   windowMs: process.env.UPLOAD_USER_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000,
   limit: process.env.UPLOAD_USER_RATE_LIMIT_MAX || 30,
@@ -326,6 +332,22 @@ const getOcrCorrectionsMiddleware = [
   submissionController.getOcrCorrections
 ];
 
+// Teacher annotations: the controller answers 404 to anyone but the owning teacher (no role middleware, which would say 403).
+// Writes are limited per teacher, not per IP: one essay can need dozens of edits and a school shares one address.
+// ANNOTATION_RATE_LIMIT_MAX (default 120) per ANNOTATION_RATE_LIMIT_WINDOW_MS (default 15 minutes).
+const teacherAnnotations = require('../controllers/teacherAnnotation.controller');
+const annotationLimiter = createUserRateLimiter({
+  windowMs: Number(process.env.ANNOTATION_RATE_LIMIT_WINDOW_MS) > 0 ? Number(process.env.ANNOTATION_RATE_LIMIT_WINDOW_MS) : 15 * 60 * 1000,
+  limit: Number(process.env.ANNOTATION_RATE_LIMIT_MAX) > 0 ? Number(process.env.ANNOTATION_RATE_LIMIT_MAX) : 120,
+  event: 'ANNOTATION_RATE_LIMITED', reason: 'teacher_annotation_user', responseCode: 'ANNOTATION_RATE_LIMITED'
+});
+router.get('/:submissionId/teacher-annotations', verifyJwtToken, teacherAnnotations.get);
+router.get('/:submissionId/teacher-annotations/history', verifyJwtToken, teacherAnnotations.history);
+router.get('/:submissionId/teacher-annotations/preview', verifyJwtToken, teacherAnnotations.preview);
+router.post('/:submissionId/teacher-annotations', verifyJwtToken, annotationLimiter, teacherAnnotations.mutate);
+router.post('/:submissionId/teacher-annotations/bulk', verifyJwtToken, annotationLimiter, teacherAnnotations.bulk);
+router.post('/:submissionId/teacher-annotations/score-review', verifyJwtToken, annotationLimiter, teacherAnnotations.scoreReview);
+
 router.get(
   '/:submissionId/ocr-corrections',
   ...getOcrCorrectionsMiddleware
@@ -342,6 +364,11 @@ router.post('/:submissionId/ocr-corrections/regenerate', createSensitiveRateLimi
   createUserConcurrencyGuard({ operation: 'ocr_correction_retry', maxConcurrent: 2 }),
   param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult,
   submissionController.regenerateCanonicalCorrections);
+
+// Task 20: retry the failed correction stage only (teacher, student; the guest route is in guestSubmission.routes.js). No credit, no re-score.
+router.post('/:submissionId/corrections/retry', createSensitiveRateLimiter(), verifyJwtToken,
+  createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'correction_stage_retry_user' }),
+  submissionController.retryCorrectionStage);
 
 router.post('/:submissionId/evaluation/retry', verifyJwtToken, requireRole('teacher'),
   createSensitiveRateLimiter(),

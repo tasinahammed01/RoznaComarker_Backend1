@@ -5,6 +5,8 @@
 const VERSION = 'compact-review-v2-symbol-map';
 const EXPLANATION_VERSION = 'compact-review-v3-explanations';
 const DEEPSEEK_VERSION = EXPLANATION_VERSION; // Existing DeepSeek wire identity remains valid.
+/** The schema's per-field limits: a finding over one of them is dropped, never the whole reply. */
+const MAX_QUOTE = 500, MAX_SUGGESTION = 300, MAX_MESSAGE = 240;
 const fields = ['symbol', 'correctionKind', 'quotedText', 'occurrence', 'suggestedText', 'confidence', 'severity'];
 const object = properties => ({ type: 'object', additionalProperties: false, properties, required: Object.keys(properties) });
 function schema(hash, categories, catalog, version = VERSION) {
@@ -36,6 +38,7 @@ function expand(parsed, legend) {
   if (!parsed.categories || typeof parsed.categories !== 'object' || Array.isArray(parsed.categories)) invalid();
   const symbols = new Map(legend.flatMap(group => group.symbols.map(item => [item.symbol, item])));
   const categories = {};
+  let overlongTotal = 0;
   for (const [category, review] of Object.entries(parsed.categories)) {
     if (!review || typeof review !== 'object' || Array.isArray(review)
       || Object.keys(review).length !== 3 || Object.keys(review).some(k => !['reviewed', 'reviewedSymbols', 'corrections'].includes(k))
@@ -46,23 +49,31 @@ function expand(parsed, legend) {
     const reviewed = Object.keys(review.reviewedSymbols);
     if (!group || reviewed.length !== expected.length || expected.some(symbol => review.reviewedSymbols[symbol] !== true)
       || reviewed.some(symbol => !expected.includes(symbol))) invalid();
-    const corrections = review.corrections.map(item => {
+    let overlong = 0;
+    const corrections = review.corrections.filter(item => {
       if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).length !== expectedFields.length
         || Object.keys(item).some(k => !expectedFields.includes(k)) || expectedFields.some(k => !(k in item))
-        || (explanations && (typeof item.message !== 'string' || !item.message.trim() || item.message.length > 240))
+        || (explanations && (typeof item.message !== 'string' || !item.message.trim()))
         || !symbols.has(item.symbol) || !['localized', 'global'].includes(item.correctionKind)
-        || typeof item.quotedText !== 'string' || !item.quotedText.length || item.quotedText.length > 500
+        || typeof item.quotedText !== 'string' || !item.quotedText.length
         || !Number.isInteger(item.occurrence) || item.occurrence < 0
-        || typeof item.suggestedText !== 'string' || item.suggestedText.length > 300
+        || typeof item.suggestedText !== 'string'
         || typeof item.confidence !== 'number' || !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1
         || !['low', 'medium', 'high'].includes(item.severity)) invalid();
+      // A well-formed finding that only exceeds a length limit (a quote of a whole passage, say) cannot be shown or grounded as one span. It is left out
+      // and counted, as the later per-finding validation would; the rest of the reply stays. Any structural defect still rejects the whole reply.
+      if (item.quotedText.length > MAX_QUOTE || item.suggestedText.length > MAX_SUGGESTION || (explanations && item.message.length > MAX_MESSAGE)) { overlong++; return false; }
+      return true;
+    }).map(item => {
       const definition = symbols.get(item.symbol), label = definition.label || item.symbol;
       const detail = item.suggestedText || definition.description || 'Review this passage.';
       return { ...item, message: explanations ? item.message : `${label}: ${detail}`.slice(0, 240), stylePreference: false };
     });
+    overlongTotal += overlong;
     categories[category] = { ...review, reviewedSymbols: reviewed, corrections,
       noFindingReason: corrections.length ? '' : 'No findings after reviewing every supplied symbol.' };
   }
-  return { transcriptHash: parsed.transcriptHash, categories };
+  // Not part of the parsed reply's shape: a count for the diagnostics only.
+  return Object.defineProperty({ transcriptHash: parsed.transcriptHash, categories }, 'overlongFindingsDropped', { value: overlongTotal, enumerable: false });
 }
 module.exports = { VERSION, EXPLANATION_VERSION, DEEPSEEK_VERSION, schema, expand };

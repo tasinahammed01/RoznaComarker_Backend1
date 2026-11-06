@@ -34,6 +34,7 @@ const logger = require('../utils/logger');
 const { bytesToMB, ensureActivePlan, getLimit, incrementUsage } = require('../middlewares/usage.middleware');
 const { getPublicApiUrl, buildPublicUploadUrl } = require('../utils/publicApiUrl');
 const { showMarksToStudent, redactStudentMarks } = require('../services/assignmentAccessPolicy.service');
+const { submissionForStudent, ocrCorrectionsForStudent } = require('../services/studentTeacherIdentity.service');
 const { scopeCanonicalPages, scopeCanonicalCorrections } = require('../services/canonicalCorrectionResponse.service');
 const { buildCanonicalCorrectionRenderModels } = require('../services/canonicalCorrectionRender.service');
 const { annotationImageGeometry } = require('../services/annotationImageGeometry.service');
@@ -45,6 +46,7 @@ const AssessmentCreditRouter = require('../services/assessmentCreditRouter.servi
 const { captureCurrentRevision } = require('../services/submissionRevision.service');
 const { scheduleSubmissionAnalysis } = require('../services/assessmentRecovery.service');
 const draftComparison = require('../services/draftComparison.service');
+const studentCorrectionView = require('../services/studentCorrectionView.service');
 const User = require('../models/user.model');
 const { normalizeTeacherEvaluationPolicy, evaluationPolicyHash } = require('../services/teacherEvaluationPolicy.service');
 const { normalizeAssignmentRubric, hashNormalizedRubric } = require('../services/assignmentRubric.service');
@@ -306,6 +308,11 @@ function normalizeSubmissionForClient(req, submission) {
   }
 
   return doc;
+}
+
+/** Submissions as students see them: each document itself when no teacher decision changes it, else a plain copy of the visible set. */
+async function studentSubmissions(list) {
+  return (await studentCorrectionView.loadStudentCorrectionViews(list)).map((view) => view.submission);
 }
 
 function toPublicUrl(req, type, filename) {
@@ -779,7 +786,7 @@ async function upsertSubmissionLocked({ req, res, assignment, qrToken }) {
       logger.info({ message: 'Assessment pipeline timing', submissionId: String(saved._id),
         stage: 'submissionAcceptedAt', timestamp: new Date().toISOString(),
         durationMs: Date.now() - submissionStartedAt, draftNumber: Number(saved.draftNumber || 1) });
-      return sendSuccess(res, populated);
+      return sendSuccess(res, submissionForStudent(populated));
     }
 
     const created = await Submission.create({
@@ -862,7 +869,7 @@ async function upsertSubmissionLocked({ req, res, assignment, qrToken }) {
       }
     });
 
-    return sendSuccess(res, populated);
+    return sendSuccess(res, submissionForStudent(populated));
   } catch (err) {
     if (err && err.code === 11000) {
       return sendError(res, 409, 'Already submitted');
@@ -1003,14 +1010,15 @@ async function getSubmissionsByAssignment(req, res) {
       .populate('file')
       .populate('files');
 
-    for (const s of submissions) {
-      normalizeSubmissionForClient(req, s);
+    for (const s of submissions) normalizeSubmissionForClient(req, s);
+    const visible = await studentSubmissions(submissions);
+    for (const s of visible) {
       // Compute canonical correction statistics for consistency with Student view
       const correctionStatistics = await buildSubmissionCorrectionStatistics(s);
       s.correctionStatistics = correctionStatistics;
     }
 
-    return sendSuccess(res, submissions);
+    return sendSuccess(res, visible);
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch submissions');
   }
@@ -1046,12 +1054,13 @@ async function getMySubmissionByAssignmentId(req, res) {
     }
 
     normalizeSubmissionForClient(req, submission);
+    const [visible] = await studentSubmissions([submission]);
 
     // Compute canonical correction statistics for consistency with Teacher view
-    const correctionStatistics = await buildSubmissionCorrectionStatistics(submission);
-    submission.correctionStatistics = correctionStatistics;
+    const correctionStatistics = await buildSubmissionCorrectionStatistics(visible);
+    visible.correctionStatistics = correctionStatistics;
 
-    return sendSuccess(res, submission);
+    return sendSuccess(res, submissionForStudent(visible));
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch submission');
   }
@@ -1076,14 +1085,15 @@ async function getMySubmissions(req, res) {
       .populate('file')
       .populate('files');
 
-    for (const s of submissions) {
-      normalizeSubmissionForClient(req, s);
+    for (const s of submissions) normalizeSubmissionForClient(req, s);
+    const visible = await studentSubmissions(submissions);
+    for (const s of visible) {
       // Compute canonical correction statistics for consistency with Teacher view
       const correctionStatistics = await buildSubmissionCorrectionStatistics(s);
       s.correctionStatistics = correctionStatistics;
     }
 
-    return sendSuccess(res, submissions);
+    return sendSuccess(res, visible.map(submissionForStudent));
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch submissions');
   }
@@ -1227,9 +1237,12 @@ async function getOcrCorrections(req, res) {
         words: words.map((w) => ({ id: w.id, fileId, ...(preserveSourceTokens ? { page: w.page } : {}), text: w.text, bbox: w.bbox, separatorBefore: separators.get(w.id) || '' })), lines: [] };
     }));
     const evaluationDoc = kind === 'submission' ? await SubmissionFeedback.findOne({ submissionId: doc._id }).lean() : null;
-    const resultState = buildCanonicalResultState({ submission: doc, feedback: evaluationDoc });
-    const hasCanonicalCorrections = resultState.correctionCurrent && Array.isArray(doc.writingCorrections);
-    const allCorrections = hasCanonicalCorrections ? doc.writingCorrections : [];
+    // Teachers and students both get the student-visible set here; the teacher's full list is the teacher-annotations snapshot.
+    const view = kind === 'submission' ? await studentCorrectionView.loadStudentCorrectionView(doc)
+      : studentCorrectionView.buildStudentCorrectionView(doc, { overlay: null });
+    const resultState = buildCanonicalResultState({ submission: view.submission, feedback: evaluationDoc });
+    const hasCanonicalCorrections = resultState.correctionCurrent && Array.isArray(view.corrections);
+    const allCorrections = hasCanonicalCorrections ? studentCorrectionView.visibleCorrectionList(view) : [];
     const corrections = buildCanonicalCorrectionRenderModels(
       scopeCanonicalCorrections(allCorrections, requestedFileId), canonicalTranscript, doc.ocrPages, { submission: doc });
     const currentWordIds = new Set(ocr.flatMap((page) => page.words || []).map((word) => String(word.id)));
@@ -1260,6 +1273,10 @@ async function getOcrCorrections(req, res) {
       processingActive: resultState.processingActive,
       automaticPollingAllowed: resultState.automaticPollingAllowed,
       manualRetryAllowed: resultState.manualRetryAllowed,
+      // Task 20/22: the same retry state as the feedback payload (the page merges both); present only when true, so normal payloads do not change.
+      ...(resultState.correctionRetryActive ? { correctionRetryActive: true } : {}),
+      ...(resultState.correctionRetryAllowed ? { correctionRetryAllowed: true } : {}),
+      ...(resultState.scoreBeforeCorrections ? { scoreBeforeCorrections: true } : {}),
       terminal: resultState.terminal,
       evaluationBlockedReason: resultState.evaluationBlockedReason,
       detailedFeedbackBlockedReason: resultState.detailedFeedbackBlockedReason,
@@ -1289,6 +1306,9 @@ async function getOcrCorrections(req, res) {
       assessmentCompletedAt: doc.assessmentCompletedAt || null,
       assessmentErrorCode: doc.assessmentErrorCode || null,
       evaluationSource: resultState.evaluationSource,
+      // Without it the page derives "current" from the status and a teacher-reviewed result loses its label, depending on which
+      // response arrives last. The same value the feedback endpoint already returns.
+      evaluationFreshness: resultState.evaluationFreshness,
       evaluationVersion: resultState.evaluationVersion,
       assessmentVersion: resultState.assessmentVersion,
       evaluationErrorCode: resultState.evaluationErrorCode,
@@ -1313,7 +1333,10 @@ async function getOcrCorrections(req, res) {
       fileId: hasRequestedFile ? requestedFileId : null,
       marksVisible
     };
-    return sendSuccess(res, marksVisible ? responseData : redactStudentMarks(responseData));
+    const studentData = studentCorrectionView.studentPayload(responseData, view);
+    const shown = marksVisible ? studentData : redactStudentMarks(studentData);
+    // A teacher's own page reads this endpoint too and is unchanged; a student or guest gets it without the pipeline's internals.
+    return sendSuccess(res, require('../services/legacyFeedbackWording.service').withoutLegacyWording(user?.role === 'teacher' ? shown : ocrCorrectionsForStudent(shown)));
   } catch (err) {
     logger.error({ message: 'Failed to fetch OCR corrections', ...logContext, error: err?.message, stack: err?.stack });
     const message =
@@ -1380,6 +1403,36 @@ async function regenerateCanonicalCorrections(req, res) {
     return res.status(202).json({ success: true, data: { correctionStatus: 'processing', processingActive: true,
       automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false } });
   } catch (err) { return sendError(res, err?.statusCode || 500, err?.message || 'Failed to regenerate corrections'); }
+}
+
+/**
+ * Task 20: the visible "Retry analysis" action after the correction stage failed. Teacher (owner), student (owner) and guest (own link). It retries
+ * the correction stage only: no credit check and no charge, because the assessment was already completed and charged once, and it never re-scores.
+ * Anyone who is not the owner gets 404. Idempotent: a second request while one runs answers 409 CORRECTION_RETRY_IN_PROGRESS.
+ */
+async function retryCorrectionStage(req, res) {
+  try {
+    const submissionId = req.params?.submissionId;
+    if (!mongoose.Types.ObjectId.isValid(submissionId)) return sendError(res, 404, 'Submission not found');
+    const submission = await Submission.findById(submissionId).select('student class submissionMode').lean();
+    if (!submission) return sendError(res, 404, 'Submission not found');
+    if (submissionAccess.isGuest(req.guestAccessContext)) {
+      if (!submissionAccess.ownsSubmission(submission, req.guestAccessContext)) return sendError(res, 404, 'Submission not found');
+    } else if (req.user?.role === 'student') {
+      if (String(submission.student) !== String(req.user._id)) return sendError(res, 404, 'Submission not found');
+    } else if (req.user?.role === 'teacher') {
+      try { await uploadService.assertTeacherOwnsClassOrThrow(req.user._id, submission.class); }
+      catch { return sendError(res, 404, 'Submission not found'); }
+    } else return sendError(res, 404, 'Submission not found');
+    const started = await require('../services/correctionStageRetry.service').startManual(Submission, submission._id);
+    if (!started.started) return res.status(409).json({ success: false, code: started.code,
+      message: started.code === 'CORRECTION_RETRY_IN_PROGRESS' ? 'Corrections are already being retried.'
+        : started.code === 'CORRECTION_RETRY_LIMIT_REACHED' ? 'Corrections could not be completed. Please ask your teacher for help.'
+          : 'This analysis cannot be retried now.',
+      data: { correctionRetryActive: started.code === 'CORRECTION_RETRY_IN_PROGRESS', correctionRetryAllowed: false } });
+    return res.status(202).json({ success: true, data: { correctionRetryActive: true, correctionRetryAllowed: false, processingActive: true,
+      automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false } });
+  } catch (err) { return sendError(res, 500, 'Failed to retry corrections'); }
 }
 
 async function retryCanonicalEvaluation(req, res) {
@@ -1465,6 +1518,7 @@ module.exports = {
   removeSubmission,
   getOcrCorrections,
   regenerateCanonicalCorrections,
+  retryCorrectionStage,
   retryCanonicalEvaluation,
   getDraftComparison,
   uploadHandwrittenForOcr,

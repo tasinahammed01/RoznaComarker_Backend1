@@ -27,6 +27,7 @@ async function getSubmissionWithPermissionsOrThrow({ user, submissionId, guestCo
   }
 
   const submission = await Submission.findById(submissionId)
+    .select('+teacherAnnotations')
     .populate("student", "_id email displayName photoURL role")
     .populate({
       path: "assignment",

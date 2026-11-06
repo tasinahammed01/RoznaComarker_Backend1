@@ -21,7 +21,7 @@ test('exact dedicated model, low effort, closed schema, private route and usage;
   const body=JSON.parse(fetchImpl.mock.calls[0][1].body);
   expect(body.model).toBe(model);expect(body.reasoning).toEqual({effort:'low'});expect(body.provider).toEqual({require_parameters:true,allow_fallbacks:false});
   expect(body.response_format).toMatchObject({type:'json_schema',json_schema:{strict:true}});expect(body.max_tokens).toBe(8000);
-  expect(body).not.toHaveProperty('temperature');expect(body).not.toHaveProperty('models');expect(body).not.toHaveProperty('max_completion_tokens');
+  expect(body.temperature).toBe(0);expect(body.seed).toBe(20261105);expect(body).not.toHaveProperty('models');expect(body).not.toHaveProperty('max_completion_tokens');
   expect(result.model).toBe(model);expect(result.usage).toMatchObject({prompt_tokens:100,completion_tokens:50});expect(fetchImpl).toHaveBeenCalledTimes(1);
   expect(client.getAssessmentAIConfig(env).model).toBe('google/gemini-3.8-flash');
   expect(client.getAssessmentAIConfig({...env,ASSESSMENT_AI_MODEL:'openai/gpt-6-astra'}).model).toBe('openai/gpt-6-astra');
@@ -47,11 +47,17 @@ test.each([
   v=>{v.categories.MECHANICS.corrections[0].explanation='extra';return v;},
   v=>{delete v.categories.MECHANICS.corrections[0].message;return v;},
   v=>{v.categories.MECHANICS.corrections[0].message=' ';return v;},
-  v=>{v.categories.MECHANICS.corrections[0].message='x'.repeat(241);return v;},
   v=>{v.categories.MECHANICS.corrections[0].message=42;return v;}
 ])('malformed/partial/unknown/type/extra correction output fails complete schema',async mutate=>{
   const value=mutate(payload('synthetic',[finding('MECHANICS','SP','mispell',{suggestedText:'misspell'})]));
   await expect(analyze('mispell',[],{fetchImpl:jest.fn(async()=>response(value))})).rejects.toBeDefined();
+});
+
+// Task 20: a well-formed finding that only exceeds a length limit is left out and counted; the rest of the reply is kept (was: whole reply rejected).
+test('an over-long explanation drops only that finding, never the whole review',async()=>{
+  const value=payload('synthetic',[finding('MECHANICS','SP','mispell',{suggestedText:'misspell',message:'x'.repeat(241)}),finding('MECHANICS','CAP','monday',{suggestedText:'Monday'})]);
+  const {result}=await analyze('mispell monday',[],{fetchImpl:jest.fn(async()=>response(value))});
+  expect(result.corrections.map(c=>c.symbol)).toEqual(['CAP']);
 });
 
 test('Gemini requires and preserves the model educational explanation without a server-generated substitute',async()=>{

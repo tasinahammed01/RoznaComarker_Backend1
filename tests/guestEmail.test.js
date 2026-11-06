@@ -59,9 +59,11 @@ test.each([false, true])('guest email card preserves canonical links and text fa
   expect(message.html).toContain(resultReady ? 'Your Feedback Is Ready' : 'Assignment Submitted Successfully');
   expect(message.html).toContain('&lt;Essay&gt; &amp; &quot;Writing&quot;');
   expect(message.html).toContain(`href="${returnUrl}"`);
-  expect(message.html).toContain('href="https://school.example/guest/results/507f1f77bcf86cd799439011"');
+  // Task 4: no token-less result link (it could only show "link unavailable"); the secondary link opens the recovery page.
+  expect(message.html).not.toContain('href="https://school.example/guest/results/507f1f77bcf86cd799439011"');
+  expect(message.html).toContain('href="https://school.example/recover"');
   expect(message.html.match(/private-token/g)?.length).toBe(1);
-  expect(message.html).toContain('Recover Link');
+  expect(message.html).toContain('Get a new link');
   expect(message.html).toContain('mailto:support@roznahub.com');
   expect(message.html).not.toMatch(/<script|<form|<iframe|<img/i);
   const status = resultReady ? 'feedback is ready' : 'submission was received';
@@ -147,4 +149,67 @@ test('shared transport errors cannot leak provider credentials through invitatio
   await expect(email.sendInvitationEmail({ to: 'guest@example.com', className: 'Writing', classCode: 'code', joinUrl: 'https://school.example/join/code' }))
     .resolves.toEqual({ success: false, error: 'SMTP_AUTH_FAILED' });
   expect(JSON.stringify(logger.error.mock.calls)).not.toMatch(/synthetic-secret|recipient@/);
+});
+
+// Task 4: the "Recover Link" in submission/result emails used to be the result page WITHOUT its token, which can only show
+// "This feedback link is unavailable". It now opens the recovery page.
+test('submission and result emails never contain a token-less result link; the secondary link opens /recover', async () => {
+  for (const resultReady of [false, true]) {
+    transport.sendMail.mockReset();
+    await email.sendGuestSubmissionEmail({ to: 'guest@example.com', assignmentTitle: 'Essay', resultReady,
+      returnUrl: 'https://school.example/guest/results/aaaaaaaaaaaaaaaaaaaaaaaa#private-token' });
+    const html = transport.sendMail.mock.calls[0][0].html;
+    const resultLinks = [...html.matchAll(/href="([^"]*\/guest\/results\/[^"]*)"/g)].map(m => m[1]);
+    expect(resultLinks.length).toBeGreaterThan(0);
+    for (const link of resultLinks) expect(link).toContain('#private-token');
+    expect(html).toContain('href="https://school.example/recover"');
+    expect(html).not.toContain('>Recover Link<');
+  }
+});
+
+describe('dedicated recovery emails', () => {
+  const link = 'https://school.example/guest/results/aaaaaaaaaaaaaaaaaaaaaaaa#private-token';
+  test('single-submission recovery: its own subject and wording, what the link opens, validity, the all-submissions link; nothing else', async () => {
+    await expect(email.sendGuestRecoveryEmail({ to: 'guest@example.com', link, expiresInDays: 30 })).resolves.toEqual({ success: true });
+    const message = transport.sendMail.mock.calls[0][0];
+    expect(message.subject).toBe('Your Co-Marker access link to your submission');
+    for (const part of [message.text, message.html]) {
+      expect(part).toContain('opens your submitted assignment with its feedback');
+      expect(part).toContain('30 days');
+      expect(part).toContain('https://school.example/recover');
+      expect(part).not.toMatch(/Submitted Successfully|has been received|score|grade|Essay/i);
+    }
+    expect(message.html).toContain(`href="${link}"`);
+    expect(logger.info).toHaveBeenCalledWith({ event: 'guest_recovery_email_sent', provider: 'smtp' });
+  });
+  test('portal recovery uses the same neutral layout, with its own wording and validity in hours', async () => {
+    await email.sendRecoveryPortalEmail({ to: 'guest@example.com', link: 'https://school.example/recover/portal#t', expiresInHours: 24 });
+    const message = transport.sendMail.mock.calls[0][0];
+    expect(message.subject).toBe('Your Co-Marker access link to your submissions');
+    expect(message.text).toContain('list of all the assignments');
+    expect(message.text).toContain('24 hours');
+    expect(message.text).not.toContain('Get one link to all of them');
+  });
+  test('a failed recovery email reports failure without the recipient or the link in the log', async () => {
+    transport.sendMail.mockRejectedValueOnce(new Error(`guest@example.com ${link}`));
+    await expect(email.sendGuestRecoveryEmail({ to: 'guest@example.com', link })).resolves.toMatchObject({ success: false });
+    const logged = JSON.stringify(logger.warn.mock.calls);
+    expect(logged).not.toContain('guest@example.com');
+    expect(logged).not.toContain('private-token');
+  });
+});
+
+test('teacher-sent recovery email: neutral wording, the link and its validity; no teacher, class, title or score', async () => {
+  const link = 'https://school.example/guest/results/aaaaaaaaaaaaaaaaaaaaaaaa#teacher-token';
+  await expect(email.sendTeacherRecoveryEmail({ to: 'guest@example.com', link, expiresInDays: 30 })).resolves.toEqual({ success: true });
+  const message = transport.sendMail.mock.calls[0][0];
+  expect(message.subject).toBe('Your teacher sent you an access link to your submission');
+  expect(message.html).toContain(`href="${link}"`);
+  for (const part of [message.text, message.html]) {
+    expect(part).toContain('Your teacher sent you a new private link');
+    expect(part).toContain('30 days');
+    expect(part).toContain('https://school.example/recover');
+    expect(part).not.toMatch(/Mr\.|Ms\.|class|score|grade|Essay/i);
+  }
+  expect(logger.info).toHaveBeenCalledWith({ event: 'teacher_recovery_email_sent', provider: 'smtp' });
 });

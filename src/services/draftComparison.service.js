@@ -162,8 +162,8 @@ function compareDrafts(previous, current) {
       overall: { previousScore, currentScore: previousScore, delta: 0, status: 'UNCHANGED' },
       rubricCategories, rubricChanged: false, rubricMessage: null,
       issues: { previousCount: (previous.submission.writingCorrections || []).length,
-        currentCount: (previous.submission.writingCorrections || []).length,
-        correctedCount: 0, remainingCount: (previous.submission.writingCorrections || []).length, newIssueCount: 0 },
+        currentCount: (current.submission.writingCorrections || []).length,
+        correctedCount: 0, remainingCount: (current.submission.writingCorrections || []).length, newIssueCount: 0 },
       previousText: submissionText(previous.submission), currentText: submissionText(current.submission),
       summary: { improved: false, unchanged: true, declined: false } };
   }
@@ -183,6 +183,13 @@ function compareDrafts(previous, current) {
     summary: { improved: delta > 0, unchanged: delta === 0, declined: delta < 0 } };
 }
 
+/** Submissions or revision snapshots as the student sees them (studentCorrectionView.service). */
+async function visibleSubmissions(list, model = 'Submission', { selected = false } = {}) {
+  // selected: the query asked for +teacherAnnotations; lean() omits an absent field, which means "no overlay", not "not loaded".
+  const withOverlay = selected ? list.map((item) => ('teacherAnnotations' in item ? item : { ...item, teacherAnnotations: null })) : list;
+  return (await require('./studentCorrectionView.service').loadStudentCorrectionViews(withOverlay, { model })).map((view) => view.submission);
+}
+
 function revisionAssessment(revision) {
   return { id: revision._id, chainId: revision.sourceSubmissionId, assignmentId: revision.assignment,
     assignmentTitle: revision.assignmentTitle || null, draftNumber: revision.draftNumber, submission: revision,
@@ -197,20 +204,27 @@ function liveAssessment(submission, feedback) {
 async function authorizeSubmission(submission, user) {
   if (accessContext.isGuest(user)) return accessContext.ownsSubmission(submission, user);
   if (user?.role === 'student') return String(submission.student) === String(user._id);
-  if (user?.role === 'teacher') return Boolean(await Class.exists({ _id: submission.class, teacher: user._id }));
+  if (user?.role === 'teacher') return Boolean(await Class.exists({ _id: submission.class, teacher: user._id, isActive: { $ne: false } }));
   return false;
+}
+
+/** What a student or guest receives: no revision id and no category matching detail. Teachers get the comparison as computed. */
+function forStudent({ previousSubmissionId: _revisionId, ...result }) {
+  if (!result.rubricCategories) return result;
+  return { ...result, rubricCategories: result.rubricCategories.map(({ matchStrategy: _strategy, ...row }) => row) };
 }
 
 async function comparisonForSubmission(submissionId, user) {
   if (!mongoose.Types.ObjectId.isValid(submissionId)) throw Object.assign(new Error('Invalid submission id'), { statusCode: 400 });
   const submission = await Submission.findById(submissionId).lean();
   if (!submission) throw Object.assign(new Error('Submission not found'), { statusCode: 404 });
-  if (!await authorizeSubmission(submission, user)) throw Object.assign(new Error('Forbidden'), { statusCode: 403 });
-  if (user?.role === 'student' || accessContext.isGuest(user)) {
+  if (!await authorizeSubmission(submission, user)) throw Object.assign(new Error('Submission not found'), { statusCode: 404 });
+  const studentView = user?.role === 'student' || accessContext.isGuest(user);
+  if (studentView) {
     const assignment = await Assignment.findById(submission.assignment).select('showMarksToStudent').lean();
     if (!showMarksToStudent(assignment)) {
       return unavailable('MARKS_HIDDEN', 'Your teacher has not released marks for this assignment yet.', {
-        currentSubmissionId: String(submission._id), previousSubmissionId: ''
+        currentSubmissionId: String(submission._id)
       });
     }
   }
@@ -218,7 +232,10 @@ async function comparisonForSubmission(submissionId, user) {
     SubmissionFeedback.findOne({ submissionId: submission._id }).lean(),
     SubmissionRevision.findOne({ sourceSubmissionId: submission._id, draftNumber: { $lt: Number(submission.draftNumber) || 1 } }).sort({ draftNumber: -1 }).lean()
   ]);
-  return compareDrafts(previousRevision ? revisionAssessment(previousRevision) : null, liveAssessment(submission, feedback));
+  // Both drafts as the student sees them: teacher-hidden corrections are not counted.
+  const [current, previous] = await Promise.all([visibleSubmissions([submission]), visibleSubmissions(previousRevision ? [previousRevision] : [], 'SubmissionRevision')]);
+  const result = compareDrafts(previous[0] ? revisionAssessment(previous[0]) : null, liveAssessment(current[0], feedback));
+  return studentView ? forStudent(result) : result;
 }
 
 function progressFromHistory(entries) {
@@ -270,13 +287,13 @@ function progressFromHistory(entries) {
 }
 
 async function historiesForFilter(filter) {
-  const submissions = await Submission.find(filter).sort({ submittedAt: 1 }).lean();
+  const submissions = await visibleSubmissions(await Submission.find(filter).select('+teacherAnnotations').sort({ submittedAt: 1 }).lean(), 'Submission', { selected: true });
   if (!submissions.length) return { submissions, grouped: new Map() };
   const ids = submissions.map((item) => item._id);
   const assignmentIds = [...new Set(submissions.map((item) => String(item.assignment)).filter(Boolean))];
   const [feedback, revisions, assignments] = await Promise.all([
     SubmissionFeedback.find({ submissionId: { $in: ids } }).lean(),
-    SubmissionRevision.find({ sourceSubmissionId: { $in: ids } }).sort({ submittedAt: 1 }).lean(),
+    SubmissionRevision.find({ sourceSubmissionId: { $in: ids } }).select('+teacherAnnotations').sort({ submittedAt: 1 }).lean().then(list => visibleSubmissions(list, 'SubmissionRevision', { selected: true })),
     Assignment.find({ _id: { $in: assignmentIds } }).select('_id title').lean()
   ]);
   const assignmentTitles = new Map(assignments.map((item) => [String(item._id), item.title]));

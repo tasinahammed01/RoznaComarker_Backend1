@@ -6,10 +6,14 @@ const { runtimeContractFingerprint } = require('../src/services/runtimeContractF
 const DEFAULT_URL = 'http://localhost:5000/api/health';
 const DEFAULT_TIMEOUT_MS = 5000;
 
-function compareRuntime(expected, health, expectedRevision = '') {
+function compareRuntime(expected, health, expectedRevision = '', tokenSent = false) {
   const runtime = health?.runtime;
+  if (health?.success === true && !runtime && !tokenSent) {
+    // The public answer is the status only: the contract comes with X-Deploy-Token (HEALTH_DETAIL_TOKEN, the same value on the server and here).
+    return { ok: false, code: 'HEALTH_DETAIL_TOKEN_MISSING', message: 'Set HEALTH_DETAIL_TOKEN to the value the backend uses, so the runtime detail can be read.' };
+  }
   if (!health || health.success !== true || !runtime || typeof runtime !== 'object') {
-    return { ok: false, code: 'MALFORMED_HEALTH_RESPONSE', message: 'Runtime health response is malformed.' };
+    return { ok: false, code: 'MALFORMED_HEALTH_RESPONSE', message: tokenSent && health?.success === true ? 'Runtime detail was not returned: HEALTH_DETAIL_TOKEN does not match the backend, or the backend has none (at least 16 characters).' : 'Runtime health response is malformed.' };
   }
   if (runtime.applicationVersion !== expected.applicationVersion) {
     return { ok: false, code: 'CONTRACT_MISMATCH', message: 'Runtime application version does not match current source.' };
@@ -26,12 +30,12 @@ function compareRuntime(expected, health, expectedRevision = '') {
   return { ok: true, code: 'MATCH', message: `Runtime contract verified (${expected.contractHash}).` };
 }
 
-async function requestHealth(url, { fetchImpl = global.fetch, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+async function requestHealth(url, { fetchImpl = global.fetch, timeoutMs = DEFAULT_TIMEOUT_MS, token = '' } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(url, { method: 'GET', signal: controller.signal,
-      headers: { accept: 'application/json' } });
+      headers: { accept: 'application/json', ...(token ? { 'x-deploy-token': token } : {}) } });
     if (!response?.ok) throw new Error(`HTTP_${Number(response?.status) || 0}`);
     return await response.json();
   } finally { clearTimeout(timer); }
@@ -40,11 +44,12 @@ async function requestHealth(url, { fetchImpl = global.fetch, timeoutMs = DEFAUL
 async function verifyRuntime({ env = process.env, fetchImpl = global.fetch } = {}) {
   const url = String(env.RUNTIME_HEALTH_URL || DEFAULT_URL).trim() || DEFAULT_URL;
   const expected = runtimeContractFingerprint(env);
+  const token = String(env.HEALTH_DETAIL_TOKEN || '').trim();
   let health;
-  try { health = await requestHealth(url, { fetchImpl }); }
+  try { health = await requestHealth(url, { fetchImpl, token }); }
   catch { return { ok: false, code: 'BACKEND_UNREACHABLE', message: 'Backend health endpoint is unreachable.' }; }
   const requiredRevision = String(env.APP_DEPLOYMENT_REVISION || '').trim();
-  return compareRuntime(expected, health, requiredRevision);
+  return compareRuntime(expected, health, requiredRevision, Boolean(token));
 }
 
 async function main() {

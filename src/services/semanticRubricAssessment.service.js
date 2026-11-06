@@ -128,7 +128,7 @@ function normalizeStatisticsComment({ category, comment, issueCount, score }) {
   }
   const label = category.charAt(0) + category.slice(1).toLowerCase();
   const normalized = issueCount === 0
-    ? `This category was assessed holistically${score < 20 ? ' from the submitted writing' : ''}. No validated canonical ${label.toLowerCase()} corrections were recorded.`
+    ? 'This category was assessed from the submitted writing.'
     : `This category was assessed using ${issueCount} validated canonical ${label.toLowerCase()} correction${issueCount === 1 ? '' : 's'}.`;
   return { comment: normalized, diagnostic: Object.freeze({ category, commentNormalized: true,
     commentNormalizationReason: issueCount === 0 ? 'ZERO_CANONICAL_COUNT_CONTRADICTION'
@@ -423,8 +423,8 @@ function validateAssessment(parsed, { submissionId = null, sourceHash, transcrip
       throw semanticRubricError('SEMANTIC_RUBRIC_EVIDENCE_REQUIRED',
         'A rubric deduction requires grounded improvement evidence',
         'consistency_validation', `categories.${category}.improvementEvidence`);
-    if (score < 20 && issueCount === 0 && !/\bholistic(?:ally)?\b/iu.test(comment))
-      comment = `${comment} This is a holistic observation, not a counted correction.`;
+    // The model may use the word itself; it is not product language.
+    comment = require('./legacyFeedbackWording.service').plainText(comment);
     const conclusionClaim = category === 'ORGANIZATION' ? conclusionClaimKind(item) : null;
     if (conclusionClaim) {
       const allEvidence = [...strengthEvidence, ...improvementEvidence];

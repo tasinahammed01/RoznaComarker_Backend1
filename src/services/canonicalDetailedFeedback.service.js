@@ -46,8 +46,9 @@ function holisticEvidence(category, categoryScores, transcript) {
       evidenceId: item.evidenceId, quotedText: item.quotedText, startChar: item.startChar, endChar: item.endChar,
       explanation: clean(item.explanation), suggestion: clean(item.suggestion) }));
 }
-const holisticExplanation = evidence => 'Holistic rubric feedback; no counted local correction. '
-  + evidence.map(item => `${item.explanation} Evidence: “${item.quotedText}” Suggested: ${item.suggestion}`).join(' ');
+const holisticExplanation = evidence => evidence.map(item => `${item.explanation} Evidence: “${item.quotedText}” Suggested: ${item.suggestion}`).join(' ');
+// Stored before Task 17: still valid. The wording is removed when it is read (legacyFeedbackWording.service.js).
+const OLD_EXPLANATION_START = 'Holistic rubric feedback; no counted local correction. ';
 
 function buildDeterministicDetailedFeedback({ corrections, statistics, categoryScores, sourceHash, semanticAssessment = null, transcript }) {
   const grouped = evidenceByCategory(corrections);
@@ -58,7 +59,7 @@ function buildDeterministicDetailedFeedback({ corrections, statistics, categoryS
     if (!issueCount || !items.length) {
       const evidence = !issueCount && !items.length ? holisticEvidence(category, categoryScores, transcript) : [];
       if (evidence.length && score < maxScore) areas.push({ id: `area_${category.toLowerCase()}_holistic`, category,
-        title: `${category[0] + category.slice(1).toLowerCase()} (holistic)`, evidenceKind: 'holistic',
+        title: `${category[0] + category.slice(1).toLowerCase()}`, evidenceKind: 'holistic',
         issueCount: 0, score, maxScore, explanation: holisticExplanation(evidence),
         dominantSymbols: [], examples: [], holisticEvidence: evidence });
       continue;
@@ -91,7 +92,7 @@ function buildDeterministicDetailedFeedback({ corrections, statistics, categoryS
   const actionSteps = areas.slice(0, 5).map((area, index) => ({ id: `action_${area.category.toLowerCase()}`, priority: index + 1,
     category: area.category, action: area.evidenceKind === 'holistic' ? area.holisticEvidence[0].suggestion
       : `Revise the ${area.dominantSymbols.join('/')} correction${area.issueCount === 1 ? '' : 's'} in the highlighted passages.`,
-    reason: area.evidenceKind === 'holistic' ? 'Grounded holistic rubric guidance, without a counted local correction.'
+    reason: area.evidenceKind === 'holistic' ? 'Based on the rubric review of this writing.'
       : `${area.issueCount} canonical ${area.title.toLowerCase()} issue${area.issueCount === 1 ? '' : 's'} currently affect this category.`,
     relatedSymbols: area.dominantSymbols, relatedCorrectionIds: area.examples.map((item) => item.correctionId),
     ...(area.evidenceKind === 'holistic' ? { evidenceKind: 'holistic', relatedEvidenceIds: area.holisticEvidence.map(item => item.evidenceId) } : {}) }));
@@ -111,7 +112,7 @@ function validateDetailedFeedback(feedback, { corrections, statistics, categoryS
       if (area.issueCount !== 0 || (corrections || []).some(item => item.category === area.category)
         || area.examples?.length || area.dominantSymbols?.length || !evidence.length
         || JSON.stringify(area.holisticEvidence) !== JSON.stringify(evidence)
-        || area.explanation !== holisticExplanation(evidence)) return null;
+        || ![holisticExplanation(evidence), OLD_EXPLANATION_START + holisticExplanation(evidence)].includes(area.explanation)) return null;
     }
     for (const example of area.examples || []) { const correction = ids.get(String(example.correctionId));
       if (!correction || example.quotedText !== clean(correction.quotedText, 140) || example.symbol !== correction.symbol) return null; }

@@ -2,7 +2,7 @@
 const router = require('express').Router();
 const controller = require('../controllers/guestSubmission.controller');
 const { requireGuestAccess } = require('../services/guestAccess.service');
-const { createSensitiveRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createSensitiveRateLimiter, createEmailRateLimiter } = require('../middlewares/rateLimit.middleware');
 const { upload, setUploadType, handleUploadError, validateUploadedFileSignature } = require('../middlewares/upload.middleware');
 const { enforceImagePreflight } = require('../middlewares/imagePreflight.middleware');
 const diagnostic=require('../utils/guestPreflightDiagnostics');
@@ -19,12 +19,20 @@ router.get('/assignments/:qrToken', controller.entry);
 router.post('/assignments/:qrToken/image-preflight', createSensitiveRateLimiter({ limit: 40, windowMs: 15 * 60 * 1000, reason: 'guest_preflight' }),
   diagnostic.stage('guest_context'),controller.prepare, setUploadType('submissions'),diagnostic.stage('image_input'), upload.single('file'), handleUploadError,
   diagnostic.stage('image_signature'),validateUploadedFileSignature,diagnostic.stage('preflight'), require('../middlewares/imagePreflight.middleware').preflightImage);
-router.post('/assignments/:qrToken/recover', createSensitiveRateLimiter({ limit: 5, windowMs: 15 * 60 * 1000, reason: 'guest_recovery' }), controller.recover);
-router.post('/submissions/:submissionId/recover', createSensitiveRateLimiter({ limit: 5, windowMs: 15 * 60 * 1000, reason: 'guest_recovery' }), controller.recover);
+// Link resend. One IP budget for both paths (generous: a class often shares one school IP) plus a per-address request limit; the
+// emails themselves are limited per address by the shared atomic cool-down and hourly cap (recoveryEmailQuota.service).
+const recoveryIpLimit = createSensitiveRateLimiter({ limit: 20, windowMs: 15 * 60 * 1000, reason: 'guest_recovery' });
+const recoveryEmailLimit = createEmailRateLimiter({ limit: require('../services/recoveryEmailQuota.service').config().requestsPerHour,
+  windowMs: 60 * 60 * 1000, reason: 'guest_recovery_email' });
+router.post('/assignments/:qrToken/recover', recoveryIpLimit, recoveryEmailLimit, controller.recover);
+router.post('/submissions/:submissionId/recover', recoveryIpLimit, recoveryEmailLimit, controller.recover);
 router.post('/assignments/:qrToken/submit', createSensitiveRateLimiter({ limit: 10, windowMs: 15 * 60 * 1000, reason: 'guest_upload' }),
   controller.prepare, setUploadType('submissions'), upload.array('files', 20), handleUploadError,
   validateUploadedFileSignature, enforceImagePreflight, controller.submit);
 router.get('/submissions/:submissionId', requireGuestAccess, controller.results);
+// Task 20: retry the failed correction stage only. Needs the submission's own link (a read-only portal session is refused by requireGuestAccess).
+router.post('/submissions/:submissionId/corrections/retry', createSensitiveRateLimiter({ limit: 10, windowMs: 15 * 60 * 1000, reason: 'guest_correction_retry' }),
+  requireGuestAccess, require('../controllers/submission.controller').retryCorrectionStage);
 router.post('/submissions/:submissionId/image-preflight', createSensitiveRateLimiter({ limit: 40, windowMs: 15 * 60 * 1000, reason: 'guest_revision_preflight' }),
   requireGuestAccess,diagnostic.stage('guest_context'), controller.prepareRevisionPreview, setUploadType('submissions'),diagnostic.stage('image_input'), upload.single('file'), handleUploadError,
   diagnostic.stage('image_signature'),validateUploadedFileSignature, controller.bindRevisionIdentity,diagnostic.stage('preflight'), require('../middlewares/imagePreflight.middleware').preflightImage);
