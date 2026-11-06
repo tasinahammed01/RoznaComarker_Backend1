@@ -263,6 +263,7 @@ function parseJson(value, expectedHash, attemptMeta = {}, expectedCategories = C
   }
   if (parsed?.reviewContract !== undefined) parsed = compactWire.expand(parsed,
     attemptMeta.legend || compactSemanticLegend(defaultLegend(), expectedCategories));
+  const overlongFindingsDropped = Number(parsed?.overlongFindingsDropped || 0);
   if (!expectedHash || parsed?.transcriptHash !== expectedHash)
     throw semanticError('SEMANTIC_SOURCE_MISMATCH', 'source_hash', 'Semantic analysis did not confirm the complete transcript hash');
   const symbolReviewCoverage = validateSemanticContract(parsed, expectedCategories, expectedSymbols, attemptMeta, coverageSource);
@@ -276,7 +277,7 @@ function parseJson(value, expectedHash, attemptMeta = {}, expectedCategories = C
   const categoryReviewNormalizations = validateCategoryReviews(categoryReviews, corrections, attemptMeta, expectedCategories);
   return { transcriptHash: parsed.transcriptHash, corrections, categoryReviews,
     symbolReviewCoverage,
-    compatibilityDiagnostics: { legacyFindingCountIgnored: false, categoryReviewNormalizations } };
+    compatibilityDiagnostics: { legacyFindingCountIgnored: false, categoryReviewNormalizations, overlongFindingsDropped } };
 }
 
 function contractError({ jsonPath, expected, actual, category = null, symbol = null,

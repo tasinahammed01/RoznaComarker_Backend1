@@ -47,11 +47,17 @@ test.each([
   v=>{v.categories.MECHANICS.corrections[0].explanation='extra';return v;},
   v=>{delete v.categories.MECHANICS.corrections[0].message;return v;},
   v=>{v.categories.MECHANICS.corrections[0].message=' ';return v;},
-  v=>{v.categories.MECHANICS.corrections[0].message='x'.repeat(241);return v;},
   v=>{v.categories.MECHANICS.corrections[0].message=42;return v;}
 ])('malformed/partial/unknown/type/extra correction output fails complete schema',async mutate=>{
   const value=mutate(payload('synthetic',[finding('MECHANICS','SP','mispell',{suggestedText:'misspell'})]));
   await expect(analyze('mispell',[],{fetchImpl:jest.fn(async()=>response(value))})).rejects.toBeDefined();
+});
+
+// Task 20: a well-formed finding that only exceeds a length limit is left out and counted; the rest of the reply is kept (was: whole reply rejected).
+test('an over-long explanation drops only that finding, never the whole review',async()=>{
+  const value=payload('synthetic',[finding('MECHANICS','SP','mispell',{suggestedText:'misspell',message:'x'.repeat(241)}),finding('MECHANICS','CAP','monday',{suggestedText:'Monday'})]);
+  const {result}=await analyze('mispell monday',[],{fetchImpl:jest.fn(async()=>response(value))});
+  expect(result.corrections.map(c=>c.symbol)).toEqual(['CAP']);
 });
 
 test('Gemini requires and preserves the model educational explanation without a server-generated substitute',async()=>{
