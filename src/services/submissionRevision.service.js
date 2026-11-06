@@ -11,7 +11,8 @@ async function captureCurrentRevision(submission) {
   const draftNumber = Math.max(1, Number(submission?.draftNumber) || 1);
   const existing = await SubmissionRevision.findOne({ sourceSubmissionId: submission._id, draftNumber });
   if (existing) return existing;
-  const feedback = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
+  // Phase B2: the teacher's record travels with the draft it was written for (draft comparison reads the final values from it).
+  const feedback = await SubmissionFeedback.findOne({ submissionId: submission._id }).select('+teacherEvaluation').lean();
   // The overlay is read here, not from the caller's document, so a draft snapshot always keeps the teacher's decisions.
   const overlay = (await require('../models/Submission').findById(submission._id).select('teacherAnnotations').lean())?.teacherAnnotations;
   return SubmissionRevision.findOneAndUpdate(

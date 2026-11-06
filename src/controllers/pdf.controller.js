@@ -108,9 +108,10 @@ async function downloadSubmissionPdf(req, res, next) {
     // Do not rely on `submission.feedback` being present/populated.
     const feedback = await Feedback.findOne({ submission: submission._id });
 
-    const submissionFeedback = await SubmissionFeedback.findOne({
+    // Phase B2: the PDF shows the teacher's final values (and its cache key follows them).
+    const submissionFeedback = require('../services/teacherEvaluation.service').finalFeedback(await SubmissionFeedback.findOne({
       submissionId: submission._id,
-    }).lean();
+    }).select('+teacherEvaluation').lean(), submission);
 
     const studentEmail =
       submission.student && typeof submission.student === "object"

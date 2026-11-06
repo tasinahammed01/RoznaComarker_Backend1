@@ -185,7 +185,11 @@ const submissionFeedbackSchema = new Schema(
     scoringAudit: { type: Schema.Types.Mixed, default: undefined },
 
     // Teacher override tracking.
-    overriddenByTeacher: { type: Boolean, default: false }
+    overriddenByTeacher: { type: Boolean, default: false },
+
+    // Phase B2: the teacher's edits of this draft's scores and comments, with history (services/teacherEvaluation.service.js). The AI fields
+    // above are never changed by it. Teacher-only: never selected unless asked for, and removed from every student response.
+    teacherEvaluation: { type: Schema.Types.Mixed, default: undefined, select: false }
   },
   {
     timestamps: true,

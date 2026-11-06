@@ -718,6 +718,8 @@ async function createAssignment(req, res) {
     if (typeof allowResubmission !== 'undefined' && typeof allowResubmission !== 'boolean') {
       return sendError(res, 400, 'allowResubmission must be a boolean');
     }
+    let createMaxDrafts;
+    try { createMaxDrafts = require('../services/draftLimit.service').parseFromBody(req.body); } catch (error) { return sendError(res, 400, error.message, error.code); }
     if (typeof requireAdaptiveBeforeResubmission !== 'undefined' && typeof requireAdaptiveBeforeResubmission !== 'boolean') {
       return sendError(res, 400, 'requireAdaptiveBeforeResubmission must be a boolean');
     }
@@ -773,7 +775,8 @@ async function createAssignment(req, res) {
           allowLateResubmission: typeof allowLateResubmission === 'boolean' ? allowLateResubmission : undefined,
           showMarksToStudent: typeof showMarksToStudent === 'boolean' ? showMarksToStudent : undefined,
           allowResubmission: resolvedResourceType === 'essay' && allowResubmission === true,
-          requireAdaptiveBeforeResubmission: resolvedResourceType === 'essay' && allowResubmission === true && requireAdaptiveBeforeResubmission === true
+          requireAdaptiveBeforeResubmission: resolvedResourceType === 'essay' && allowResubmission === true && requireAdaptiveBeforeResubmission === true,
+          ...(typeof createMaxDrafts === 'number' && resolvedResourceType === 'essay' && allowResubmission === true ? { maxDrafts: createMaxDrafts } : {})
         });
 
         await incrementUsage(teacherId, { assignments: 1 });
@@ -963,6 +966,13 @@ async function updateAssignment(req, res) {
     }
     if (!capabilities.allowResubmission) assignment.allowResubmission = false;
     if (!capabilities.requireAdaptiveBeforeResubmission || assignment.allowResubmission !== true) assignment.requireAdaptiveBeforeResubmission = false;
+    // Draft limit (flag on only): set or cleared by the owning teacher here; dropped when another draft is not allowed.
+    if (require('../services/draftLimit.service').enabled()) {
+      let maxDrafts;
+      try { maxDrafts = require('../services/draftLimit.service').parseFromBody(req.body); } catch (error) { return sendError(res, 400, error.message, error.code); }
+      if (maxDrafts !== undefined) assignment.maxDrafts = maxDrafts === null ? undefined : maxDrafts;
+      if (assignment.allowResubmission !== true) assignment.maxDrafts = undefined;
+    }
 
     const saved = await assignment.save();
 
@@ -1538,7 +1548,7 @@ async function getMyAssignments(req, res) {
 
     const filteredAssignments = await filterAssignmentsWithAvailableResources(assignments);
 
-    return sendSuccess(res, filteredAssignments.map(item => assignmentForStudent(item)));
+    return sendSuccess(res, filteredAssignments.map(item => require('../services/draftLimit.service').forStudent(assignmentForStudent(item))));
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch assignments');
   }
@@ -1586,7 +1596,7 @@ async function getAssignmentById(req, res) {
       return sendError(res, 403, 'Forbidden');
     }
 
-    return sendSuccess(res, assignmentForStudent(filteredAssignment));
+    return sendSuccess(res, require('../services/draftLimit.service').forStudent(assignmentForStudent(filteredAssignment)));
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch assignment');
   }
@@ -1876,6 +1886,7 @@ async function duplicateAssignment(req, res) {
       allowResubmission: source.resourceType === 'essay' && source.allowResubmission === true,
       requireAdaptiveBeforeResubmission: source.resourceType === 'essay'
         && source.allowResubmission === true && source.requireAdaptiveBeforeResubmission === true,
+      ...(source.resourceType === 'essay' && source.allowResubmission === true && Number.isInteger(source.maxDrafts) ? { maxDrafts: source.maxDrafts } : {}),
       isActive: true
     };
 
@@ -1971,7 +1982,7 @@ async function getAssignmentByQrToken(req, res) {
       return sendError(res, 403, 'Forbidden');
     }
 
-    return sendSuccess(res, assignmentForStudent(filteredAssignment));
+    return sendSuccess(res, require('../services/draftLimit.service').forStudent(assignmentForStudent(filteredAssignment)));
   } catch (err) {
     return sendError(res, 500, 'Failed to resolve assignment QR');
   }
@@ -2010,7 +2021,11 @@ async function retryStaleEvaluations(req, res) {
   }
 }
 
+/** GET /api/assignments/draft-limit/config: whether the assignment form offers "Maximum drafts", and its bounds. */
+function getDraftLimitConfig(_req, res) { return sendSuccess(res, require('../services/draftLimit.service').config()); }
+
 module.exports = {
+  getDraftLimitConfig,
   createAssignment,
   duplicateAssignment,
   updateAssignment,

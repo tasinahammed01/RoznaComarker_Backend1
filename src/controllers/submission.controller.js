@@ -456,14 +456,16 @@ async function enforceResubmissionPermission(req, res, next) {
     if (!studentId) return sendError(res, 401, 'Unauthorized');
 
     const assignment = req.params?.assignmentId
-      ? await Assignment.findOne({ _id: req.params.assignmentId, isActive: true }).select('allowResubmission requireAdaptiveBeforeResubmission')
-      : await Assignment.findOne({ qrToken: String(req.params?.qrToken || '').trim(), isActive: true }).select('allowResubmission requireAdaptiveBeforeResubmission');
+      ? await Assignment.findOne({ _id: req.params.assignmentId, isActive: true }).select('allowResubmission requireAdaptiveBeforeResubmission maxDrafts')
+      : await Assignment.findOne({ qrToken: String(req.params?.qrToken || '').trim(), isActive: true }).select('allowResubmission requireAdaptiveBeforeResubmission maxDrafts');
     if (!assignment) return next();
 
-    const existing = await Submission.exists({ student: studentId, assignment: assignment._id });
+    const existing = await Submission.findOne({ student: studentId, assignment: assignment._id }).select('_id draftNumber').lean();
     if (existing && assignment.allowResubmission !== true) {
       return sendError(res, 403, 'Another draft is not allowed for this assignment', 'RESUBMISSION_NOT_ALLOWED');
     }
+    const draftLimit = require('../services/draftLimit.service');
+    if (existing && draftLimit.limitReached(assignment, existing)) return sendError(res, 403, draftLimit.MESSAGE, draftLimit.CODE);
     if (existing && assignment.requireAdaptiveBeforeResubmission === true) {
       const completion = await getAdaptiveCompletionForResubmission(existing._id, studentId);
       if (!completion.completed) return sendError(res, 403, ADAPTIVE_RESUBMISSION_MESSAGE, 'ADAPTIVE_PRACTICE_REQUIRED');
@@ -556,6 +558,12 @@ async function upsertSubmissionLocked({ req, res, assignment, qrToken }) {
     await cleanupUnpersistedRequestFiles(req);
     return sendError(res, 403, 'Another draft is not allowed for this assignment', 'RESUBMISSION_NOT_ALLOWED');
   }
+  // Draft limit: the one place every new draft (registered and guest) passes through. The save below is also guarded on the draft number.
+  const draftLimit = require('../services/draftLimit.service');
+  if (existing && draftLimit.limitReached(assignment, existing)) {
+    await cleanupUnpersistedRequestFiles(req);
+    return sendError(res, 403, draftLimit.MESSAGE, draftLimit.CODE);
+  }
   if (existing && assignment.requireAdaptiveBeforeResubmission === true) {
     const completion = await getAdaptiveCompletionForResubmission(existing._id, guestRevision ? req.guestAccessContext : studentId);
     if (!completion.completed) {
@@ -623,7 +631,11 @@ async function upsertSubmissionLocked({ req, res, assignment, qrToken }) {
       existing.isLate = isLate;
       existing.qrToken = qrToken;
       existing.previousRevision = previousRevision._id;
+      const draftNumberRead = existing.draftNumber;
       existing.draftNumber = Math.max(1, Number(existing.draftNumber) || 1) + 1;
+      // Draft limit on: the save only goes through if no other request moved the chain to this draft first (two uploads at the same moment
+      // cannot both pass the limit check and both become the next draft).
+      if (draftLimit.enabled()) existing.$where = { draftNumber: draftNumberRead === undefined ? { $exists: false } : draftNumberRead };
       existing.fileContentIdentity = contentIdentity;
       const teacher = await User.findById(classDoc.teacher).select('aiConfig').lean();
       const normalizedRubric = normalizeAssignmentRubric(assignment || {});
@@ -707,7 +719,12 @@ async function upsertSubmissionLocked({ req, res, assignment, qrToken }) {
         existing.guest.resultEmailNextAttemptAt = undefined;
       }
       if(!guestRevision)existing.registeredRequestKey=req.registeredRequestKey;
-      const saved = await existing.save();
+      let saved;
+      try { saved = await existing.save(); } catch (error) {
+        if (error?.name !== 'DocumentNotFoundError' || !draftLimit.enabled()) throw error;
+        await cleanupUnpersistedRequestFiles(req);
+        return sendError(res, 409, 'Another draft was submitted at the same time. Reload the page and try again.', 'DRAFT_SUBMITTED_CONCURRENTLY');
+      }
       if (guestRevision) req.guestCommitted = true;
       if (reusableCorrections && previousFeedback) {
         const mapped = remapDraftFileReferences(previousFeedback, previousFileIds, persistedFiles.map(file => String(file._id)));
@@ -1236,7 +1253,8 @@ async function getOcrCorrections(req, res) {
         rasterHash: stored?.rasterHash || null, rasterizationVersion: stored?.rasterizationVersion || null,
         words: words.map((w) => ({ id: w.id, fileId, ...(preserveSourceTokens ? { page: w.page } : {}), text: w.text, bbox: w.bbox, separatorBefore: separators.get(w.id) || '' })), lines: [] };
     }));
-    const evaluationDoc = kind === 'submission' ? await SubmissionFeedback.findOne({ submissionId: doc._id }).lean() : null;
+    const evaluationDoc = kind === 'submission'
+      ? require('../services/teacherEvaluation.service').finalFeedback(await SubmissionFeedback.findOne({ submissionId: doc._id }).select('+teacherEvaluation').lean(), doc) : null;
     // Teachers and students both get the student-visible set here; the teacher's full list is the teacher-annotations snapshot.
     const view = kind === 'submission' ? await studentCorrectionView.loadStudentCorrectionView(doc)
       : studentCorrectionView.buildStudentCorrectionView(doc, { overlay: null });
@@ -1499,9 +1517,12 @@ async function retryCanonicalEvaluation(req, res) {
 
 async function getDraftComparison(req, res) {
   try {
-    return sendSuccess(res, await draftComparison.comparisonForSubmission(req.params.submissionId, req.user));
+    const againstDraft = draftComparison.parseAgainstDraft(req.query?.againstDraft);
+    return sendSuccess(res, await draftComparison.comparisonForSubmission(req.params.submissionId, req.user, { againstDraft }));
   } catch (error) {
-    return sendError(res, error?.statusCode || 500, error?.message || 'Failed to compare drafts');
+    // The draft selector's codes (INVALID_DRAFT_NUMBER, DRAFT_NOT_FOUND) only; other errors answer as before (no code).
+    const code = ['INVALID_DRAFT_NUMBER', 'DRAFT_NOT_FOUND'].includes(error?.code) ? error.code : undefined;
+    return sendError(res, error?.statusCode || 500, error?.message || 'Failed to compare drafts', code);
   }
 }
 
