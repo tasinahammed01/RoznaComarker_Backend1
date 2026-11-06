@@ -93,6 +93,8 @@ describe('registered students and the teacher setting', () => {
     const shown = await request(app).get(`/api/assignments/${a._id}`).set('Authorization', `Bearer ${studentToken}`);
     expect(shown.status).toBe(200);
     expect(shown.body.data).not.toHaveProperty('maxDrafts');
+    const listed = (await request(app).get('/api/assignments/my').set('Authorization', `Bearer ${studentToken}`)).body.data;
+    expect(listed.find(item => String(item._id) === String(a._id))).not.toHaveProperty('maxDrafts');
   });
   test('teacher setting: validated 2..10, cleared when another draft is not allowed; students cannot set it; students see the effective value', async () => {
     const a = await createAssignment();
@@ -103,6 +105,8 @@ describe('registered students and the teacher setting', () => {
     expect((await patch(a._id, { maxDrafts: 4 }, studentToken)).status).toBe(403);
     const shown = (await request(app).get(`/api/assignments/${a._id}`).set('Authorization', `Bearer ${studentToken}`)).body.data;
     expect(shown.maxDrafts).toBe(5);
+    const listed = (await request(app).get('/api/assignments/my').set('Authorization', `Bearer ${studentToken}`)).body.data;
+    expect(listed.find(item => String(item._id) === String(a._id)).maxDrafts).toBe(5);
     expect((await patch(a._id, { allowResubmission: false })).status).toBe(200);
     expect((await Assignment.findById(a._id).lean()).maxDrafts).toBeUndefined();
     const config = await request(app).get('/api/assignments/draft-limit/config').set('Authorization', `Bearer ${teacherToken}`);

@@ -1548,7 +1548,7 @@ async function getMyAssignments(req, res) {
 
     const filteredAssignments = await filterAssignmentsWithAvailableResources(assignments);
 
-    return sendSuccess(res, filteredAssignments.map(item => assignmentForStudent(item)));
+    return sendSuccess(res, filteredAssignments.map(item => require('../services/draftLimit.service').forStudent(assignmentForStudent(item))));
   } catch (err) {
     return sendError(res, 500, 'Failed to fetch assignments');
   }
