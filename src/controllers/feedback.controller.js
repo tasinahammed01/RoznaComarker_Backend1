@@ -878,9 +878,10 @@ async function getSubmissionFeedback(req, res) {
       return sendError(res, 403, "Forbidden");
     }
 
-    let feedback = await SubmissionFeedback.findOne({
+    // Phase B2: the teacher's final values (if any, for this draft) replace the AI values here, for every reader of this response.
+    let feedback = require('../services/teacherEvaluation.service').finalFeedback(await SubmissionFeedback.findOne({
       submissionId: submission._id,
-    }).lean();
+    }).select('+teacherEvaluation').lean(), submission);
     const legacyFeedback = await Feedback.findOne({ submission: submission._id })
       .select("teacherComments textFeedback")
       .lean();

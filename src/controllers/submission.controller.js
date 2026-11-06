@@ -1236,7 +1236,8 @@ async function getOcrCorrections(req, res) {
         rasterHash: stored?.rasterHash || null, rasterizationVersion: stored?.rasterizationVersion || null,
         words: words.map((w) => ({ id: w.id, fileId, ...(preserveSourceTokens ? { page: w.page } : {}), text: w.text, bbox: w.bbox, separatorBefore: separators.get(w.id) || '' })), lines: [] };
     }));
-    const evaluationDoc = kind === 'submission' ? await SubmissionFeedback.findOne({ submissionId: doc._id }).lean() : null;
+    const evaluationDoc = kind === 'submission'
+      ? require('../services/teacherEvaluation.service').finalFeedback(await SubmissionFeedback.findOne({ submissionId: doc._id }).select('+teacherEvaluation').lean(), doc) : null;
     // Teachers and students both get the student-visible set here; the teacher's full list is the teacher-annotations snapshot.
     const view = kind === 'submission' ? await studentCorrectionView.loadStudentCorrectionView(doc)
       : studentCorrectionView.buildStudentCorrectionView(doc, { overlay: null });

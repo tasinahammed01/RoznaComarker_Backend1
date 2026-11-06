@@ -301,7 +301,7 @@ const results = endpoint(async (req, res) => {
   const doc = req.guestSubmission;
   const assignment = await Assignment.findById(doc.assignment);
   if (!assignment?.isActive) throw access.fail(404, 'Results unavailable.');
-  const feedback = await Feedback.findOne({ submissionId: doc._id }).lean();
+  const feedback = require('../services/teacherEvaluation.service').finalFeedback(await Feedback.findOne({ submissionId: doc._id }).select('+teacherEvaluation').lean(), doc);
   const corrections = require('../services/studentCorrectionView.service');
   const view = await corrections.loadStudentCorrectionView(doc);
   const { status, state, ready } = require('../services/canonicalResultState.service').guestResultStatus({ submission: view.submission, feedback });

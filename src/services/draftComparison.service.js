@@ -8,6 +8,8 @@ const SubmissionFeedback = require('../models/SubmissionFeedback');
 const SubmissionRevision = require('../models/SubmissionRevision');
 const { showMarksToStudent } = require('./assignmentAccessPolicy.service');
 
+// Phase B2: every draft is compared on the scores the student was shown (the teacher's final values, when there are any).
+const { finalFeedback } = require('./teacherEvaluation.service');
 const normalize = (value) => String(value || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
 const round = (value) => Math.round(Number(value) * 100) / 100;
@@ -193,11 +195,11 @@ async function visibleSubmissions(list, model = 'Submission', { selected = false
 function revisionAssessment(revision) {
   return { id: revision._id, chainId: revision.sourceSubmissionId, assignmentId: revision.assignment,
     assignmentTitle: revision.assignmentTitle || null, draftNumber: revision.draftNumber, submission: revision,
-    feedback: revision.feedbackSnapshot || null, assessedAt: revision.assessmentCompletedAt || revision.feedbackSnapshot?.updatedAt || revision.submittedAt };
+    feedback: finalFeedback(revision.feedbackSnapshot || null, revision), assessedAt: revision.assessmentCompletedAt || revision.feedbackSnapshot?.updatedAt || revision.submittedAt };
 }
 function liveAssessment(submission, feedback) {
   return { id: submission._id, chainId: submission._id, assignmentId: submission.assignment,
-    assignmentTitle: submission.assignmentTitle || null, draftNumber: Number(submission.draftNumber) || 1, submission, feedback,
+    assignmentTitle: submission.assignmentTitle || null, draftNumber: Number(submission.draftNumber) || 1, submission, feedback: finalFeedback(feedback, submission),
     assessedAt: submission.assessmentCompletedAt || feedback?.updatedAt || submission.submittedAt };
 }
 
@@ -229,7 +231,7 @@ async function comparisonForSubmission(submissionId, user) {
     }
   }
   const [feedback, previousRevision] = await Promise.all([
-    SubmissionFeedback.findOne({ submissionId: submission._id }).lean(),
+    SubmissionFeedback.findOne({ submissionId: submission._id }).select('+teacherEvaluation').lean(),
     SubmissionRevision.findOne({ sourceSubmissionId: submission._id, draftNumber: { $lt: Number(submission.draftNumber) || 1 } }).sort({ draftNumber: -1 }).lean()
   ]);
   // Both drafts as the student sees them: teacher-hidden corrections are not counted.
@@ -292,7 +294,7 @@ async function historiesForFilter(filter) {
   const ids = submissions.map((item) => item._id);
   const assignmentIds = [...new Set(submissions.map((item) => String(item.assignment)).filter(Boolean))];
   const [feedback, revisions, assignments] = await Promise.all([
-    SubmissionFeedback.find({ submissionId: { $in: ids } }).lean(),
+    SubmissionFeedback.find({ submissionId: { $in: ids } }).select('+teacherEvaluation').lean(),
     SubmissionRevision.find({ sourceSubmissionId: { $in: ids } }).select('+teacherAnnotations').sort({ submittedAt: 1 }).lean().then(list => visibleSubmissions(list, 'SubmissionRevision', { selected: true })),
     Assignment.find({ _id: { $in: assignmentIds } }).select('_id title').lean()
   ]);

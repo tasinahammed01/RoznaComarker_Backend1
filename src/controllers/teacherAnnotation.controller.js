@@ -195,4 +195,4 @@ const preview = endpoint(async (req, res) => {
     feedback: feedback.body?.data ?? null, feedbackStatus: feedback.status } });
 });
 
-module.exports = { get, history, mutate, bulk, scoreReview, preview };
+module.exports = { get, history, mutate, bulk, scoreReview, preview, authorized };

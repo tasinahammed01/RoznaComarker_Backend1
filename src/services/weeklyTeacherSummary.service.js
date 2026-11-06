@@ -6,6 +6,7 @@ const Membership = require('../models/membership.model');
 const Submission = require('../models/Submission');
 const SubmissionRevision = require('../models/SubmissionRevision');
 const SubmissionFeedback = require('../models/SubmissionFeedback');
+const { finalFeedback } = require('./teacherEvaluation.service');
 const AssessmentRun = require('../models/AssessmentRun');
 const AdaptivePracticeSession = require('../models/AdaptivePracticeSession');
 const User = require('../models/user.model');
@@ -29,7 +30,7 @@ function resolveWindow(endValue = new Date()) {
 function assessedEntry(document, feedback, live = false) {
   return { id: document._id, chainId: live ? document._id : document.sourceSubmissionId,
     assignmentId: document.assignment, draftNumber: Number(document.draftNumber) || 1,
-    submission: document, feedback: live ? feedback : document.feedbackSnapshot,
+    submission: document, feedback: finalFeedback(live ? feedback : document.feedbackSnapshot, document),
     assessedAt: document.assessmentCompletedAt || (live ? feedback?.updatedAt : document.feedbackSnapshot?.updatedAt) || document.submittedAt };
 }
 
@@ -50,7 +51,7 @@ async function progressForWindow({ teacherId, classIds, assignmentIds, start, en
     Submission.find({ _id: { $in: chainIds }, ...scope }).lean().then((list) => visible.loadStudentCorrectionViews(list)).then((views) => views.map((v) => v.submission)),
     SubmissionRevision.find({ sourceSubmissionId: { $in: chainIds } }).sort({ draftNumber: 1 }).lean()
       .then((list) => visible.loadStudentCorrectionViews(list, { model: 'SubmissionRevision' })).then((views) => views.map((v) => v.submission)),
-    SubmissionFeedback.find({ submissionId: { $in: chainIds } }).lean()
+    SubmissionFeedback.find({ submissionId: { $in: chainIds } }).select('+teacherEvaluation').lean()
   ]);
   const feedbackById = new Map(feedbacks.map((x) => [String(x.submissionId), x]));
   const entriesByChain = new Map(chainIds.map((id) => [id, []]));
