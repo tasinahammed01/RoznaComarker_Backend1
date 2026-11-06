@@ -1401,6 +1401,36 @@ async function regenerateCanonicalCorrections(req, res) {
   } catch (err) { return sendError(res, err?.statusCode || 500, err?.message || 'Failed to regenerate corrections'); }
 }
 
+/**
+ * Task 20: the visible "Retry analysis" action after the correction stage failed. Teacher (owner), student (owner) and guest (own link). It retries
+ * the correction stage only: no credit check and no charge, because the assessment was already completed and charged once, and it never re-scores.
+ * Anyone who is not the owner gets 404. Idempotent: a second request while one runs answers 409 CORRECTION_RETRY_IN_PROGRESS.
+ */
+async function retryCorrectionStage(req, res) {
+  try {
+    const submissionId = req.params?.submissionId;
+    if (!mongoose.Types.ObjectId.isValid(submissionId)) return sendError(res, 404, 'Submission not found');
+    const submission = await Submission.findById(submissionId).select('student class submissionMode').lean();
+    if (!submission) return sendError(res, 404, 'Submission not found');
+    if (submissionAccess.isGuest(req.guestAccessContext)) {
+      if (!submissionAccess.ownsSubmission(submission, req.guestAccessContext)) return sendError(res, 404, 'Submission not found');
+    } else if (req.user?.role === 'student') {
+      if (String(submission.student) !== String(req.user._id)) return sendError(res, 404, 'Submission not found');
+    } else if (req.user?.role === 'teacher') {
+      try { await uploadService.assertTeacherOwnsClassOrThrow(req.user._id, submission.class); }
+      catch { return sendError(res, 404, 'Submission not found'); }
+    } else return sendError(res, 404, 'Submission not found');
+    const started = await require('../services/correctionStageRetry.service').startManual(Submission, submission._id);
+    if (!started.started) return res.status(409).json({ success: false, code: started.code,
+      message: started.code === 'CORRECTION_RETRY_IN_PROGRESS' ? 'Corrections are already being retried.'
+        : started.code === 'CORRECTION_RETRY_LIMIT_REACHED' ? 'Corrections could not be completed. Please ask your teacher for help.'
+          : 'This analysis cannot be retried now.',
+      data: { correctionRetryActive: started.code === 'CORRECTION_RETRY_IN_PROGRESS', correctionRetryAllowed: false } });
+    return res.status(202).json({ success: true, data: { correctionRetryActive: true, correctionRetryAllowed: false, processingActive: true,
+      automaticPollingAllowed: true, manualRetryAllowed: false, terminal: false } });
+  } catch (err) { return sendError(res, 500, 'Failed to retry corrections'); }
+}
+
 async function retryCanonicalEvaluation(req, res) {
   try {
     const submission = await Submission.findById(req.params.submissionId);
@@ -1484,6 +1514,7 @@ module.exports = {
   removeSubmission,
   getOcrCorrections,
   regenerateCanonicalCorrections,
+  retryCorrectionStage,
   retryCanonicalEvaluation,
   getDraftComparison,
   uploadHandwrittenForOcr,

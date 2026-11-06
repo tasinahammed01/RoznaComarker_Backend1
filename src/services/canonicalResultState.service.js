@@ -147,14 +147,19 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
     : detailedCurrent
     ? String(feedback?.detailedFeedback?.status || 'completed')
     : feedback?.detailedFeedback ? 'stale' : 'blocked';
-  const processingActive = !ocrFailed && (['pending', 'processing'].includes(String(submission.ocrStatus || 'completed'))
+  const analysisProcessing = !ocrFailed && (['pending', 'processing'].includes(String(submission.ocrStatus || 'completed'))
     || correctionPending || semanticProcessing || evaluationProcessing);
+  // Task 20: a correction-only retry after a failed correction stage. The page keeps polling for the corrections; the score is not being changed.
+  const correctionStageRetry = require('./correctionStageRetry.service');
+  const correctionRetryActive = layoutCurrent && !ocrFailed && correctionStageRetry.active(submission);
+  const correctionRetryAllowed = layoutCurrent && !ocrFailed && !analysisProcessing && correctionStageRetry.manualAllowed(submission);
+  const processingActive = analysisProcessing || correctionRetryActive;
   const terminal = !processingActive && (teacherOverride || evaluationCurrent || ocrFailed || semanticFailed
     || ['failed', 'stale'].includes(evaluationStatus));
   const automaticPollingAllowed = processingActive && !terminal;
   const semanticErrorCode = submission.semanticErrorCode || safeErrorCode(submission.correctionError);
   const nonRetryableConfigurationFailure = semanticErrorCode === 'AI_PROVIDER_NOT_CONFIGURED';
-  const manualRetryAllowed = !nonRetryableConfigurationFailure && (semanticFailed
+  const manualRetryAllowed = !nonRetryableConfigurationFailure && !correctionRetryActive && (semanticFailed
     || ['failed', 'stale'].includes(evaluationStatus) || invalidCanonicalFeedback);
   const staleReason = !teacherOverride && !evaluationProcessing && semanticComplete
     && ['completed', 'partial', 'stale'].includes(persistedEvaluationStatus)
@@ -175,7 +180,7 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
             : null;
   const evaluationFreshness = teacherOverride
     ? 'overridden'
-    : evaluationProcessing || processingActive
+    : evaluationProcessing || analysisProcessing
       ? 'processing'
       : persistedEvaluationStatus === 'failed'
         ? 'failed'
@@ -209,6 +214,8 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
     processingActive,
     automaticPollingAllowed,
     manualRetryAllowed,
+    correctionRetryActive,
+    correctionRetryAllowed,
     terminal,
     evaluationBlockedReason: evaluationStatus === 'blocked' ? 'corrections_incomplete' : null,
     detailedFeedbackBlockedReason: detailedFeedbackStatus === 'blocked' ? (semanticFailed ? 'evaluation_unavailable' : 'evaluation_unavailable') : null,

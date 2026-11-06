@@ -364,6 +364,11 @@ router.post('/:submissionId/ocr-corrections/regenerate', createSensitiveRateLimi
   param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult,
   submissionController.regenerateCanonicalCorrections);
 
+// Task 20: retry the failed correction stage only (teacher, student; the guest route is in guestSubmission.routes.js). No credit, no re-score.
+router.post('/:submissionId/corrections/retry', createSensitiveRateLimiter(), verifyJwtToken,
+  createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'correction_stage_retry_user' }),
+  submissionController.retryCorrectionStage);
+
 router.post('/:submissionId/evaluation/retry', verifyJwtToken, requireRole('teacher'),
   createSensitiveRateLimiter(),
   createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'evaluation_retry_user' }),

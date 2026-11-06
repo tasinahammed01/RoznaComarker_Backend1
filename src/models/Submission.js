@@ -245,6 +245,18 @@ const submissionSchema = new Schema(
     semanticMaxAttempts: { type: Number, min: 0, default: undefined },
     semanticNextRetryAt: { type: Date, default: undefined },
     semanticErrorCode: { type: String, trim: true },
+    // Task 20: a retry of the correction stage alone, after it failed (correctionStageRetry.service.js). Never re-scores, never charges a credit.
+    // Kept apart from correctionStatus/semanticStatus so the recovery sweeper never mistakes it for a stuck full analysis. Teacher/server only.
+    correctionRetry: {
+      jobId: { type: String, trim: true },
+      status: { type: String, enum: ['scheduled', 'processing', 'completed', 'failed'] },
+      trigger: { type: String, enum: ['automatic', 'manual'] },
+      startedAt: { type: Date },
+      finishedAt: { type: Date },
+      automaticCount: { type: Number, min: 0 },
+      manualCount: { type: Number, min: 0 },
+      lastErrorCode: { type: String, trim: true }
+    },
     semanticSourceKey: { type: String, trim: true, index: true },
     semanticProvider: { type: String, trim: true },
     semanticModel: { type: String, trim: true },

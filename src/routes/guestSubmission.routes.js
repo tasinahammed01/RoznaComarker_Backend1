@@ -30,6 +30,9 @@ router.post('/assignments/:qrToken/submit', createSensitiveRateLimiter({ limit: 
   controller.prepare, setUploadType('submissions'), upload.array('files', 20), handleUploadError,
   validateUploadedFileSignature, enforceImagePreflight, controller.submit);
 router.get('/submissions/:submissionId', requireGuestAccess, controller.results);
+// Task 20: retry the failed correction stage only. Needs the submission's own link (a read-only portal session is refused by requireGuestAccess).
+router.post('/submissions/:submissionId/corrections/retry', createSensitiveRateLimiter({ limit: 10, windowMs: 15 * 60 * 1000, reason: 'guest_correction_retry' }),
+  requireGuestAccess, require('../controllers/submission.controller').retryCorrectionStage);
 router.post('/submissions/:submissionId/image-preflight', createSensitiveRateLimiter({ limit: 40, windowMs: 15 * 60 * 1000, reason: 'guest_revision_preflight' }),
   requireGuestAccess,diagnostic.stage('guest_context'), controller.prepareRevisionPreview, setUploadType('submissions'),diagnostic.stage('image_input'), upload.single('file'), handleUploadError,
   diagnostic.stage('image_signature'),validateUploadedFileSignature, controller.bindRevisionIdentity,diagnostic.stage('preflight'), require('../middlewares/imagePreflight.middleware').preflightImage);

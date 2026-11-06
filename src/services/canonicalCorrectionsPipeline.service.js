@@ -102,9 +102,14 @@ function holisticCoverageMismatchCategories(categoryScores = {}, statistics = {}
   }).map(([category]) => category);
 }
 
-async function generateAndPersist(doc, { assignment = {}, force = false } = {}) {
+/**
+ * correctionOnly: { jobId } runs the correction stage alone for a claimed correctionStageRetry (Task 20): same request, same grounding and merge,
+ * but it never locks or touches the evaluation, the feedback or the credit, and it writes only if the submission is still in the failed state the
+ * retry was claimed from. Without it: the full analysis, unchanged, plus one automatic correction-only retry when its correction stage fails.
+ */
+async function generateAndPersist(doc, { assignment = {}, force = false, correctionOnly = null } = {}) {
   const accounting=require('./providerAttemptAccounting.service');
-  if(!accounting.active())return accounting.run(()=>generateAndPersist(doc,{assignment,force}));
+  if(!accounting.active())return accounting.run(()=>generateAndPersist(doc,{assignment,force,correctionOnly}));
   if (!require('../utils/sourceFidelity').eligible(doc)) return {errorCode:'OCR_SOURCE_REVIEW_REQUIRED',semanticSucceeded:false};
   const totalStartedAt = Date.now();
   logger.info({ message: 'Canonical evaluation timing', submissionId: String(doc._id),
@@ -136,14 +141,22 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   const semanticSourceKey = buildSemanticSourceKey(semantic.semanticSourceKey({ correctionSourceHash: hash, config: semanticConfig,
     legendVersion: legend.version, legendContentHash: legend.contentHash, assignmentHash,
     policyHash: assessmentPolicy.policyHash }));
-  if (!force && doc.correctionSourceHash === hash && doc.correctionVersion === canonical.VERSION
+  const retryJobId = correctionOnly?.jobId || null;
+  if (retryJobId && doc.correctionSourceHash !== hash) {
+    // The essay, the assignment or the legend changed since the failure: a retry is not a re-analysis. Leave it to the full pipeline.
+    await doc.constructor.updateOne({ _id: doc._id, 'correctionRetry.jobId': retryJobId }, { $set: { 'correctionRetry.status': 'failed',
+      'correctionRetry.finishedAt': new Date(), 'correctionRetry.lastErrorCode': 'CORRECTION_RETRY_SOURCE_CHANGED' } });
+    return { reused: false, correctionOnly: true, semanticSucceeded: false, errorCode: 'CORRECTION_RETRY_SOURCE_CHANGED' };
+  }
+  if (!retryJobId && !force && doc.correctionSourceHash === hash && doc.correctionVersion === canonical.VERSION
     && doc.correctionTranscriptLayoutVersion === CANONICAL_TRANSCRIPT_LAYOUT_VERSION && doc.correctionStatus === 'completed'
     && doc.semanticSourceKey === semanticSourceKey) {
     semanticMetrics.increment('semanticJobsReused');
     return { reused: true, semanticSourceKey };
   }
-  const jobId = crypto.randomUUID();
+  const jobId = retryJobId || crypto.randomUUID();
   const semanticMaxAttempts = plannedSemanticAttempts(semanticConfig);
+  if (!retryJobId) {
   const locked = await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId,
     semanticStatus: { $nin: ['processing', 'retry_wait'] } }, { $set: { correctionStatus: 'processing', correctionJobId: jobId, correctionError: null,
     correctionSourceHash: hash, correctionVersion: canonical.VERSION,
@@ -161,6 +174,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
   semanticMetrics.increment('semanticJobsStarted');
   await SubmissionFeedback.updateOne({ submissionId: doc._id, overriddenByTeacher: { $ne: true } },
     { $unset: { evaluationSourceHash: 1, evaluationRubricSourceHash: 1, evaluationPolicyHash: 1 } }).catch(() => {});
+  }
   const transcriptReadyAt = Date.now();
   const execution = executionPolicy.plan({ startedAt: transcriptReadyAt });
   const assessmentDeadlineAt = execution.assessmentDeadlineAt;
@@ -376,7 +390,21 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     conflictCount: Number(merged.diagnostics?.conflictCount || 0),
     semanticCanonicalFingerprint,
     ...rejectionStageCounts };
-  const finalWrite = await doc.constructor.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
+  if (retryJobId && (semanticError || !['completed', 'partial'].includes(semanticRun?.status))) {
+    // The retry failed too: the earlier result stays exactly as it was. The page offers the visible retry while it is allowed.
+    await doc.constructor.updateOne({ _id: doc._id, 'correctionRetry.jobId': retryJobId }, { $set: { 'correctionRetry.status': 'failed',
+      'correctionRetry.finishedAt': new Date(), 'correctionRetry.lastErrorCode': safeErrorCode(semanticError) || 'SEMANTIC_ANALYSIS_FAILED' } });
+    logger.warn({ event: 'correction_stage_retry_finished', submissionId: String(doc._id), outcome: 'failed', errorCode: safeErrorCode(semanticError) || null,
+      durationMs: Date.now() - totalStartedAt });
+    return { reused: false, correctionOnly: true, semanticSucceeded: false, correctionsAvailable: false, errorCode: safeErrorCode(semanticError) || 'SEMANTIC_ANALYSIS_FAILED' };
+  }
+  const priorSemanticMetrics = retryJobId ? (doc.semanticMetrics?.toObject?.() || doc.semanticMetrics || {}) : {};
+  const finalWrite = await doc.constructor.updateOne(retryJobId
+    // Only over the failed state the retry was claimed from: anything newer (an upload, a regeneration, a re-OCR) wins.
+    ? { _id: doc._id, ocrJobId: doc.ocrJobId, correctionSourceHash: hash, semanticStatus: 'failed', correctionStatus: 'partial',
+      'correctionRetry.jobId': retryJobId }
+    : { _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
+    ...(retryJobId ? { 'correctionRetry.status': 'completed', 'correctionRetry.finishedAt': new Date() } : {}),
     writingCorrections: corrections, correctionStatistics: combinedStatistics, correctionSourceHash: hash,
     correctionOcrJobId: doc.ocrJobId || null, correctionOcrEvidenceHash: evidenceIdentity.ocrEvidenceHash(canonicalTranscript, doc),
     correctionGenerationConfig: { provider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
@@ -399,7 +427,9 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     correctionLegendSource: legend.source,
     correctionLegendVersion: legend.version, correctionLegendContentHash: legend.contentHash,
     deductionPolicyVersion: canonical.DEDUCTION_POLICY_VERSION,
-    semanticMetrics: persistedSemanticMetrics
+    // A retry keeps the first run's evaluation timings and rubric diagnostics: only the correction-stage metrics are replaced.
+    semanticMetrics: retryJobId ? { ...priorSemanticMetrics, ...persistedSemanticMetrics, correctionRetry: { trigger: doc.correctionRetry?.trigger || null } }
+      : persistedSemanticMetrics
   }});
   if (!finalWrite.modifiedCount) {
     semanticMetrics.increment('semanticJobsSuperseded');
@@ -450,6 +480,13 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     durationMs: semanticAiMs });
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'finalCorrectionsPersisted',
     aiOnlyCount: ai.length, totalCount: corrections.length });
+  if (retryJobId) {
+    // Correction stage only: the score, the detailed feedback and the credit stay as the first run left them.
+    logger.info({ event: 'correction_stage_retry_finished', submissionId: String(doc._id), outcome: semanticRun?.status || 'completed',
+      correctionCount: corrections.length, durationMs: Date.now() - totalStartedAt });
+    return { reused: false, correctionOnly: true, semanticSucceeded: semanticRun?.status === 'completed', correctionsAvailable: true,
+      correctionsCompleteness: semanticRun?.status || 'complete' };
+  }
   let evaluationMs = 0; let detailedFeedbackMs = 0; let holisticCorrectionCoverageMismatch = false;
   let holisticCorrectionCoverageMismatchCategories = [];
   let rubricConcernCategories = []; let categoryCoverageDisagreements = []; let preparedRubricAttemptCount = 0;
@@ -589,6 +626,9 @@ async function generateAndPersist(doc, { assignment = {}, force = false } = {}) 
     categoryCoverageComplete: persistedSemanticMetrics.coverage.categoryCoverageComplete,
     structuralPassStatus: persistedSemanticMetrics.coverage.structuralPassStatus,
     categoryAudit: persistedSemanticMetrics.categoryAudit, rubricConcernCategories, categoryCoverageDisagreements });
+  // One automatic correction-only retry when the correction stage failed for a reason a retry can fix. It runs after this analysis is complete,
+  // never during it, and it cannot change the score or charge again (correctionStageRetry.service.js).
+  if (semanticError) await require('./correctionStageRetry.service').scheduleAutomatic(doc.constructor, doc._id, semanticError).catch(() => {});
   return { reused: false, semanticSourceKey, semanticSucceeded: !semanticError && semanticRun?.status === 'completed',
     correctionsAvailable: !semanticError, correctionsCompleteness: semanticError ? 'none' : semanticRun?.status || 'complete',
     semanticMetrics: semanticRun?.metrics || null };
