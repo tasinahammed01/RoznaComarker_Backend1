@@ -10,6 +10,10 @@ const { showMarksToStudent } = require('./assignmentAccessPolicy.service');
 
 // Phase B2: every draft is compared on the scores the student was shown (the teacher's final values, when there are any).
 const { finalFeedback } = require('./teacherEvaluation.service');
+// Draft comparison v2 (DRAFT_COMPARISON_V2_ENABLED, default off): per-error tracking, an honest result when the rubric changed, and a note
+// when an earlier draft's snapshot predates the teacher overlay. Off: the payload is exactly the v1 payload.
+const v2Enabled = () => String(process.env.DRAFT_COMPARISON_V2_ENABLED || '').trim().toLowerCase() === 'true';
+const ISSUES_OVERLAY_MISSING = 'The earlier draft was saved before your teacher\'s changes to its corrections were kept with it, so this list may include corrections your teacher hid.';
 const normalize = (value) => String(value || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
 const round = (value) => Math.round(Number(value) * 100) / 100;
@@ -146,7 +150,32 @@ function submissionText(submission) {
     .map((page) => String(page?.text || '').trim()).filter(Boolean).join('\n\n');
 }
 
-function compareDrafts(previous, current) {
+/** v2 additions to an available comparison: per-error lists (replacing the counts with the matcher's), the rubric-changed rule, the overlay note. */
+function withV2(result, previous, current, { overlayMissing = false } = {}) {
+  const out = { ...result, comparisonVersion: 2 };
+  if (out.rubricChanged) {
+    // Scores stay visible; the overall change and any improved/declined claim are withheld.
+    out.overall = { ...out.overall, delta: null, status: 'RUBRIC_CHANGED' };
+    out.summary = { improved: false, unchanged: false, declined: false, limited: true };
+  }
+  if (out.issuesAvailable === false || !out.issues) return out;
+  const tracked = require('./draftIssueTracking.service').trackIssues({
+    previousCorrections: previous.submission.writingCorrections || [], currentCorrections: current.submission.writingCorrections || [],
+    previousText: out.previousText, currentText: out.currentText });
+  out.issues = { previousCount: (previous.submission.writingCorrections || []).length, currentCount: (current.submission.writingCorrections || []).length,
+    correctedCount: tracked.counts.fixed, remainingCount: tracked.counts.remaining, newIssueCount: tracked.counts.new, unclearCount: tracked.counts.unclear };
+  out.issueDetails = tracked.lists;
+  if (overlayMissing) out.issuesMessage = ISSUES_OVERLAY_MISSING;
+  return out;
+}
+
+/** options.v2: only the per-submission comparison asks for it (class progress and the weekly summary keep the v1 counts and cost). */
+function compareDrafts(previous, current, options = {}) {
+  const result = compareDraftsV1(previous, current);
+  return options.v2 && v2Enabled() && result.available ? withV2(result, previous, current, options) : result;
+}
+
+function compareDraftsV1(previous, current) {
   const ids = { previousSubmissionId: String(previous?.id || ''), currentSubmissionId: String(current?.id || '') };
   if (!isAssessed(current?.submission, current?.feedback)) return unavailable('CURRENT_UNASSESSED', 'Complete the assessment to see improvement.', ids);
   if (!previous) return unavailable('FIRST_DRAFT', 'No previous assessed draft to compare yet.', ids);
@@ -236,7 +265,11 @@ async function comparisonForSubmission(submissionId, user) {
   ]);
   // Both drafts as the student sees them: teacher-hidden corrections are not counted.
   const [current, previous] = await Promise.all([visibleSubmissions([submission]), visibleSubmissions(previousRevision ? [previousRevision] : [], 'SubmissionRevision')]);
-  const result = compareDrafts(previous[0] ? revisionAssessment(previous[0]) : null, liveAssessment(current[0], feedback));
+  // v2: the earlier draft's snapshot has no overlay although the teacher changed that draft's corrections (snapshots made before overlays
+  // were kept with them). Its list falls back to the raw corrections, so it is marked.
+  const overlayMissing = v2Enabled() && previousRevision && !('teacherAnnotations' in previousRevision)
+    && Boolean(await require('../models/AnnotationAudit').exists({ submissionId: submission._id, draftNumber: Number(previousRevision.draftNumber) }));
+  const result = compareDrafts(previous[0] ? revisionAssessment(previous[0]) : null, liveAssessment(current[0], feedback), { v2: true, overlayMissing });
   return studentView ? forStudent(result) : result;
 }
 
@@ -331,5 +364,5 @@ async function studentProgress(classId, studentId, user) {
   return progressFromHistory(grouped.get(String(studentId)) || []);
 }
 
-module.exports = { normalize, issueFingerprint, compareIssues, categoryScores, matchCategories, compareDrafts,
+module.exports = { v2Enabled, withV2, ISSUES_OVERLAY_MISSING, normalize, issueFingerprint, compareIssues, categoryScores, matchCategories, compareDrafts,
   correctionSetReliable, progressFromHistory, comparisonForSubmission, classProgressSummaries, studentProgress, isAssessed };
