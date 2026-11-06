@@ -122,6 +122,28 @@ const mutate = endpoint(async (req, res) => {
   res.json({ success: true, data: { revision: result.revision } });
 });
 
+// Phase A: bulk hide / restore by ids, by category, or (restore) all hidden. Same owner check (404), class-closed rule, assessment lock,
+// revision and idempotency as a single action; one audit row per changed item; one overlay write. Scores are never recomputed: like a
+// single hide, it only sets the grade-check flag.
+const resolveForBulk = (doc, overlay) => { const r = studentView.resolveOverlay(doc, overlay); return { resolution: r, rows: r.rows, orphans: r.orphans, archivedOrphans: r.archivedOrphans }; };
+const bulk = endpoint(async (req, res) => {
+  const doc = await authorized(req, { write: true });
+  policy.checkBulkBody(req.body, defaultLegend().groups.map(g => g.key));
+  const stored = policy.normalizeState(doc.teacherAnnotations);
+  const prefix = new RegExp(`^${req.body.requestId.replace(/[^a-f0-9-]/gi, '')}:\\d{3}$`, 'i');
+  const priorRows = [...await AnnotationAudit.find({ submissionId: doc._id, requestId: prefix }).lean(), ...(stored.recent || []).filter(row => prefix.test(row.requestId))];
+  const unique = [...new Map(priorRows.map(row => [row.requestId, row])).values()];
+  const replay = policy.bulkReplayOf(unique, req.user._id, req.body);
+  if (replay) { await syncAudit(doc); return res.json({ success: true, data: replay }); }
+  if (review.assessmentBusy(doc)) throw fail(409, 'ANNOTATION_ASSESSMENT_BUSY');
+  const result = policy.prepareBulk(doc, req.user._id, req.body, { resolve: resolveForBulk });
+  if (!result.changedIds.length) return res.json({ success: true, data: { revision: result.revision, changedIds: [] } });
+  await saveOverlay(doc, result.state);
+  try { await syncAudit(doc, [...result.legacyAudit.map(legacyRow), ...result.auditRows]); }
+  catch (error) { logger.error({ event: 'teacher_annotation_audit_deferred', submissionId: String(doc._id), error: error.name }); }
+  res.json({ success: true, data: { revision: result.revision, changedIds: result.changedIds } });
+});
+
 // Task 7C: "keep these scores". Writes the teacher overlay and the audit row, nothing else: it only reads the feedback document, calls no AI
 // and spends no credits. It goes through the overlay revision, so it serialises against annotation writes.
 const scoreReview = endpoint(async (req, res) => {
@@ -173,4 +195,4 @@ const preview = endpoint(async (req, res) => {
     feedback: feedback.body?.data ?? null, feedbackStatus: feedback.status } });
 });
 
-module.exports = { get, history, mutate, scoreReview, preview };
+module.exports = { get, history, mutate, bulk, scoreReview, preview };

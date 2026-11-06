@@ -199,4 +199,77 @@ function prepare(doc, actor, body, { resolution, prior, now = new Date() } = {})
   return { state: stored, auditRow, revision: state.revision, legacyAudit: state.legacyAudit || [] };
 }
 
-module.exports = { TRANSITIONS, ORPHAN_TRANSITIONS, RECENT_AUDIT, MAX_ENTRIES, normalizeState, source, validateValue, prepare, checkBody, replayOf, requestHashOf };
+// Bulk hide / restore (Phase A). Every change goes through prepare() above, one item at a time, so the lifecycle, orphan rules, anchors
+// and the one-audit-row-per-change are the single-action ones. Bulk acts only on items whose status is the action's source state and that
+// are not orphaned; anything else is left alone (so a repeat changes nothing). Bulk restore brings back hidden items only: removed
+// (archived) ones are restored one at a time from the list.
+const BULK_MAX = 500;
+const BULK_FROM = Object.freeze({ hide: 'visible', restore: 'hidden' });
+const BULK_KEYS = ['action', 'ids', 'category', 'all', 'revision', 'sourceHash', 'requestId'];
+const bulkRowId = (requestId, index) => `${requestId}:${String(index).padStart(3, '0')}`;
+
+/** Shape checks for a bulk request. `categories`: the legend's group keys. */
+function checkBulkBody(body, categories) {
+  if (JSON.stringify(body || {}).length > 64000) throw fail(413,'ANNOTATION_PAYLOAD_TOO_LARGE');
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(k => !BULK_KEYS.includes(k))) throw fail(400,'ANNOTATION_INVALID_FIELDS');
+  if (!BULK_FROM[body.action] || !/^[a-f0-9-]{36}$/i.test(body.requestId || '') || !Number.isInteger(body.revision) || typeof body.sourceHash !== 'string') throw fail(400,'ANNOTATION_INVALID_REQUEST');
+  const scopes = ['ids', 'category', 'all'].filter(k => body[k] !== undefined);
+  if (scopes.length !== 1) throw fail(400,'ANNOTATION_INVALID_REQUEST');
+  if (body.ids !== undefined) {
+    if (!Array.isArray(body.ids) || !body.ids.length || body.ids.some(id => typeof id !== 'string' || !id || id.length > 120)) throw fail(400,'ANNOTATION_INVALID_REQUEST');
+    if (body.ids.length > BULK_MAX) throw fail(400,'ANNOTATION_BULK_TOO_MANY');
+    if (new Set(body.ids).size !== body.ids.length) throw fail(400,'ANNOTATION_INVALID_REQUEST');
+  }
+  if (body.category !== undefined && (typeof body.category !== 'string' || !categories.includes(body.category))) throw fail(400,'ANNOTATION_INVALID_CATEGORY');
+  if (body.all !== undefined && (body.all !== true || body.action !== 'restore')) throw fail(400,'ANNOTATION_INVALID_REQUEST');
+}
+
+/** An earlier bulk request with the same id (its rows, from the collection or the overlay): its result, or a conflict if the body differs. */
+function bulkReplayOf(rows, actor, body) {
+  if (!rows.length) return null;
+  if (rows.some(row => row.requestHash !== requestHashOf(actor, body))) throw fail(409,'ANNOTATION_IDEMPOTENCY_CONFLICT');
+  return { replay: true, revision: Math.max(...rows.map(r => r.newRevision)), changedIds: [...new Set(rows.map(r => r.correctionId))] };
+}
+
+/**
+ * Applies a bulk hide or restore. `resolve(doc, state)` returns the current resolution and teacher rows for a state
+ * (studentCorrectionView), so each item is judged on what the items before it did (one entry can govern several corrections).
+ * Returns { state, auditRows, revision, changedIds, legacyAudit }, or throws before anything is written.
+ */
+function prepareBulk(doc, actor, body, { resolve, now = new Date() } = {}) {
+  const from = BULK_FROM[body.action];
+  let state = normalizeState(doc.teacherAnnotations);
+  if (body.revision !== state.revision || body.sourceHash !== source(doc).sourceHash) throw fail(409,'ANNOTATION_REVISION_CONFLICT');
+  const legacyAudit = state.legacyAudit || [];
+  const first = resolve(doc, doc.teacherAnnotations ?? null);
+  const rows = new Map(first.rows.map(row => [String(row.id), row]));
+  const orphanEntryIds = new Set([...first.orphans, ...first.archivedOrphans].map(o => String(o.entryId)));
+  let targets;
+  if (body.ids) {
+    // Every id must be a correction of this submission: an id from another submission (or a stale list) rejects the whole request.
+    if (body.ids.some(id => !rows.has(id) && !orphanEntryIds.has(id))) throw fail(400,'ANNOTATION_UNKNOWN_IDS');
+    targets = body.ids;
+  } else {
+    targets = first.rows.filter(row => row.moderationStatus === from && (body.all || String(row.category || '').toUpperCase() === body.category)).map(row => String(row.id));
+    if (targets.length > BULK_MAX) throw fail(400,'ANNOTATION_BULK_TOO_MANY');
+  }
+  const hash = requestHashOf(actor, body);
+  const auditRows = [], changedIds = [];
+  let current = doc;
+  for (const id of targets) {
+    if (orphanEntryIds.has(id)) continue;   // orphans are never shown to students and have their own one-at-a-time rules
+    const { resolution, rows: liveRows } = resolve(current, current.teacherAnnotations ?? null);
+    const live = liveRows.find(row => String(row.id) === id);
+    if (!live || live.moderationStatus !== from || resolution.orphanIds.has(live.entryId)) continue;
+    const child = { action: body.action, id, revision: state.revision, sourceHash: body.sourceHash, requestId: crypto.randomUUID() };
+    const result = prepare(current, actor, child, { resolution, now });
+    Object.assign(result.auditRow, { requestId: bulkRowId(body.requestId, auditRows.length), requestHash: hash });
+    auditRows.push(result.auditRow); changedIds.push(id);
+    state = normalizeState(result.state);
+    current = { ...current, teacherAnnotations: result.state };
+  }
+  return { state: current.teacherAnnotations, auditRows, revision: state.revision, changedIds, legacyAudit };
+}
+
+module.exports = { TRANSITIONS, ORPHAN_TRANSITIONS, RECENT_AUDIT, MAX_ENTRIES, BULK_MAX, normalizeState, source, validateValue, prepare, checkBody, replayOf, requestHashOf,
+  checkBulkBody, bulkReplayOf, prepareBulk, bulkRowId };

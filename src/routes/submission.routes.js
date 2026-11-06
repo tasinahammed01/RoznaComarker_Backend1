@@ -345,6 +345,7 @@ router.get('/:submissionId/teacher-annotations', verifyJwtToken, teacherAnnotati
 router.get('/:submissionId/teacher-annotations/history', verifyJwtToken, teacherAnnotations.history);
 router.get('/:submissionId/teacher-annotations/preview', verifyJwtToken, teacherAnnotations.preview);
 router.post('/:submissionId/teacher-annotations', verifyJwtToken, annotationLimiter, teacherAnnotations.mutate);
+router.post('/:submissionId/teacher-annotations/bulk', verifyJwtToken, annotationLimiter, teacherAnnotations.bulk);
 router.post('/:submissionId/teacher-annotations/score-review', verifyJwtToken, annotationLimiter, teacherAnnotations.scoreReview);
 
 router.get(
