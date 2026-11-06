@@ -92,6 +92,7 @@ router.post(
   body('allowGuestSubmission').optional().isBoolean().withMessage('allowGuestSubmission must be a boolean'),
   body('showMarksToStudent').optional().isBoolean().withMessage('showMarksToStudent must be a boolean'),
   body('allowResubmission').optional().isBoolean().withMessage('allowResubmission must be a boolean'),
+  body('maxDrafts').optional({ values: 'null' }).isInt({ min: 2, max: 10 }).withMessage('maxDrafts must be a whole number from 2 to 10').bail().toInt(),
   body('requireAdaptiveBeforeResubmission').optional().isBoolean().withMessage('requireAdaptiveBeforeResubmission must be a boolean'),
   body('resourceType').optional().isIn(['essay', 'flashcard', 'worksheet']).withMessage('resourceType must be essay, flashcard, or worksheet'),
   body('resourceId').optional({ nullable: true }).isString().withMessage('resourceId must be a string'),
@@ -169,6 +170,7 @@ router.patch(
   body('allowGuestSubmission').optional().isBoolean().withMessage('allowGuestSubmission must be a boolean'),
   body('showMarksToStudent').optional().isBoolean().withMessage('showMarksToStudent must be a boolean'),
   body('allowResubmission').optional().isBoolean().withMessage('allowResubmission must be a boolean'),
+  body('maxDrafts').optional({ values: 'null' }).isInt({ min: 2, max: 10 }).withMessage('maxDrafts must be a whole number from 2 to 10').bail().toInt(),
   body('requireAdaptiveBeforeResubmission').optional().isBoolean().withMessage('requireAdaptiveBeforeResubmission must be a boolean'),
   handleValidationResult,
   assignmentController.updateAssignment
@@ -284,6 +286,9 @@ router.delete(
  *       404:
  *         description: Class not found
  */
+// Draft limit (DRAFT_LIMIT_ENABLED): whether the assignment form shows "Maximum drafts". Teachers only; no assignment data.
+router.get('/draft-limit/config', verifyJwtToken, requireRole('teacher'), assignmentController.getDraftLimitConfig);
+
 router.get(
   '/class/:classId',
   verifyJwtToken,

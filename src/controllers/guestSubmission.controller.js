@@ -83,6 +83,8 @@ const prepare = endpoint(async (req, res, next) => {
 async function revisionContext(req, enforceAdaptive = false) {
   const context = await assignmentFor(req.guestSubmission.qrToken);
   if (!context.assignment.allowResubmission) throw access.fail(403, 'Another draft is not allowed for this assignment.', 'RESUBMISSION_NOT_ALLOWED');
+  const draftLimit = require('../services/draftLimit.service');
+  if (draftLimit.limitReached(context.assignment, req.guestSubmission)) throw access.fail(403, draftLimit.MESSAGE, draftLimit.CODE);
   if (context.assignment.deadline && new Date() > context.assignment.deadline && !context.assignment.allowLateResubmission) throw access.fail(403, 'Deadline passed.');
   if (enforceAdaptive && context.assignment.requireAdaptiveBeforeResubmission) {
     const completion = await require('../services/adaptivePractice.service').getAdaptiveCompletionForResubmission(req.guestSubmission._id, req.guestAccessContext);
@@ -186,9 +188,9 @@ const presentation = endpoint(async (req, res) => {
   const source = require('../utils/sourceFidelity').payload(doc);
   if (source) submission.sourceFidelity = source;
   const assignmentDto = Object.fromEntries(['_id', 'title', 'instructions', 'deadline', 'rubric', 'rubrics',
-    'showMarksToStudent', 'allowResubmission', 'requireAdaptiveBeforeResubmission', 'qrToken']
+    'showMarksToStudent', 'allowResubmission', 'requireAdaptiveBeforeResubmission', 'qrToken', 'maxDrafts']
     .filter(key => assignment[key] != null).map(key => [key, assignment[key]]));
-  ok(res, { submission, assignment: assignmentDto,
+  ok(res, { submission, assignment: require('../services/draftLimit.service').forStudent(assignmentDto),
     classSummary: { name: req.guestClass.name, gradingScale: req.guestClass.gradingScale } });
 });
 const media = endpoint(async (req, res) => {

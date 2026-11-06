@@ -94,6 +94,10 @@ const assignmentSchema = new Schema(
       type: Boolean,
       default: true
     },
+    // Maximum drafts including the first (services/draftLimit.service.js, DRAFT_LIMIT_ENABLED). Absent: the default limit applies when the flag
+    // is on, no limit when it is off.
+    maxDrafts: { type: Number, min: 2, max: 10, default: undefined },
+
     allowResubmission: {
       type: Boolean,
       default: false
