@@ -98,6 +98,10 @@ const assignmentSchema = new Schema(
     // is on, no limit when it is off.
     maxDrafts: { type: Number, min: 2, max: 10, default: undefined },
 
+    // Improved Writing Model (services/writingModel.service.js, IMPROVED_WRITING_MODEL_ENABLED). Teacher-only: never selected unless asked for;
+    // students get only the approved, released text through their own endpoint.
+    writingModel: { type: mongoose.Schema.Types.Mixed, default: undefined, select: false },
+
     allowResubmission: {
       type: Boolean,
       default: false

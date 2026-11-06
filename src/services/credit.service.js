@@ -122,6 +122,27 @@ async function consumeAssessmentCredit({ userId, submissionId, assignmentId, ass
   return result;
 }
 
+/**
+ * Improved Writing Model: one credit for an AI draft of a model answer, charged after the draft was produced and saved (like an assessment,
+ * which is charged on completion). Same wallet, buckets and durable, idempotent mutation; its own ledger type so it is never counted as an
+ * assessment. Personal wallets only (the caller refuses institution-funded classes).
+ */
+async function consumeWritingModelCredit({ userId, assignmentId, requestId, reason = 'Improved Writing Model draft' }) {
+  const state = await getOrCreateWallet(userId);
+  return require('./durableCreditMutation.service').mutate({
+    walletId: state.wallet._id,
+    entry: { userId, type: 'WRITING_MODEL_DEBIT', amount: -1, reason, assignmentId, assessmentId: String(requestId),
+      idempotencyKey: `writing-model:${assignmentId}:${requestId}` },
+    available,
+    decide(wallet) {
+      if (available(wallet) < 1) throw insufficient();
+      if (wallet.monthlyCreditsUsed < wallet.monthlyCredits) return { increments: { monthlyCreditsUsed: 1 }, bucket: 'monthly' };
+      if (wallet.purchasedCredits > 0) return { increments: { purchasedCredits: -1 }, bucket: 'purchased' };
+      return { increments: { bonusCredits: -1 }, bucket: 'bonus' };
+    }
+  });
+}
+
 async function adjustBonusCredits({ userId, amount, reason, idempotencyKey, actorId, metadata = {}, transactionType, referralId, rewardGrantId }) {
   if (!Number.isInteger(amount) || amount === 0) throw Object.assign(new Error('amount must be a non-zero integer'), { statusCode: 400 });
   if (!reason || !String(reason).trim()) throw Object.assign(new Error('reason is required'), { statusCode: 400 });
@@ -163,5 +184,5 @@ async function acknowledgeNudge(userOrId, threshold) {
   return state;
 }
 
-module.exports = { cycleFor, available, allowance, getOrCreateWallet, resetMonthlyCreditsIfNeeded, canRunAssessment,
+module.exports = { consumeWritingModelCredit, cycleFor, available, allowance, getOrCreateWallet, resetMonthlyCreditsIfNeeded, canRunAssessment,
   consumeAssessmentCredit, addBonusCredits: adjustBonusCredits, adjustBonusCredits, acknowledgeNudge, toDto, insufficient };

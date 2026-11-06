@@ -47,6 +47,7 @@ router.get('/submissions/:submissionId/practice', requireGuestAccess, controller
 router.post('/submissions/:submissionId/practice', createSensitiveRateLimiter({ limit: 5, reason: 'guest_practice' }), requireGuestAccess, controller.practice);
 router.post('/submissions/:submissionId/practice/:sessionId/:activityId', createSensitiveRateLimiter({ limit: 20, reason: 'guest_practice_check' }), requireGuestAccess, controller.attempt);
 router.get('/submissions/:submissionId/drafts', requireGuestAccess, controller.drafts);
+router.get('/submissions/:submissionId/writing-model', requireGuestAccess, require('../controllers/writingModel.controller').forGuest);
 router.get('/submissions/:submissionId/ocr-corrections', requireGuestAccess, require('../controllers/submission.controller').getOcrCorrections);
 router.get('/submissions/:submissionId/pdf', createSensitiveRateLimiter({ limit: 5, reason: 'guest_pdf' }), requireGuestAccess, require('../controllers/pdf.controller').downloadSubmissionPdf);
 module.exports = router;
