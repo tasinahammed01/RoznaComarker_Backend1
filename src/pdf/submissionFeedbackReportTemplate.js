@@ -6,7 +6,7 @@ const pad = (value) => String(value).padStart(2, '0');
 const list = (value) => Array.isArray(value) ? value : [];
 
 function overlay(layout) {
-  const underlines = layout.underlines.map(({ box, color, correction, corrections }) => `<i class="${box.semantic ? 'target-rail' : 'underline'}${box.lineLevel ? ' target-rail--line' : ''}" data-correction-id="${esc(correction.reportId || correction.id || '')}" data-correction-ids="${esc((corrections || [correction]).map((c) => c.reportId || c.id).join(','))}" style="position:absolute;left:${box.x}mm;top:${box.y}mm;width:${box.semantic ? 0 : box.w}mm;${box.semantic ? `height:${box.h}mm;border-left:2px solid;z-index:5;` : `background:${strokeColor(color)};`}border-color:${strokeColor(color)}"></i>`);
+  const underlines = layout.underlines.map(({ box, color, correction, corrections }) => `<i class="${box.semantic ? 'target-rail' : 'underline'}${box.lineLevel || box.bracket ? ' target-rail--line' : ''}" data-correction-id="${esc(correction.reportId || correction.id || '')}" data-correction-ids="${esc((corrections || [correction]).map((c) => c.reportId || c.id).join(','))}" style="position:absolute;left:${box.x}mm;top:${box.y}mm;width:${box.semantic ? 0 : box.w}mm;${box.semantic ? `height:${box.h}mm;border-left:2px solid;z-index:5;` : `background:${strokeColor(color)};`}border-color:${strokeColor(color)}"></i>`);
   const connectorLines = layout.markers.filter((marker) => marker.leader).map(({ leader, color, correction }) =>
     `<line data-correction-id="${esc(correction.reportId || correction.id || '')}" x1="${leader.startX}" y1="${leader.startY}" x2="${leader.endX}" y2="${leader.endY}" stroke="${color}" />`);
   const connectors = connectorLines.length

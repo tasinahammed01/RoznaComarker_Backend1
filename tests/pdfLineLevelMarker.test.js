@@ -32,10 +32,16 @@ describe('line-level markers in the PDF', () => {
     expect(result.unmapped.map(item => item.id)).toEqual(['c3']);
   });
   test('a boxed word stays a word-level underline', () => {
-    const result = present([correction('c4', 'w1_0', { version: 1, source: 'wordIds', wordIds: ['w1_0'], anchors: [], boxes: [WORDS.find(w => w.id === 'w1_0').bbox] })]);
+    const boxed = { version: 1, source: 'wordIds', wordIds: ['w1_0'], anchors: [], boxes: [WORDS.find(w => w.id === 'w1_0').bbox] };
+    const result = present([correction('c4', 'w1_0', boxed, 'SP')]);
     expect(result.strokes).toHaveLength(1);
     expect(result.strokes[0].semantic).toBe(false);
     expect(result.strokes[0].lineLevel).toBeUndefined();
+    // Task 21: a boxed FRAG (sentence-level) is a margin bracket anchored to its words: never a line-level marker either.
+    const fragment = present([correction('c5', 'w1_0', boxed)]);
+    expect(fragment.strokes).toHaveLength(1);
+    expect(fragment.strokes[0]).toMatchObject({ semantic: true, bracket: true });
+    expect(fragment.strokes[0].lineLevel).toBeUndefined();
   });
 });
 describe('line-level markers with words as the report really stores them', () => {

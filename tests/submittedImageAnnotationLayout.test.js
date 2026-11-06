@@ -458,10 +458,11 @@ describe('submitted image annotation layout', () => {
       symbols.map((symbol, index) => correction(`c${index + 1}`, 45, 70, { symbol })),
       { annotationObstacles }
     ));
-    expect(layout.markers).toHaveLength(1);
-    expect(layout.markers[0].label).toBe('REP\u00b7P+1');
-    const target = unionBoxes(layout.markers[0].boxes);
+    // Task 21: FRAG is sentence-level, so it is a margin bracket with its own chip; the word-level REP and P still share one chip.
+    expect(layout.markers).toHaveLength(2);
+    expect(layout.markers.map((marker) => marker.label).sort()).toEqual(['FRAG', 'REP\u00b7P']);
     layout.markers.forEach((marker) => {
+      const target = unionBoxes(marker.boxes);
       const centerX = marker.rect.x + marker.rect.w / 2;
       expect(Math.abs(centerX - (target.x + target.w / 2)))
         .toBeLessThanOrEqual(marker.rect.w * 1.2);

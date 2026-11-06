@@ -854,7 +854,7 @@ function createSubmittedImageLayout(page, options = {}) {
       .map(b=>normalizePercentBox(b,geometry.sourceWidth,geometry.sourceHeight)).filter(Boolean)}))});
   const mapSegment=s=>({x:geometry.imageXmm+s.left/100*geometry.imageWidthMm,
     y:geometry.imageYmm+s.top/100*geometry.imageHeightMm,w:s.width/100*geometry.imageWidthMm,
-    h:(s.height||0)/100*geometry.imageHeightMm,boundary:!!s.boundary,semantic:!!s.semantic,lineLevel:!!s.lineLevel,
+    h:(s.height||0)/100*geometry.imageHeightMm,boundary:!!s.boundary,semantic:!!s.semantic,lineLevel:!!s.lineLevel,bracket:!!s.bracket,
     correctionIds:s.correctionIds});
   for(const group of presentation.groups){
     const correction={...group.members[0],markerMembers:group.members,displayLabel:group.displayLabel,
