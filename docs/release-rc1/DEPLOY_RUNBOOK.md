@@ -34,9 +34,19 @@ Everything below was written for RC2 and still applies unless this section says 
 - **Adaptive practice (Task 18):** becomes available by itself when the final evaluation matches the corrections; no teacher action is needed. Practice items are still generated only when the student clicks.
 - **New environment variables:** none.
 
+## RC3, final changes (Tasks 20 to 22)
+
+- **Corrections are more reliable (Task 20).** A malformed correction reply gets one more attempt with different sampling, inside the same time budget. A single over-long finding is left out instead of rejecting the whole reply (this was the cause of a reproducible failure). Measured on 3 essays x 30 runs with the real model: failures 30/90 before, 0/90 after, no added time on these essays.
+- **If the correction step still fails,** one automatic retry of that step alone runs 10 seconds later, and the student, the guest and the teacher get a "Retry analysis" (teacher: "Retry corrections") button, at most 3 times per submission. These retries never re-score and never use an Assessment Credit. The teacher's full "Regenerate" is unchanged: it checks and uses a credit, as before. When corrections arrive after the score, the score card says once: "The score was calculated before the detailed corrections were available."
+- **Database:** submissions get a `correctionRetry` sub-document (the state of that retry). No index, no migration. The recovery worker never picks it up.
+- **Image markers (Task 21):** a sentence-level correction (FRAG, RO, Content/Organization codes, or a quote of more than four words) is one bracket in the margin from its first to its last line, instead of one long underline per line. Overlapping brackets get separate columns; a bracket that needs the right margin opens towards the text. Word-level underlines are unchanged (0 of 860 on the development database changed). On a phone, chips are smaller (16px) and lines thicker (3px). The PDF uses the same rules; the PDF cache regenerates again on first download.
+- **Student pages (Task 22):** "Submit Another Draft" is an outlined button with "View Submission". A failed correction step shows one message with the retry button, not four contradicting ones. The date under the essay title is the date of the draft being viewed (it was the assignment's date).
+- **Runtime contract fingerprint:** the correction and rubric prompt and schema versions are unchanged.
+- **New environment variables:** none.
+
 ## The deploy, in order (VPS)
 
-**Before you start, on the developer's machine:** the final RC3 commit must be on GitHub. The release-freeze check (Task 19) found `origin/release-candidate-3` at `385be7b2`, 9 commits behind the final local commit, and `origin/highlight-sync` 7 behind. Push both branches first, then compare the commit below with the one you were given.
+**Before you start, on the developer's machine:** the final RC3 commit must be on GitHub. The final freeze (Task 22) found `origin/release-candidate-3` at `84d584ea`, 8 commits behind the final local commit (this document's commit included), and `origin/highlight-sync` at `a6251cf`, 14 behind. Push both branches first, then compare the commit below with the one you were given.
 
 **Never switch the `.env` to Gemini before the new code is merged.** The code on production (`45e49aae`) refuses `OCR_GPT_VISION_MODEL=google/gemini-3.8-flash` and the server would not start. The new code accepts the current Qwen settings, so the code goes first and the env second.
 

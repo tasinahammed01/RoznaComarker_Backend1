@@ -47,13 +47,24 @@ Summary of the limits to tell the client: Content and Organization detection is 
 
 Worksheet answer visibility is number 1 above and dialog text loss on resize is number 3: both still apply.
 
+## Added by Tasks 20 to 22
+
+| # | Issue or risk | Recommendation |
+|---|---|---|
+| 24 | **A teacher's full "Regenerate" uses a second Assessment Credit** after a result whose correction step failed (it re-scores; the credit is per assessment run). The free "Retry corrections" button is the intended action for that case and is offered first. Verified by `tests/correctionRetryCredit.test.js`. | Tell teachers: use "Retry corrections", not "Regenerate", when only the corrections are missing. |
+| 25 | **A score made before the corrections stays as it was.** When corrections arrive by a retry, the score is not recomputed (by design, scores never change on their own); the score card says so in one line. Counts can then differ from a rubric category (for example Grammar full marks with 1 grammar correction). | Teacher decision per case; a full Regenerate (one credit) re-scores. |
+| 26 | **The automatic correction retry is held in memory.** If the server restarts during the 10-second wait or the retry, the page shows "still being prepared" for at most 10 minutes, then offers the manual retry. Nothing is lost and nothing is re-scored. | Ship. |
+| 27 | **Some word-level chips moved slightly** on pages with sentence-level corrections: on the development database 161 of 1,399 chip placements (desktop and phone counted separately) differ, almost all because a sentence-level chip no longer shares or crowds the word's chip. Underlines themselves: 0 changed. | Ship. |
+| 28 | **An overdue assignment never submitted shows "View Submission"** on the student's class page (it leads to an empty result). It no longer shows "Submit Another Draft". The button logic was left as it was. | Backlog: show "Upload Essay" or a closed state. |
+| 29 | **Line endings and the PDF parity guard.** The generated PDF rules carry hashes of the website source files as they were on disk; with `core.autocrlf=true` on Windows a fresh checkout can fail `pdfWebsiteAnnotationConsistency` although the code is identical. Linux checkouts (the VPS) are not affected. Pre-existing. | Backlog: a `.gitattributes` with `eol=lf` for the rule sources. |
+
 ## Test suites that fail, also on `origin/main`
 
 They are not regressions, but they are not all understood.
 
 | Suite | Finding |
 |---|---|
-| `institutionCredit` | **Unexplained, and it is a money path.** `monthlyCreditsUsed` expected 3, received 1. Possibly the monthly cycle reset with a stale test date (not confirmed). A real bug is not ruled out. |
+| `institutionCredit` | **Explained (Task 22): a stale test, not a money defect.** The test fixes the wallet cycle at 2026-09-01 to 2026-10-01. Since today is past the cycle end, the first debit correctly rolls the wallet into a new month (`monthlyCreditsUsed` 0, then 1) and leaves the carried top-up credits untouched, which is the intended rule (monthly allowance first). It started failing when the clock passed 2026-10-01, on `origin/main` too. Fix later: relative dates in the test. |
 | `classArchive`, `subscription.usage` | `POST /api/classes` answers 500 at `buildJoinUrl` because `FRONTEND_URL` is missing in the test environment. Production requires it at startup. Not re-run with it set. |
 | `phase2AssignmentControls` | With `PAYMENT_PROVIDER` set, the remaining failures answer 409 "still being processed", the guard against a second upload during processing. The test predates it. |
 | `provisionalGuestPersistence` | The test sends `PROMPT_VERSION`; the code requires the Gemini prompt version since the default model changed. |

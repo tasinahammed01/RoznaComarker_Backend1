@@ -16,7 +16,9 @@ A short summary for the school. Everything below is in this release; nothing has
 ## Highlights on the page image
 - Clicking a correction highlights it in the transcript, the list and on the image, and the other way round.
 - Underlines use the colour of the error type (spelling, grammar, vocabulary and so on), sit under the exact word, and the code label sits on that word.
-- A sentence-level correction is marked with a bracket in the margin. Corrections that could not be placed on the image are listed, never drawn in the wrong place.
+- A sentence-level correction (a fragment, a run-on sentence, a content or organization comment, or a long quote) is one bracket in the margin from its first to its last line, with its label at the top, instead of long lines under every line. Tapping the bracket opens the same explanation. Word-level underlines are unchanged.
+- On phones the labels are smaller and the lines thicker, so the handwriting stays readable.
+- Corrections that could not be placed on the image are listed, never drawn in the wrong place.
 
 ## Grade check
 - When a teacher changes which corrections count, the page shows the scores next to what was counted and what the student now sees, so the teacher can confirm the grade with one click. Grades never change on their own.
@@ -35,6 +37,15 @@ A short summary for the school. Everything below is in this release; nothing has
 
 ## Adaptive practice
 - Practice becomes available on its own as soon as the final evaluation is ready. No teacher action is needed. Practice exercises are still created only when the student asks for them.
+
+## More reliable corrections
+- The correction step now recovers by itself from the error that sometimes left an essay with a score but no corrections (0 failures in 90 test runs, 30 before).
+- If corrections are still missing, the page says so once and offers "Retry analysis" to the student, the guest and the teacher. It never uses an Assessment Credit and never changes the score. Corrections then appear without reloading the page.
+- If the corrections arrive after the score, the score card says that the score was calculated before them.
+
+## Student pages
+- "Submit Another Draft" is now a proper button with "View Submission".
+- The date under the essay title is the date of the draft being viewed.
 
 ## Fixes
 - The results page now updates by itself from the provisional score to the final score and detailed feedback; it no longer stays on "out of date".
