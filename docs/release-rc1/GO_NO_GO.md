@@ -5,7 +5,7 @@ This is the decision sheet, not a record of results. RC3 is RC2 plus the Gemini 
 ## Conditions to NOT ship
 
 - The production commit is not known (DEPLOY_RUNBOOK step 0).
-- `origin/release-candidate-3` on GitHub is not the final RC3 commit (the final freeze, Task 22, found it 8 commits behind, and `origin/highlight-sync` 14 behind).
+- `origin/release-candidate-3` on GitHub is not the final RC3 commit (the push-status check made after Task 22 found it 8 commits behind, and `origin/highlight-sync` 14 behind).
 - The `.env` was switched to Gemini before the new code was merged: the old code will not start with it.
 - The check in DEPLOY_RUNBOOK step 1 reports any fatal problem, for example `AI_PRIMARY_PROVIDER`, `AI_PRIMARY_MODEL`, `OPENROUTER_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `PAYMENT_PROVIDER` not `paypal`, a missing `OCR_SOURCE_MODE` or `OCR_GPT_VISION_MODEL`, or a model and reader that do not belong together (Gemini needs `verbatim_json`; Qwen needs `json_contract` or `plain_text`): the server will not start.
 - `.env` has a duplicate key the check lists: the last occurrence wins, which may not be the value you meant.
@@ -25,6 +25,10 @@ Twelve handwriting samples, on the final code. Dropped lines: 0 (pass). Word box
 ## Content and Organization findings, as measured
 
 The detector rarely returns Content or Organization findings (0 on most of 11 samples, also on samples that lost marks in these categories). A rewritten detector prompt was tried and dropped: it did not produce them where marks were lost, its run-to-run difference reached 26%, and 3 of 25 calls failed. So teachers and students see a count of 0 for these two categories on many essays, while the rubric score in the score panel shows the marks lost. This is a known limit, KNOWN_RISKS number 23.
+
+## Verification status after Task 22
+
+The final freeze was NOT fully run after Task 22. What was run: the related backend suites (97 of 97 pass, including the student payload guard, the PDF parity guard and the golden file), frontend Karma for the changed areas (725 of 725 pass) and a successful production build. Not run, and to be done at deploy time: the full backend suite compared name by name with `origin/main`, the production-mode startup rehearsal with `verify:runtime`, and the production build in a temporary worktree with the secret and "Holistic" scans.
 
 ## Tasks 20 to 22, as measured
 

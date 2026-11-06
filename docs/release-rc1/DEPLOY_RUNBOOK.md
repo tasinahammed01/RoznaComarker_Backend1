@@ -46,7 +46,7 @@ Everything below was written for RC2 and still applies unless this section says 
 
 ## The deploy, in order (VPS)
 
-**Before you start, on the developer's machine:** the final RC3 commit must be on GitHub. The final freeze (Task 22) found `origin/release-candidate-3` at `84d584ea`, 8 commits behind the final local commit (this document's commit included), and `origin/highlight-sync` at `a6251cf`, 14 behind. Push both branches first, then compare the commit below with the one you were given.
+**Before you start, on the developer's machine:** the final RC3 commit must be on GitHub. The push-status check made after Task 22 (the full freeze verification was not run, see GO_NO_GO.md) found `origin/release-candidate-3` at `84d584ea`, 8 commits behind the final local commit (this document's commit included), and `origin/highlight-sync` at `a6251cf`, 14 behind. Push both branches first, then compare the commit below with the one you were given.
 
 **Never switch the `.env` to Gemini before the new code is merged.** The code on production (`45e49aae`) refuses `OCR_GPT_VISION_MODEL=google/gemini-3.8-flash` and the server would not start. The new code accepts the current Qwen settings, so the code goes first and the env second.
 
