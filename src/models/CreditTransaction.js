@@ -2,7 +2,9 @@ const mongoose = require('mongoose');
 
 const TYPES = ['ASSESSMENT_DEBIT', 'BONUS_CREDIT', 'ADMIN_CREDIT', 'ADMIN_DEBIT', 'MONTHLY_RESET', 'PLAN_ALLOWANCE_CHANGE',
   'TOPUP_PURCHASE_PENDING', 'TOPUP_PURCHASE_COMPLETED', 'TOPUP_PURCHASE_FAILED', 'TOPUP_REFUND', 'TOPUP_ADMIN_ADJUSTMENT',
-  'REFERRAL_REFERRER_BONUS', 'REFERRAL_REFERRED_BONUS', 'BONUS_REWARD'];
+  'REFERRAL_REFERRER_BONUS', 'REFERRAL_REFERRED_BONUS', 'BONUS_REWARD',
+  // Improved Writing Model: an AI draft of a model answer (1 credit, teacher-triggered). Not an assessment.
+  'WRITING_MODEL_DEBIT'];
 const creditTransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   type: { type: String, enum: TYPES, required: true, index: true },

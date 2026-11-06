@@ -286,6 +286,19 @@ router.delete(
  *       404:
  *         description: Class not found
  */
+// Improved Writing Model (IMPROVED_WRITING_MODEL_ENABLED): the controller answers 404 to anyone but the owning teacher (no role middleware,
+// which would say 403). Saves and AI drafts are limited per teacher; an AI draft also runs one at a time per teacher.
+const writingModel = require('../controllers/writingModel.controller');
+const { createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createUserConcurrencyGuard } = require('../middlewares/concurrency.middleware');
+router.get('/:id/writing-model', verifyJwtToken, writingModel.get);
+// WRITING_MODEL_RATE_LIMIT_MAX (saves, default 60) and WRITING_MODEL_AI_RATE_LIMIT_MAX (AI drafts, default 10) per 15 minutes per teacher.
+const envLimit = (name, fallback) => Number(process.env[name]) > 0 ? Number(process.env[name]) : fallback;
+router.put('/:id/writing-model', verifyJwtToken, createUserRateLimiter({ windowMs: 15 * 60 * 1000, limit: envLimit('WRITING_MODEL_RATE_LIMIT_MAX', 60), event: 'WRITING_MODEL_RATE_LIMITED', reason: 'writing_model_save', responseCode: 'WRITING_MODEL_RATE_LIMITED' }), writingModel.save);
+router.post('/:id/writing-model/generate-draft', verifyJwtToken,
+  createUserRateLimiter({ windowMs: 15 * 60 * 1000, limit: envLimit('WRITING_MODEL_AI_RATE_LIMIT_MAX', 10), event: 'AI_GENERATION_RATE_LIMITED', reason: 'writing_model_draft', responseCode: 'WRITING_MODEL_RATE_LIMITED' }),
+  createUserConcurrencyGuard({ operation: 'writing_model_draft', maxConcurrent: 1 }), writingModel.generateDraft);
+
 // Draft limit (DRAFT_LIMIT_ENABLED): whether the assignment form shows "Maximum drafts". Teachers only; no assignment data.
 router.get('/draft-limit/config', verifyJwtToken, requireRole('teacher'), assignmentController.getDraftLimitConfig);
 
