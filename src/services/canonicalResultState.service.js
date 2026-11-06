@@ -154,6 +154,10 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
   const correctionRetryActive = layoutCurrent && !ocrFailed && correctionStageRetry.active(submission);
   const correctionRetryAllowed = layoutCurrent && !ocrFailed && !analysisProcessing && correctionStageRetry.manualAllowed(submission);
   const processingActive = analysisProcessing || correctionRetryActive;
+  // C.3b: the corrections arrived through a correction-only retry AFTER this score was calculated (the score is never recomputed for it). Only
+  // then may the counts disagree with the rubric, so only then the page says so. A later full assessment clears it (a later completion time).
+  const retryFinishedAt = new Date(submission.correctionRetry?.finishedAt || 0).getTime();
+  const assessedAt = new Date(submission.assessmentCompletedAt || 0).getTime();
   const terminal = !processingActive && (teacherOverride || evaluationCurrent || ocrFailed || semanticFailed
     || ['failed', 'stale'].includes(evaluationStatus));
   const automaticPollingAllowed = processingActive && !terminal;
@@ -216,6 +220,8 @@ function canonicalState({ submission = {}, feedback = null, currentSettings = nu
     manualRetryAllowed,
     correctionRetryActive,
     correctionRetryAllowed,
+    ...(submission.correctionRetry?.status === 'completed' && retryFinishedAt > assessedAt && assessedAt > 0
+      && semanticComplete && !teacherOverride ? { scoreBeforeCorrections: true } : {}),
     terminal,
     evaluationBlockedReason: evaluationStatus === 'blocked' ? 'corrections_incomplete' : null,
     detailedFeedbackBlockedReason: detailedFeedbackStatus === 'blocked' ? (semanticFailed ? 'evaluation_unavailable' : 'evaluation_unavailable') : null,
