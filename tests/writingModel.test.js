@@ -94,6 +94,47 @@ describe('access', () => {
 });
 
 describe('teacher text and release rules', () => {
+  test('manual save, approval and release survive fresh reads; a newer draft stays hidden until approved', async () => {
+    await save({ text: 'First manual model.', status: 'draft', releaseRule: 'manual', released: false });
+    expect((await studentView()).body.data).toEqual({ available: false });
+    await save({ status: 'approved' });
+    expect((await studentView()).body.data).toEqual({ available: false });
+    const body = { requestId: crypto.randomUUID(), revision: (await get()).body.data.revision, released: true };
+    expect((await put(body)).status).toBe(200);
+    expect((await put(body)).body.data.replay).toBe(true);
+    expect((await get()).body.data.revision).toBe(body.revision + 1);
+    const persisted = await Assignment.findById(fixture.IDS.assignment).select('+writingModel').lean();
+    expect(persisted.writingModel).toEqual(expect.objectContaining({ status: 'approved', released: true, text: 'First manual model.' }));
+    for (let i = 0; i < 2; i++) expect((await studentView()).body.data).toEqual({ available: true, text: 'First manual model.' });
+    await save({ text: 'Newer model.', status: 'draft' });
+    expect((await studentView()).body.data).toEqual({ available: false });
+    await save({ status: 'approved' });
+    expect((await studentView()).body.data).toEqual({ available: true, text: 'Newer model.' });
+    expect(await debits()).toBe(0); expect(provider).not.toHaveBeenCalled();
+  });
+  test('concurrent approvals use optimistic locking and an unrelated assignment never receives the model', async () => {
+    await save({ text: 'One assignment only.', status: 'draft', releaseRule: 'manual' });
+    const revision = (await get()).body.data.revision;
+    const results = await Promise.all([false, true].map(released => put({ requestId: crypto.randomUUID(), revision, status: 'approved', released })));
+    expect(results.map(r => r.status).sort()).toEqual([200, 409]);
+    expect((await get()).body.data.revision).toBe(revision + 1);
+    const other = await Assignment.create({ title: 'Separate essay', class: fixture.IDS.class, teacher: fixture.teacher._id });
+    await Submission.updateOne({ _id: fixture.IDS.registered }, { $set: { assignment: other._id } });
+    expect((await studentView()).body.data).toEqual({ available: false });
+    expect(await debits()).toBe(0); expect(provider).not.toHaveBeenCalled();
+  });
+  test('released content remains protected by guest settings and return-link validity', async () => {
+    await save({ text: 'Guest model.', status: 'approved', releaseRule: 'manual', released: true });
+    expect((await guestView()).body.data).toEqual({ available: true, text: 'Guest model.' });
+    const url = `/api/guest/submissions/${fixture.IDS.guest}/writing-model`;
+    expect((await request(app).get(url).set('X-Guest-Token', 'invalid-token')).status).not.toBe(200);
+    await Submission.updateOne({ _id: fixture.IDS.guest }, { $set: { 'guest.expiresAt': new Date('2000-01-01') } });
+    expect((await guestView()).status).not.toBe(200);
+    await Submission.updateOne({ _id: fixture.IDS.guest }, { $set: { 'guest.expiresAt': new Date('2099-01-01') } });
+    await Assignment.updateOne({ _id: fixture.IDS.assignment }, { $set: { allowGuestSubmission: false } });
+    expect((await guestView()).status).not.toBe(200);
+    expect((await studentView()).body.data).toEqual({ available: true, text: 'Guest model.' });
+  });
   test('hidden as a draft, hidden before draft 2, visible after; students get only { available, text }', async () => {
     expect((await save({ text: 'A model answer written by the teacher.' })).body.data.snapshot).toEqual(expect.objectContaining({ status: 'draft', source: 'teacher' }));
     expect((await studentView()).body.data).toEqual({ available: false });
