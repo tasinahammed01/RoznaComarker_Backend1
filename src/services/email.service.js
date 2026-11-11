@@ -19,11 +19,11 @@ function guestEmailHtml({ assignmentTitle, returnUrl, resultReady }) {
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="max-width:640px;background-color:#ffffff;border-radius:16px;border-top:5px solid #008081;">
 <tr><td class="email-content" style="padding:32px;">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
-<td width="46" height="46" align="center" bgcolor="#14264d" style="background-color:#14264d;color:#ffffff;border-radius:12px;font-size:21px;font-weight:bold;">RH</td>
-<td style="padding-left:12px;"><strong style="font-size:24px;color:#14264d;">RoznaHub</strong><br><span style="font-size:14px;color:#59657d;">Co-Marker</span></td></tr></table>
+<td width="46" height="46" align="center" bgcolor="#14264d" style="background-color:#14264d;color:#ffffff;border-radius:12px;font-size:21px;font-weight:bold;">R</td>
+<td style="padding-left:12px;"><strong style="font-size:24px;color:#14264d;">Rubrilo</strong></td></tr></table>
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:28px;"><tr><td bgcolor="#fff7df" style="padding:10px 16px;background-color:#fff7df;border-radius:24px;color:#a96700;font-size:13px;font-weight:bold;">Guest Submission</td></tr></table>
 <h1 class="email-heading" style="margin:20px 0 14px;font-size:34px;line-height:41px;letter-spacing:-0.6px;color:#14264d;">${heading}</h1>
-<p style="margin:0 0 22px;font-size:16px;line-height:25px;color:#59657d;">${resultReady ? 'Your feedback is ready.' : 'Your work has been received and submitted successfully through RoznaHub Co-Marker.'} Use your private link below to view your feedback and results ${resultReady ? 'without logging in' : 'later'}.</p>
+<p style="margin:0 0 22px;font-size:16px;line-height:25px;color:#59657d;">${resultReady ? 'Your feedback is ready.' : 'Your work has been received and submitted successfully through Rubrilo.'} Use your private link below to view your feedback and results ${resultReady ? 'without logging in' : 'later'}.</p>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f3f6f8" style="background-color:#f3f6f8;border-radius:12px;table-layout:fixed;"><tr><td style="padding:20px;">
 <p style="margin:0 0 6px;font-size:13px;line-height:20px;color:#59657d;">Assignment</p>
 <p style="margin:0;font-size:17px;line-height:25px;font-weight:bold;color:#14264d;overflow-wrap:anywhere;word-wrap:break-word;">${escapeHtml(assignmentTitle)}</p>
@@ -50,15 +50,15 @@ function guestEmailHtml({ assignmentTitle, returnUrl, resultReady }) {
  * (single-submission email) where to get one link to all submissions. Nothing else; never a title, name, score or feedback.
  */
 function recoveryAccessMessage({ to, link, subject, opens, cta, validity, allSubmissions = null }) {
-  const from = `"${process.env.MAIL_FROM_NAME || 'CoMarker'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`;
+  const from = `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`;
   const privacy = 'Keep this link private: anyone with it can see your work. If you did not ask for it, you can ignore this email.';
-  const text = ['Rozna Co-Marker', '', 'Here is your new private access link.', opens, '', link, '', `The link works for ${validity}.`, privacy,
+  const text = ['Rubrilo', '', 'Here is your new private access link.', opens, '', link, '', `The link works for ${validity}.`, privacy,
     ...(allSubmissions ? ['', `Submitted more than one assignment? Get one link to all of them: ${allSubmissions}`] : [])].join('\n');
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(subject)}</title></head>`
     + `<body style="margin:0;padding:24px 12px;background-color:#f2f6f8;font-family:Arial,Helvetica,sans-serif;color:#14264d;">`
     + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center">`
     + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;background-color:#ffffff;border-radius:16px;border-top:5px solid #008081;"><tr><td style="padding:28px;">`
-    + `<p style="margin:0 0 18px;font-size:18px;font-weight:bold;">Rozna Co-Marker</p>`
+    + `<p style="margin:0 0 18px;font-size:18px;font-weight:bold;">Rubrilo</p>`
     + `<h1 style="margin:0 0 12px;font-size:26px;line-height:32px;">Your access link</h1>`
     + `<p style="margin:0 0 20px;font-size:16px;line-height:24px;color:#59657d;">${escapeHtml(opens)}</p>`
     + `<p style="margin:0 0 20px;"><a href="${escapeHtml(link)}" style="display:inline-block;padding:14px 22px;background-color:#008081;color:#ffffff;font-weight:bold;text-decoration:none;border-radius:12px;">${escapeHtml(cta)}</a></p>`
@@ -102,7 +102,7 @@ async function sendInvitationEmail({ to, className, classCode, joinUrl, teacherN
     const safeUrl = escapeHtml(joinUrl);
     
     const mailOptions = {
-      from: `"${process.env.MAIL_FROM_NAME || 'CoMarker'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
+      from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
       to: Array.isArray(to) ? to.join(', ') : to,
       subject: `You're invited to join ${String(className).replace(/[\r\n]/g, ' ')}`,
       html: `
@@ -175,10 +175,10 @@ module.exports = {
       const readiness = emailReadiness();
       if (!readiness.ready) return { success: false, code: readiness.code };
       const result = await getTransporter().sendMail({
-        from: `"${process.env.MAIL_FROM_NAME || 'CoMarker'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
-        to, subject: 'Co-Marker: assignment submitted',
-        text: `${studentName} (Guest) submitted ${assignmentTitle}. Open the assignment submissions in Co-Marker to review it.`,
-        html: `<p>${escapeHtml(studentName)} (Guest) submitted <strong>${escapeHtml(assignmentTitle)}</strong>.</p><p>Open the assignment submissions in Co-Marker to review it.</p>`
+        from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
+        to, subject: 'Rubrilo: assignment submitted',
+        text: `${studentName} (Guest) submitted ${assignmentTitle}. Open the assignment submissions in Rubrilo to review it.`,
+        html: `<p>${escapeHtml(studentName)} (Guest) submitted <strong>${escapeHtml(assignmentTitle)}</strong>.</p><p>Open the assignment submissions in Rubrilo to review it.</p>`
       });
       if (result?.rejected?.length && !result?.accepted?.length) return { success: false, code: 'PROVIDER_REJECTED' };
       return { success: true };
@@ -191,7 +191,7 @@ module.exports = {
   async sendRecoveryPortalEmail({ to, link, expiresInHours }) {
     const hours = Number.isInteger(expiresInHours) ? expiresInHours : 24;
     return sendRecoveryAccessEmail({ to, link, event: 'recovery_portal_email',
-      subject: 'Your Co-Marker access link to your submissions',
+      subject: 'Your Rubrilo access link to your submissions',
       opens: 'It opens a list of all the assignments you submitted with this email address, so you can choose one and see your work and feedback.',
       cta: 'See my submissions', validity: `${hours} hour${hours === 1 ? '' : 's'}` });
   },
@@ -200,7 +200,7 @@ module.exports = {
   async sendGuestRecoveryEmail({ to, link, expiresInDays }) {
     const days = Number.isInteger(expiresInDays) ? expiresInDays : 30;
     return sendRecoveryAccessEmail({ to, link, event: 'guest_recovery_email',
-      subject: 'Your Co-Marker access link to your submission',
+      subject: 'Your Rubrilo access link to your submission',
       opens: 'It opens your submitted assignment with its feedback, the same page as your original link. Your earlier links keep working.',
       cta: 'Open my submission', validity: `${days} day${days === 1 ? '' : 's'}`, allSubmissions: new URL('/recover', link).href });
   },
@@ -220,10 +220,10 @@ module.exports = {
       const status = resultReady ? 'feedback is ready' : 'submission was received';
       let message;
       try { message = {
-        from: `"${process.env.MAIL_FROM_NAME || 'CoMarker'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
+        from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
         to,
-        subject: `Your Co-Marker ${resultReady ? 'feedback is ready' : 'assignment submission'}: ${String(assignmentTitle).replace(/[\r\n]/g, ' ').slice(0, 150)}`,
-        text: `Rozna Co-Marker\n\nYour ${status} for ${assignmentTitle}.\nUse this private link to access your feedback without logging in:\n${returnUrl}\nKeep this link private. Do not share it. It expires; request a new link from the assignment page if needed.`,
+        subject: `Your Rubrilo ${resultReady ? 'feedback is ready' : 'assignment submission'}: ${String(assignmentTitle).replace(/[\r\n]/g, ' ').slice(0, 150)}`,
+        text: `Rubrilo\n\nYour ${status} for ${assignmentTitle}.\nUse this private link to access your feedback without logging in:\n${returnUrl}\nKeep this link private. Do not share it. It expires; request a new link from the assignment page if needed.`,
         html: guestEmailHtml({ assignmentTitle, returnUrl, resultReady })
       }; } catch { throw Object.assign(new Error('Email template unavailable'), { code: 'TEMPLATE_FAILURE' }); }
       const result = await getTransporter().sendMail(message);

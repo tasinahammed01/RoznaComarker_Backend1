@@ -67,7 +67,7 @@ describe('PayPal subscription management Phase 3', () => {
     const res = await request(app).post('/api/subscription/paypal/cancel').set(auth()).send({});
     expect(res.status).toBe(200); expect(res.body.data.pending).toBe(true);
     expect(paypalMock.cancelSubscription).toHaveBeenCalledWith(SUBSCRIPTION,
-      'Cancelled by subscriber from CoMarker account settings.', expect.stringMatching(/^cancel-/));
+      'Cancelled by subscriber from Rubrilo account settings.', expect.stringMatching(/^cancel-/));
     expect(String((await User.findById(teacher._id)).plan)).toBe(String(essential._id));
   });
 

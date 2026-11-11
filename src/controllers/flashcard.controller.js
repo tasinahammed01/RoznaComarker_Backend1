@@ -378,7 +378,7 @@ async function generateFlashcards(req, res) {
     const shouldAddImages = addImage || includeImages;
     const normalizedContent = String(content || "").trim();
     if (normalizedContent.length < 3) {
-      return sendError(res, 400, "Add a little more content so CoMarker can create useful flashcards.", "INSUFFICIENT_FLASHCARD_CONTENT");
+      return sendError(res, 400, "Add a little more content so Rubrilo can create useful flashcards.", "INSUFFICIENT_FLASHCARD_CONTENT");
     }
 
     debugLog("[FLASHCARD GENERATION] Parameters:", {

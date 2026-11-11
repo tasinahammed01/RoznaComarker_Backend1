@@ -733,7 +733,7 @@ function drawPageHeaderFooter(
       .font(STYLE.fonts.bold)
       .fontSize(STYLE.sizes.base)
       .fillColor(STYLE.colors.primary);
-    doc.text("Rozna", L, 18);
+    doc.text("Rubrilo", L, 18);
     doc
       .font(STYLE.fonts.main)
       .fontSize(STYLE.sizes.xs)
@@ -783,7 +783,7 @@ function drawPageHeaderFooter(
     .fillColor(STYLE.colors.headerFt);
   const generatedDate = formatDate(new Date());
   doc.text(
-    `Generated on ${generatedDate} - Rozna Education Platform`,
+    `Generated on ${generatedDate} - Rubrilo`,
     L,
     footerY + 10,
     { width: W, align: "center" },
@@ -2598,7 +2598,7 @@ async function generateWorksheetSubmissionPdf(data, outputPath) {
     const L = doc.page.margins.left, W = pageW(doc);
     doc.font(STYLE.fonts.bold).fontSize(19).fillColor(STYLE.colors.neutral).text(model.worksheetTitle, L, doc.y, { width: W - 150 });
     doc.font(STYLE.fonts.main).fontSize(9.5).fillColor(STYLE.colors.muted).text("Student Submission Report", L, doc.y + 2, { width: W - 150 });
-    doc.font(STYLE.fonts.bold).fontSize(11).fillColor(STYLE.colors.primary).text("RoznaHub", L + W - 120, 73, { width: 120, align: "right" });
+    doc.font(STYLE.fonts.bold).fontSize(11).fillColor(STYLE.colors.primary).text("Rubrilo", L + W - 120, 73, { width: 120, align: "right" });
     doc.moveDown(0.8); doc.moveTo(L, doc.y).lineTo(L + W, doc.y).lineWidth(1.5).strokeColor(STYLE.colors.primary).stroke(); doc.y += 10;
     const metadata = [["Student", model.studentName || model.studentEmail || "Student"], ["Email", model.studentEmail], ["Class", model.className], ["Submitted", model.submittedAt], ["Status", model.submissionStatus]].filter(([, value]) => value);
     const colW = W / 3;

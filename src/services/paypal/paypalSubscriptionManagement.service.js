@@ -11,7 +11,7 @@ const MANAGEABLE = new Set(['ACTIVE', 'SUSPENDED']);
 const TERMINAL = new Set(['CANCELLED', 'EXPIRED']);
 const ACTIVE_STATUSES = ['prepared', 'processing', 'approval_pending', 'provider_pending'];
 const PROCESSING_LEASE_MS = 2 * 60 * 1000;
-const CANCEL_REASON = 'Cancelled by subscriber from CoMarker account settings.';
+const CANCEL_REASON = 'Cancelled by subscriber from Rubrilo account settings.';
 
 function domainError(code, message, statusCode = 400) {
   return Object.assign(new Error(message), { code, statusCode });

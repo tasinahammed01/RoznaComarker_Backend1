@@ -54,7 +54,9 @@ test.each([false, true])('guest email card preserves canonical links and text fa
   expect(message.html).toContain('role="presentation"');
   expect(message.html).toContain('max-width:640px');
   expect(message.html).toContain('max-width:480px');
-  expect(message.html).toContain('RoznaHub');
+  expect(message.html).toContain('Rubrilo');
+  expect(message.html).not.toMatch(/Co-?Marker|>RH</);
+  expect(message.html).toContain('RoznaHub. All rights reserved.'); // legal company name is kept
   expect(message.html).toContain('Guest Submission');
   expect(message.html).toContain(resultReady ? 'Your Feedback Is Ready' : 'Assignment Submitted Successfully');
   expect(message.html).toContain('&lt;Essay&gt; &amp; &quot;Writing&quot;');
@@ -67,7 +69,7 @@ test.each([false, true])('guest email card preserves canonical links and text fa
   expect(message.html).toContain('mailto:support@roznahub.com');
   expect(message.html).not.toMatch(/<script|<form|<iframe|<img/i);
   const status = resultReady ? 'feedback is ready' : 'submission was received';
-  expect(message.text).toBe(`Rozna Co-Marker\n\nYour ${status} for ${assignmentTitle}.\nUse this private link to access your feedback without logging in:\n${returnUrl}\nKeep this link private. Do not share it. It expires; request a new link from the assignment page if needed.`);
+  expect(message.text).toBe(`Rubrilo\n\nYour ${status} for ${assignmentTitle}.\nUse this private link to access your feedback without logging in:\n${returnUrl}\nKeep this link private. Do not share it. It expires; request a new link from the assignment page if needed.`);
 });
 
 test('missing config fails safely before touching the transport', async () => {
@@ -172,7 +174,7 @@ describe('dedicated recovery emails', () => {
   test('single-submission recovery: its own subject and wording, what the link opens, validity, the all-submissions link; nothing else', async () => {
     await expect(email.sendGuestRecoveryEmail({ to: 'guest@example.com', link, expiresInDays: 30 })).resolves.toEqual({ success: true });
     const message = transport.sendMail.mock.calls[0][0];
-    expect(message.subject).toBe('Your Co-Marker access link to your submission');
+    expect(message.subject).toBe('Your Rubrilo access link to your submission');
     for (const part of [message.text, message.html]) {
       expect(part).toContain('opens your submitted assignment with its feedback');
       expect(part).toContain('30 days');
@@ -185,7 +187,7 @@ describe('dedicated recovery emails', () => {
   test('portal recovery uses the same neutral layout, with its own wording and validity in hours', async () => {
     await email.sendRecoveryPortalEmail({ to: 'guest@example.com', link: 'https://school.example/recover/portal#t', expiresInHours: 24 });
     const message = transport.sendMail.mock.calls[0][0];
-    expect(message.subject).toBe('Your Co-Marker access link to your submissions');
+    expect(message.subject).toBe('Your Rubrilo access link to your submissions');
     expect(message.text).toContain('list of all the assignments');
     expect(message.text).toContain('24 hours');
     expect(message.text).not.toContain('Get one link to all of them');

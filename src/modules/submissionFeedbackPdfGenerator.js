@@ -74,7 +74,7 @@ async function generateSubmissionFeedbackPdf(viewModel, outputPath, options = {}
       stage('image_loading', imagesStartedAt);
       throwIfAborted(options.abortSignal);
       const pdfStartedAt = Date.now(); await timeout(page.pdf({ path: outputPath, format: 'A4', preferCSSPageSize: true, printBackground: true, displayHeaderFooter: true,
-        headerTemplate: '<div style="width:100%;margin:0 14mm;font:7pt Arial;color:#738392;border-bottom:1px solid #dfe6ea;padding-bottom:1mm"><b style="color:#087f83">ROZNAHUB</b> &nbsp;/&nbsp; Submission Feedback Report</div>',
+        headerTemplate: '<div style="width:100%;margin:0 14mm;font:7pt Arial;color:#738392;border-bottom:1px solid #dfe6ea;padding-bottom:1mm"><b style="color:#087f83">RUBRILO</b> &nbsp;/&nbsp; Submission Feedback Report</div>',
         footerTemplate: '<div style="width:100%;margin:0 14mm;font:7pt Arial;color:#738392;border-top:1px solid #dfe6ea;padding-top:1mm;display:flex;justify-content:space-between"><span>Confidential academic feedback</span><span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span></div>' }),
         limits.renderTimeoutMs, 'PDF document rendering timed out.', cancelRender);
       const pdfMs = Date.now() - pdfStartedAt;

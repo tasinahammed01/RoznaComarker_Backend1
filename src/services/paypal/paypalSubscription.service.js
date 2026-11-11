@@ -52,7 +52,7 @@ async function createProviderSubscription(attempt, { client, environment }) {
     plan_id: attempt.providerPlanId,
     custom_id: attempt.attemptId,
     application_context: {
-      brand_name: 'RoznaHub / CoMarker',
+      brand_name: 'Rubrilo',
       user_action: 'SUBSCRIBE_NOW',
       return_url: redirects.returnUrl,
       cancel_url: redirects.cancelUrl
