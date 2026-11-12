@@ -6,6 +6,8 @@ const {withPreflightProgress}=require('../services/submissionProgress.service');
 const guestDiagnostic=require('../utils/guestPreflightDiagnostics');
 const exact=()=>require('../services/hybridSource/contract').mode()==='gpt_vision_exact';
 async function sourceContext(req){
+  // Work a teacher uploads for a student: the teacher route has already proved ownership and names the student as the owner.
+  if(req.teacherUploadSource)return req.teacherUploadSource;
   if(req.guestContext){
     const access=require('../services/guestAccess.service'),guest=access.identity(req.body);
     if(!/^[\w-]{32,128}$/.test(req.get('Idempotency-Key')||''))throw access.fail(400,'A valid submission reference is required.');

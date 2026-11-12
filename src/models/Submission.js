@@ -45,6 +45,34 @@ const submissionSchema = new Schema(
     registeredRequestKey: { type: String, select: false },
     guestRevisionLease: { owner: String, until: Date },
     guestAcceptedRevisionKey: { type: String, select: false },
+    // Work a teacher uploaded for a student (photos of handwritten pages), on a registered or a guest submission. Teacher and
+    // server only: hidden from default queries and stripped from toJSON. requestKey/contentHash are hashes of the client's
+    // per-student idempotency key and of the uploaded content; email is sent only when the teacher asks ("Save and send").
+    teacherUpload: {
+      type: new Schema({
+        uploadedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+        batchId: { type: String, maxlength: 64, required: true },
+        requestKey: { type: String, maxlength: 64 },
+        contentHash: { type: String, maxlength: 64 },
+        uploadedAt: { type: Date, required: true },
+        email: {
+          type: new Schema({
+            // held = asked for, but marking failed: not sent; goes back to queued when the teacher retries marking.
+            status: { type: String, enum: ['none', 'queued', 'sending', 'sent', 'failed', 'held'], default: 'none' },
+            requestedAt: Date,
+            leaseUntil: Date,
+            nextAttemptAt: Date,
+            sentAt: Date,
+            failedAt: Date,
+            attempts: { type: Number, min: 0, default: 0 },
+            lastErrorCode: { type: String, maxlength: 64 }
+          }, { _id: false }),
+          default: () => ({})
+        }
+      }, { _id: false }),
+      default: undefined,
+      select: false
+    },
     assignment: {
       type: Schema.Types.ObjectId,
       ref: 'Assignment',
@@ -309,6 +337,14 @@ submissionSchema.index({ assignment: 1, 'guest.normalizedEmail': 1, submittedAt:
   { name: 'guest_recovery_lookup_v1', partialFilterExpression: { submissionMode: 'guest' } });
 submissionSchema.index({ assignment: 1 });
 submissionSchema.index({ submissionMode: 1, assessmentStatus: 1, 'guest.resultEmailSentAt': 1, 'guest.resultEmailNextAttemptAt': 1 }, { name: 'guest_result_email_queue_v1' });
+// Teacher uploads (created in production by scripts/migrateTeacherUploadIndexes.js): one submission per idempotency key and
+// assignment, the "Save and send" email queue, and the per-assignment status list.
+submissionSchema.index({ assignment: 1, 'teacherUpload.requestKey': 1 }, { name: 'teacher_upload_request_v1', unique: true,
+  partialFilterExpression: { 'teacherUpload.requestKey': { $type: 'string' } } });
+submissionSchema.index({ 'teacherUpload.email.status': 1, assessmentStatus: 1, 'teacherUpload.email.nextAttemptAt': 1 },
+  { name: 'teacher_upload_email_queue_v1', partialFilterExpression: { 'teacherUpload.email.status': { $type: 'string' } } });
+submissionSchema.index({ assignment: 1, 'teacherUpload.uploadedBy': 1, createdAt: -1 },
+  { name: 'teacher_upload_list_v1', partialFilterExpression: { 'teacherUpload.uploadedBy': { $type: 'objectId' } } });
 submissionSchema.index({ class: 1 });
 submissionSchema.index({ class: 1, student: 1, submittedAt: 1 });
 submissionSchema.index({ class: 1, assignment: 1, submittedAt: 1, draftNumber: 1 });
@@ -320,6 +356,7 @@ require('../services/sourceFidelity/immutability').install(submissionSchema);
 submissionSchema.set('toJSON',{transform(_doc,ret){
   delete ret.registeredRequestKey;
   delete ret.teacherAnnotations; // teacher-only, even when a query selected it
+  delete ret.teacherUpload; // teacher/server-only, even when a query selected it; teacher endpoints build their own DTO
   for(const page of ret.ocrPages||[])delete page.studentSourceEvidence;
   const source=require('../utils/sourceFidelity').payload(ret);if(source)ret.sourceFidelity=source;return ret;
 }});

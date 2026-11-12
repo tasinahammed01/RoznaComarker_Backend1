@@ -196,6 +196,7 @@ if (process.env.NODE_ENV === "development") {
 }
 app.use("/api/classes", classRoutes);
 app.use("/api/memberships", membershipRoutes);
+app.use('/api/assignments/:assignmentId/teacher-uploads', require('./routes/teacherUpload.routes'));
 app.use("/api/assignments", assignmentRoutes);
 app.use("/api/files", fileRoutes);
 app.use("/api/uploads", uploadRoutes);

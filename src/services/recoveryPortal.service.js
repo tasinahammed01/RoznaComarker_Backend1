@@ -118,10 +118,10 @@ const listStatus = (submission, feedback) => {
 async function listAssignments(emailNormalized) {
   const Assignment = require('../models/assignment.model'), Class = require('../models/class.model');
   const submissions = await Submission.find({ submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null })
-    .select('-ocrPages -transcriptPages').sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean();
+    .select('-ocrPages -transcriptPages +teacherUpload').sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean();
   if (!submissions.length) return [];
-  const assignments = await Assignment.find({ _id: { $in: [...new Set(submissions.map(s => String(s.assignment)))] }, isActive: true, allowGuestSubmission: true })
-    .select('_id title class teacher').lean();
+  const assignments = await Assignment.find({ _id: { $in: [...new Set(submissions.map(s => String(s.assignment)))] }, isActive: true })
+    .select('_id title class teacher allowGuestSubmission').lean();
   const classes = await Class.find(require('./classLifecycle.service').withActiveStatus({
     _id: { $in: [...new Set(assignments.map(a => String(a.class)))] }, isActive: true })).select('_id name teacher').lean();
   const classById = new Map(classes.map(c => [String(c._id), c]));
@@ -131,6 +131,8 @@ async function listAssignments(emailNormalized) {
   return submissions.flatMap(s => {
     const assignment = assignmentById.get(String(s.assignment)), classDoc = assignment && classById.get(String(assignment.class));
     if (!assignment || !classDoc || String(classDoc.teacher) !== String(assignment.teacher)) return [];
+    // Guest submissions need an assignment open to guests; work a teacher uploaded is listed whatever that setting is.
+    if (assignment.allowGuestSubmission !== true && !s.teacherUpload?.uploadedBy) return [];
     return [{ id: String(s._id), assignmentTitle: String(assignment.title || '').slice(0, 200), className: String(classDoc.name || '').slice(0, 120),
       submittedAt: s.submittedAt || s.createdAt || null, status: listStatus(s, feedbackBySubmission.get(String(s._id)) || null) }];
   });

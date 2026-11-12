@@ -69,7 +69,10 @@ async function requireGuestAccess(req, res, next) {
     req.guestSubmission = !guestToken && portalSession && ['GET', 'HEAD'].includes(req.method)
       ? await require('./recoveryPortal.service').submissionForSession(req.params.submissionId, portalSession)
       : await authorize(req.params.submissionId, guestToken);
-    const assignment = await require('../models/assignment.model').findOne({ _id: req.guestSubmission.assignment, isActive: true, allowGuestSubmission: true });
+    // Work a teacher uploaded is readable through its link even when the assignment does not accept guest submissions.
+    const teacherUpload = await Submission.exists({ _id: req.guestSubmission._id, 'teacherUpload.uploadedBy': { $exists: true } });
+    const assignment = await require('../models/assignment.model').findOne({ _id: req.guestSubmission.assignment, isActive: true,
+      ...(teacherUpload && ['GET', 'HEAD'].includes(req.method) ? {} : { allowGuestSubmission: true }) });
     if (!assignment) throw fail(404, 'Results unavailable.');
     const classDoc = await require('../models/class.model').findOne(
       require('./classLifecycle.service').withActiveStatus({ _id: assignment.class, teacher: assignment.teacher, isActive: true }));

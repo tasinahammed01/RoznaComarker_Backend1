@@ -209,6 +209,9 @@ function startAssessmentRecoveryWorker(config = workerConfig()) {
         .sort({ updatedAt: 1 }).limit(config.batchSize).select('_id ocrJobId').lean();
       for (const candidate of candidates) await processSubmission(candidate._id, candidate.ocrJobId, config);
       await require('./guestResultNotification.service').run();
+      // Feedback emails for work a teacher uploaded ("Save and send" / Send). Its failures never stop the recovery loop.
+      await require('./teacherUploadEmail.service').run()
+        .catch(error => logger.error({ event: 'teacher_upload_email_run_failed', errorCode: error?.code || 'TEACHER_UPLOAD_EMAIL_FAILED' }));
       return { claimed: candidates.length };
     } catch (error) {
       logger.error({ event: 'assessment_recovery_worker_failed', errorCode: error?.code || 'RECOVERY_SCAN_FAILED' });

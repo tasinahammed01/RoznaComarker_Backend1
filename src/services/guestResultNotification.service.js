@@ -7,10 +7,12 @@ const logger = require('../utils/logger');
 // independent of the original confirmation token, so delivery never invalidates
 // the student's original return link. Both remain revocable and email recovery
 // rotates both capabilities. Only hashes are persisted.
+// Teacher uploads are never emailed here: their students are emailed only when the teacher chose "Save and send".
+const NOT_TEACHER_UPLOAD = { 'teacherUpload.uploadedBy': { $exists: false } };
 async function run({ batchSize = 10 } = {}) {
   if (!require('../config/guestSubmission').guestSubmissionEnabled()) return;
   const now = new Date();
-  const candidates = await Submission.find({ submissionMode: 'guest', assessmentStatus: 'complete',
+  const candidates = await Submission.find({ submissionMode: 'guest', assessmentStatus: 'complete', ...NOT_TEACHER_UPLOAD,
     'guest.revokedAt': null, 'guest.resultEmailSentAt': null,
     $and: [
       { $or: [{ 'guest.resultEmailLeaseUntil': null }, { 'guest.resultEmailLeaseUntil': { $lte: now } }] },
@@ -21,7 +23,7 @@ async function run({ batchSize = 10 } = {}) {
       const { assignment } = await require('../controllers/guestSubmission.controller').assignmentFor(candidate.qrToken);
       const issued = access.issueToken();
       const link = access.returnUrl(candidate._id, issued.token);
-      const doc = await Submission.findOneAndUpdate({ _id: candidate._id, assessmentStatus: 'complete', draftNumber: candidate.draftNumber, 'guest.revokedAt': null,
+      const doc = await Submission.findOneAndUpdate({ _id: candidate._id, assessmentStatus: 'complete', draftNumber: candidate.draftNumber, ...NOT_TEACHER_UPLOAD, 'guest.revokedAt': null,
         'guest.resultEmailSentAt': null, $or: [{ 'guest.resultEmailLeaseUntil': null }, { 'guest.resultEmailLeaseUntil': { $lte: now } }] },
       { $set: { 'guest.resultEmailLeaseUntil': new Date(Date.now() + 5 * 60 * 1000),
         'guest.resultAccessHash': issued.accessHash, 'guest.resultExpiresAt': issued.expiresAt } }, { returnDocument: 'after' })

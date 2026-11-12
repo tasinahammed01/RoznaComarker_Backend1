@@ -12,17 +12,23 @@ const logger = require('../utils/logger');
 const MAX_RECOVERY_LINKS = 10;
 
 async function resendGuestLink({ emailNormalized, submissionId = null, qrToken = null, now = new Date(), env = process.env }) {
-  let assignmentToken = qrToken;
+  let assignmentToken = qrToken, assignment = null;
   if (submissionId) {
     if (!mongoose.isValidObjectId(submissionId)) return { sent: false, reason: 'no_submission' };
     const original = await Submission.findOne({ _id: submissionId, submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized,
-      'guest.revokedAt': null }).select('qrToken').lean();
+      'guest.revokedAt': null }).select('qrToken assignment +teacherUpload').lean();
     if (!original) return { sent: false, reason: 'no_submission' };
+    // Work a teacher uploaded has no QR entry: its assignment only has to be active (the guest-submission setting does not apply).
+    if (original.teacherUpload?.uploadedBy) {
+      assignment = await require('../models/assignment.model').findOne({ _id: original.assignment, isActive: true }).select('_id').lean();
+      if (!assignment) return { sent: false, reason: 'unavailable' };
+    }
     assignmentToken = original.qrToken;
   }
-  let assignment;
-  try { ({ assignment } = await require('../controllers/guestSubmission.controller').assignmentFor(assignmentToken)); }
-  catch { return { sent: false, reason: 'unavailable' }; }
+  if (!assignment) {
+    try { ({ assignment } = await require('../controllers/guestSubmission.controller').assignmentFor(assignmentToken)); }
+    catch { return { sent: false, reason: 'unavailable' }; }
+  }
   // The latest submission for this email in this assignment (or exactly the one asked for).
   const candidate = await Submission.findOne({ ...(submissionId ? { _id: submissionId } : {}), assignment: assignment._id, submissionMode: 'guest',
     'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null }).sort({ submittedAt: -1 }).select('_id').lean();

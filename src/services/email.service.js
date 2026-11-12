@@ -170,6 +170,27 @@ async function testEmailConfig() {
 }
 
 module.exports = {
+  // Feedback for work a teacher uploaded ("Save and send" or Send). Never throws: { success, code } with a safe failure code.
+  async sendTeacherUploadFeedbackEmail({ to, studentName, teacherName, assignmentTitle, link, expiresAt = null, needsLogin = false }) {
+    try {
+      const readiness = emailReadiness();
+      if (!readiness.ready) throw Object.assign(new Error('Email configuration unavailable'), { code: readiness.code });
+      let content;
+      try { content = require('./teacherUploadEmailTemplate').buildTeacherUploadFeedbackEmail({ studentName, teacherName, assignmentTitle, link, expiresAt, needsLogin }); }
+      catch { throw Object.assign(new Error('Email template unavailable'), { code: 'TEMPLATE_FAILURE' }); }
+      const result = await getTransporter().sendMail({
+        from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
+        to, subject: content.subject, text: content.text, html: content.html
+      });
+      if (result?.rejected?.length && !result?.accepted?.length) throw Object.assign(new Error('Email rejected'), { code: 'PROVIDER_REJECTED' });
+      logger.info({ event: 'teacher_upload_feedback_email_sent', provider: 'smtp' });
+      return { success: true };
+    } catch (error) {
+      const code = safeEmailFailure(error);
+      logger.warn({ event: 'teacher_upload_feedback_email_failed', code });
+      return { success: false, code };
+    }
+  },
   async sendTeacherSubmissionEmail({ to, assignmentTitle, studentName }) {
     try {
       const readiness = emailReadiness();
