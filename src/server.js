@@ -55,6 +55,8 @@ async function start() {
   } else {
     logger.warn({ event: 'assessment_recovery_disabled' });
   }
+  // Reference files left waiting by a restart are read again (also on the next list or status request).
+  if (require('./services/referenceFiles/policy').referenceFilesEnabled()) void require('./services/referenceFiles/referenceFile.service').resumeInBackground();
   const pdfEngine = String(process.env.PDF_REPORT_ENGINE || "puppeteer").toLowerCase();
   if (pdfEngine !== "puppeteer") throw new Error("Unsupported PDF_REPORT_ENGINE configuration.");
   pdfBrowserManager.validateBrowserRuntime();

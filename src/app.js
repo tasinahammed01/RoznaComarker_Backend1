@@ -211,6 +211,7 @@ app.use('/api/billing', require('./routes/billing.routes'));
 app.use("/api/writing-corrections", writingCorrectionsRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/rubrics", rubricRoutes);
+app.use('/api/reference-files', require('./routes/referenceFile.routes'));
 app.use("/api/flashcards", flashcardRoutes);
 app.use("/api/shared", sharedFlashcardRoutes);
 app.use("/api/worksheets/generate/text", worksheetTextRoute);
