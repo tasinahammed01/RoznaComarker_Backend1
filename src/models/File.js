@@ -34,7 +34,8 @@ const fileSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['assignments', 'submissions', 'feedback'],
+      // 'references': teacher reference files (models/ReferenceFile.js). Not in any file route's allowed types, so never served.
+      enum: ['assignments', 'submissions', 'feedback', 'references'],
       required: [true, 'type is required']
     },
     uploadOrder: { type: Number, min: 0, required: false },
