@@ -31,7 +31,9 @@ const STUDENT_HIDDEN_KEYS = new Set([...INTERNAL_FIELDS,
   // Phase B2: the teacher's score-edit record (history, reason, who). Students get the final values in the existing score fields instead.
   'teacherEvaluation',
   // Improved Writing Model record (drafts, status, who); students get only the approved, released text from their own endpoint.
-  'writingModel']);
+  'writingModel',
+  // Reference files used for marking (version, hash, count): teacher-only material, nothing about it reaches a student or guest.
+  'referenceContext']);
 
 // ALLOWLISTS (Task 9). A field not named here does not reach a student, so a field added to a schema or written by a provider cannot leak on these shapes.
 // One page of the transcript. Read by my-submission-page.ts and transcript-page-views.util.ts (fileId, pageNumber, page, width, height, sourceGeometry, pageImageUrl,

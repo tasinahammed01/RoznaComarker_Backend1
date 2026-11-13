@@ -10,6 +10,7 @@ const logger = require('../../utils/logger');
 const { LIMITS, EXTRACTION_VERSION, ReferenceFileError } = require('./policy');
 const { runExtraction } = require('./extractRunner');
 const { detectRubric } = require('./rubricDetect');
+const { markingExcerpt } = require('./markingContext');
 
 const referencesRoot = () => path.resolve(__dirname, '../../..', process.env.UPLOAD_BASE_PATH || 'uploads', 'references');
 
@@ -38,7 +39,7 @@ async function processReferenceFile(id, { read = readStoredFile, extract = runEx
     const result = await extract(await read(claimed), claimed.kind);
     // Rubric detection (deterministic) only for assignment files: class files are background context only.
     const detection = claimed.scope === 'assignment' ? { rubricDetection: detectRubric(result.text) } : {};
-    const done = await ReferenceFile.findOneAndUpdate({ ...mine, removedAt: null }, { $set: { ...detection, status: 'ready', text: result.text, textChars: result.chars,
+    const done = await ReferenceFile.findOneAndUpdate({ ...mine, removedAt: null }, { $set: { ...detection, status: 'ready', text: result.text, markingText: markingExcerpt(result.text), textChars: result.chars,
       textTruncated: Boolean(result.truncated), units: Number.isFinite(result.units) ? result.units : null, extractionVersion: EXTRACTION_VERSION,
       extractedAt: now(), failureCode: null, failureMessage: null, leaseUntil: null } }, { new: true });
     logger.info({ message: 'Reference file ready', code: 'REFERENCE_FILE_READY', referenceFileId: String(claimed._id), kind: claimed.kind,

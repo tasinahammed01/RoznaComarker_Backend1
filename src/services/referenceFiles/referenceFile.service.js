@@ -45,6 +45,11 @@ async function ownedScope(teacherId, scope, id) {
 
 const scopeFilter = target => (target.scope === 'class'
   ? { class: target.classId, scope: 'class', removedAt: null } : { assignment: target.assignmentId, scope: 'assignment', removedAt: null });
+/** The key of a class or assignment for the unique slot and content indexes. */
+const scopeKey = target => (target.scope === 'class' ? `class:${target.classId}` : `assignment:${target.assignmentId}`);
+const limitError = target => fail(409, 'REFERENCE_FILE_LIMIT', `You can add up to ${LIMITS.maxFilesPerScope} files to each ${target.scope}. Remove one first.`);
+const duplicateError = target => fail(409, 'REFERENCE_FILE_DUPLICATE', `This file is already added to this ${target.scope}.`);
+const duplicateKeyField = error => Object.keys(error?.keyPattern || error?.keyValue || {})[0] || null;
 
 /** The teacher-facing view of one file. Allowlist: nothing else ever leaves the server. */
 function present(doc) {
@@ -104,16 +109,15 @@ async function uploadReferenceFile({ teacher, target, file, requestId, markedAsR
   const replayed = await replay(teacher._id, requestId, target);
   if (replayed) return replayed;
   if (!file?.buffer) throw fail(400, 'REFERENCE_FILE_MISSING', 'Choose a file to upload.');
-  if (await ReferenceFile.countDocuments(scopeFilter(target)) >= LIMITS.maxFilesPerScope)
-    throw fail(409, 'REFERENCE_FILE_LIMIT', `You can add up to ${LIMITS.maxFilesPerScope} files to each ${target.scope}. Remove one first.`);
+  // Fast path for a clear answer; the unique slot index below is what makes the limit hold under simultaneous uploads.
+  if (await ReferenceFile.countDocuments(scopeFilter(target)) >= LIMITS.maxFilesPerScope) throw limitError(target);
   let checked;
   try { checked = await checkReferenceFile(file.buffer, file.originalname); } catch (error) {
     if (error instanceof ReferenceFileError) throw fail(STATUS_FOR[error.code] || 400, error.code, error.safeMessage);
     throw error;
   }
   const contentHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
-  if (await ReferenceFile.exists({ ...scopeFilter(target), contentHash }))
-    throw fail(409, 'REFERENCE_FILE_DUPLICATE', `This file is already added to this ${target.scope}.`);
+  if (await ReferenceFile.exists({ ...scopeFilter(target), contentHash })) throw duplicateError(target);
 
   // bytesToMB rounds to 0.01 MB, so a small file would count as 0: every file counts at least 0.01 MB.
   const megabytes = Math.max(0.01, bytesToMB(file.buffer.length));
@@ -127,9 +131,24 @@ async function uploadReferenceFile({ teacher, target, file, requestId, markedAsR
     const name = safeDisplayName(file.originalname, checked.kind);
     fileDoc = await File.create({ originalName: name, filename, path: path.relative(path.resolve(__dirname, '../../..'), absolute).split(path.sep).join('/'),
       url: 'internal:reference-file', uploadedBy: teacher._id, role: 'teacher', type: 'references', sizeBytes: file.buffer.length });
-    const doc = await ReferenceFile.create({ owner: teacher._id, scope: target.scope, class: target.classId, assignment: target.assignmentId,
-      file: fileDoc._id, originalName: name, kind: checked.kind, sizeBytes: file.buffer.length, requestId, contentHash,
-      markedAsRubric: target.scope === 'assignment' && Boolean(markedAsRubric) });
+    // Atomic limits: take the first free slot of this class or assignment. A taken slot (another upload won it) moves on to the next; a
+    // taken content key means the same file is already active here. Both checks are unique indexes, so no race can pass them.
+    const key = scopeKey(target);
+    let doc = null;
+    for (let slot = 0; slot < LIMITS.maxFilesPerScope && !doc; slot += 1) {
+      try {
+        doc = await ReferenceFile.create({ owner: teacher._id, scope: target.scope, class: target.classId, assignment: target.assignmentId,
+          file: fileDoc._id, originalName: name, kind: checked.kind, sizeBytes: file.buffer.length, requestId, contentHash,
+          markedAsRubric: target.scope === 'assignment' && Boolean(markedAsRubric), activeSlot: `${key}:${slot}`, activeContentKey: `${key}:${contentHash}` });
+      } catch (error) {
+        if (error?.code !== 11000) throw error;
+        const field = duplicateKeyField(error);
+        if (field === 'activeSlot') continue;
+        if (field === 'activeContentKey') throw duplicateError(target);
+        throw error;                                   // the request id: handled below (replay)
+      }
+    }
+    if (!doc) throw limitError(target);
     logger.info({ message: 'Reference file stored', code: 'REFERENCE_FILE_STORED', referenceFileId: String(doc._id), scope: target.scope, kind: checked.kind,
       sizeBytes: file.buffer.length });
     startProcessing(doc._id);
@@ -179,7 +198,8 @@ async function removeReferenceFile(teacherId, id) {
   const doc = await ownedFile(teacherId, id, { includeRemoved: true });
   if (doc.removedAt) return { removed: true, file: present(doc) };
   const updated = await ReferenceFile.findOneAndUpdate({ _id: doc._id, owner: teacherId, removedAt: null },
-    { $set: { removedAt: new Date(), removedBy: teacherId } }, { new: true }).lean();
+    // Frees the file's slot and content key: the limit and the duplicate check count only active files.
+    { $set: { removedAt: new Date(), removedBy: teacherId }, $unset: { activeSlot: 1, activeContentKey: 1 } }, { new: true }).lean();
   logger.info({ message: 'Reference file removed', code: 'REFERENCE_FILE_REMOVED', referenceFileId: String(doc._id), scope: doc.scope });
   return { removed: true, file: present(updated || { ...doc, removedAt: new Date() }) };
 }

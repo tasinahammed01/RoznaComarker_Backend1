@@ -26,6 +26,8 @@ const referenceFileSchema = new Schema({
   failureMessage: { type: String, default: null },
   // Extracted plain text, cached once: marking never re-extracts. Never selected unless asked for.
   text: { type: String, select: false },
+  // The excerpt marking uses (markingContext.markingExcerpt): cut at a sentence end once, when the file is processed. Never selected unless asked for.
+  markingText: { type: String, select: false },
   textChars: { type: Number, default: 0 },
   textTruncated: { type: Boolean, default: false },
   units: { type: Number, default: null },                    // pages (PDF) or slides (PPTX), when known
@@ -39,17 +41,23 @@ const referenceFileSchema = new Schema({
   rubricAppliedAt: { type: Date, default: null },
   rubricAppliedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   removedAt: { type: Date, default: null },
-  removedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null }
+  removedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+  // Atomic limits. While a file is active it holds one of the 5 slots of its class or assignment ("<scope key>:<0-4>") and its content key
+  // ("<scope key>:<sha256>"); both are unique, so two simultaneous uploads can never make a sixth file or a duplicate. Removing a file frees both.
+  activeSlot: { type: String, default: undefined, select: false },
+  activeContentKey: { type: String, default: undefined, select: false }
 }, { timestamps: true, versionKey: false });
 
 referenceFileSchema.index({ owner: 1, requestId: 1 }, { unique: true, name: 'reference_file_request_v1' });
 referenceFileSchema.index({ class: 1, scope: 1, removedAt: 1, createdAt: 1 }, { name: 'reference_file_class_v1' });
 referenceFileSchema.index({ assignment: 1, removedAt: 1, createdAt: 1 }, { name: 'reference_file_assignment_v1' });
 referenceFileSchema.index({ status: 1, leaseUntil: 1 }, { name: 'reference_file_processing_v1', partialFilterExpression: { status: 'processing' } });
+referenceFileSchema.index({ activeSlot: 1 }, { unique: true, sparse: true, name: 'reference_file_active_slot_v1' });
+referenceFileSchema.index({ activeContentKey: 1 }, { unique: true, sparse: true, name: 'reference_file_active_content_v1' });
 
 // Defence in depth: whatever serializes this document never carries the text, hash, lease or stored-file id. Responses use their own allowlist.
 referenceFileSchema.set('toJSON', { transform(_doc, ret) {
-  delete ret.text; delete ret.contentHash; delete ret.leaseUntil; delete ret.file; return ret;
+  delete ret.text; delete ret.markingText; delete ret.contentHash; delete ret.leaseUntil; delete ret.file; delete ret.activeSlot; delete ret.activeContentKey; return ret;
 } });
 
 module.exports = mongoose.model('ReferenceFile', referenceFileSchema);

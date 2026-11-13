@@ -6,7 +6,8 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 
-const REFERENCE_FILE_INDEX_NAMES = ['reference_file_request_v1', 'reference_file_class_v1', 'reference_file_assignment_v1', 'reference_file_processing_v1'];
+const REFERENCE_FILE_INDEX_NAMES = ['reference_file_request_v1', 'reference_file_class_v1', 'reference_file_assignment_v1', 'reference_file_processing_v1',
+  'reference_file_active_slot_v1', 'reference_file_active_content_v1'];
 
 /** Creates the reference-file indexes on the given (connected) mongoose instance and returns the collection's index list. */
 async function ensureReferenceFileIndexes() {

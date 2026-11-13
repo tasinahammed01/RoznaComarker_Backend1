@@ -2,7 +2,8 @@
 // Reference files never reach students, guests, recovery or PDFs.
 //  1. Static: only the files listed in ALLOWED may mention the ReferenceFile collection or the reference-file services, and no route file
 //     other than routes/referenceFile.routes.js can reach them through its requires (followed transitively, lazy requires included).
-//     Stage 4 (marking) will add exactly one context module here, with its own leak tests; anything else is a regression.
+//     Stage 4 (marking) added exactly one context module, services/referenceFiles/markingContext.js, with its own leak tests
+//     (tests/referenceFileMarking.test.js). It is the only part of the feature that marking (and so any route) may reach; anything else is a regression.
 //  2. Runtime: with files uploaded and read, the student, member and guest endpoints return nothing about them.
 const fs = require('fs');
 const path = require('path');
@@ -17,8 +18,18 @@ process.env.REFERENCE_FILES_ENABLED = 'true';
 
 const SRC = path.resolve(__dirname, '..', 'src');
 const rel = file => path.relative(SRC, file).split(path.sep).join('/');
-const ALLOWED = new Set(['app.js', 'server.js', 'models/ReferenceFile.js', 'models/File.js', 'controllers/referenceFile.controller.js', 'routes/referenceFile.routes.js']);
+const ALLOWED = new Set(['app.js', 'server.js', 'models/ReferenceFile.js', 'models/File.js', 'controllers/referenceFile.controller.js', 'routes/referenceFile.routes.js',
+  // Stage 4, marking: resolves the context once per run and stores only its version, hash and file count on the (teacher-only) result.
+  'services/canonicalEvaluation.service.js',
+  // Stage 4, marking: adds the two prompt lines (assessment prompt only; none without usable files).
+  'services/semanticRubricAssessment.service.js',
+  // Stage 4: the context version joins the runtime fingerprint only while REFERENCE_FILES_ENABLED is on.
+  'services/runtimeContractFingerprint.service.js']);
 const isFeature = name => name === 'models/ReferenceFile.js' || name.startsWith('services/referenceFiles/');
+// The single entry point marking may use. Followed no further: what it reads (ready files' excerpts) goes only into the AI request.
+const MARKING_BRIDGE = 'services/referenceFiles/markingContext.js';
+// The on/off switch and limits (no database, no file data, no requires): the runtime fingerprint (health route) reads the switch.
+const SWITCH_ONLY = 'services/referenceFiles/policy.js';
 const MENTION = /ReferenceFile|referenceFiles|reference-files|referencefiles/u;
 
 function sourceFiles(dir) {
@@ -44,21 +55,34 @@ describe('static isolation', () => {
     expect(offenders).toEqual([]);
   });
 
-  test('no route except the reference-file router reaches the collection or its services (transitively)', () => {
+  test('no route except the reference-file router reaches the collection or its services (transitively), except marking through the one bridge', () => {
     const routes = fs.readdirSync(path.join(SRC, 'routes')).filter(name => /\.(js|ts)$/u.test(name) && name !== 'referenceFile.routes.js');
     expect(routes.length).toBeGreaterThan(20);
-    const reached = {};
+    const reached = {}; const throughBridge = new Set();
     for (const route of routes) {
       const seen = new Set(), queue = [path.join(SRC, 'routes', route)];
       while (queue.length) {
         const file = queue.pop();
         if (seen.has(file)) continue;
         seen.add(file);
+        if (rel(file) === MARKING_BRIDGE) { throughBridge.add(route); continue; }
+        if (rel(file) === SWITCH_ONLY) { expect(requiresOf(file)).toEqual([]); continue; }
         if (isFeature(rel(file))) (reached[route] ||= []).push(rel(file));
         queue.push(...requiresOf(file));
       }
     }
     expect(reached).toEqual({});
+    expect(throughBridge.size).toBeGreaterThan(0);                 // the check sees marking: it is not vacuous
+  });
+
+  test('the marking bridge returns no file text to its callers, only the prompt lines and a version/hash/count record', () => {
+    const marking = require('../src/services/referenceFiles/markingContext');
+    const ctx = marking.assembleContext([{ _id: 'x', scope: 'class', markingText: 'Secret course text.' }]);
+    expect(marking.resultRecord(ctx)).toEqual({ version: 'reference-context-v1', hash: ctx.hash, fileCount: 1 });
+    expect(JSON.stringify(marking.resultSet(ctx))).not.toContain('Secret');
+    expect(marking.promptLines(ctx)[0]).toContain('Secret course text.');   // only ever passed to the assessment request builder
+    const callers = sourceFiles(SRC).map(rel).filter(name => name !== MARKING_BRIDGE && /promptLines\(/u.test(fs.readFileSync(path.join(SRC, name), 'utf8')));
+    expect(callers).toEqual(['services/semanticRubricAssessment.service.js']);
   });
 
   test('the check itself works: the reference-file router does reach them', () => {
