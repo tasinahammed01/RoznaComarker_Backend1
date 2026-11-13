@@ -1,5 +1,6 @@
 const nodemailer = require('nodemailer');
 const logger = require('../utils/logger');
+const { emailBrandHeaderHtml } = require('./emailBrand.service');
 const { emailReadiness, safeEmailFailure, smtpTransportOptions } = require('./emailReadiness.service');
 const escapeHtml = value => String(value == null ? '' : value).replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -18,9 +19,7 @@ function guestEmailHtml({ assignmentTitle, returnUrl, resultReady }) {
 <!--[if mso]><table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="max-width:640px;background-color:#ffffff;border-radius:16px;border-top:5px solid #008081;">
 <tr><td class="email-content" style="padding:32px;">
-<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
-<td width="46" height="46" align="center" bgcolor="#14264d" style="background-color:#14264d;color:#ffffff;border-radius:12px;font-size:21px;font-weight:bold;">R</td>
-<td style="padding-left:12px;"><strong style="font-size:24px;color:#14264d;">Rubrilo</strong></td></tr></table>
+${emailBrandHeaderHtml()}
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:28px;"><tr><td bgcolor="#fff7df" style="padding:10px 16px;background-color:#fff7df;border-radius:24px;color:#a96700;font-size:13px;font-weight:bold;">Guest Submission</td></tr></table>
 <h1 class="email-heading" style="margin:20px 0 14px;font-size:34px;line-height:41px;letter-spacing:-0.6px;color:#14264d;">${heading}</h1>
 <p style="margin:0 0 22px;font-size:16px;line-height:25px;color:#59657d;">${resultReady ? 'Your feedback is ready.' : 'Your work has been received and submitted successfully through Rubrilo.'} Use your private link below to view your feedback and results ${resultReady ? 'without logging in' : 'later'}.</p>

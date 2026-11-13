@@ -1,4 +1,5 @@
 'use strict';
+const { emailBrandHeaderHtml } = require('./emailBrand.service');
 // The email a student receives when the teacher uploaded their handwritten work and chose "Save and send" (or pressed Send):
 // Rubrilo branding, the teacher's name, the assignment and a private link to the finished feedback. Every inserted value is
 // escaped in the HTML and stripped of line breaks in the subject (no header injection). Pure: no I/O.
@@ -50,9 +51,7 @@ function buildTeacherUploadFeedbackEmail({ studentName, teacherName, assignmentT
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f2f6f8"><tr><td class="email-outer" align="center" style="padding:32px 16px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="max-width:640px;background-color:#ffffff;border-radius:16px;border-top:5px solid #008081;">
 <tr><td class="email-content" style="padding:32px;">
-<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
-<td width="46" height="46" align="center" bgcolor="#14264d" style="background-color:#14264d;color:#ffffff;border-radius:12px;font-size:21px;font-weight:bold;">R</td>
-<td style="padding-left:12px;"><strong style="font-size:24px;color:#14264d;">Rubrilo</strong></td></tr></table>
+${emailBrandHeaderHtml()}
 <h1 class="email-heading" style="margin:28px 0 14px;font-size:34px;line-height:41px;letter-spacing:-0.6px;color:#14264d;">Your feedback is ready</h1>
 <p style="margin:0 0 14px;font-size:16px;line-height:25px;color:#59657d;">Hi ${escapeHtml(student)},</p>
 <p style="margin:0 0 22px;font-size:16px;line-height:25px;color:#59657d;"><strong style="color:#14264d;">${escapeHtml(teacher)}</strong> uploaded your handwritten work and your feedback is ready. ${escapeHtml(access)}</p>
