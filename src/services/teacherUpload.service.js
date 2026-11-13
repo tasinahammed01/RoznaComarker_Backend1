@@ -31,6 +31,8 @@ const LEASE_MS = 2 * 60 * 1000;          // a crashed save releases the teacher'
 const LEASE_WAIT_MS = 20 * 1000;         // a save waits this long for the teacher's other saves before answering "busy"
 const PENDING_CHARGE = ['started', 'processing'];   // saved but not yet charged: credits are consumed when marking completes
 const EMAIL_STATUSES_TO_QUEUE = ['none', 'failed'];
+const CREDIT_BLOCK = 'INSUFFICIENT_ASSESSMENT_CREDITS';
+const RESTART_GRACE_MS = 2 * 60 * 1000;  // a (re)start whose dispatch has not claimed it yet counts as requested for this long
 
 function fail(statusCode, message, code, details) {
   return Object.assign(new Error(message), { statusCode, code, ...(details ? { details } : {}) });
@@ -57,7 +59,7 @@ async function creditSummary(teacher, ctx) {
   let available = Math.max(0, Number(state.availableCredits) || 0);
   if (state.myLimit != null) available = Math.min(available, Math.max(0, Number(state.myLimit) - Number(state.myUsage || 0)));
   const reserved = await Submission.countDocuments({ 'teacherUpload.uploadedBy': teacher._id, assessmentStatus: { $in: PENDING_CHARGE } });
-  return { available: Math.max(0, available - reserved), reserved };
+  return { available: Math.max(0, available - reserved), reserved, wallet: available };
 }
 
 /** A class member gets a registered submission; any other address (with or without an account elsewhere) a guest one. */
@@ -214,7 +216,7 @@ async function save({ req, teacher, assignmentId }) {
           fileUrls: stored.urls, fileUrl: stored.urls[0], fileContentIdentity: contentHash,
           // The teacher hands in work the class did; it is never marked late.
           submittedAt: now, status: 'submitted', isLate: false,
-          teacherUpload: { uploadedBy: teacher._id, batchId, requestKey: key, contentHash, uploadedAt: now, email: emailState },
+          teacherUpload: { uploadedBy: teacher._id, batchId, requestKey: key, contentHash, uploadedAt: now, typedName: row.name, email: emailState },
           ...pendingAnalysisState({ ocrJobId, now }) });
       } else {
         const current = await Submission.findOne({ _id: existing._id }).select('files fileOrder fileUrls').lean();
@@ -225,7 +227,7 @@ async function save({ req, teacher, assignmentId }) {
         const updated = await Submission.updateOne({ _id: existing._id, 'teacherUpload.uploadedBy': teacher._id }, {
           $set: { ...reset.$set, files: fileIds, file: fileIds[0], fileOrder: fileIds.map((fileId, order) => ({ fileId, order })),
             fileUrls: urls, fileUrl: urls[0], fileContentIdentity: contentHash, submittedAt: now,
-            'teacherUpload.batchId': batchId, 'teacherUpload.requestKey': key, 'teacherUpload.contentHash': contentHash,
+            'teacherUpload.batchId': batchId, 'teacherUpload.requestKey': key, 'teacherUpload.contentHash': contentHash, 'teacherUpload.typedName': row.name,
             'teacherUpload.uploadedAt': now, ...((sendEmail && EMAIL_STATUSES_TO_QUEUE.includes(existing.teacherUpload.email?.status))
               || existing.teacherUpload.email?.status === 'held'   // held for failed marking: sent once the new marking succeeds
               ? { 'teacherUpload.email.status': 'queued', 'teacherUpload.email.requestedAt': now } : {}) },
@@ -242,6 +244,7 @@ async function save({ req, teacher, assignmentId }) {
       }
       scheduleSubmissionAnalysis(submissionId, ocrJobId);
       logger.info({ event: 'teacher_upload_saved', mode, pages: persisted.length, account: match.kind });
+      logTransition(submissionId, 'uploaded', null, mode);
       return { item: await itemFor(submissionId, teacher._id), duplicate: false };
     });
   } catch (error) {
@@ -255,20 +258,52 @@ async function save({ req, teacher, assignmentId }) {
   }
 }
 
-/** Teacher-facing status of one upload: uploaded, processing, marked or failed (marking), plus its email status. */
+/**
+ * Teacher-facing status of one upload. Every stored state maps to one of these, so nothing is ever shown as "processing" for good:
+ *   uploaded        saved, waiting for the marking run to pick it up
+ *   reading         a run is reading the handwriting (OCR)
+ *   processing      read; corrections and marking are running
+ *   waiting_credits marking stopped because there were no assessment credits (Retry marking once there are)
+ *   marked          finished
+ *   failed          marking stopped with a reason code (Retry marking)
+ */
 function statusOf(doc) {
   if (doc.assessmentStatus === 'complete') return 'marked';
   if (doc.assessmentStatus === 'failed') return 'failed';
-  if (doc.ocrStatus === 'pending' && !doc.analysisLeaseOwner) return 'uploaded';
+  if (doc.evaluationStatus === 'blocked') return doc.evaluationErrorCode === CREDIT_BLOCK ? 'waiting_credits' : 'failed';
+  if (doc.ocrStatus === 'pending' || doc.ocrStatus === 'processing') return doc.analysisLeaseOwner ? 'reading' : 'uploaded';
   return 'processing';
 }
-const LIST_FIELDS = '+teacherUpload +guest.normalizedEmail _id submissionMode student guest.displayName files ocrStatus assessmentStatus assessmentErrorCode analysisLeaseOwner createdAt';
+/** The reason code shown with a stopped upload (a code, never provider text). */
+function failureCodeOf(doc) {
+  const status = statusOf(doc);
+  if (status === 'waiting_credits') return CREDIT_BLOCK;
+  if (status !== 'failed') return null;
+  const code = doc.assessmentStatus === 'failed' ? doc.assessmentErrorCode : doc.evaluationErrorCode;
+  return String(code || 'ASSESSMENT_FAILED').slice(0, 64);
+}
+/** One line per status change: ids, status and codes only (no names, emails, text or provider details). */
+function logTransition(submissionId, status, code, reason) {
+  logger.info({ event: 'teacher_upload_status', submissionId: String(submissionId), status,
+    ...(code ? { code: String(code).slice(0, 64) } : {}), ...(reason ? { reason: String(reason).slice(0, 32) } : {}) });
+}
+/** Logs the current status of a teacher upload after a marking run or a watchdog decision. Never throws. */
+async function logCurrentStatus(submissionId, reason) {
+  try {
+    const doc = await Submission.findOne({ _id: submissionId, 'teacherUpload.uploadedBy': { $exists: true } })
+      .select('_id ocrStatus assessmentStatus assessmentErrorCode evaluationStatus evaluationErrorCode analysisLeaseOwner').lean();
+    if (doc) logTransition(doc._id, statusOf(doc), failureCodeOf(doc), reason);
+  } catch { /* logging must never change the outcome */ }
+}
+const LIST_FIELDS = '+teacherUpload +guest.normalizedEmail _id submissionMode student guest.displayName files ocrStatus assessmentStatus assessmentErrorCode evaluationStatus evaluationErrorCode analysisLeaseOwner createdAt';
 function dto(doc) {
   const email = doc.teacherUpload?.email || {};
-  return { submissionId: String(doc._id), name: doc.submissionMode === 'guest' ? doc.guest?.displayName : doc.student?.displayName || '',
+  const failureCode = failureCodeOf(doc);
+  // The name and email the teacher typed (a member's email is the account email the typed address matched).
+  return { submissionId: String(doc._id), name: doc.teacherUpload?.typedName || (doc.submissionMode === 'guest' ? doc.guest?.displayName : doc.student?.displayName || ''),
     email: doc.submissionMode === 'guest' ? doc.guest?.normalizedEmail : doc.student?.email || '',
     account: doc.submissionMode === 'guest' ? 'guest' : 'member', uploadedByTeacher: true, pages: (doc.files || []).length,
-    status: statusOf(doc), ...(doc.assessmentStatus === 'failed' ? { failureCode: String(doc.assessmentErrorCode || 'ASSESSMENT_FAILED').slice(0, 64) } : {}),
+    status: statusOf(doc), ...(failureCode ? { failureCode } : {}),
     emailStatus: email.status || 'none', emailSentAt: email.sentAt || null, emailFailedAt: email.failedAt || null,
     // Only this one reason is shown: the server stopped mid-send, so the email may already have arrived (Resend may duplicate it).
     emailDeliveryUncertain: email.status === 'failed' && email.lastErrorCode === 'DELIVERY_UNCERTAIN',
@@ -329,10 +364,22 @@ async function sourceFor({ teacher, assignmentId, body }) {
 }
 
 /**
- * "Retry marking" for an upload whose marking failed. Needs one available credit (charged only when marking succeeds, once per
- * run, by the normal pipeline). Pages saved without a handwriting check (uploads made before the check existed) are checked now,
- * from the stored files, and the result is stored on each file exactly as the upload stores it. A held email goes back to the
- * queue and is sent once, after marking succeeds. Idempotent: only a failed upload is restarted.
+ * Restartable: not complete and no run holding it, and either stopped (failed, or blocked e.g. for credits) or quiet for the grace
+ * period (an unfinished state nothing has touched for a while is stalled; a recent one is still on its way, e.g. a fresh dispatch).
+ */
+function restartableQuery(now) {
+  return { assessmentStatus: { $ne: 'complete' }, $and: [
+    { $or: [{ analysisLeaseExpiresAt: { $exists: false } }, { analysisLeaseExpiresAt: null }, { analysisLeaseExpiresAt: { $lte: now } }] },
+    { $or: [{ assessmentStatus: 'failed' }, { evaluationStatus: 'blocked' }, { updatedAt: { $lte: new Date(now.getTime() - RESTART_GRACE_MS) } }] }] };
+}
+
+/**
+ * "Retry marking" for an upload in ANY state that is not finished: failed, waiting for credits, or stalled (uploaded, reading or
+ * marking with no run holding it). A run that is live, or was (re)started moments ago, is left alone (alreadyRequested), so a
+ * double click or a retry during a run never restarts twice. Needs one credit, counted once: work still waiting to be charged
+ * already holds its own reservation. Credits are only charged when marking succeeds, once per run, by the normal pipeline.
+ * Pages saved without a handwriting check (uploads made before the check existed) are checked now, from the stored files.
+ * A held email goes back to the queue and is sent once, after marking succeeds.
  */
 async function retryMarking({ teacher, assignmentId, submissionId }) {
   const ctx = await ownedContext(teacher._id, assignmentId);
@@ -340,9 +387,15 @@ async function retryMarking({ teacher, assignmentId, submissionId }) {
   const owned = { _id: submissionId, assignment: ctx.assignment._id, class: ctx.classDoc._id, 'teacherUpload.uploadedBy': teacher._id };
   const doc = await Submission.findOne(owned).select('+teacherUpload +guest.normalizedEmail _id student submissionMode files assessmentStatus').lean();
   if (!doc) throw notFound();
-  if (doc.assessmentStatus !== 'failed') return { item: await itemFor(submissionId, teacher._id), alreadyRequested: true };
+  const already = async () => ({ item: await itemFor(submissionId, teacher._id), alreadyRequested: true });
+  if (!await Submission.exists({ ...owned, ...restartableQuery(new Date()) })) return already();
   const noCredit = () => fail(402, 'You have no assessment credits left. Add credits to retry marking.', 'INSUFFICIENT_CREDITS', { available: 0 });
-  if ((await creditSummary(teacher, ctx)).available < 1) throw noCredit();
+  const enoughCredit = async () => {
+    const credits = await creditSummary(teacher, ctx);
+    const selfReserved = await Submission.exists({ ...owned, assessmentStatus: { $in: PENDING_CHARGE } });
+    return credits.wallet - (credits.reserved - (selfReserved ? 1 : 0)) >= 1;
+  };
+  if (!await enoughCredit()) throw noCredit();
 
   if (exactSourceMode()) {
     // The check reuses accepted evidence for pages already read, so only pages that were never checked cost a read.
@@ -367,17 +420,20 @@ async function retryMarking({ teacher, assignmentId, submissionId }) {
   }
 
   return withTeacherLease(teacher._id, async () => {
-    if ((await creditSummary(teacher, ctx)).available < 1) throw noCredit();   // re-checked under the lease: parallel retries cannot overspend
+    if (!await enoughCredit()) throw noCredit();   // re-checked under the lease: parallel retries cannot overspend
     const now = new Date(), ocrJobId = new mongoose.Types.ObjectId().toString(), reset = analysisReset(ocrJobId, now);
-    const restarted = await Submission.updateOne({ ...owned, assessmentStatus: 'failed' },
+    // Atomic: only one of two parallel retries matches; a run that started meanwhile keeps its lease and is not restarted.
+    const restarted = await Submission.updateOne({ ...owned, ...restartableQuery(now) },
       { $set: reset.$set, ...(Object.keys(reset.$unset).length ? { $unset: reset.$unset } : {}) });
-    if (!restarted.modifiedCount) return { item: await itemFor(submissionId, teacher._id), alreadyRequested: true };
+    if (!restarted.modifiedCount) return already();
     await Submission.updateOne({ ...owned, 'teacherUpload.email.status': 'held' },
       { $set: { 'teacherUpload.email.status': 'queued', 'teacherUpload.email.requestedAt': now }, $unset: { 'teacherUpload.email.nextAttemptAt': 1 } });
     scheduleSubmissionAnalysis(submissionId, ocrJobId);
     logger.info({ event: 'teacher_upload_marking_retried' });
+    logTransition(submissionId, 'uploaded', null, 'retry');
     return { item: await itemFor(submissionId, teacher._id), alreadyRequested: false };
   });
 }
 
-module.exports = { MAX_PAGES_PER_STUDENT, ownedContext, creditSummary, check, save, list, requestSend, retryMarking, sourceFor, statusOf };
+module.exports = { MAX_PAGES_PER_STUDENT, ownedContext, creditSummary, check, save, list, requestSend, retryMarking, sourceFor, statusOf,
+  failureCodeOf, logTransition, logCurrentStatus, CREDIT_BLOCK };

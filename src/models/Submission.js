@@ -52,6 +52,8 @@ const submissionSchema = new Schema(
       type: new Schema({
         uploadedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
         batchId: { type: String, maxlength: 64, required: true },
+        // The student name exactly as the teacher typed it (for a class member the account name may differ). Teacher-only.
+        typedName: { type: String, maxlength: 200 },
         requestKey: { type: String, maxlength: 64 },
         contentHash: { type: String, maxlength: 64 },
         uploadedAt: { type: Date, required: true },
