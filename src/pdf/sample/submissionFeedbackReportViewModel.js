@@ -10,14 +10,9 @@ const {
 
 const CATEGORIES = ['CONTENT', 'GRAMMAR', 'ORGANIZATION', 'VOCABULARY', 'MECHANICS'];
 const COLORS = Object.fromEntries(require('../../services/correctionLegendResolver.service').fallbackLegend().groups.map(group => [group.key, group.color]));
-const AI_FEEDBACK_CATEGORIES = [
-  ['GRAMMAR', 'Grammar'],
-  ['VOCABULARY', 'Vocabulary'],
-  ['ORGANIZATION', 'Organization & Structure'],
-  ['CONTENT', 'Content & Task Achievement'],
-  ['MECHANICS', 'Spelling & Punctuation'],
-  ['PRESENTATION', 'Presentation & Handwriting']
-];
+// The shared display order and labels (src/constants/assessmentCategories.js).
+const { ASSESSMENT_CATEGORY_ORDER, ASSESSMENT_CATEGORY_LABELS, sortByAssessmentCategory } = require('../../constants/assessmentCategories');
+const AI_FEEDBACK_CATEGORIES = ASSESSMENT_CATEGORY_ORDER.map((key) => [key, ASSESSMENT_CATEGORY_LABELS[key]]);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const feedbackText = (value) => typeof value === 'string' ? value.trim() : '';
 const id = (value) => String(value?._id || value || '');
@@ -166,7 +161,7 @@ function buildReportViewModel(input = {}) {
     return { fileId, fileIndex: fileOrder.get(fileId) ?? index, fileName: String(page.fileName || ''), fileType: String(page.fileType || ''), pageNumber, displayPageNumber: index + 1, imageDataUrl: submission.imageDataByPageKey?.[assetKey] || submission.imageDataByFileId?.[fileId] || null, imageWidth, imageHeight, annotationWords: (Array.isArray(page.words) ? page.words : []).map((word) => ({ ...word, bbox: normalizeBox(word?.bbox, imageWidth, imageHeight) })), annotationSourceGeometry: page.annotationSourceGeometry || null, annotationObstacles: normalizeBoxes((Array.isArray(page.words) ? page.words : []).map((word) => word?.bbox), imageWidth, imageHeight), transcriptStartChar: startChar, transcriptEndChar: Number(page.endChar ?? startChar + pageText.length), transcriptText: pageText, transcriptSource: page.source || null, transcriptParagraphs: Array.isArray(page.paragraphs) ? page.paragraphs : [], corrections: pageCorrections.map((c) => ({ ...c, displayNumber: numberById.get(c.reportId) })), transcript: { text: pageText, startChar, endChar: Number(page.endChar ?? startChar + pageText.length), highlightedSegments: highlightedSegments(pageText, startChar, pageCorrections, numberById) } };
   });
   const rubric = evaluationCurrent ? evaluation.rubricScores || {} : {};
-  const categoryScores = Object.entries(rubric).map(([category, item]) => { const maxScore = Math.max(0, Number(item?.maxScore || 0)); const score = clamp(Number(item?.score || 0), 0, maxScore); return { category, score, maxScore, percentage: maxScore ? Math.round(score / maxScore * 100) : 0, issueCount: CATEGORIES.includes(category) ? statistics[category.toLowerCase()] : null, feedback: String(item?.comment || '') }; });
+  const categoryScores = sortByAssessmentCategory(Object.entries(rubric), ([category]) => category).map(([category, item]) => { const maxScore = Math.max(0, Number(item?.maxScore || 0)); const score = clamp(Number(item?.score || 0), 0, maxScore); return { category, score, maxScore, percentage: maxScore ? Math.round(score / maxScore * 100) : 0, issueCount: CATEGORIES.includes(category) ? statistics[category.toLowerCase()] : null, feedback: String(item?.comment || '') }; });
   const rubricTotal = categoryScores.reduce((sum, item) => sum + item.score, 0); const maximumScore = categoryScores.reduce((sum, item) => sum + item.maxScore, 0) || 100;
   const persistedOverall = finite(evaluation.overallScore) ? Number(evaluation.overallScore) : null;
   const completeLegend = legend; const activeLegendItems = completeLegend.filter((item) => corrections.some((c) => c.symbol === item.symbol)).map((item) => ({ ...item, count: corrections.filter((c) => c.symbol === item.symbol).length }));

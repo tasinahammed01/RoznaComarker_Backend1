@@ -88,7 +88,8 @@ function overallFeedback(vm) {
 }
 
 function renderSubmissionFeedbackReportHtml(vm) {
-  const statCategories = ['content', 'grammar', 'organization', 'vocabulary', 'mechanics'];
+  // The five correction categories in the shared display order (src/constants/assessmentCategories.js).
+  const statCategories = require('../constants/assessmentCategories').ASSESSMENT_CATEGORY_ORDER.filter((key) => key !== 'PRESENTATION').map((key) => key.toLowerCase());
   const stats = statCategories.map((category) => statisticCell(vm, category)).join('');
   const submittedDocument = `<div class="post-cover">${submittedPagesWithDedicatedImages(vm.submittedPages)}</div>`;
   const feedback = vm.detailedFeedback || {}; const improvements = list(feedback.areasForImprovement); const strengths = list(feedback.strengths);

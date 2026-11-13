@@ -9,6 +9,7 @@
     "migrate:flashcard-indexes": "node scripts/migrateFlashcardIndexes.js",
     "migrate:recovery-portal-indexes": "node scripts/migrateRecoveryPortalIndexes.js",
     "migrate:teacher-upload-indexes": "node scripts/migrateTeacherUploadIndexes.js",
+    "migrate:submission-writing-model-indexes": "node scripts/migrateSubmissionWritingModelIndexes.js",
     "migrate:annotation-indexes": "node scripts/migrateAnnotationIndexes.js",
     "migrate:teacher-annotations": "node scripts/migrateTeacherAnnotations.js",
     "report:score-review": "node scripts/countScoreReviewState.js",

@@ -21,7 +21,7 @@ const digest = value => sha(JSON.stringify(stable(value)));
 const pick = (value, keys) => Object.fromEntries(keys.map(key => [key, value?.[key]]));
 // Fingerprint actual loaded source at process start; a release cannot reuse another renderer's artifact.
 const rendererFingerprint = digest(['../modules/submissionFeedbackPdfGenerator.js', '../pdf/submissionFeedbackReportTemplate.js',
-  '../pdf/submittedImageAnnotationLayout.js', '../pdf/assets/rubrilo-logo-horizontal-fullcolor@512w.png', '../pdf/websiteAnnotationPresentation.js', '../pdf/websiteAnnotationRules.generated.js',
+  '../pdf/submittedImageAnnotationLayout.js', '../pdf/assets/rubrilo-logo-horizontal-fullcolor@512w.png', '../constants/assessmentCategories.js', '../pdf/websiteAnnotationPresentation.js', '../pdf/websiteAnnotationRules.generated.js',
   '../pdf/sample/submissionFeedbackReportViewModel.js', './submissionFeedbackReport.service.js', './correctionLegendResolver.service.js',
   './canonicalCorrectionRender.service.js', './canonicalCorrectionResponse.service.js', './teacherComments.service.js', './teacherAnnotation.service.js',
   './studentCorrectionView.service.js', './annotationAnchor.service.js',

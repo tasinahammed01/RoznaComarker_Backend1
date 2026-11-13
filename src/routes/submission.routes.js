@@ -347,8 +347,20 @@ router.get('/:submissionId/teacher-annotations/preview', verifyJwtToken, teacher
 router.post('/:submissionId/teacher-annotations', verifyJwtToken, annotationLimiter, teacherAnnotations.mutate);
 router.post('/:submissionId/teacher-annotations/bulk', verifyJwtToken, annotationLimiter, teacherAnnotations.bulk);
 router.post('/:submissionId/teacher-annotations/score-review', verifyJwtToken, annotationLimiter, teacherAnnotations.scoreReview);
-// Improved Writing Model for the student's own submission (IMPROVED_WRITING_MODEL_ENABLED): the approved, released text or { available: false }.
-router.get('/:submissionId/writing-model', noStore, verifyJwtToken, require('../controllers/writingModel.controller').forStudent);
+// Improved Writing Model, one per submission (IMPROVED_WRITING_MODEL_ENABLED). Student: their own submission's submitted text or
+// { available: false }. Teacher (owner of the submission's assignment and class; other teachers 404, students 403): the panel, save/submit,
+// and an AI draft from this student's writing. WRITING_MODEL_RATE_LIMIT_MAX (saves, default 60) and WRITING_MODEL_AI_RATE_LIMIT_MAX (AI
+// drafts, default 10) per 15 minutes per teacher; an AI draft also runs one at a time per teacher.
+const writingModel = require('../controllers/writingModel.controller');
+const wmLimit = (name, fallback) => Number(process.env[name]) > 0 ? Number(process.env[name]) : fallback;
+router.get('/:submissionId/writing-model', noStore, verifyJwtToken, writingModel.forStudent);
+router.get('/:submissionId/writing-model/teacher', noStore, verifyJwtToken, requireRole('teacher'), writingModel.get);
+router.put('/:submissionId/writing-model/teacher', noStore, verifyJwtToken, requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 15 * 60 * 1000, limit: wmLimit('WRITING_MODEL_RATE_LIMIT_MAX', 60), event: 'WRITING_MODEL_RATE_LIMITED', reason: 'writing_model_save', responseCode: 'WRITING_MODEL_RATE_LIMITED' }),
+  writingModel.save);
+router.post('/:submissionId/writing-model/teacher/generate-draft', noStore, verifyJwtToken, requireRole('teacher'),
+  createUserRateLimiter({ windowMs: 15 * 60 * 1000, limit: wmLimit('WRITING_MODEL_AI_RATE_LIMIT_MAX', 10), event: 'AI_GENERATION_RATE_LIMITED', reason: 'writing_model_draft', responseCode: 'WRITING_MODEL_RATE_LIMITED' }),
+  createUserConcurrencyGuard({ operation: 'writing_model_draft', maxConcurrent: 1 }), writingModel.generateDraft);
 
 // Phase B2: teacher edits of the evaluation scores and comments. Same owner rule (404 for everyone else); off unless TEACHER_EVALUATION_EDIT_ENABLED.
 // Saves are limited per teacher: TEACHER_EVALUATION_RATE_LIMIT_MAX (default 60) per TEACHER_EVALUATION_RATE_LIMIT_WINDOW_MS (default 15 minutes).
