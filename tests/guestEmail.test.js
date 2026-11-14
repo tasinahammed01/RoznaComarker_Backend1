@@ -10,6 +10,8 @@ const email = require('../src/services/email.service');
 const transport = nodemailer.transport;
 beforeEach(() => {
   jest.clearAllMocks(); transport.sendMail.mockReset();
+  // A real SMTP send reports the recipient as accepted; "sent" now requires it (email.service deliveryOutcome).
+  transport.sendMail.mockImplementation(async options => ({ accepted: String(options.to).split(',').map(a => a.trim()), rejected: [] }));
   process.env.SMTP_USER = 'sender@example.com'; process.env.SMTP_PASS = 'test-only-password';
   delete process.env.MAIL_FROM_EMAIL; delete process.env.MAIL_FROM_NAME; delete process.env.SMTP_PORT;
 });
@@ -139,7 +141,7 @@ test('Resend sends through the existing Nodemailer transport with the configured
 });
 
 test('class invitations still use the shared SMTP transport', async () => {
-  transport.sendMail.mockResolvedValueOnce({ messageId: 'opaque-test-id' });
+  transport.sendMail.mockResolvedValueOnce({ messageId: 'opaque-test-id', accepted: ['guest@example.com'], rejected: [] });
   await expect(email.sendInvitationEmail({ to: 'guest@example.com', className: 'Writing', classCode: 'code',
     joinUrl: 'https://school.example/join/code' })).resolves.toMatchObject({ success: true });
   expect(transport.sendMail).toHaveBeenCalledTimes(1);

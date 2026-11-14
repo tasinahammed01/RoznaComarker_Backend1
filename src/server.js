@@ -11,11 +11,12 @@ const app = require("./app");
 
 let server;
 let assessmentRecoveryWorker;
+let teacherUploadEmailWorker;
 
 const { createShutdown } = require('./services/shutdown.service');
 const shutdown = createShutdown({ getServer: () => server,
   closeBrowser: () => pdfBrowserManager.closeBrowser(),
-  stopBackground: () => assessmentRecoveryWorker?.stop(),
+  stopBackground: () => { assessmentRecoveryWorker?.stop(); teacherUploadEmailWorker?.stop(); },
   disconnect: () => require('mongoose').disconnect(), logger });
 
 process.on("SIGINT", () => shutdown("SIGINT"));
@@ -50,11 +51,17 @@ async function start() {
     if(ocrConfiguration.mode==='astra_human_confirm')await require('./models/SourceHumanReview').createIndexes();
   }
   require('./services/planEntitlementWorker.service').startPlanEntitlementWorker();
-  if (String(process.env.ASSESSMENT_RECOVERY_ENABLED || 'true').toLowerCase() !== 'false') {
+  const assessmentRecoveryEnabled = String(process.env.ASSESSMENT_RECOVERY_ENABLED || 'true').toLowerCase() !== 'false';
+  if (assessmentRecoveryEnabled) {
     assessmentRecoveryWorker = require('./services/assessmentRecovery.service').startAssessmentRecoveryWorker();
   } else {
     logger.warn({ event: 'assessment_recovery_disabled' });
   }
+  // Teacher-upload feedback emails run on their own timer, whatever the recovery setting (they never wait behind marking).
+  teacherUploadEmailWorker = require('./services/teacherUploadEmail.service').startTeacherUploadEmailWorker();
+  // One line to read in the PM2 log (values only, no secrets): whether background marking recovery and the email queue run.
+  logger.info({ event: 'background_workers', assessmentRecoveryEnabled, teacherUploadEmailWorker: true,
+    teacherUploadEmailIntervalMs: teacherUploadEmailWorker.intervalMs });
   // Reference files left waiting by a restart are read again (also on the next list or status request).
   if (require('./services/referenceFiles/policy').referenceFilesEnabled()) void require('./services/referenceFiles/referenceFile.service').resumeInBackground();
   const pdfEngine = String(process.env.PDF_REPORT_ENGINE || "puppeteer").toLowerCase();

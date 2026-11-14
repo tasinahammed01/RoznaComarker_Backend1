@@ -38,7 +38,9 @@ module.exports = {
   list: endpoint(req => service.list({ teacher: req.user, assignmentId: req.params.assignmentId })),
   check: endpoint(req => service.check({ teacher: req.user, assignmentId: req.params.assignmentId, students: req.body?.students })),
   save: endpoint(req => service.save({ req, teacher: req.user, assignmentId: req.params.assignmentId })),
-  send: endpoint(req => service.requestSend({ teacher: req.user, assignmentId: req.params.assignmentId, submissionId: req.params.submissionId })),
+  // Body (optional): { resend: true, requestId } sends an email that was already sent once more ("Resend email").
+  send: endpoint(req => service.requestSend({ teacher: req.user, assignmentId: req.params.assignmentId, submissionId: req.params.submissionId,
+    resend: req.body?.resend === true, requestId: typeof req.body?.requestId === 'string' ? req.body.requestId : null })),
   retry: endpoint(req => service.retryMarking({ teacher: req.user, assignmentId: req.params.assignmentId, submissionId: req.params.submissionId })),
   source
 };

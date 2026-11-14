@@ -1,5 +1,5 @@
 'use strict';
-jest.mock('nodemailer', () => ({ createTransport: jest.fn(() => ({ sendMail: jest.fn(async options => ({ messageId: 'test-message', options })) })) }));
+jest.mock('nodemailer', () => ({ createTransport: jest.fn(() => ({ sendMail: jest.fn(async options => ({ messageId: 'test-message', options, accepted: String(options.to).split(',').map(a => a.trim()), rejected: [] })) })) }));
 jest.mock('../src/utils/logger', () => ({ info: jest.fn(), error: jest.fn() }));
 const nodemailer = require('nodemailer');
 const { sendInvitationEmail } = require('../src/services/email.service');

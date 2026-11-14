@@ -35,7 +35,7 @@ test('concurrent guest and teacher mail reuse one transport and preserve private
     let mail; let smtp; let logger;
     jest.isolateModules(() => { smtp = require('nodemailer'); logger = require('../src/utils/logger');
       mail = require('../src/services/email.service'); });
-    const sendMail = jest.fn(async () => ({ accepted: ['synthetic@example.com'], rejected: [] }));
+    const sendMail = jest.fn(async options => ({ accepted: String(options.to).split(',').map(a => a.trim()), rejected: [] }));
     smtp.createTransport.mockReturnValue({ sendMail });
     const link = 'https://school.example/guest/results/id#synthetic-private-token';
     const results = await Promise.all([

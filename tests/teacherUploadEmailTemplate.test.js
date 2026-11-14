@@ -62,7 +62,8 @@ describe('template', () => {
 
 describe('delivery (SMTP mocked)', () => {
   test('sends the HTML and the plain-text version from Rubrilo', async () => {
-    await expect(email.sendTeacherUploadFeedbackEmail({ to: 'sam@example.com', ...base })).resolves.toEqual({ success: true });
+    await expect(email.sendTeacherUploadFeedbackEmail({ to: 'sam@example.com', ...base })).resolves.toEqual({ success: true,
+      delivery: { acceptedCount: 1, rejectedCount: 0, responseCode: null, enhancedStatus: null, messageId: null } });
     const message = transport.sendMail.mock.calls[0][0];
     expect(message).toEqual(expect.objectContaining({ to: 'sam@example.com', subject: 'Your feedback is ready: My Summer Holiday' }));
     expect(message.from).toBe('"Rubrilo" <sender@example.com>');
