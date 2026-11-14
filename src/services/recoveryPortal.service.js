@@ -56,7 +56,7 @@ async function issueLink(emailNormalized, { source = 'student', issuedBy = null,
   const settings = config(env);
   const account = await accountFor(emailNormalized);
   const hasSubmissions = await Submission.exists({ submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null })
-    || (account && await Submission.exists({ submissionMode: 'registered', student: account._id }));
+    || (account && await Submission.exists({ submissionMode: { $ne: 'guest' }, student: account._id }));   // very old records have no submissionMode
   if (!hasSubmissions) return { sent: false, reason: 'no_submissions' };
   // Shared with the single-submission link resend: per-address cool-down and hourly cap, both atomic.
   const slot = await require('./recoveryEmailQuota.service').claim(emailNormalized, { now, env });
@@ -118,50 +118,104 @@ const listStatus = (submission, feedback) => {
   return status === 'complete' ? 'ready' : ['failed', 'blocked'].includes(status) ? 'failed' : 'processing';
 };
 
+// Old records can carry a missing, null or invalid assignment/class id. String() of those gave "undefined", "null" or e.g.
+// "legacy-class", and one such value in an $in query threw a CastError that failed the WHOLE list (503 RECOVERY_FAILED). Ids are now
+// checked first; a row that cannot be read is skipped and logged with its submission id and a fixed reason code only.
+const OBJECT_ID = /^[a-f\d]{24}$/i;
+/** The id as a 24-hex string, or null. Accepts an ObjectId, a populated document or a 24-hex string (isValidObjectId alone also
+ *  accepts any 12-character string, such as "legacy-class"). */
+function idString(value) {
+  const raw = value && typeof value === 'object' && value._id ? value._id : value;
+  if (raw == null || (typeof raw !== 'string' && typeof raw !== 'object')) return null;
+  const text = String(raw);
+  return OBJECT_ID.test(text) ? text : null;
+}
+/** MISSING_* for an absent/null value, INVALID_* for one that is present but not an id, null when usable. */
+const idProblem = (value, what) => (value == null || value === '' ? `MISSING_${what}` : idString(value) ? null : `INVALID_${what}`);
+/** Ids, counts and codes only: never the email, a title or the error text. */
+const skipRow = (submissionId, reason) => logger.warn({ event: 'recovery_portal_row_skipped', code: 'RECOVERY_ROW_SKIPPED',
+  reason: /^[A-Z_]{1,40}$/.test(reason) ? reason : 'MAPPING_FAILED', submissionId: idString(submissionId) || 'unknown' });
+const STAGES = ['account_lookup', 'lookup', 'mapping'];
+
 /**
  * Every guest submission made with this email whose assignment and class are still open to guests (the same conditions the result
  * page checks), then the essay submissions on the student account with this exact address in its active classes ("Sign in to
- * view"). Minimal projection: no scores, no feedback, no names, no email, no teacher or class ids; account rows carry an opaque
- * key instead of the submission id and no status. Archived classes and inactive assignments are left out.
+ * view"); any submission that is not a guest submission counts as account work, so very old records without submissionMode are
+ * included. Minimal projection: no scores, no feedback, no names, no email, no teacher or class ids; account rows carry an opaque
+ * key instead of the submission id and no status. Archived classes and inactive assignments are left out. A row with an unusable
+ * assignment or class id, or one that fails while it is mapped, is skipped (RECOVERY_ROW_SKIPPED); the rest are listed. A failure
+ * of the whole list carries error.stage ('account_lookup' | 'lookup' | 'mapping') for the controller's log.
  */
 async function listAssignments(emailNormalized) {
-  const Assignment = require('../models/assignment.model'), Class = require('../models/class.model');
-  const account = await accountFor(emailNormalized);
-  const [submissions, accountSubmissions] = await Promise.all([
-    Submission.find({ submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null })
-      .select('-ocrPages -transcriptPages +teacherUpload').sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean(),
-    account ? Submission.find({ submissionMode: 'registered', student: account._id }).select('_id assignment class submittedAt createdAt')
-      .sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean() : []]);
-  if (!submissions.length && !accountSubmissions.length) return [];
-  const assignments = await Assignment.find({ _id: { $in: [...new Set([...submissions, ...accountSubmissions].map(s => String(s.assignment)))] }, isActive: true })
-    .select('_id title class teacher allowGuestSubmission resourceType').lean();
-  const classes = await Class.find(require('./classLifecycle.service').withActiveStatus({
-    _id: { $in: [...new Set(assignments.map(a => String(a.class)))] }, isActive: true })).select('_id name teacher').lean();
-  const classById = new Map(classes.map(c => [String(c._id), c]));
-  const feedbacks = await require('../models/SubmissionFeedback').find({ submissionId: { $in: submissions.map(x => x._id) } }).lean();
-  const feedbackBySubmission = new Map(feedbacks.map(fb => [String(fb.submissionId), fb]));
-  const assignmentById = new Map(assignments.map(a => [String(a._id), a]));
-  const guestRows = submissions.flatMap(s => {
-    const assignment = assignmentById.get(String(s.assignment)), classDoc = assignment && classById.get(String(assignment.class));
-    if (!assignment || !classDoc || String(classDoc.teacher) !== String(assignment.teacher)) return [];
-    // Guest submissions need an assignment open to guests; work a teacher uploaded is listed whatever that setting is.
-    if (assignment.allowGuestSubmission !== true && !s.teacherUpload?.uploadedBy) return [];
-    return [{ id: String(s._id), assignmentTitle: String(assignment.title || '').slice(0, 200), className: String(classDoc.name || '').slice(0, 120),
-      submittedAt: s.submittedAt || s.createdAt || null, status: listStatus(s, feedbackBySubmission.get(String(s._id)) || null) }];
-  });
-  // Account work: essays in classes the student is still an active member of. Only the student, signed in, can open it.
-  const memberOf = account && accountSubmissions.length ? new Set((await require('../models/membership.model')
-    .find({ student: account._id, class: { $in: [...new Set(accountSubmissions.map(s => String(s.class)))] }, status: 'active' }).select('class').lean())
-    .map(m => String(m.class))) : new Set();
-  const accountRows = accountSubmissions.flatMap(s => {
-    const assignment = assignmentById.get(String(s.assignment)), classDoc = assignment && classById.get(String(assignment.class));
-    if (!assignment || !classDoc || String(classDoc.teacher) !== String(assignment.teacher) || !memberOf.has(String(classDoc._id))) return [];
-    if (assignment.resourceType && assignment.resourceType !== 'essay') return [];
-    return [{ access: 'signIn', assignmentTitle: String(assignment.title || '').slice(0, 200), className: String(classDoc.name || '').slice(0, 120),
-      submittedAt: s.submittedAt || s.createdAt || null }];
-  });
-  const time = row => (row.submittedAt ? new Date(row.submittedAt).getTime() : 0);
-  return [...guestRows, ...accountRows.sort((a, b) => time(b) - time(a)).map((row, index) => ({ id: `account-${index + 1}`, ...row }))].slice(0, MAX_LIST);
+  let stage = 'account_lookup';
+  try {
+    const Assignment = require('../models/assignment.model'), Class = require('../models/class.model');
+    const account = await accountFor(emailNormalized);
+    stage = 'lookup';
+    const [submissions, accountSubmissions] = await Promise.all([
+      Submission.find({ submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null })
+        .select('-ocrPages -transcriptPages +teacherUpload').sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean(),
+      account ? Submission.find({ submissionMode: { $ne: 'guest' }, student: account._id }).select('_id assignment class submittedAt createdAt')
+        .sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean() : []]);
+    if (!submissions.length && !accountSubmissions.length) return [];
+    // Rows whose own ids cannot be used are skipped before any query sees them.
+    const usable = (rows, { needsClass }) => rows.filter(s => {
+      const reason = idProblem(s.assignment, 'ASSIGNMENT') || (needsClass ? idProblem(s.class, 'CLASS') : null);
+      if (reason) skipRow(s._id, reason);
+      return !reason;
+    });
+    const guestSubs = usable(submissions, { needsClass: false }), accountSubs = usable(accountSubmissions, { needsClass: true });
+    const assignmentIds = [...new Set([...guestSubs, ...accountSubs].map(s => idString(s.assignment)))];
+    const assignments = assignmentIds.length ? await Assignment.find({ _id: { $in: assignmentIds }, isActive: true })
+      .select('_id title class teacher allowGuestSubmission resourceType').lean() : [];
+    const assignmentById = new Map(assignments.map(a => [String(a._id), a]));
+    const classIds = [...new Set(assignments.map(a => idString(a.class)).filter(Boolean))];
+    const classes = classIds.length ? await Class.find(require('./classLifecycle.service').withActiveStatus({ _id: { $in: classIds }, isActive: true }))
+      .select('_id name teacher').lean() : [];
+    const classById = new Map(classes.map(c => [String(c._id), c]));
+    const feedbacks = guestSubs.length ? await require('../models/SubmissionFeedback').find({ submissionId: { $in: guestSubs.map(x => x._id) } }).lean() : [];
+    const feedbackBySubmission = new Map(feedbacks.map(fb => [String(fb.submissionId), fb]));
+    stage = 'account_lookup';
+    const memberClassIds = [...new Set(accountSubs.map(s => idString(s.class)))];
+    const memberOf = account && memberClassIds.length ? new Set((await require('../models/membership.model')
+      .find({ student: account._id, class: { $in: memberClassIds }, status: 'active' }).select('class').lean()).map(m => String(m.class))) : new Set();
+    stage = 'mapping';
+    /** The assignment and class of one row, or null (a deleted or closed one is left out silently, as before; an assignment whose
+     *  own class id is unusable is skipped and logged). */
+    const placeOf = s => {
+      const assignment = assignmentById.get(idString(s.assignment));
+      if (!assignment) return null;
+      const classProblem = idProblem(assignment.class, 'CLASS');
+      if (classProblem) { skipRow(s._id, classProblem); return null; }
+      const classDoc = classById.get(idString(assignment.class));
+      if (!classDoc || String(classDoc.teacher) !== String(assignment.teacher)) return null;
+      return { assignment, classDoc };
+    };
+    const mapRow = (s, build) => { try { return build(); } catch { skipRow(s._id, 'MAPPING_FAILED'); return []; } };
+    const guestRows = guestSubs.flatMap(s => mapRow(s, () => {
+      const place = placeOf(s);
+      if (!place) return [];
+      const { assignment, classDoc } = place;
+      // Guest submissions need an assignment open to guests; work a teacher uploaded is listed whatever that setting is.
+      if (assignment.allowGuestSubmission !== true && !s.teacherUpload?.uploadedBy) return [];
+      return [{ id: String(s._id), assignmentTitle: String(assignment.title || '').slice(0, 200), className: String(classDoc.name || '').slice(0, 120),
+        submittedAt: s.submittedAt || s.createdAt || null, status: listStatus(s, feedbackBySubmission.get(String(s._id)) || null) }];
+    }));
+    // Account work: essays in classes the student is still an active member of. Only the student, signed in, can open it.
+    const accountRows = accountSubs.flatMap(s => mapRow(s, () => {
+      const place = placeOf(s);
+      if (!place || !memberOf.has(String(place.classDoc._id))) return [];
+      const { assignment, classDoc } = place;
+      if (assignment.resourceType && assignment.resourceType !== 'essay') return [];
+      return [{ access: 'signIn', assignmentTitle: String(assignment.title || '').slice(0, 200), className: String(classDoc.name || '').slice(0, 120),
+        submittedAt: s.submittedAt || s.createdAt || null }];
+    }));
+    const time = row => { const at = row.submittedAt ? new Date(row.submittedAt).getTime() : 0; return Number.isFinite(at) ? at : 0; };
+    return [...guestRows, ...accountRows.sort((a, b) => time(b) - time(a)).map((row, index) => ({ id: `account-${index + 1}`, ...row }))].slice(0, MAX_LIST);
+  } catch (error) {
+    if (error && typeof error === 'object' && !STAGES.includes(error.stage)) error.stage = stage;
+    throw error;
+  }
 }
 
 /** The guest submission, only if it belongs to the session's email. Same generic error otherwise (no existence oracle). */
