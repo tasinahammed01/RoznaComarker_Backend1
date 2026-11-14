@@ -7,7 +7,9 @@ const flashcardProgressController = require('../controllers/flashcardProgress.co
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
 const { requireRole } = require('../middlewares/role.middleware');
 
-const { createSensitiveRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createSensitiveRateLimiter, createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
+const { createUserConcurrencyGuard } = require('../middlewares/concurrency.middleware');
+const assignmentReportController = require('../controllers/assignmentReport.controller');
 
 const { body, param } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
@@ -317,6 +319,31 @@ router.get(
   param('id').isMongoId().withMessage('Invalid assignment id'),
   handleValidationResult,
   assignmentController.getStaleEvaluationSummary
+);
+
+// Whole-assignment report (teacher only; 404 to anyone else). Light aggregated numbers, never raw submissions.
+router.get(
+  '/:id/report',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  handleValidationResult,
+  createUserRateLimiter({ limit: 60, windowMs: 5 * 60 * 1000, event: 'API_RATE_LIMITED', reason: 'assignment_report' }),
+  createUserConcurrencyGuard({ operation: 'assignment_report', maxConcurrent: 2 }),
+  assignmentReportController.getAssignmentReport
+);
+
+// AI summary of the report (teacher only, on request, no credit charge; off unless ASSIGNMENT_REPORT_SUMMARY_ENABLED=true).
+// 6 per 15 minutes per teacher, one at a time; 5 per assignment per day and at least 3 scored submissions are checked in the service.
+router.post(
+  '/:id/report/summary',
+  verifyJwtToken,
+  requireRole('teacher'),
+  param('id').isMongoId().withMessage('Invalid assignment id'),
+  handleValidationResult,
+  createUserRateLimiter({ limit: 6, windowMs: 15 * 60 * 1000, event: 'AI_GENERATION_RATE_LIMITED', reason: 'assignment_report_summary' }),
+  createUserConcurrencyGuard({ operation: 'assignment_report_summary', maxConcurrent: 1 }),
+  assignmentReportController.postAssignmentSummary
 );
 
 router.post(
