@@ -107,6 +107,14 @@ async function runClaimedSubmission(doc, owner, config = workerConfig()) {
     }
   },{worker:true});
 }
+const teacherUploads = () => require('./teacherUpload.service');   // lazy: teacherUpload.service requires this module
+
+/** A failure the worker will not retry: give the work a terminal "failed" state with the code, instead of leaving it pending. */
+function terminalFailure(code) {
+  return { ocrStatus: 'failed', ocrErrorCode: code, correctionStatus: 'failed', semanticStatus: 'failed', semanticErrorCode: code,
+    evaluationStatus: 'blocked', evaluationErrorCode: code, assessmentStatus: 'failed', assessmentErrorCode: code };
+}
+
 async function runClaimedSubmissionWork(doc, owner, config = workerConfig()) {
   const startedAt = Date.now();
   const context = { submissionId: String(doc._id), ocrJobId: doc.ocrJobId || null,
@@ -126,6 +134,14 @@ async function runClaimedSubmissionWork(doc, owner, config = workerConfig()) {
           logger.warn({ event: 'recovery_retry_scheduled', ...context, delayMs });
           return { status: 'retry_wait' };
         }
+        // Not retryable, or out of attempts: it fails now, with the provider's code. Before, it stayed "pending" for good:
+        // no stage query matches ocrStatus "failed", so nothing ever picked it up again or marked it failed.
+        const failure = (refreshed?.ocrFailures || []).find(item => item?.retryable === false) || (refreshed?.ocrFailures || [])[0];
+        const code = String(failure?.code || 'OCR_PROVIDER_FAILED').slice(0, 100);
+        await releaseLease(doc, owner, { ...terminalFailure(code), analysisErrorCode: code, analysisNextRetryAt: null });
+        logger.error({ event: 'recovery_failed', ...context, errorCode: code, exhausted: true, durationMs: Date.now() - startedAt });
+        await teacherUploads().logCurrentStatus(doc._id, 'ocr_failed');
+        return { status: 'failed', errorCode: code };
       }
       const completed = await Submission.findOne({ _id: doc._id, ocrJobId: doc.ocrJobId,
         ocrStatus: 'completed' }).select('_id').lean();
@@ -158,9 +174,12 @@ async function runClaimedSubmissionWork(doc, owner, config = workerConfig()) {
     }
     await releaseLease(doc, owner, { analysisNextRetryAt: null, analysisErrorCode: null });
     logger.info({ event: 'recovery_completed', ...context, durationMs: Date.now() - startedAt });
+    await teacherUploads().logCurrentStatus(doc._id, 'run_finished');
     return { status: 'completed' };
   } catch (error) {
-    const exhausted = ['astra_verified','astra_human_confirm','gpt_vision_exact'].includes(process.env.OCR_SOURCE_MODE) || Number(doc.analysisAttempt || 0) >= config.maxAttempts;
+    // A provider error marked permanent (retryable: false) fails now: retrying the same request cannot succeed.
+    const permanent = error?.retryable === false || error?.permanent === true;
+    const exhausted = permanent || ['astra_verified','astra_human_confirm','gpt_vision_exact'].includes(process.env.OCR_SOURCE_MODE) || Number(doc.analysisAttempt || 0) >= config.maxAttempts;
     const code = String(error?.code || 'ASSESSMENT_RECOVERY_FAILED').slice(0, 100);
     const terminalState = exhausted ? (doc.ocrStatus === 'pending' ? {
       ocrStatus: 'failed', ocrErrorCode: 'ASSESSMENT_RECOVERY_EXHAUSTED',
@@ -180,7 +199,8 @@ async function runClaimedSubmissionWork(doc, owner, config = workerConfig()) {
         15000 * (2 ** Math.max(0, Number(doc.analysisAttempt || 1) - 1))))
     });
     logger.error({ event: 'recovery_failed', ...context, errorCode: code,
-      exhausted, durationMs: Date.now() - startedAt });
+      exhausted, permanent, durationMs: Date.now() - startedAt });
+    await teacherUploads().logCurrentStatus(doc._id, exhausted ? 'run_failed' : 'retry_wait');
     return { status: exhausted ? 'failed' : 'retry_wait', errorCode: code };
   }
 }
@@ -199,6 +219,34 @@ function scheduleSubmissionAnalysis(submissionId, expectedOcrJobId) {
   })));
 }
 
+/**
+ * Watchdog for work a teacher uploaded: anything still "started"/"processing" that no run holds, that has been quiet for a full
+ * lease period, and that the worker will never pick up again (out of attempts, or in a state no stage query matches) is marked
+ * failed with its last code (ASSESSMENT_STALLED when there is none), so the teacher sees "Marking failed" and can retry.
+ * Work waiting for credits is left alone: it is shown as "Waiting for credits" and restarted by Retry marking.
+ */
+async function sweepStalledTeacherUploads(config = workerConfig(), now = new Date()) {
+  const quietBefore = new Date(now.getTime() - config.leaseMs);
+  const notWaiting = { $or: [{ analysisNextRetryAt: { $exists: false } }, { analysisNextRetryAt: null }, { analysisNextRetryAt: { $lte: now } }] };
+  const stalledQuery = { $and: [
+    { 'teacherUpload.uploadedBy': { $exists: true } },
+    { assessmentStatus: { $in: ['started', 'processing'] } },
+    leaseAvailable(now),
+    { updatedAt: { $lte: quietBefore } },
+    { $nor: [{ evaluationStatus: 'blocked', evaluationErrorCode: 'INSUFFICIENT_ASSESSMENT_CREDITS' }] },
+    { $or: [{ analysisAttempt: { $gte: config.maxAttempts } }, { $and: [notWaiting, { $nor: [dueWorkQuery(now, config.maxAttempts, config.leaseMs)] }] }] }
+  ] };
+  const stalled = await Submission.find(stalledQuery).select('_id ocrJobId ocrErrorCode evaluationErrorCode analysisErrorCode').limit(50).lean();
+  let failed = 0;
+  for (const doc of stalled) {
+    const code = String(doc.analysisErrorCode || doc.ocrErrorCode || doc.evaluationErrorCode || 'ASSESSMENT_STALLED').slice(0, 100);
+    const res = await Submission.updateOne({ _id: doc._id, ocrJobId: doc.ocrJobId, ...stalledQuery },
+      { $set: { assessmentStatus: 'failed', assessmentErrorCode: code, analysisErrorCode: code, analysisNextRetryAt: null } });
+    if (res.modifiedCount) { failed += 1; teacherUploads().logTransition(doc._id, 'failed', code, 'watchdog'); }
+  }
+  return { failed };
+}
+
 function startAssessmentRecoveryWorker(config = workerConfig()) {
   let running = false;
   const run = async () => {
@@ -208,6 +256,8 @@ function startAssessmentRecoveryWorker(config = workerConfig()) {
       const candidates = await Submission.find(dueWorkQuery(new Date(), config.maxAttempts, config.leaseMs))
         .sort({ updatedAt: 1 }).limit(config.batchSize).select('_id ocrJobId').lean();
       for (const candidate of candidates) await processSubmission(candidate._id, candidate.ocrJobId, config);
+      await sweepStalledTeacherUploads(config)
+        .catch(error => logger.error({ event: 'teacher_upload_watchdog_failed', errorCode: error?.code || 'WATCHDOG_FAILED' }));
       await require('./guestResultNotification.service').run();
       // Feedback emails for work a teacher uploaded ("Save and send" / Send). Its failures never stop the recovery loop.
       await require('./teacherUploadEmail.service').run()
@@ -225,4 +275,4 @@ function startAssessmentRecoveryWorker(config = workerConfig()) {
 }
 
 module.exports = { workerConfig, dueWorkQuery, claimSubmission, runClaimedSubmission,
-  processSubmission, scheduleSubmissionAnalysis, startAssessmentRecoveryWorker };
+  processSubmission, scheduleSubmissionAnalysis, startAssessmentRecoveryWorker, sweepStalledTeacherUploads };

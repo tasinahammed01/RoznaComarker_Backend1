@@ -9,6 +9,8 @@
     "migrate:flashcard-indexes": "node scripts/migrateFlashcardIndexes.js",
     "migrate:recovery-portal-indexes": "node scripts/migrateRecoveryPortalIndexes.js",
     "migrate:teacher-upload-indexes": "node scripts/migrateTeacherUploadIndexes.js",
+    "migrate:reference-file-indexes": "node scripts/migrateReferenceFileIndexes.js",
+    "migrate:submission-writing-model-indexes": "node scripts/migrateSubmissionWritingModelIndexes.js",
     "migrate:annotation-indexes": "node scripts/migrateAnnotationIndexes.js",
     "migrate:teacher-annotations": "node scripts/migrateTeacherAnnotations.js",
     "report:score-review": "node scripts/countScoreReviewState.js",
@@ -41,6 +43,7 @@
     "@google-cloud/vision": "^4.3.3",
     "@google/generative-ai": "^0.24.1",
     "canvas": "^3.2.3",
+    "cfb": "^1.2.2",
     "cheerio": "^1.0.0-rc.12",
     "cors": "^2.8.5",
     "css-tree": "^3.1.0",
@@ -77,7 +80,9 @@
     "tsx": "^4.22.3",
     "undici": "^6.28.0",
     "uuid": "^11.1.1",
-    "xlsx": "^0.18.5"
+    "word-extractor": "^1.0.4",
+    "xlsx": "^0.18.5",
+    "yauzl": "^2.10.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

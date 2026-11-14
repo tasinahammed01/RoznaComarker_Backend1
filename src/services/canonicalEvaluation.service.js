@@ -35,6 +35,14 @@ const hashRubric = (assignment) => crypto.createHash('sha256').update(JSON.strin
 const hashBuiltInContext = (assignment) => crypto.createHash('sha256').update(JSON.stringify(stable({
   title: assignment?.title || '', instructions: assignment?.instructions || assignment?.description || ''
 }))).digest('hex');
+// Reference files (REFERENCE_FILES_ENABLED): the files in use become part of the analysis identity only when there are any, so a result marked
+// with other files is not reused, while marking without files keeps exactly today's identity.
+const referenceMarking = require('./referenceFiles/markingContext');
+const idOf = value => (value && typeof value === 'object' && value._id ? value._id : value) || null;
+const resolveSubmissionReferences = (submission, assignment) => referenceMarking.resolveReferenceContext({
+  assignmentId: idOf(submission?.assignment) || idOf(assignment?._id), classId: idOf(submission?.class) || idOf(assignment?.class), submissionId: submission?._id });
+const analysisContextHash = (builtInContextHash, referenceContext) => (referenceContext
+  ? crypto.createHash('sha256').update(`${builtInContextHash}:${referenceContext.version}:${referenceContext.hash}`).digest('hex') : builtInContextHash);
 
 function synchronizedRubricScores(scores, stats) {
   const map = { CONTENT: 'content', ORGANIZATION: 'organization', GRAMMAR: 'grammar', VOCABULARY: 'vocabulary', MECHANICS: 'mechanics' };
@@ -158,6 +166,8 @@ function validatePreparedRubric(prepared, expected) {
   const hashMismatch = prepared.sourceHash !== expected.sourceHash
     || prepared.policyHash !== expected.policyHash || prepared.rubricHash !== expected.rubricHash
     || prepared.customRubricStatus !== expected.customRubricStatus
+    // Reference files changed between the preparation and now: the prepared assessment used other files.
+    || ('referenceHash' in expected && (prepared.referenceHash ?? null) !== expected.referenceHash)
     || (prepared.semantic?.sourceHash && prepared.semantic.sourceHash !== expected.sourceHash);
   if (hashMismatch) throw preparedRubricError(
     'PREPARED_RUBRIC_HASH_MISMATCH', 'Prepared rubric evidence does not match the current evaluation inputs', diagnostics);
@@ -181,7 +191,7 @@ async function resolveAssessmentPolicy(submission) {
 }
 
 async function prepareRubricAssessment({ submission, assignment, sourceHash, deadlineAt = null, authoritativeCorrections = false,
-  assessmentPolicy = null }) {
+  assessmentPolicy = null, referenceContext = undefined }) {
   if (!require('../utils/sourceFidelity').eligible(submission)) throw Object.assign(Error('OCR_SOURCE_REVIEW_REQUIRED'),{code:'OCR_SOURCE_REVIEW_REQUIRED'});
   const rubricStartedAt = Date.now();
   const executionPolicy = require('./assessmentExecutionPolicy.service');
@@ -200,11 +210,15 @@ async function prepareRubricAssessment({ submission, assignment, sourceHash, dea
   logger.info({ message: 'Assessment pipeline timing', submissionId: String(submission._id), stage: 'rubricStartedAt',
     timestamp: new Date(rubricStartedAt).toISOString(), sourceHash });
   const rubricCorrections = authoritativeCorrections ? rubricInputCorrections(correctionsAllowedByPolicy(submission.writingCorrections || [], policy)) : [];
+  // The current reference files (resolved here when the caller did not); a failed lookup is null and marking goes on without them.
+  const references = referenceContext === undefined ? await resolveSubmissionReferences(submission, assignment) : referenceContext;
   const semantic = await semanticRubricAssessment.assess({ submissionId: String(submission._id), transcript, sourceHash,
     assignment, corrections: rubricCorrections,
     statistics: authoritativeCorrections ? computeCanonicalCorrectionStatistics(rubricCorrections) : {}, pageManifest: submission.ocrPages || [],
     transcriptComplete: submission.ocrStatus === 'completed' && Boolean(transcript.trim()), policy,
-    customRubric: customRubricResult.rubric, includeLanguageCategories: true, deadlineAt });
+    customRubric: customRubricResult.rubric, includeLanguageCategories: true, deadlineAt,
+    ...(references ? { referenceContext: references } : {}) });
+  referenceMarking.checkForEchoes(semantic, references, { submissionId: submission._id });
   for (const category of ['CONTENT', 'ORGANIZATION', 'VOCABULARY']) {
     semantic.categories[category] = applySemanticStrictness(semantic.categories[category], policy.strictness);
   }
@@ -218,7 +232,7 @@ async function prepareRubricAssessment({ submission, assignment, sourceHash, dea
     provider: semantic.provider || null, model: semantic.model || null });
   return { semantic, sourceHash, policyHash, rubricHash, authoritativeCorrections, customRubricStatus: customRubricResult.status,
     promptVersion: semanticRubricAssessment.contractVersions(semantic.model).promptVersion, schemaVersion: semanticRubricAssessment.SCHEMA_VERSION,
-    rubricStartedAt, rubricEndedAt };
+    rubricStartedAt, rubricEndedAt, referenceContext: references || null, referenceHash: references?.hash || null };
 }
 
 async function persistProvisionalScore({ submission, assignment, sourceHash, jobId, preparedRubricAssessment, assessmentPolicy = null }) {
@@ -270,8 +284,9 @@ async function persistProvisionalScore({ submission, assignment, sourceHash, job
     evaluationSource: 'provisional', evaluationStatus: 'partial', evaluationProvider: semantic.provider,
     evaluationModel: semantic.model, evaluationErrorCode: null, correctionStats: stats,
     evaluationAttempts: semantic.metrics?.attempts || [], rubricScores, customRubricScores,
-    sourceRubric: customRubricResult.rubric, overallScore, grade
-  } }, { new: true, runValidators: true, upsert: true });
+    sourceRubric: customRubricResult.rubric, overallScore, grade,
+    ...referenceMarking.resultSet(prepared.referenceContext)
+  }, ...referenceMarking.resultUnset(prepared.referenceContext) }, { new: true, runValidators: true, upsert: true });
   if (!feedback) throw supersededEvaluationError();
   const updated = await Submission.updateOne({ _id: submission._id, correctionSourceHash: sourceHash,
     correctionJobId: jobId, evaluationJobId: jobId }, { $set: {
@@ -304,7 +319,10 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
   const customRubricResult = normalizeAssignmentRubric(assignment || {});
   const rubricHash = customRubricResult.status === 'valid' ? hashNormalizedRubric(customRubricResult) : hashRubric(assignment);
   const builtInContextHash = hashBuiltInContext(assignment);
-  const expectedAnalysisHash = analysisInputHash({ sourceHash, rubricHash, policyHash, contextHash: builtInContextHash });
+  // Retries and re-marking always use the files as they are now (and record their hash on the result).
+  const referenceContext = await resolveSubmissionReferences(submission, assignment);
+  const contextHash = analysisContextHash(builtInContextHash, referenceContext);
+  const expectedAnalysisHash = analysisInputHash({ sourceHash, rubricHash, policyHash, contextHash });
   if (customRubricResult.status === 'invalid') {
     console.warn('[canonical-evaluation] invalid assignment rubric', {
       submissionId: String(submission._id), diagnostics: customRubricResult.diagnostics
@@ -430,7 +448,7 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
     const corrections = correctionsAllowedByPolicy(submission.writingCorrections || [], policy);
     const reusableBuiltInScores = Boolean(persistedFeedback && !persistedFeedback.overriddenByTeacher
       && persistedFeedback.analysisInputHash === analysisInputHash({ sourceHash,
-        rubricHash: persistedFeedback.evaluationRubricSourceHash, policyHash, contextHash: builtInContextHash })
+        rubricHash: persistedFeedback.evaluationRubricSourceHash, policyHash, contextHash })
       && submission.evaluationSourceHash === sourceHash
       && ['completed', 'partial'].includes(submission.evaluationStatus)
       && persistedFeedback.evaluationSource !== 'provisional'
@@ -446,7 +464,8 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
       errorCode: null, durationMs: 0 });
     console.info('[canonical-evaluation] semantic rubric assessment started', { submissionId: String(submission._id),
       sourceHashMatch: true, correctionCounts: stats });
-    const expectedPrepared = { sourceHash, policyHash, rubricHash, customRubricStatus: customRubricResult.status };
+    const expectedPrepared = { sourceHash, policyHash, rubricHash, customRubricStatus: customRubricResult.status,
+      ...(referenceContext ? { referenceHash: referenceContext.hash } : {}) };
     const handoffDiagnostics = preparedRubricDiagnostics(preparedRubricAssessment, expectedPrepared);
     if (process.env.NODE_ENV !== 'production') logger.info({ message: 'Prepared rubric handoff diagnostics',
       submissionId: String(submission._id), ...handoffDiagnostics });
@@ -474,11 +493,11 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
           || [408, 429].includes(status) || status >= 500);
         if (!recoverable) throw error;
         logger.warn({ event: 'evaluation.prepared_rubric_fallback', submissionId: String(submission._id), errorCode: code, attempt: 1 });
-        prepared = await prepareRubricAssessment({ submission, assignment, sourceHash, authoritativeCorrections: true, assessmentPolicy: snapshot, deadlineAt });
+        prepared = await prepareRubricAssessment({ submission, assignment, sourceHash, authoritativeCorrections: true, assessmentPolicy: snapshot, deadlineAt, referenceContext });
         validatePreparedRubric(prepared, expectedPrepared);
       }
     } else {
-      prepared = await prepareRubricAssessment({ submission, assignment, sourceHash, authoritativeCorrections: true, assessmentPolicy: snapshot, deadlineAt });
+      prepared = await prepareRubricAssessment({ submission, assignment, sourceHash, authoritativeCorrections: true, assessmentPolicy: snapshot, deadlineAt, referenceContext });
       validatePreparedRubric(prepared, expectedPrepared);
     }
     const semantic = prepared.semantic;
@@ -539,8 +558,10 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
         transcriptComplete: submission.ocrStatus === 'completed' && Boolean(transcript.trim()),
         policy,
         customRubric: customRubricResult.rubric,
-        includeLanguageCategories: false
+        includeLanguageCategories: false,
+        ...(referenceContext ? { referenceContext } : {})
       });
+      referenceMarking.checkForEchoes(finalCustomRubricAssessment, referenceContext, { submissionId: submission._id });
       finalSemanticCustomCriteria = finalCustomRubricAssessment.customCriteria;
       customRubricEvidenceAuthority = 'canonical_corrections_and_transcript';
       logger.info({ message: 'Final custom rubric assessment with authoritative corrections',
@@ -628,9 +649,11 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
       evaluationJobId: jobId, overriddenByTeacher: { $ne: true } }, { $set: {
       submissionId: submission._id, classId: submission.class, studentId: submission.student, submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered', teacherId: classDoc?.teacher,
       assessmentVersion: ASSESSMENT_VERSION, evaluationVersion: VERSION, evaluationSourceHash: sourceHash,
-      analysisInputHash: analysisInputHash({ sourceHash, rubricHash, policyHash, contextHash: builtInContextHash }),
+      analysisInputHash: analysisInputHash({ sourceHash, rubricHash, policyHash, contextHash }),
       evaluationRubricSourceHash: rubricHash, evaluationPolicyHash: policyHash,
       evaluationBuiltInContextHash: builtInContextHash,
+      // The reference files this result was marked with (version, hash, count; removed when none). Hidden from every student surface.
+      ...referenceMarking.resultSet(referenceContext),
       evaluationPolicy: { ...policy, scoringPolicyVersion: SCORING_POLICY_VERSION },
       evaluationSource: 'ai', evaluationStatus: semantic.status,
       evaluationProvider: semantic.provider, evaluationModel: semantic.model, evaluationErrorCode: null, correctionStats: stats,
@@ -639,7 +662,7 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
       rubricScores, customRubricScores, sourceRubric: customRubricResult.rubric, overallScore, grade,
       scoringAudit: scoringAuditRecord,
       detailedFeedback, detailedFeedbackSourceHash: sourceHash, detailedFeedbackVersion: detailedFeedbackService.VERSION
-    }}, { new: true, runValidators: true });
+    }, ...referenceMarking.resultUnset(referenceContext) }, { new: true, runValidators: true });
     if (!savedFeedback) throw supersededEvaluationError();
     feedbackPersisted = true;
     const completed = await submission.constructor.updateOne({ _id: submission._id, correctionSourceHash: sourceHash,

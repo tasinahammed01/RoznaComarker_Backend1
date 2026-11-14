@@ -43,7 +43,9 @@ function runtimeContractFingerprint(env = process.env) {
     canonicalEvaluation: canonicalEvaluation.VERSION,
     qwenSourceWire:require('./gptVisionExact/contract').QWEN_WIRE_VERSION,
     qwenSourcePrompt:require('./gptVisionExact/contract').QWEN_PROMPT_VERSION,
-    ...sourceReader(env)
+    ...sourceReader(env),
+    // Reference files in the assessment prompt: only when switched on, so the hash is unchanged while REFERENCE_FILES_ENABLED is off.
+    ...(require('./referenceFiles/policy').referenceFilesEnabled(env) ? { referenceContext: require('./referenceFiles/markingContext').REFERENCE_CONTEXT_VERSION } : {})
   });
   const orderedContractValues = [
     contracts.correctionPrompt, contracts.correctionSchema, contracts.rubricPrompt,
@@ -55,6 +57,7 @@ function runtimeContractFingerprint(env = process.env) {
   if(contracts.qwenSourceReader)orderedContractValues.push(contracts.qwenSourceReader, contracts.qwenSourceReaderVersion || null);
   if(contracts.sourceReader)orderedContractValues.push(contracts.sourceReader, contracts.sourceReaderVersion || null, contracts.sourceModel || null,
     contracts.sourceReasoning || null, contracts.sourceTemperature || null, contracts.sourceSecondReader || null);
+  if(contracts.referenceContext)orderedContractValues.push(contracts.referenceContext);
   const contractHash = crypto.createHash('sha256').update(JSON.stringify(orderedContractValues)).digest('hex').slice(0, 16);
   return Object.freeze({
     applicationVersion: String(packageJson.version || 'unknown'),

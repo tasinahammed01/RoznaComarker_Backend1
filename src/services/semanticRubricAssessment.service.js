@@ -178,6 +178,8 @@ function buildRequest(input, model = require('./aiGateway.service').assessmentMo
     `teacherEvaluationPolicy=${JSON.stringify(policy)}`,
     `customRubric=${JSON.stringify(input.customRubric || null)}`,
     `assignment=${JSON.stringify(assignment)}`,
+    // Reference files (REFERENCE_FILES_ENABLED): add-only. Without a usable context nothing is added, so the prompt is byte-identical to before.
+    ...require('./referenceFiles/markingContext').promptLines(input.referenceContext),
     `statistics=${JSON.stringify(input.statistics || {})}`,
     `pageManifest=${JSON.stringify(compactPageManifest(input.pageManifest || []))}`,
     `evidenceCatalog=${JSON.stringify(evidenceCatalog)}`,

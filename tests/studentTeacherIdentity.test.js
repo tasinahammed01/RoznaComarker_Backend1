@@ -139,7 +139,6 @@ const NOT_COVERED = {
   '/api/submissions/:submissionId/teacher-annotations/history': 'teacher only: the controller answers 404 to everyone else (annotationApi.test.js)',
   '/api/submissions/:submissionId/teacher-annotations/preview': 'teacher only: the controller answers 404 to everyone else (annotationApi.test.js)',
   '/api/submissions/:submissionId/teacher-evaluation': 'teacher only (Phase B2): the controller answers 404 to everyone else (teacherEvaluation.test.js)',
-  '/api/assignments/:id/writing-model': 'teacher only (Improved Writing Model): the controller answers 404 to everyone else (writingModel.test.js)',
   '/api/submissions/:submissionId/writing-model': 'behind IMPROVED_WRITING_MODEL_ENABLED (off here: 404); returns only { available, text } (writingModel.test.js)',
   '/api/guest/submissions/:submissionId/writing-model': 'behind IMPROVED_WRITING_MODEL_ENABLED (off here: 404); returns only { available, text } (writingModel.test.js)',
   '/api/subscription/me': 'answers 500 for the fixture user, who has no subscription record (pre-existing; a teacher billing route)',

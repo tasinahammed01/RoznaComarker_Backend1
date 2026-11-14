@@ -141,6 +141,10 @@ const submissionFeedbackSchema = new Schema(
     evaluationBuiltInContextHash: { type: String, trim: true },
     evaluationPolicyHash: { type: String, trim: true },
     analysisInputHash: { type: String, trim: true },
+    // Reference files used for this result (the reference-file marking context): version, content hash and file count only. Absent when
+    // none were used. Teacher/internal only: hidden from every student surface (studentTeacherIdentity.service STUDENT_HIDDEN_KEYS).
+    referenceContext: { type: new Schema({ version: { type: String, trim: true }, hash: { type: String, trim: true }, fileCount: { type: Number, min: 0 } },
+      { _id: false }), default: undefined },
     evaluationPolicy: { type: Schema.Types.Mixed, default: undefined },
     evaluationSource: { type: String, enum: ['ai', 'deterministic_fallback', 'provisional'], default: 'deterministic_fallback' },
     evaluationStatus: { type: String, enum: ['pending', 'processing', 'completed', 'partial', 'failed', 'blocked', 'stale'], default: 'pending' },
