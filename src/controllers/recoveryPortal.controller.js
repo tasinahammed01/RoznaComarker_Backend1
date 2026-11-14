@@ -6,7 +6,8 @@ const ok = (res, data, status = 200) => res.status(status).json({ success: true,
 
 /**
  * Where an unexpected failure happened, safe to log: the error's name, the first stack frame inside src/ as "src/...:line", and the
- * stage the list reached. Never the error message (a CastError message contains the stored value) and nothing personal.
+ * stage the list reached; for a MongoServerError also its numeric code and codeName. Never the error message (a CastError message
+ * contains the stored value) and nothing personal.
  */
 function failureTrace(error) {
   const name = typeof error?.name === 'string' && /^[A-Za-z][\w]{0,59}$/.test(error.name) ? error.name : 'Error';
@@ -17,7 +18,11 @@ function failureTrace(error) {
     const at = file ? file.lastIndexOf('/src/') : -1;
     if (at >= 0 && !file.includes('/node_modules/')) { frame = `${file.slice(at + 1)}:${match[2]}`; break; }
   }
-  return { errorName: name, frame, ...(['account_lookup', 'lookup', 'mapping'].includes(error?.stage) ? { stage: error.stage } : {}) };
+  // MongoServerError only: its numeric code and codeName (e.g. 292 QueryExceededMemoryLimitNoDiskUseAllowed) are safe and say what the
+  // server refused; its message is not (it can echo filter values).
+  const mongo = name === 'MongoServerError' && Number.isInteger(error?.code)
+    ? { errorCode: error.code, ...(typeof error.codeName === 'string' && /^[A-Za-z]{1,80}$/.test(error.codeName) ? { codeName: error.codeName } : {}) } : {};
+  return { errorName: name, frame, ...(['account_lookup', 'lookup', 'mapping'].includes(error?.stage) ? { stage: error.stage } : {}), ...mongo };
 }
 
 function endpoint(fn) {

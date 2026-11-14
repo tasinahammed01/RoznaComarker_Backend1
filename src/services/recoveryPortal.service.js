@@ -56,7 +56,7 @@ async function issueLink(emailNormalized, { source = 'student', issuedBy = null,
   const settings = config(env);
   const account = await accountFor(emailNormalized);
   const hasSubmissions = await Submission.exists({ submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null })
-    || (account && await Submission.exists({ submissionMode: { $ne: 'guest' }, student: account._id }));   // very old records have no submissionMode
+    || (account && (await accountWork(account._id)).length > 0);   // very old records have no submissionMode
   if (!hasSubmissions) return { sent: false, reason: 'no_submissions' };
   // Shared with the single-submission link resend: per-address cool-down and hourly cap, both atomic.
   const slot = await require('./recoveryEmailQuota.service').claim(emailNormalized, { now, env });
@@ -137,6 +137,32 @@ const skipRow = (submissionId, reason) => logger.warn({ event: 'recovery_portal_
   reason: /^[A-Z_]{1,40}$/.test(reason) ? reason : 'MAPPING_FAILED', submissionId: idString(submissionId) || 'unknown' });
 const STAGES = ['account_lookup', 'lookup', 'mapping'];
 
+// The listing queries fetch LIGHT rows and are not sorted by the database. Sorting heavy submissions (OCR pages with per-word boxes,
+// corrections, annotations) needed a blocking in-memory sort with no supporting index; where that sort may not spill to disk it
+// failed with MongoServerError 292 (QueryExceededMemoryLimitNoDiskUseAllowed) and the whole list answered 503. Rows are now
+// sorted here, newest first, after at most LIST_SCAN_CAP rows per query (far more than one address has; reaching it is logged).
+const LIST_SCAN_CAP = 1000;
+// Exactly what a guest row reads: the row itself (_id, assignment, dates, teacherUpload.uploadedBy) and the result page's status
+// (canonicalResultState.guestResultStatus: the stage statuses, hashes and versions; only the `source` of each correction; for
+// exact-source submissions the page-level source fields, never the per-word data).
+const GUEST_LIST_FIELDS = ['_id', 'assignment', 'submittedAt', 'createdAt', 'teacherUpload.uploadedBy',
+  'assessmentStatus', 'assessmentCompletedAt', 'ocrStatus', 'ocrErrorCode',
+  'correctionStatus', 'correctionError', 'correctionRetry', 'correctionSourceHash', 'correctionStatistics', 'correctionTranscriptLayoutVersion',
+  'evaluationStatus', 'evaluationError', 'evaluationErrorCode', 'evaluationJobId', 'evaluationPolicyHash', 'evaluationRubricSourceHash', 'evaluationVersion',
+  'semanticStatus', 'semanticAttempt', 'semanticMaxAttempts', 'semanticMetrics', 'semanticNextRetryAt', 'semanticErrorCode',
+  'writingCorrections.source',
+  'sourceFidelityMode', 'sourceFidelityStatus', 'sourceHumanReviewSummary', 'sourceTranscriptExact', 'sourceTranscriptSha256', 'files', 'file',
+  'ocrPages.fileId', 'ocrPages.fileOrder', 'ocrPages.pageIndex', 'ocrPages.sourceFidelityStatus', 'ocrPages.sourceVerificationStage',
+  'ocrPages.sourceTextExact', 'ocrPages.sourceTextSha256'].join(' ');
+// An account row reads only its ids and dates; submissionMode separates account work from guest work.
+const ACCOUNT_LIST_FIELDS = '_id assignment class submittedAt createdAt submissionMode';
+const timeOf = value => { const at = value ? new Date(value).getTime() : NaN; return Number.isFinite(at) ? at : -Infinity; };
+/** Newest submittedAt first (missing dates last), then the newer _id: the order the database sort gave. */
+const newestFirst = rows => rows.slice().sort((a, b) => (timeOf(b.submittedAt) - timeOf(a.submittedAt)) || (String(b._id) < String(a._id) ? -1 : String(b._id) > String(a._id) ? 1 : 0));
+/** Account work of a student: queried by student only (so only student-led indexes apply); any non-guest submission counts. */
+const accountWork = async studentId => (await Submission.find({ student: studentId }).select(ACCOUNT_LIST_FIELDS).limit(LIST_SCAN_CAP).lean())
+  .filter(s => s.submissionMode !== 'guest');
+
 /**
  * Every guest submission made with this email whose assignment and class are still open to guests (the same conditions the result
  * page checks), then the essay submissions on the student account with this exact address in its active classes ("Sign in to
@@ -152,11 +178,12 @@ async function listAssignments(emailNormalized) {
     const Assignment = require('../models/assignment.model'), Class = require('../models/class.model');
     const account = await accountFor(emailNormalized);
     stage = 'lookup';
-    const [submissions, accountSubmissions] = await Promise.all([
+    const [guestFound, accountFound] = await Promise.all([
       Submission.find({ submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null })
-        .select('-ocrPages -transcriptPages +teacherUpload').sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean(),
-      account ? Submission.find({ submissionMode: { $ne: 'guest' }, student: account._id }).select('_id assignment class submittedAt createdAt')
-        .sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean() : []]);
+        .select(GUEST_LIST_FIELDS).limit(LIST_SCAN_CAP).lean(),
+      account ? accountWork(account._id) : []]);
+    if (guestFound.length >= LIST_SCAN_CAP || accountFound.length >= LIST_SCAN_CAP) logger.warn({ event: 'recovery_portal_cap_reached', code: 'RECOVERY_CAP_REACHED' });
+    const submissions = newestFirst(guestFound).slice(0, MAX_LIST), accountSubmissions = newestFirst(accountFound).slice(0, MAX_LIST);
     if (!submissions.length && !accountSubmissions.length) return [];
     // Rows whose own ids cannot be used are skipped before any query sees them.
     const usable = (rows, { needsClass }) => rows.filter(s => {
