@@ -70,3 +70,5 @@ tmp/ocr-eval-results/
 !package-lock.json
 !tsconfig.json
 !*.config.js
+# Local scratch output (browser profiles, rendered PDFs, live-run markers): never tracked.
+tmp/
