@@ -1,7 +1,8 @@
 'use strict';
 // Measures a stored recording's duration BEFORE any provider call, so nothing is spent on a recording that is too short or too long.
 // music-metadata is ESM-only and this repo is CommonJS: it is loaded with a dynamic import() (works on every Node 22; require() of ESM only
-// from 22.12). The whole file is scanned (duration: true) because Chrome's MediaRecorder writes WebM files with no duration in the header.
+// from 22.12). duration: true asks for a full scan where the format needs one (MP3 without a Xing header). Known gap: for WebM the library
+// reads only the header Duration, so a WebM without it (Chrome's MediaRecorder output) is refused as unreadable (tests/audioDuration.test.js).
 // Errors carry fixed codes only: never the library's message (it can contain the path).
 const { maxAcceptedDurationSeconds } = require('./policy');
 

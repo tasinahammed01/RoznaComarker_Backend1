@@ -14,7 +14,7 @@ const LIMITS = policy.readLimits({}).limits;
 const fakeLibrary = format => ({ parseFile: jest.fn(async () => ({ format })) });
 
 describe('measureAudioDuration (library injected)', () => {
-  test('scans the whole file (Chrome WebM has no duration in its header) and skips cover art', async () => {
+  test('asks for the full duration scan (MP3 without a Xing header needs it) and skips cover art', async () => {
     const library = fakeLibrary({ duration: 61.25, hasAudio: true, hasVideo: false });
     const result = await duration.measureAudioDuration('/x/a.webm', { load: async () => library });
     expect(result).toEqual({ durationSeconds: 61.25, hasVideo: false });
@@ -68,30 +68,60 @@ describe('checkDuration: at least 5 s; at most 420 s plus the 1 s tolerance', ()
   });
 });
 
-// Gated: runs the REAL library, in a separate Node process (no Jest VM), on WAV files generated here. No network, no real recordings.
+// music-metadata is pinned exactly to 12.3.2 (a cooldown: 12.5.0 was three days old). Production installs with npm ci from the lockfile.
+describe('music-metadata pin', () => {
+  test('package.json and package-lock.json pin music-metadata to exactly 12.3.2', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    const lock = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package-lock.json'), 'utf8'));
+    expect(pkg.dependencies['music-metadata']).toBe('12.3.2');
+    expect(lock.packages[''].dependencies['music-metadata']).toBe('12.3.2');
+    expect(lock.packages['node_modules/music-metadata'].version).toBe('12.3.2');
+  });
+});
+
+// Gated: runs the REAL library, in a separate Node process (no Jest VM), on synthetic files generated here (tests/helpers/audioSamples.js).
+// No network, no real recordings.
 const integration = process.env.AUDIO_LIBRARY_INTEGRATION === '1' ? describe : describe.skip;
 integration('music-metadata really loads (dynamic import from CommonJS) and measures duration', () => {
+  const samples = require('./helpers/audioSamples');
   let dir;
-  const wav = (seconds, sampleRate = 8000) => {
-    const data = Buffer.alloc(Math.round(seconds * sampleRate), 0x80);              // 8-bit mono silence
-    const header = Buffer.alloc(44);
-    header.write('RIFF', 0); header.writeUInt32LE(36 + data.length, 4); header.write('WAVE', 8); header.write('fmt ', 12);
-    header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22); header.writeUInt32LE(sampleRate, 24);
-    header.writeUInt32LE(sampleRate, 28); header.writeUInt16LE(1, 32); header.writeUInt16LE(8, 34); header.write('data', 36); header.writeUInt32LE(data.length, 40);
-    return Buffer.concat([header, data]);
-  };
   beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audio-duration-it-')); });
   afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
-
-  test.each([[6, 6], [430, 430]])('a %p s WAV measures %p s', (seconds, expected) => {
-    const file = path.join(dir, `tone-${seconds}.wav`);
-    fs.writeFileSync(file, wav(seconds));
+  const measure = (name, buffer) => {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, buffer);
     const script = `require(${JSON.stringify(path.join(__dirname, '..', 'src', 'services', 'audio', 'duration.js'))})`
       + `.measureAudioDuration(${JSON.stringify(file)}).then(r => process.stdout.write(JSON.stringify(r)), e => { process.stdout.write(JSON.stringify({ error: e.code })); })`;
     const run = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 60000 });
     expect(run.status).toBe(0);
-    const result = JSON.parse(run.stdout);
+    return JSON.parse(run.stdout);
+  };
+
+  test('the installed library is 12.3.2', () => {
+    // read from disk: the package's exports map does not expose package.json
+    expect(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'node_modules', 'music-metadata', 'package.json'), 'utf8')).version).toBe('12.3.2');
+  });
+
+  test.each([
+    ['tone-6.wav', 6, () => samples.wav(6)],
+    ['tone-430.wav', 430, () => samples.wav(430)],
+    ['cbr-6.mp3', 6, () => samples.mp3(6)],
+    ['vbr-no-xing-430.mp3', 430, () => samples.mp3(430, { vbr: true })],      // whole-file frame scan: no header gives the duration
+    ['opus-10.ogg', 10, () => samples.oggOpus(10)],
+    ['header-duration-12.webm', 12, () => samples.webm(12)]
+  ])('%s measures %p s', (name, expected, build) => {
+    const result = measure(name, build());
     expect(result.hasVideo).toBe(false);
-    expect(result.durationSeconds).toBeCloseTo(expected, 2);
+    expect(Math.abs(result.durationSeconds - expected)).toBeLessThan(0.05);
+  });
+
+  test('a WebM with a video track is reported as video', () => {
+    expect(measure('video.webm', samples.webm(8, { video: true })).hasVideo).toBe(true);
+  });
+
+  // KNOWN GAP (both 12.3.2 and 12.5.0): the Matroska parser reads only the header Duration and skips clusters, so a WebM without it
+  // (Chrome MediaRecorder output) cannot be measured and is refused as unreadable. Must be solved before in-browser recording ships.
+  test('a WebM without a header Duration (Chrome MediaRecorder style) is AUDIO_UNREADABLE', () => {
+    expect(measure('no-header-duration-12.webm', samples.webm(12, { headerDuration: false }))).toEqual({ error: 'AUDIO_UNREADABLE' });
   });
 });
