@@ -43,6 +43,7 @@ const RAW_READERS = {
   'app.js': 'route name only (writing-corrections legend)',
   'services/legacyFeedbackWording.service.js': 'names the list only to leave it untouched while rewording our own fields; reads nothing from it',
   'routes/writingCorrections.routes.js': 'route name only',
+  'services/assignmentReport.service.js': 'teacher-only whole-assignment report: stored AI counts by decision (symbol/category/id/source only, no text), never a student surface',
 };
 // Every file allowed to name the teacher overlay.
 const OVERLAY_READERS = ['models/Submission.js', 'models/SubmissionRevision.js', 'services/studentCorrectionView.service.js',

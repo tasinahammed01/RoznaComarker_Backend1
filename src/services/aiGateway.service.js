@@ -428,6 +428,9 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
     };
     const correctionPolicy=correctionRequestPolicy({provider:entry.provider,model:entry.model,feature,responseFormat,responseSchema,env});
     if(correctionPolicy.reasoning) body.reasoning=correctionPolicy.reasoning;
+    // Assignment report summary: the proven Claude request shape of teacher comment drafts (no temperature, reasoning off, so no billed
+    // thinking), without the correction model chain. Only this feature; every other request body is unchanged.
+    if(feature==='assignment_report_summary'&&!google){delete body.temperature;body.reasoning={effort:'none'};}
     if(isAssessmentFeature(feature)) {
       if(google || !ASSESSMENT_MODELS.includes(entry.model))
         throw attemptError('AI_ASSESSMENT_AUTHORITY_INVALID','Assessment requires one approved OpenRouter model.');

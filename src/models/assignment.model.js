@@ -102,6 +102,10 @@ const assignmentSchema = new Schema(
     // students get only the approved, released text through their own endpoint.
     writingModel: { type: mongoose.Schema.Types.Mixed, default: undefined, select: false },
 
+    // Whole-assignment report AI summary (services/assignmentReportSummary.service.js, ASSIGNMENT_REPORT_SUMMARY_ENABLED). Teacher-only:
+    // never selected unless asked for, never copied by Duplicate, removed from toJSON. No index.
+    reportSummary: { type: mongoose.Schema.Types.Mixed, default: undefined, select: false },
+
     allowResubmission: {
       type: Boolean,
       default: false
@@ -121,5 +125,7 @@ const assignmentSchema = new Schema(
 );
 
 assignmentSchema.index({ resourceType: 1, resourceId: 1 });
+// Defence in depth: even a query that selected the report summary never serialises it.
+assignmentSchema.set('toJSON', { transform(_doc, ret) { delete ret.reportSummary; return ret; } });
 
 module.exports = mongoose.model('Assignment', assignmentSchema);
