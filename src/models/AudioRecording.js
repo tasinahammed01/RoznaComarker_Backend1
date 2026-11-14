@@ -32,6 +32,10 @@ const audioRecordingSchema = new Schema({
   sizeBytes: { type: Number, required: true, min: 1 },
   durationSeconds: { type: Number, min: 0, default: null },
   audioSha256: { type: String, match: /^[a-f0-9]{64}$/, select: false },
+  // The teacher whose speech-to-text minutes this recording uses (services/audio/usage.js), whoever uploaded it; set when the recording is
+  // created for an assignment. Without it the worker refuses before any provider call. institutionId is recorded with the minutes, for reports.
+  minutesChargedTo: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+  institutionId: { type: Schema.Types.ObjectId, ref: 'Institution', default: null },
   // Exactly what was charged to whose storage quota, so a later deletion releases exactly that.
   storageChargedTo: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   storageChargedMB: { type: Number, min: 0, default: 0 },

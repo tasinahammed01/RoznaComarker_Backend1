@@ -42,7 +42,8 @@ async function makeRecording({ status = 'queued', fileName = `${crypto.randomUUI
   if (write) fs.writeFileSync(absolute, Buffer.alloc(4096, 1));
   const file = await File.create({ originalName: 'recording.webm', filename: fileName, path: storage.storedPathFor(fileName), url: `/files/audio/${fileName}`,
     uploadedBy: ownerId, role: 'teacher', type: 'audio', sizeBytes: 4096 });
-  const created = await AudioRecording.create({ owner: ownerId, requestId: crypto.randomUUID(), audioFileId: file._id, contentType: 'audio/webm',
+  // minutesChargedTo (stage 4): without an owning teacher the worker refuses before any provider call (tests/audioUsage.test.js).
+  const created = await AudioRecording.create({ owner: ownerId, minutesChargedTo: ownerId, requestId: crypto.randomUUID(), audioFileId: file._id, contentType: 'audio/webm',
     sizeBytes: 4096, durationSeconds: 8.2, storageChargedTo: ownerId, storageChargedMB: 0.01, status: 'uploaded', ...extra });
   if (status === 'queued') await processing.enqueue(created._id, { now: clock() });
   return AudioRecording.findById(created._id).select('+leaseUntil +attemptKey +processingQueue +transcript +derived');

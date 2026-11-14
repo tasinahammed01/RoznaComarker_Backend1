@@ -6,6 +6,9 @@
 //   took over an expired lease, makes a late result a no-op ("discarded").
 // - Retryable failures wait 15 s, 60 s, 5 min (a provider Retry-After is a hint, capped at 5 min); after AUDIO_STT_MAX_ATTEMPTS (3) it fails.
 // - After a restart, work left transcribing is picked up again once its lease ends; work that used all its attempts is marked failed.
+// - Minutes (services/audio/usage.js) are reserved after the claim and BEFORE the provider call, kept only when the transcript is stored and
+//   released otherwise. A refusal that can pass later (daily cap, busy) puts the work back in the queue without using an attempt; a permanent
+//   one (monthly cap, no owning teacher) fails it.
 // - The sweep reads an inclusion projection with a limit and no database sort (it sorts in Node), and logs counts only.
 // Logs carry ids, codes and counts: never file names, paths or transcript text.
 const crypto = require('crypto');
@@ -17,6 +20,7 @@ const { audioSttEnabled, readLimits, STT_BACKOFF_MS, MAX_STT_BACKOFF_MS } = requ
 const { resolveStoredAudioPath } = require('./storage');
 const { deriveTexts, fluencyMetrics } = require('./stt/transcript');
 const { SttError } = require('./stt/errors');
+const usage = require('./usage');
 
 const SWEEP_CAP = 20;
 const DEFAULT_INTERVAL_MS = 30000;
@@ -74,6 +78,7 @@ async function processAudioRecording(id, { transcribe = defaultTranscribe, now =
   if (running.has(key)) return { status: 'skipped' };
   const controller = new AbortController();
   running.set(key, controller);
+  let reservationKey = null;                 // minutes this attempt holds and has not settled yet
   try {
     const claimed = await claim(id, { now, env });
     if (!claimed) return { status: 'skipped' };
@@ -97,11 +102,26 @@ async function processAudioRecording(id, { transcribe = defaultTranscribe, now =
     const filePath = await storedAudioPath(claimed.audioFileId);
     if (!filePath) return fail('AUDIO_FILE_UNAVAILABLE', false);
 
+    // Minutes are checked and reserved here, before any provider call.
+    const reservation = await usage.reserveMinutes({ recording: claimed, now, env });
+    if (!reservation.ok) {
+      if (!reservation.retryable) return fail(reservation.code, false);
+      // Not this attempt's fault (daily cap, busy): back in the queue at retryAt, and the attempt is given back.
+      const stored = await AudioRecording.updateOne(mine, { $set: { status: 'queued', leaseUntil: null, lastErrorCode: reservation.code,
+        nextAttemptAt: reservation.retryAt }, $inc: { attempts: -1 } });
+      if (!stored.modifiedCount) { log('audio_transcription_discarded', { ...context, reason: 'not_current', code: reservation.code }); return { status: 'discarded' }; }
+      log('audio_transcription_deferred', { ...context, code: reservation.code, delayMs: reservation.retryAt - now() });
+      return { status: 'queued', code: reservation.code };
+    }
+    reservationKey = reservation.key;
+    const release = async reason => { await usage.releaseReservation(reservation.key, { now, reason }); reservationKey = null; };
+
     let result;
     const startedAt = Date.now();
     try {
       result = await transcribe({ filePath, contentType: claimed.contentType, env, signal: controller.signal });
     } catch (caught) {
+      await release(controller.signal.aborted ? 'cancelled' : 'failed');
       if (controller.signal.aborted) { log('audio_transcription_discarded', { ...context, reason: 'cancelled' }); return { status: 'discarded' }; }
       const error = caught instanceof SttError ? caught : null;
       return fail(error ? error.code : 'AUDIO_TRANSCRIPTION_FAILED', error ? error.retryable : true, error?.retryAfterMs ?? null);
@@ -113,10 +133,16 @@ async function processAudioRecording(id, { transcribe = defaultTranscribe, now =
     const stored = await AudioRecording.updateOne({ ...mine, transcript: null }, terminal({ status: 'ready', readyAt: now(), lastErrorCode: null,
       transcriptSchemaVersion: transcript.transcriptSchemaVersion, wordTimingsAvailable: transcript.wordTimingsAvailable,
       speakingCoachDataAvailable: transcript.speakingCoachDataAvailable, transcript, derived }), { writeTranscriptOnce: true });
-    if (!stored.modifiedCount) { log('audio_transcription_discarded', { ...context, reason: 'not_current' }); return { status: 'discarded' }; }
+    if (!stored.modifiedCount) { await release('discarded'); log('audio_transcription_discarded', { ...context, reason: 'not_current' }); return { status: 'discarded' }; }
+    await usage.consumeReservation(reservation.key, { now });
+    reservationKey = null;
     log('audio_transcription_ready', { ...context, durationMs: Date.now() - startedAt, wordCount: transcript.words.length,
       wordTimingsAvailable: transcript.wordTimingsAvailable, fallbackUsed: Boolean(result.fallbackUsed) });
     return { status: 'ready' };
+  } catch (error) {
+    // Anything unexpected after the reservation: the minutes are released, never left counting.
+    if (reservationKey) await usage.releaseReservation(reservationKey, { now, reason: 'error' }).catch(() => {});
+    throw error;
   } finally {
     running.delete(key);
   }
@@ -126,6 +152,7 @@ async function processAudioRecording(id, { transcribe = defaultTranscribe, now =
 async function cancelAudioRecording(id, { now = () => new Date() } = {}) {
   const result = await AudioRecording.updateOne({ _id: id, status: { $in: ACTIVE } }, terminal({ status: 'cancelled', cancelledAt: now() }));
   if (!result.modifiedCount) return { cancelled: false };
+  await usage.releaseRecordingReservations(id, { now, reason: 'cancelled' });
   running.get(String(id))?.abort();
   log('audio_transcription_cancelled', { recordingId: String(id) });
   return { cancelled: true };
