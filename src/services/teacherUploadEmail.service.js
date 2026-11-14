@@ -6,6 +6,11 @@
 // one twice. After a crash or restart an email left in 'sending' may already have been delivered, so it is never resent by
 // itself: it is marked failed (DELIVERY_UNCERTAIN) and the teacher can press Resend. Failures are retried with backoff up to
 // MAX_ATTEMPTS, then marked failed with a safe error code. At most RATE_LIMIT emails per teacher in any RATE_WINDOW_MS.
+//
+// "sent" is recorded only when the SMTP server accepted this recipient (email.service deliveryOutcome); a refused or unaccepted
+// recipient fails at once, so the teacher sees Resend. Each attempt stores and logs ids, times, counts and SMTP codes only.
+// The queue runs on its own timer (startTeacherUploadEmailWorker, every 30 s), not behind the marking batch; any number of
+// passes may run at once (the timer, the recovery worker, several processes): the queued -> sending claim is atomic.
 const Submission = require('../models/Submission');
 const Assignment = require('../models/assignment.model');
 const User = require('../models/user.model');
@@ -20,6 +25,23 @@ const RATE_LIMIT = 60;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const RATE_RETRY_MS = 60 * 1000;
 const RECOVERY_LINKS_KEPT = 10;
+const WORKER_INTERVAL_MS = 30 * 1000;
+// The server refused this recipient (or accepted nobody): retrying the same address would only delay the Resend button.
+const FINAL_CODES = ['RECIPIENT_MISSING', 'TEMPLATE_FAILURE', 'PROVIDER_REJECTED', 'NO_ACCEPTED_RECIPIENT', 'SMTP_NOT_ACCEPTED'];
+const count = value => (Number.isInteger(value) && value >= 0 ? value : undefined);
+/** The SMTP answer fields stored on the email state (only the ones the server gave). */
+function deliveryFields(delivery, startedAt, finishedAt) {
+  const d = delivery && typeof delivery === 'object' ? delivery : {};
+  const fields = { 'teacherUpload.email.sendStartedAt': startedAt, 'teacherUpload.email.durationMs': Math.max(0, finishedAt - startedAt),
+    'teacherUpload.email.acceptedCount': count(d.acceptedCount), 'teacherUpload.email.rejectedCount': count(d.rejectedCount),
+    'teacherUpload.email.smtpResponseCode': Number.isInteger(d.responseCode) ? d.responseCode : undefined,
+    'teacherUpload.email.smtpEnhancedStatus': typeof d.enhancedStatus === 'string' && /^\d\.\d{1,3}\.\d{1,3}$/.test(d.enhancedStatus) ? d.enhancedStatus : undefined,
+    'teacherUpload.email.messageId': typeof d.messageId === 'string' && d.messageId.length <= 256 ? d.messageId : undefined };
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
+}
+/** The same SMTP fields of the previous attempt, cleared so a new attempt never shows an old answer. */
+const STALE_DELIVERY = { 'teacherUpload.email.acceptedCount': 1, 'teacherUpload.email.rejectedCount': 1, 'teacherUpload.email.smtpResponseCode': 1,
+  'teacherUpload.email.smtpEnhancedStatus': 1, 'teacherUpload.email.messageId': 1 };
 
 const due = now => ({ $or: [{ 'teacherUpload.email.nextAttemptAt': null }, { 'teacherUpload.email.nextAttemptAt': { $lte: now } }] });
 
@@ -77,6 +99,7 @@ async function sendOne(candidate, now) {
     return 'deferred';
   }
   let message, delivery;
+  const startedAt = new Date();
   try {
     message = await messageFor(claimed, lease);
     delivery = !message ? { success: false, code: 'CHANGED_WHILE_SENDING' } : message.error ? { success: false, code: message.error }
@@ -84,22 +107,32 @@ async function sendOne(candidate, now) {
   } catch {
     delivery = { success: false, code: 'OTHER_SAFE_PROVIDER_FAILURE' };
   }
-  if (delivery.success) {
-    await Submission.updateOne(owned, { $set: { 'teacherUpload.email.status': 'sent', 'teacherUpload.email.sentAt': new Date() },
-      $unset: { 'teacherUpload.email.leaseUntil': 1, 'teacherUpload.email.nextAttemptAt': 1, 'teacherUpload.email.lastErrorCode': 1, 'teacherUpload.email.failedAt': 1 } });
+  const finishedAt = new Date();
+  const answer = deliveryFields(delivery?.delivery, startedAt, finishedAt);
+  const attempts = Number(claimed.teacherUpload.email.attempts) || 1;
+  // Ids, times, counts and codes only: never the address, the link or the server's text.
+  const trace = { submissionId: String(claimed._id), teacherId: String(teacherId), attempts,
+    queuedAt: claimed.teacherUpload.email.requestedAt || null, sendStartedAt: startedAt, durationMs: answer['teacherUpload.email.durationMs'],
+    acceptedCount: answer['teacherUpload.email.acceptedCount'], rejectedCount: answer['teacherUpload.email.rejectedCount'],
+    smtpResponseCode: answer['teacherUpload.email.smtpResponseCode'], smtpEnhancedStatus: answer['teacherUpload.email.smtpEnhancedStatus'],
+    messageId: answer['teacherUpload.email.messageId'] };
+  if (delivery?.success) {
+    await Submission.updateOne(owned, { $set: { 'teacherUpload.email.status': 'sent', 'teacherUpload.email.sentAt': finishedAt, ...answer },
+      $unset: { 'teacherUpload.email.leaseUntil': 1, 'teacherUpload.email.nextAttemptAt': 1, 'teacherUpload.email.lastErrorCode': 1, 'teacherUpload.email.failedAt': 1,
+        ...Object.fromEntries(Object.keys(STALE_DELIVERY).filter(key => !(key in answer)).map(key => [key, 1])) } });
+    logger.info({ event: 'teacher_upload_email_sent', ...trace, sentAt: finishedAt });
     return 'sent';
   }
-  const code = String(delivery.code || 'OTHER_SAFE_PROVIDER_FAILURE').slice(0, 64);
-  const attempts = Number(claimed.teacherUpload.email.attempts) || 1;
-  const finalFailure = attempts >= MAX_ATTEMPTS || ['RECIPIENT_MISSING', 'TEMPLATE_FAILURE'].includes(code);
+  const code = String(delivery?.code || 'OTHER_SAFE_PROVIDER_FAILURE').slice(0, 64);
+  const finalFailure = attempts >= MAX_ATTEMPTS || FINAL_CODES.includes(code);
   await Submission.updateOne(owned, {
-    $set: finalFailure
-      ? { 'teacherUpload.email.status': 'failed', 'teacherUpload.email.failedAt': new Date(), 'teacherUpload.email.lastErrorCode': code }
+    $set: { ...answer, ...(finalFailure
+      ? { 'teacherUpload.email.status': 'failed', 'teacherUpload.email.failedAt': finishedAt, 'teacherUpload.email.lastErrorCode': code }
       : { 'teacherUpload.email.status': 'queued', 'teacherUpload.email.lastErrorCode': code,
-        'teacherUpload.email.nextAttemptAt': new Date(now.getTime() + BACKOFF_MS[Math.min(attempts - 1, BACKOFF_MS.length - 1)]) },
-    $unset: { 'teacherUpload.email.leaseUntil': 1 },
+        'teacherUpload.email.nextAttemptAt': new Date(now.getTime() + BACKOFF_MS[Math.min(attempts - 1, BACKOFF_MS.length - 1)]) }) },
+    $unset: { 'teacherUpload.email.leaseUntil': 1, ...Object.fromEntries(Object.keys(STALE_DELIVERY).filter(key => !(key in answer)).map(key => [key, 1])) },
     ...(message?.issuedHash ? { $pull: { 'guest.recoveryAccess': { hash: message.issuedHash } } } : {}) });
-  logger.warn({ event: 'teacher_upload_email_not_sent', code, attempts, final: finalFailure });
+  logger.warn({ event: 'teacher_upload_email_not_sent', code, final: finalFailure, ...trace });
   return finalFailure ? 'failed' : 'retry';
 }
 
@@ -125,4 +158,24 @@ async function run({ batchSize = 25, now = new Date() } = {}) {
   return outcome;
 }
 
-module.exports = { run, reserveQuota, MAX_ATTEMPTS, BACKOFF_MS, RATE_LIMIT, RATE_WINDOW_MS, LEASE_MS };
+/**
+ * The queue's own timer (every 30 s), so an email never waits behind the OCR and AI marking batch of the recovery worker.
+ * One pass at a time in this process (a pass still running makes the next tick a no-op); passes in other processes are safe
+ * because each email is claimed atomically.
+ */
+function startTeacherUploadEmailWorker({ intervalMs = WORKER_INTERVAL_MS } = {}) {
+  let running = false;
+  const tick = async () => {
+    if (running) return { skipped: true };
+    running = true;
+    try { return await run(); }
+    catch (error) { logger.error({ event: 'teacher_upload_email_run_failed', errorCode: error?.code || 'TEACHER_UPLOAD_EMAIL_FAILED' }); return { failed: true }; }
+    finally { running = false; }
+  };
+  const timer = setInterval(() => void tick(), intervalMs);
+  timer.unref?.();
+  void tick();
+  return { tick, stop: () => clearInterval(timer), intervalMs };
+}
+
+module.exports = { run, reserveQuota, startTeacherUploadEmailWorker, MAX_ATTEMPTS, BACKOFF_MS, RATE_LIMIT, RATE_WINDOW_MS, LEASE_MS, WORKER_INTERVAL_MS, FINAL_CODES };

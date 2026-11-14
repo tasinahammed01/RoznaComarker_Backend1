@@ -1,5 +1,5 @@
 'use strict';
-const { emailBrandHeaderHtml } = require('./emailBrand.service');
+const { emailBrandHeaderHtml, emailPreheaderHtml } = require('./emailBrand.service');
 // The email a student receives when the teacher uploaded their handwritten work and chose "Save and send" (or pressed Send):
 // Rubrilo branding, the teacher's name, the assignment and a private link to the finished feedback. Every inserted value is
 // escaped in the HTML and stripped of line breaks in the subject (no header injection). Pure: no I/O.
@@ -48,6 +48,7 @@ function buildTeacherUploadFeedbackEmail({ studentName, teacherName, assignmentT
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Your feedback is ready</title><style>@media only screen and (max-width:480px){.email-outer{padding:12px 8px!important}.email-content{padding:24px 20px!important}.email-heading{font-size:28px!important;line-height:34px!important}}</style></head>
 <body style="margin:0;padding:0;background-color:#f2f6f8;color:#14264d;font-family:Arial,Helvetica,sans-serif;">
+${emailPreheaderHtml(`${teacher} uploaded your work and your feedback is ready.`)}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f2f6f8"><tr><td class="email-outer" align="center" style="padding:32px 16px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="max-width:640px;background-color:#ffffff;border-radius:16px;border-top:5px solid #008081;">
 <tr><td class="email-content" style="padding:32px;">

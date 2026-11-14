@@ -26,8 +26,10 @@ async function getSubmissionWithPermissionsOrThrow({ user, submissionId, guestCo
     throw new ApiError(400, "Invalid submission id");
   }
 
+  // guest.normalizedEmail: the guest's own address for the "Student email" field. Only the callers allowed below ever get this PDF:
+  // the owning teacher, the student who owns it, or the holder of that guest submission's own link.
   const submission = await Submission.findById(submissionId)
-    .select('+teacherAnnotations')
+    .select('+teacherAnnotations +guest.normalizedEmail')
     .populate("student", "_id email displayName photoURL role")
     .populate({
       path: "assignment",
@@ -113,12 +115,13 @@ async function downloadSubmissionPdf(req, res, next) {
       submissionId: submission._id,
     }).select('+teacherEvaluation').lean(), submission);
 
+    // A class member's account email, or the address a guest (or the teacher, on a teacher upload) typed for this submission.
     const studentEmail =
       submission.student && typeof submission.student === "object"
         ? String(
             submission.student.email || submission.student.userEmail || "",
           ).trim()
-        : "";
+        : submission.submissionMode === "guest" ? String(submission.guest?.normalizedEmail || "").trim() : "";
 
     const studentName =
       submission.student && typeof submission.student === "object"
@@ -137,7 +140,8 @@ async function downloadSubmissionPdf(req, res, next) {
       studentEmail,
       title: String(submission.assignment?.title || submission.assignment?.name || ""),
       className: String(submission.class?.name || ""),
-      teacherName: String(submission.assignment?.teacher?.displayName || submission.assignment?.teacher?.email || ""),
+      // Never the teacher's email (students download this PDF): their display name, else a neutral label.
+      teacherName: String(submission.assignment?.teacher?.displayName || "").trim() || "Teacher",
       submittedAt: submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : assignmentPublishDateRaw ? new Date(assignmentPublishDateRaw).toLocaleString() : "",
       assignmentInstructions: String(submission.assignment?.instructions || submission.assignment?.description || ""),
     };

@@ -31,6 +31,10 @@ const LEASE_MS = 2 * 60 * 1000;          // a crashed save releases the teacher'
 const LEASE_WAIT_MS = 20 * 1000;         // a save waits this long for the teacher's other saves before answering "busy"
 const PENDING_CHARGE = ['started', 'processing'];   // saved but not yet charged: credits are consumed when marking completes
 const EMAIL_STATUSES_TO_QUEUE = ['none', 'failed'];
+// "Resend email" on an email that was already sent: at most once a minute per submission (on top of the route's rate limit and
+// the per-teacher email limit), and idempotent on the client's request id.
+const RESEND_COOLDOWN_MS = 60 * 1000;
+const REQUEST_ID = /^[a-f0-9-]{36}$/i;
 const CREDIT_BLOCK = 'INSUFFICIENT_ASSESSMENT_CREDITS';
 const RESTART_GRACE_MS = 2 * 60 * 1000;  // a (re)start whose dispatch has not claimed it yet counts as requested for this long
 
@@ -324,13 +328,38 @@ async function list({ teacher, assignmentId }) {
 }
 
 /** Queues the feedback email for one upload. Idempotent: only none/failed move to queued; anything else is answered as-is.
- *  Work whose marking failed is refused: there is no feedback to send until "Retry marking" succeeds. */
-async function requestSend({ teacher, assignmentId, submissionId }) {
+ *  Work whose marking failed is refused: there is no feedback to send until "Retry marking" succeeds.
+ *  An email already sent is sent again only on an explicit Resend (resend: true with a request id), at most once a minute;
+ *  the same request id again changes nothing. */
+async function requestSend({ teacher, assignmentId, submissionId, resend = false, requestId = null, now = new Date() }) {
   const ctx = await ownedContext(teacher._id, assignmentId);
   if (!mongoose.isValidObjectId(submissionId)) throw notFound();
   const owned = { _id: submissionId, assignment: ctx.assignment._id, class: ctx.classDoc._id, 'teacherUpload.uploadedBy': teacher._id };
   if (await Submission.exists({ ...owned, assessmentStatus: 'failed' }))
     throw fail(409, 'Marking failed, so there is no feedback to email yet. Retry marking first.', 'TEACHER_UPLOAD_MARKING_FAILED');
+  if (resend === true) {
+    if (typeof requestId !== 'string' || !REQUEST_ID.test(requestId)) throw fail(400, 'A valid request id is required.', 'TEACHER_UPLOAD_INVALID_REQUEST');
+    const again = await Submission.updateOne({ ...owned, assessmentStatus: { $ne: 'failed' }, 'teacherUpload.email.status': 'sent',
+      'teacherUpload.email.resendRequestId': { $ne: requestId }, 'teacherUpload.email.sentAt': { $lte: new Date(now.getTime() - RESEND_COOLDOWN_MS) } }, {
+      $set: { 'teacherUpload.email.status': 'queued', 'teacherUpload.email.requestedAt': now, 'teacherUpload.email.attempts': 0,
+        'teacherUpload.email.resendRequestId': requestId },
+      $unset: { 'teacherUpload.email.nextAttemptAt': 1, 'teacherUpload.email.failedAt': 1, 'teacherUpload.email.lastErrorCode': 1 } });
+    if (again.modifiedCount) {
+      logger.info({ event: 'teacher_upload_email_resend_requested', submissionId: String(submissionId), teacherId: String(teacher._id) });
+      return { item: await itemFor(submissionId, teacher._id), alreadyRequested: false };
+    }
+    const current = await Submission.findOne(owned).select('+teacherUpload').lean();
+    if (!current) throw notFound();
+    const state = current.teacherUpload?.email || {};
+    if (state.resendRequestId === requestId || state.status !== 'sent') {
+      // The same click again, or the email is already on its way (queued or sending): nothing new.
+      if (state.resendRequestId === requestId || ['queued', 'sending'].includes(state.status)) return { item: await itemFor(submissionId, teacher._id), alreadyRequested: true };
+    } else {
+      const waitMs = new Date(state.sentAt).getTime() + RESEND_COOLDOWN_MS - now.getTime();
+      if (waitMs > 0) throw fail(429, 'The email was just sent. Wait a minute before sending it again.', 'TEACHER_UPLOAD_RESEND_COOLDOWN',
+        { retryAfterSeconds: Math.ceil(waitMs / 1000) });
+    }
+  }
   const queued = await Submission.updateOne({ ...owned, assessmentStatus: { $ne: 'failed' }, 'teacherUpload.email.status': { $in: EMAIL_STATUSES_TO_QUEUE } }, {
     // A Resend starts over: a fresh attempt count, no pending backoff.
     $set: { 'teacherUpload.email.status': 'queued', 'teacherUpload.email.requestedAt': new Date(), 'teacherUpload.email.attempts': 0 },
@@ -435,5 +464,5 @@ async function retryMarking({ teacher, assignmentId, submissionId }) {
   });
 }
 
-module.exports = { MAX_PAGES_PER_STUDENT, ownedContext, creditSummary, check, save, list, requestSend, retryMarking, sourceFor, statusOf,
+module.exports = { MAX_PAGES_PER_STUDENT, RESEND_COOLDOWN_MS, ownedContext, creditSummary, check, save, list, requestSend, retryMarking, sourceFor, statusOf,
   failureCodeOf, logTransition, logCurrentStatus, CREDIT_BLOCK };

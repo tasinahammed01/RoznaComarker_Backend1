@@ -67,7 +67,18 @@ const submissionSchema = new Schema(
             sentAt: Date,
             failedAt: Date,
             attempts: { type: Number, min: 0, default: 0 },
-            lastErrorCode: { type: String, maxlength: 64 }
+            lastErrorCode: { type: String, maxlength: 64 },
+            // The last send attempt, as the SMTP server answered it: times, counts and codes only (never an address or the
+            // server's text). "sent" means the server accepted the recipient; inbox delivery can still be delayed or filtered.
+            sendStartedAt: Date,
+            durationMs: { type: Number, min: 0 },
+            acceptedCount: { type: Number, min: 0 },
+            rejectedCount: { type: Number, min: 0 },
+            smtpResponseCode: { type: Number, min: 0, max: 999 },
+            smtpEnhancedStatus: { type: String, maxlength: 16 },
+            messageId: { type: String, maxlength: 256 },
+            // "Resend email" on an email that was already sent: the request id makes a repeated click a no-op.
+            resendRequestId: { type: String, maxlength: 64 }
           }, { _id: false }),
           default: () => ({})
         }

@@ -5,7 +5,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { ApiError } = require('../middlewares/error.middleware');
 const logger = require('../utils/logger');
-const PDF_RENDERER_VERSION = 'feedback-pdf-v3';
+const PDF_RENDERER_VERSION = 'feedback-pdf-v4';
 const PDF_ANNOTATION_VERSION = 'website-semantic-groups-v1';
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 function stable(value) {

@@ -1,5 +1,7 @@
 'use strict';
-// Multi-assignment recovery portal. One emailed link lists every guest submission made with that email address.
+// Multi-assignment recovery portal. One emailed link lists every submission made with that email address: guest submissions (the
+// student's own and work a teacher uploaded) open from the list; work saved on the student ACCOUNT with that exact address (a class
+// member, self-submitted or uploaded by the teacher) is listed as "Sign in to view" (title, class and date only, never results).
 //   link token    32 random bytes (base64url, 43 chars), sent only in the email (URL fragment), stored as SHA-256, expires (default 24 h),
 //                 usable a limited number of times (default 10), revocable.
 //   portal session 32 random bytes, returned once by the exchange, sent as X-Recovery-Session, stored as SHA-256, short-lived
@@ -42,6 +44,9 @@ function normalizeEmail(email) {
 
 const portalLink = token => access.frontendLink(`/recover/portal#${token}`);
 
+/** The student account registered with exactly this (normalised) address, if any. The emailed token proves control of the mailbox. */
+const accountFor = emailNormalized => require('../models/user.model').findOne({ email: emailNormalized, role: 'student' }).select('_id').lean();
+
 /**
  * Creates a link and emails it, but only when the address has at least one guest submission and has not asked too often.
  * Returns what happened (for tests and the future teacher flow); callers facing the public never reveal it.
@@ -49,7 +54,9 @@ const portalLink = token => access.frontendLink(`/recover/portal#${token}`);
  */
 async function issueLink(emailNormalized, { source = 'student', issuedBy = null, now = new Date(), env = process.env } = {}) {
   const settings = config(env);
-  const hasSubmissions = await Submission.exists({ submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null });
+  const account = await accountFor(emailNormalized);
+  const hasSubmissions = await Submission.exists({ submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null })
+    || (account && await Submission.exists({ submissionMode: 'registered', student: account._id }));
   if (!hasSubmissions) return { sent: false, reason: 'no_submissions' };
   // Shared with the single-submission link resend: per-address cool-down and hourly cap, both atomic.
   const slot = await require('./recoveryEmailQuota.service').claim(emailNormalized, { now, env });
@@ -113,22 +120,28 @@ const listStatus = (submission, feedback) => {
 
 /**
  * Every guest submission made with this email whose assignment and class are still open to guests (the same conditions the result
- * page checks). Minimal projection: no scores, no feedback, no names, no email, no teacher or class ids.
+ * page checks), then the essay submissions on the student account with this exact address in its active classes ("Sign in to
+ * view"). Minimal projection: no scores, no feedback, no names, no email, no teacher or class ids; account rows carry an opaque
+ * key instead of the submission id and no status. Archived classes and inactive assignments are left out.
  */
 async function listAssignments(emailNormalized) {
   const Assignment = require('../models/assignment.model'), Class = require('../models/class.model');
-  const submissions = await Submission.find({ submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null })
-    .select('-ocrPages -transcriptPages +teacherUpload').sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean();
-  if (!submissions.length) return [];
-  const assignments = await Assignment.find({ _id: { $in: [...new Set(submissions.map(s => String(s.assignment)))] }, isActive: true })
-    .select('_id title class teacher allowGuestSubmission').lean();
+  const account = await accountFor(emailNormalized);
+  const [submissions, accountSubmissions] = await Promise.all([
+    Submission.find({ submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized, 'guest.revokedAt': null })
+      .select('-ocrPages -transcriptPages +teacherUpload').sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean(),
+    account ? Submission.find({ submissionMode: 'registered', student: account._id }).select('_id assignment class submittedAt createdAt')
+      .sort({ submittedAt: -1, _id: -1 }).limit(MAX_LIST).lean() : []]);
+  if (!submissions.length && !accountSubmissions.length) return [];
+  const assignments = await Assignment.find({ _id: { $in: [...new Set([...submissions, ...accountSubmissions].map(s => String(s.assignment)))] }, isActive: true })
+    .select('_id title class teacher allowGuestSubmission resourceType').lean();
   const classes = await Class.find(require('./classLifecycle.service').withActiveStatus({
     _id: { $in: [...new Set(assignments.map(a => String(a.class)))] }, isActive: true })).select('_id name teacher').lean();
   const classById = new Map(classes.map(c => [String(c._id), c]));
   const feedbacks = await require('../models/SubmissionFeedback').find({ submissionId: { $in: submissions.map(x => x._id) } }).lean();
   const feedbackBySubmission = new Map(feedbacks.map(fb => [String(fb.submissionId), fb]));
   const assignmentById = new Map(assignments.map(a => [String(a._id), a]));
-  return submissions.flatMap(s => {
+  const guestRows = submissions.flatMap(s => {
     const assignment = assignmentById.get(String(s.assignment)), classDoc = assignment && classById.get(String(assignment.class));
     if (!assignment || !classDoc || String(classDoc.teacher) !== String(assignment.teacher)) return [];
     // Guest submissions need an assignment open to guests; work a teacher uploaded is listed whatever that setting is.
@@ -136,6 +149,19 @@ async function listAssignments(emailNormalized) {
     return [{ id: String(s._id), assignmentTitle: String(assignment.title || '').slice(0, 200), className: String(classDoc.name || '').slice(0, 120),
       submittedAt: s.submittedAt || s.createdAt || null, status: listStatus(s, feedbackBySubmission.get(String(s._id)) || null) }];
   });
+  // Account work: essays in classes the student is still an active member of. Only the student, signed in, can open it.
+  const memberOf = account && accountSubmissions.length ? new Set((await require('../models/membership.model')
+    .find({ student: account._id, class: { $in: [...new Set(accountSubmissions.map(s => String(s.class)))] }, status: 'active' }).select('class').lean())
+    .map(m => String(m.class))) : new Set();
+  const accountRows = accountSubmissions.flatMap(s => {
+    const assignment = assignmentById.get(String(s.assignment)), classDoc = assignment && classById.get(String(assignment.class));
+    if (!assignment || !classDoc || String(classDoc.teacher) !== String(assignment.teacher) || !memberOf.has(String(classDoc._id))) return [];
+    if (assignment.resourceType && assignment.resourceType !== 'essay') return [];
+    return [{ access: 'signIn', assignmentTitle: String(assignment.title || '').slice(0, 200), className: String(classDoc.name || '').slice(0, 120),
+      submittedAt: s.submittedAt || s.createdAt || null }];
+  });
+  const time = row => (row.submittedAt ? new Date(row.submittedAt).getTime() : 0);
+  return [...guestRows, ...accountRows.sort((a, b) => time(b) - time(a)).map((row, index) => ({ id: `account-${index + 1}`, ...row }))].slice(0, MAX_LIST);
 }
 
 /** The guest submission, only if it belongs to the session's email. Same generic error otherwise (no existence oracle). */

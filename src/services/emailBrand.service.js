@@ -32,4 +32,17 @@ function emailBrandHeaderHtml(env = process.env) {
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>\n${cell}</tr></table>`;
 }
 
-module.exports = { emailLogoUrl, emailBrandHeaderHtml, LOGO_PATH };
+// Filler after the preheader so inbox previews do not continue into the body text (zero-width and non-breaking characters).
+const PREHEADER_FILLER = '&#847;&zwnj;&nbsp;'.repeat(60);
+/**
+ * The inbox preview text (preheader): the first element of <body>, hidden in the message itself in every client (display:none,
+ * max-height/width 0, overflow hidden, opacity 0, mso-hide:all for Outlook, and text the colour of the background). Escaped.
+ */
+function emailPreheaderHtml(text, { background = '#f2f6f8' } = {}) {
+  const value = String(text == null ? '' : text).replace(/[\r\n]+/g, ' ').trim().slice(0, 200);
+  if (!value) return '';
+  return `<div style="display:none;font-size:1px;line-height:1px;color:${escapeAttr(background)};max-height:0;max-width:0;`
+    + `opacity:0;overflow:hidden;mso-hide:all;visibility:hidden;">${escapeAttr(value)}${PREHEADER_FILLER}</div>`;
+}
+
+module.exports = { emailLogoUrl, emailBrandHeaderHtml, emailPreheaderHtml, LOGO_PATH };

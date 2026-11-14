@@ -1,9 +1,32 @@
 const nodemailer = require('nodemailer');
 const logger = require('../utils/logger');
-const { emailBrandHeaderHtml } = require('./emailBrand.service');
+const { emailBrandHeaderHtml, emailPreheaderHtml } = require('./emailBrand.service');
 const { emailReadiness, safeEmailFailure, smtpTransportOptions } = require('./emailReadiness.service');
 const escapeHtml = value => String(value == null ? '' : value).replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+
+const addressOf = value => String(value && typeof value === 'object' ? value.address : value || '').trim().toLowerCase();
+/**
+ * What the SMTP server said about one send, safe to store and log: counts and codes only, never an address or the server's text.
+ * Delivered (as far as we can know) only when EVERY recipient is in `accepted` (the server answered 2xx to RCPT TO), none is in
+ * `rejected`, and the final reply (after DATA), when present, is 2xx. Anything else is a failure with a safe code:
+ * PROVIDER_REJECTED (a recipient refused), NO_ACCEPTED_RECIPIENT (no recipient accepted) or SMTP_NOT_ACCEPTED (non-2xx reply).
+ * "Accepted" means the server took the message; delivery to the inbox can still be delayed or filtered by the receiving side.
+ */
+function deliveryOutcome(result, to) {
+  const accepted = Array.isArray(result?.accepted) ? result.accepted.map(addressOf) : [];
+  const rejected = Array.isArray(result?.rejected) ? result.rejected.map(addressOf) : [];
+  const recipients = (Array.isArray(to) ? to : String(to || '').split(',')).map(addressOf).filter(Boolean);
+  const reply = /^(\d{3})(?:[ -](\d\.\d{1,3}\.\d{1,3})\b)?/.exec(String(typeof result?.response === 'string' ? result.response : '').trim());
+  const details = { acceptedCount: accepted.length, rejectedCount: rejected.length, responseCode: reply ? Number(reply[1]) : null,
+    enhancedStatus: reply && reply[2] ? reply[2] : null,
+    messageId: typeof result?.messageId === 'string' && result.messageId.length <= 256 ? result.messageId : null };
+  const code = recipients.some(r => rejected.includes(r)) ? 'PROVIDER_REJECTED'
+    : !recipients.length || !recipients.every(r => accepted.includes(r)) ? 'NO_ACCEPTED_RECIPIENT'
+      : details.responseCode !== null && (details.responseCode < 200 || details.responseCode > 299) ? 'SMTP_NOT_ACCEPTED' : null;
+  return { delivered: !code, code, details };
+}
+const notDelivered = outcome => Object.assign(new Error('Email not accepted'), { code: 'PROVIDER_REJECTED', deliveryCode: outcome.code, details: outcome.details });
 
 // Presentation only: the CTA retains the caller's canonical capability URL.
 function guestEmailHtml({ assignmentTitle, returnUrl, resultReady }) {
@@ -15,6 +38,7 @@ function guestEmailHtml({ assignmentTitle, returnUrl, resultReady }) {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${heading}</title><style>@media only screen and (max-width:480px){.email-outer{padding:12px 8px!important}.email-content{padding:24px 20px!important}.email-heading{font-size:28px!important;line-height:34px!important}}</style></head>
 <body style="margin:0;padding:0;background-color:#f2f6f8;color:#14264d;font-family:Arial,Helvetica,sans-serif;">
+${emailPreheaderHtml(resultReady ? 'Your feedback is ready. Open it with your private link.' : 'Your work was received. Keep this email: it has your private link.')}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f2f6f8"><tr><td class="email-outer" align="center" style="padding:32px 16px;">
 <!--[if mso]><table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="max-width:640px;background-color:#ffffff;border-radius:16px;border-top:5px solid #008081;">
@@ -55,9 +79,10 @@ function recoveryAccessMessage({ to, link, subject, opens, cta, validity, allSub
     ...(allSubmissions ? ['', `Submitted more than one assignment? Get one link to all of them: ${allSubmissions}`] : [])].join('\n');
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(subject)}</title></head>`
     + `<body style="margin:0;padding:24px 12px;background-color:#f2f6f8;font-family:Arial,Helvetica,sans-serif;color:#14264d;">`
+    + emailPreheaderHtml(`Your private access link. It works for ${validity}.`)
     + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center">`
     + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;background-color:#ffffff;border-radius:16px;border-top:5px solid #008081;"><tr><td style="padding:28px;">`
-    + `<p style="margin:0 0 18px;font-size:18px;font-weight:bold;">Rubrilo</p>`
+    + `<div style="margin:0 0 22px;">${emailBrandHeaderHtml()}</div>`
     + `<h1 style="margin:0 0 12px;font-size:26px;line-height:32px;">Your access link</h1>`
     + `<p style="margin:0 0 20px;font-size:16px;line-height:24px;color:#59657d;">${escapeHtml(opens)}</p>`
     + `<p style="margin:0 0 20px;"><a href="${escapeHtml(link)}" style="display:inline-block;padding:14px 22px;background-color:#008081;color:#ffffff;font-weight:bold;text-decoration:none;border-radius:12px;">${escapeHtml(cta)}</a></p>`
@@ -72,12 +97,12 @@ async function sendRecoveryAccessEmail({ event, ...content }) {
   try {
     const readiness = emailReadiness();
     if (!readiness.ready) throw Object.assign(new Error('Email configuration unavailable'), { code: readiness.code });
-    const result = await getTransporter().sendMail(recoveryAccessMessage(content));
-    if (result?.rejected?.length && !result?.accepted?.length) throw Object.assign(new Error('Email rejected'), { code: 'PROVIDER_REJECTED' });
+    const outcome = deliveryOutcome(await getTransporter().sendMail(recoveryAccessMessage(content)), content.to);
+    if (!outcome.delivered) throw notDelivered(outcome);
     logger.info({ event: `${event}_sent`, provider: 'smtp' });
     return { success: true };
   } catch (error) {
-    const code = safeEmailFailure(error);
+    const code = error.deliveryCode || safeEmailFailure(error);
     logger.warn({ event: `${event}_failed`, code });
     return { success: false, code };
   }
@@ -104,8 +129,9 @@ async function sendInvitationEmail({ to, className, classCode, joinUrl, teacherN
       from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
       to: Array.isArray(to) ? to.join(', ') : to,
       subject: `You're invited to join ${String(className).replace(/[\r\n]/g, ' ')}`,
-      html: `
+      html: `${emailPreheaderHtml(`You're invited to join ${String(className).replace(/[\r\n]/g, ' ')} on Rubrilo.`, { background: '#ffffff' })}
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="margin: 0 0 20px;">${emailBrandHeaderHtml()}</div>
           <div style="background-color: #f8f9fa; padding: 30px; border-radius: 10px; text-align: center;">
             <h1 style="color: #2c3e50; margin-bottom: 20px;">🎓 Class Invitation</h1>
             <p style="font-size: 18px; color: #34495e; margin-bottom: 25px;">
@@ -144,11 +170,13 @@ async function sendInvitationEmail({ to, className, classCode, joinUrl, teacherN
     };
 
     const result = await transporter.sendMail(mailOptions);
+    const outcome = deliveryOutcome(result, to);
+    if (!outcome.delivered) throw notDelivered(outcome);
     logger.info({ event: 'class_invitation_email_sent', provider: 'smtp' });
     return { success: true, messageId: result.messageId };
     
   } catch (error) {
-    const code = safeEmailFailure(error);
+    const code = error.deliveryCode || safeEmailFailure(error);
     logger.error({ event: 'class_invitation_email_failed', code });
     return { success: false, error: code };
   }
@@ -169,8 +197,10 @@ async function testEmailConfig() {
 }
 
 module.exports = {
-  // Feedback for work a teacher uploaded ("Save and send" or Send). Never throws: { success, code } with a safe failure code.
+  // Feedback for work a teacher uploaded ("Save and send" or Send). Never throws: { success, code, delivery } with a safe failure
+  // code; delivery = { acceptedCount, rejectedCount, responseCode, enhancedStatus, messageId } when the server answered.
   async sendTeacherUploadFeedbackEmail({ to, studentName, teacherName, assignmentTitle, link, expiresAt = null, needsLogin = false }) {
+    let delivery = null;
     try {
       const readiness = emailReadiness();
       if (!readiness.ready) throw Object.assign(new Error('Email configuration unavailable'), { code: readiness.code });
@@ -181,13 +211,16 @@ module.exports = {
         from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
         to, subject: content.subject, text: content.text, html: content.html
       });
-      if (result?.rejected?.length && !result?.accepted?.length) throw Object.assign(new Error('Email rejected'), { code: 'PROVIDER_REJECTED' });
-      logger.info({ event: 'teacher_upload_feedback_email_sent', provider: 'smtp' });
-      return { success: true };
+      const outcome = deliveryOutcome(result, to);
+      delivery = outcome.details;
+      if (!outcome.delivered) throw notDelivered(outcome);
+      logger.info({ event: 'teacher_upload_feedback_email_sent', provider: 'smtp', ...delivery });
+      return { success: true, delivery };
     } catch (error) {
-      const code = safeEmailFailure(error);
-      logger.warn({ event: 'teacher_upload_feedback_email_failed', code });
-      return { success: false, code };
+      const code = error.deliveryCode || safeEmailFailure(error);
+      const replied = delivery || (Number(error?.responseCode) ? { acceptedCount: 0, rejectedCount: 0, responseCode: Number(error.responseCode), enhancedStatus: null, messageId: null } : null);
+      logger.warn({ event: 'teacher_upload_feedback_email_failed', code, ...(replied || {}) });
+      return { success: false, code, ...(replied ? { delivery: replied } : {}) };
     }
   },
   async sendTeacherSubmissionEmail({ to, assignmentTitle, studentName }) {
@@ -198,9 +231,12 @@ module.exports = {
         from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
         to, subject: 'Rubrilo: assignment submitted',
         text: `${studentName} (Guest) submitted ${assignmentTitle}. Open the assignment submissions in Rubrilo to review it.`,
-        html: `<p>${escapeHtml(studentName)} (Guest) submitted <strong>${escapeHtml(assignmentTitle)}</strong>.</p><p>Open the assignment submissions in Rubrilo to review it.</p>`
+        html: `${emailPreheaderHtml(`${studentName} (Guest) submitted ${assignmentTitle}.`, { background: '#ffffff' })}`
+          + `<div style="font-family:Arial,Helvetica,sans-serif;color:#14264d;"><div style="margin:0 0 18px;">${emailBrandHeaderHtml()}</div>`
+          + `<p>${escapeHtml(studentName)} (Guest) submitted <strong>${escapeHtml(assignmentTitle)}</strong>.</p><p>Open the assignment submissions in Rubrilo to review it.</p></div>`
       });
-      if (result?.rejected?.length && !result?.accepted?.length) return { success: false, code: 'PROVIDER_REJECTED' };
+      const outcome = deliveryOutcome(result, to);
+      if (!outcome.delivered) return { success: false, code: outcome.code };
       return { success: true };
     } catch (error) {
       logger.warn({ event: 'teacher_submission_email_failed', code: safeEmailFailure(error) });
@@ -246,20 +282,20 @@ module.exports = {
         text: `Rubrilo\n\nYour ${status} for ${assignmentTitle}.\nUse this private link to access your feedback without logging in:\n${returnUrl}\nKeep this link private. Do not share it. It expires; request a new link from the assignment page if needed.`,
         html: guestEmailHtml({ assignmentTitle, returnUrl, resultReady })
       }; } catch { throw Object.assign(new Error('Email template unavailable'), { code: 'TEMPLATE_FAILURE' }); }
-      const result = await getTransporter().sendMail(message);
-      if (result?.rejected?.length && !result?.accepted?.length) {
-        throw Object.assign(new Error('Email rejected'), { code: 'PROVIDER_REJECTED' });
-      }
+      const outcome = deliveryOutcome(await getTransporter().sendMail(message), to);
+      if (!outcome.delivered) throw notDelivered(outcome);
       logger.info({ event: 'guest_confirmation_email_sent', provider: 'smtp' });
       return { success: true };
     } catch (error) {
-      const code = safeEmailFailure(error);
+      const code = error.deliveryCode || safeEmailFailure(error);
       logger.warn({ event: 'guest_confirmation_email_failed', code });
       return { success: false, code };
     }
   },
   sendInvitationEmail,
   recoveryAccessMessage,
+  deliveryOutcome,
+  getTransporter,
   testEmailConfig,
   emailReadiness
 };

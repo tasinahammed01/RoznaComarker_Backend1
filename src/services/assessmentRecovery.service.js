@@ -259,9 +259,7 @@ function startAssessmentRecoveryWorker(config = workerConfig()) {
       await sweepStalledTeacherUploads(config)
         .catch(error => logger.error({ event: 'teacher_upload_watchdog_failed', errorCode: error?.code || 'WATCHDOG_FAILED' }));
       await require('./guestResultNotification.service').run();
-      // Feedback emails for work a teacher uploaded ("Save and send" / Send). Its failures never stop the recovery loop.
-      await require('./teacherUploadEmail.service').run()
-        .catch(error => logger.error({ event: 'teacher_upload_email_run_failed', errorCode: error?.code || 'TEACHER_UPLOAD_EMAIL_FAILED' }));
+      // Feedback emails for work a teacher uploaded run on their own timer (teacherUploadEmail.service), not behind this batch.
       return { claimed: candidates.length };
     } catch (error) {
       logger.error({ event: 'assessment_recovery_worker_failed', errorCode: error?.code || 'RECOVERY_SCAN_FAILED' });
