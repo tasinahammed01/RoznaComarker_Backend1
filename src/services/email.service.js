@@ -1,6 +1,6 @@
 const nodemailer = require('nodemailer');
 const logger = require('../utils/logger');
-const { emailBrandHeaderHtml } = require('./emailBrand.service');
+const { emailBrandHeaderHtml, emailPreheaderHtml } = require('./emailBrand.service');
 const { emailReadiness, safeEmailFailure, smtpTransportOptions } = require('./emailReadiness.service');
 const escapeHtml = value => String(value == null ? '' : value).replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -38,6 +38,7 @@ function guestEmailHtml({ assignmentTitle, returnUrl, resultReady }) {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${heading}</title><style>@media only screen and (max-width:480px){.email-outer{padding:12px 8px!important}.email-content{padding:24px 20px!important}.email-heading{font-size:28px!important;line-height:34px!important}}</style></head>
 <body style="margin:0;padding:0;background-color:#f2f6f8;color:#14264d;font-family:Arial,Helvetica,sans-serif;">
+${emailPreheaderHtml(resultReady ? 'Your feedback is ready. Open it with your private link.' : 'Your work was received. Keep this email: it has your private link.')}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f2f6f8"><tr><td class="email-outer" align="center" style="padding:32px 16px;">
 <!--[if mso]><table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="max-width:640px;background-color:#ffffff;border-radius:16px;border-top:5px solid #008081;">
@@ -78,9 +79,10 @@ function recoveryAccessMessage({ to, link, subject, opens, cta, validity, allSub
     ...(allSubmissions ? ['', `Submitted more than one assignment? Get one link to all of them: ${allSubmissions}`] : [])].join('\n');
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(subject)}</title></head>`
     + `<body style="margin:0;padding:24px 12px;background-color:#f2f6f8;font-family:Arial,Helvetica,sans-serif;color:#14264d;">`
+    + emailPreheaderHtml(`Your private access link. It works for ${validity}.`)
     + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center">`
     + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;background-color:#ffffff;border-radius:16px;border-top:5px solid #008081;"><tr><td style="padding:28px;">`
-    + `<p style="margin:0 0 18px;font-size:18px;font-weight:bold;">Rubrilo</p>`
+    + `<div style="margin:0 0 22px;">${emailBrandHeaderHtml()}</div>`
     + `<h1 style="margin:0 0 12px;font-size:26px;line-height:32px;">Your access link</h1>`
     + `<p style="margin:0 0 20px;font-size:16px;line-height:24px;color:#59657d;">${escapeHtml(opens)}</p>`
     + `<p style="margin:0 0 20px;"><a href="${escapeHtml(link)}" style="display:inline-block;padding:14px 22px;background-color:#008081;color:#ffffff;font-weight:bold;text-decoration:none;border-radius:12px;">${escapeHtml(cta)}</a></p>`
@@ -127,8 +129,9 @@ async function sendInvitationEmail({ to, className, classCode, joinUrl, teacherN
       from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
       to: Array.isArray(to) ? to.join(', ') : to,
       subject: `You're invited to join ${String(className).replace(/[\r\n]/g, ' ')}`,
-      html: `
+      html: `${emailPreheaderHtml(`You're invited to join ${String(className).replace(/[\r\n]/g, ' ')} on Rubrilo.`, { background: '#ffffff' })}
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="margin: 0 0 20px;">${emailBrandHeaderHtml()}</div>
           <div style="background-color: #f8f9fa; padding: 30px; border-radius: 10px; text-align: center;">
             <h1 style="color: #2c3e50; margin-bottom: 20px;">🎓 Class Invitation</h1>
             <p style="font-size: 18px; color: #34495e; margin-bottom: 25px;">
@@ -228,7 +231,9 @@ module.exports = {
         from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
         to, subject: 'Rubrilo: assignment submitted',
         text: `${studentName} (Guest) submitted ${assignmentTitle}. Open the assignment submissions in Rubrilo to review it.`,
-        html: `<p>${escapeHtml(studentName)} (Guest) submitted <strong>${escapeHtml(assignmentTitle)}</strong>.</p><p>Open the assignment submissions in Rubrilo to review it.</p>`
+        html: `${emailPreheaderHtml(`${studentName} (Guest) submitted ${assignmentTitle}.`, { background: '#ffffff' })}`
+          + `<div style="font-family:Arial,Helvetica,sans-serif;color:#14264d;"><div style="margin:0 0 18px;">${emailBrandHeaderHtml()}</div>`
+          + `<p>${escapeHtml(studentName)} (Guest) submitted <strong>${escapeHtml(assignmentTitle)}</strong>.</p><p>Open the assignment submissions in Rubrilo to review it.</p></div>`
       });
       const outcome = deliveryOutcome(result, to);
       if (!outcome.delivered) return { success: false, code: outcome.code };
