@@ -2933,7 +2933,7 @@ async function generateWorksheetReportPdf(data, outputPath) {
       totalQuestions: getWorksheetTotalQuestions(ws),
       assignmentDate: assignment.createdAt || ws.createdAt,
       dueDate: assignment.deadline || ws.assignmentDeadline,
-      teacherName: teacher ? teacher.displayName || teacher.email : null,
+      teacherName: teacher ? String(teacher.displayName || '').trim() || 'Teacher' : null,   // never the teacher's email
       language: ws.language,
     });
 
