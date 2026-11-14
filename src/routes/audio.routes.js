@@ -1,6 +1,7 @@
 'use strict';
 // /api/audio: audio upload and speech-to-text. Behind AUDIO_STT_ENABLED (default off). While off, EVERY route here answers 404 with the same
-// body as the disabled reference-files routes, before sign-in is checked, so the feature cannot be discovered.
+// body as the other switched-off feature routers ({ success: false, code: 'NOT_FOUND' }), before sign-in is checked, so the feature cannot be
+// discovered.
 //   GET /config   { enabled, maxFileBytes, maxDurationSeconds, minDurationSeconds, dailyMinutesPerTeacher, monthlyMinutesPerTeacher }
 // Upload, status and playback routes arrive in a later stage. Every route states its own sign-in and role
 // (tests/helpers/studentRouteScan.js reads the role from each route).

@@ -5,7 +5,7 @@ const { SttError, fromHttpStatus } = require('./errors');
 
 const TIMEOUT = Symbol('audio-stt-timeout');
 
-async function requestJson({ provider, url, init, fetchImpl, timeoutMs, signal }) {
+async function requestJson({ provider, url, init, fetchImpl, timeoutMs, signal, now = Date.now }) {
   const client = fetchImpl || globalThis.fetch;
   if (typeof client !== 'function') throw new SttError('AUDIO_STT_NETWORK', { provider });
   if (signal?.aborted) throw new SttError('AUDIO_STT_CANCELLED', { provider });
@@ -22,7 +22,7 @@ async function requestJson({ provider, url, init, fetchImpl, timeoutMs, signal }
   try {
     let response;
     try { response = await client(url, { ...init, signal: controller.signal }); } catch (error) { throw failure(error); }
-    if (!response || !response.ok) throw fromHttpStatus(Number(response?.status) || 0, provider);
+    if (!response || !response.ok) throw fromHttpStatus(Number(response?.status) || 0, provider, { retryAfter: header(response?.headers, 'retry-after'), nowMs: now() });
     let body;
     try { body = await response.text(); } catch (error) { throw failure(error); }
     let json;

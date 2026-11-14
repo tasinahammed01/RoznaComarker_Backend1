@@ -227,13 +227,44 @@ describe('fluency metrics (no AI, from the raw timings)', () => {
 });
 
 describe('error mapping', () => {
-  test.each([[400, false], [401, false], [403, false], [413, false], [422, false], [429, false], [500, true], [502, true], [503, true]])(
-    'HTTP %i: retryable=%p', async (status, retryable) => {
-      const error = await run({ fetchImpl: fakeFetch(() => jsonResponse(status, { err_msg: 'Synthetic provider text: market busy' })) }).catch(e => e);
-      expect(error).toMatchObject({ name: 'SttError', code: retryable ? 'AUDIO_STT_PROVIDER_ERROR' : 'AUDIO_STT_REJECTED', retryable, httpStatus: status,
-        provider: 'deepgram' });
-      expect(error.message).not.toContain('Synthetic provider text');
+  test.each([
+    [400, 'AUDIO_STT_REJECTED', false], [401, 'AUDIO_STT_REJECTED', false], [403, 'AUDIO_STT_REJECTED', false], [404, 'AUDIO_STT_REJECTED', false],
+    [413, 'AUDIO_STT_REJECTED', false], [422, 'AUDIO_STT_REJECTED', false],
+    [408, 'AUDIO_STT_TIMEOUT', true], [429, 'AUDIO_STT_RATE_LIMITED', true],
+    [500, 'AUDIO_STT_PROVIDER_ERROR', true], [502, 'AUDIO_STT_PROVIDER_ERROR', true], [503, 'AUDIO_STT_PROVIDER_ERROR', true]
+  ])('HTTP %i: %s, retryable=%p', async (status, code, retryable) => {
+    const error = await run({ fetchImpl: fakeFetch(() => jsonResponse(status, { err_msg: 'Synthetic provider text: market busy' })) }).catch(e => e);
+    expect(error).toMatchObject({ name: 'SttError', code, retryable, httpStatus: status, provider: 'deepgram', retryAfterMs: null });
+    expect(error.message).not.toContain('Synthetic provider text');
+  });
+
+  describe('Retry-After is a hint, capped at the backoff ceiling (5 min)', () => {
+    const NOW = Date.parse('2026-11-15T10:00:00Z');
+    const withHeader = (status, value) => fakeFetch(() => jsonResponse(status, {}, { 'retry-after': value }));
+    test.each([
+      [429, '30', 30000], [429, '0', 0], [503, '120', 120000], [408, '7', 7000],
+      [429, '86400', 300000],                                        // a day is capped at the ceiling
+      [429, 'Sun, 15 Nov 2026 10:01:00 GMT', 60000],                 // an HTTP date, 60 s from now
+      [429, 'Sun, 15 Nov 2026 09:00:00 GMT', 0],                     // a date in the past means "now"
+      [429, 'Wed, 15 Nov 2028 10:00:00 GMT', 300000],                // far future: capped
+      [429, 'soon', null], [429, '-5', null], [429, '1.5', null], [429, '', null]
+    ])('HTTP %i with Retry-After %p gives retryAfterMs %p', async (status, value, expected) => {
+      const error = await run({ fetchImpl: withHeader(status, value), now: () => NOW }).catch(e => e);
+      expect(error).toMatchObject({ retryable: true, retryAfterMs: expected });
     });
+
+    test('a permanent 4xx ignores Retry-After', async () => {
+      const error = await run({ fetchImpl: withHeader(400, '30'), now: () => NOW }).catch(e => e);
+      expect(error).toMatchObject({ code: 'AUDIO_STT_REJECTED', retryable: false, retryAfterMs: null });
+    });
+
+    test('the hint is parsed by a pure helper (used by the worker later)', () => {
+      const { retryAfterHintMs } = require('../src/services/audio/stt/errors');
+      expect(retryAfterHintMs('45', NOW)).toBe(45000);
+      expect(retryAfterHintMs('999999', NOW)).toBe(300000);
+      expect(retryAfterHintMs(null, NOW)).toBeNull();
+    });
+  });
 
   test('a network failure is retryable', async () => {
     const error = await run({ fetchImpl: fakeFetch(() => { throw new TypeError('fetch failed'); }) }).catch(e => e);
@@ -270,20 +301,52 @@ describe('error mapping', () => {
   });
 });
 
-describe('fallback (only when configured; no loop)', () => {
+describe('fallback (explicit opt-in only; never by default; no loop)', () => {
   const openaiOk = (url) => (url.startsWith('https://api.openai.com/')
     ? jsonResponse(200, { text: 'So I went to the market.', usage: { type: 'duration', seconds: 8 } }, { 'x-request-id': 'oa-req-1' })
     : jsonResponse(503, {}));
+  const openaiCalls = fetchImpl => fetchImpl.calls.filter(call => call.url.startsWith('https://api.openai.com/'));
+  const ON = { AUDIO_STT_FALLBACK_ENABLED: 'true' };
 
-  test('no fallback configured: one provider call, the error is returned', async () => {
-    const fetchImpl = fakeFetch(() => jsonResponse(503, {}));
+  test('flag off (default), key set: OpenAI is never called and never receives audio', async () => {
+    const fetchImpl = fakeFetch(openaiOk);
     expect(await run({ fetchImpl }).catch(e => e)).toMatchObject({ code: 'AUDIO_STT_PROVIDER_ERROR', retryable: true });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(openaiCalls(fetchImpl)).toHaveLength(0);
   });
 
-  test('a retryable primary failure tries the configured fallback once', async () => {
+  test.each(['false', '1', 'yes', ''])('flag %p: OpenAI is never called', async (value) => {
     const fetchImpl = fakeFetch(openaiOk);
-    const out = await run({ fetchImpl, env: { AUDIO_STT_FALLBACK_PROVIDER: 'openai' } });
+    await run({ fetchImpl, env: { AUDIO_STT_FALLBACK_ENABLED: value } }).catch(() => {});
+    expect(openaiCalls(fetchImpl)).toHaveLength(0);
+  });
+
+  test('flag on, OPENAI_API_KEY missing: OpenAI is never called; the primary error is returned', async () => {
+    const fetchImpl = fakeFetch(openaiOk);
+    const error = await stt.transcribe({ filePath: audioPath, contentType: 'audio/webm', fetchImpl,
+      env: { DEEPGRAM_API_KEY: KEYS.DEEPGRAM_API_KEY, ...ON } }).catch(e => e);
+    expect(openaiCalls(fetchImpl)).toHaveLength(0);
+    expect(error).toMatchObject({ code: 'AUDIO_STT_PROVIDER_ERROR', retryable: true, provider: 'deepgram' });
+    expect(error.primaryCode).toBeUndefined();
+  });
+
+  test('flag on, key blank: OpenAI is never called', async () => {
+    const fetchImpl = fakeFetch(openaiOk);
+    await run({ fetchImpl, env: { ...ON, OPENAI_API_KEY: '   ' } }).catch(() => {});
+    expect(openaiCalls(fetchImpl)).toHaveLength(0);
+  });
+
+  test('flag on and key set, but the primary succeeded: OpenAI is never called', async () => {
+    const fetchImpl = okDeepgram();
+    const out = await run({ fetchImpl, env: ON });
+    expect(out.fallbackUsed).toBe(false);
+    expect(openaiCalls(fetchImpl)).toHaveLength(0);
+  });
+
+  test('flag on and key set: a retryable primary failure tries OpenAI once', async () => {
+    const fetchImpl = fakeFetch(openaiOk);
+    const out = await run({ fetchImpl, env: ON });
+    expect(openaiCalls(fetchImpl)).toHaveLength(1);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(out.fallbackUsed).toBe(true);
     expect(out.attempts).toEqual([{ provider: 'deepgram', outcome: 'failed', code: 'AUDIO_STT_PROVIDER_ERROR' }, { provider: 'openai', outcome: 'ok', code: null }]);
@@ -293,15 +356,29 @@ describe('fallback (only when configured; no loop)', () => {
       displayText: { text: 'So I went to the market.', fillers: [] } });
   });
 
-  test('a permanent primary failure does not use the fallback', async () => {
+  test('flag on and key set: a permanent primary failure (400) does not use the fallback', async () => {
     const fetchImpl = fakeFetch(() => jsonResponse(400, {}));
-    expect(await run({ fetchImpl, env: { AUDIO_STT_FALLBACK_PROVIDER: 'openai' } }).catch(e => e)).toMatchObject({ code: 'AUDIO_STT_REJECTED' });
+    expect(await run({ fetchImpl, env: ON }).catch(e => e)).toMatchObject({ code: 'AUDIO_STT_REJECTED' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('flag on and key set: a caller cancel does not use the fallback', async () => {
+    const controller = new AbortController();
+    const fetchImpl = fakeFetch((url, init) => new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason))));
+    const pending = run({ fetchImpl, env: ON, signal: controller.signal });
+    setTimeout(() => controller.abort(), 20);
+    expect(await pending.catch(e => e)).toMatchObject({ code: 'AUDIO_STT_CANCELLED' });
+    expect(openaiCalls(fetchImpl)).toHaveLength(0);
+  });
+
+  test('flag on and key set: a 429 is retryable, so the fallback is used', async () => {
+    const fetchImpl = fakeFetch(url => (url.startsWith('https://api.openai.com/') ? openaiOk(url) : jsonResponse(429, {})));
+    expect((await run({ fetchImpl, env: ON })).fallbackUsed).toBe(true);
   });
 
   test('both failing: two calls in total, retryable stays true, both codes kept', async () => {
     const fetchImpl = fakeFetch(() => jsonResponse(500, {}));
-    const error = await run({ fetchImpl, env: { AUDIO_STT_FALLBACK_PROVIDER: 'openai' } }).catch(e => e);
+    const error = await run({ fetchImpl, env: ON }).catch(e => e);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(error).toMatchObject({ code: 'AUDIO_STT_PROVIDER_ERROR', retryable: true, provider: 'openai', primaryCode: 'AUDIO_STT_PROVIDER_ERROR' });
   });
@@ -336,7 +413,7 @@ describe('logs and network', () => {
     try {
       await run({ fetchImpl: okDeepgram() });
       await run({ fetchImpl: fakeFetch(() => jsonResponse(500, { err_msg: 'market busy' })) }).catch(() => {});
-      await run({ fetchImpl: fakeFetch(() => jsonResponse(503, {})), env: { AUDIO_STT_FALLBACK_PROVIDER: 'openai' } }).catch(() => {});
+      await run({ fetchImpl: fakeFetch(() => jsonResponse(503, {})), env: { AUDIO_STT_FALLBACK_ENABLED: 'true' } }).catch(() => {});
     } finally { spies.forEach(spy => spy.mockRestore()); }
     const text = lines.join('\n');
     expect(lines.length).toBeGreaterThan(0);

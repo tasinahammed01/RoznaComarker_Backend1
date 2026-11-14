@@ -24,7 +24,7 @@ function normalize(body, { model, headerRequestId = null } = {}) {
     wordTimingsAvailable: false, words: [], utterances: [], rawText: body.text.trim() });
 }
 
-async function transcribe({ audio, contentType, env = process.env, fetchImpl, signal, timeoutMs }) {
+async function transcribe({ audio, contentType, env = process.env, fetchImpl, signal, timeoutMs, now }) {
   const key = String(env[KEY_VARIABLE] || '').trim();
   if (!key) throw new SttError('AUDIO_STT_NOT_CONFIGURED', { provider: PROVIDER, detail: `${KEY_VARIABLE} is not set` });
   if (Number(audio?.size) > MAX_BYTES) throw new SttError('AUDIO_STT_FILE_TOO_LARGE_FOR_PROVIDER', { provider: PROVIDER });
@@ -35,7 +35,7 @@ async function transcribe({ audio, contentType, env = process.env, fetchImpl, si
   form.append('language', 'en');
   form.append('response_format', 'json');
   const { json, headers } = await requestJson({ provider: PROVIDER, url: ENDPOINT,
-    init: { method: 'POST', headers: { Authorization: `Bearer ${key}` }, body: form }, fetchImpl, timeoutMs, signal });
+    init: { method: 'POST', headers: { Authorization: `Bearer ${key}` }, body: form }, fetchImpl, timeoutMs, signal, now });
   return normalize(json, { model, headerRequestId: header(headers, 'x-request-id') });
 }
 

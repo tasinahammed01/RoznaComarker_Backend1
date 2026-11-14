@@ -26,6 +26,7 @@ describe('audio limits', () => {
       sttTimeoutMs: 300000,
       sttMaxAttempts: 3,
       sttProvider: 'deepgram',
+      sttFallbackEnabled: false,
       sttFallbackProvider: null
     });
     expect(Object.isFrozen(limits)).toBe(true);
@@ -34,22 +35,34 @@ describe('audio limits', () => {
   test('valid values are used', () => {
     const { limits, issues } = policy.readLimits({ AUDIO_MAX_FILE_BYTES: '10485760', AUDIO_MAX_DURATION_SECONDS: '300',
       AUDIO_DAILY_MINUTES_PER_TEACHER: '60', AUDIO_MONTHLY_MINUTES_PER_TEACHER: '900', AUDIO_STT_TIMEOUT_MS: '120000',
-      AUDIO_STT_MAX_ATTEMPTS: '2', AUDIO_STT_PROVIDER: 'OpenAI', AUDIO_STT_FALLBACK_PROVIDER: 'deepgram' });
+      AUDIO_STT_MAX_ATTEMPTS: '2', AUDIO_STT_PROVIDER: 'OpenAI' });
     expect(issues).toEqual([]);
     expect(limits).toMatchObject({ maxFileBytes: 10485760, maxDurationSeconds: 300, dailyMinutesPerTeacher: 60, monthlyMinutesPerTeacher: 900,
-      sttTimeoutMs: 120000, sttMaxAttempts: 2, sttProvider: 'openai', sttFallbackProvider: 'deepgram' });
+      sttTimeoutMs: 120000, sttMaxAttempts: 2, sttProvider: 'openai', sttFallbackEnabled: false, sttFallbackProvider: null });
   });
 
-  test('a fallback equal to the primary provider is dropped (no loop to the same provider)', () => {
-    const { limits, issues } = policy.readLimits({ AUDIO_STT_PROVIDER: 'deepgram', AUDIO_STT_FALLBACK_PROVIDER: 'deepgram' });
-    expect(limits.sttFallbackProvider).toBeNull();
-    expect(issues).toEqual(['AUDIO_STT_FALLBACK_PROVIDER']);
+  // Voice data of possibly under-18 students must not reach a second vendor by default: the fallback is an explicit opt-in.
+  test.each([[undefined, false], ['', false], ['false', false], ['1', false], ['yes', false], ['true', true], [' TRUE ', true]])(
+    'AUDIO_STT_FALLBACK_ENABLED=%p enables the OpenAI fallback: %p', (value, enabled) => {
+      const { limits } = policy.readLimits(value === undefined ? {} : { AUDIO_STT_FALLBACK_ENABLED: value });
+      expect(limits.sttFallbackEnabled).toBe(enabled);
+      expect(limits.sttFallbackProvider).toBe(enabled ? 'openai' : null);
+    });
+
+  test('the fallback is always OpenAI behind Deepgram; with OpenAI as primary there is no fallback (reported)', () => {
+    const { limits, issues } = policy.readLimits({ AUDIO_STT_PROVIDER: 'openai', AUDIO_STT_FALLBACK_ENABLED: 'true' });
+    expect(limits).toMatchObject({ sttProvider: 'openai', sttFallbackEnabled: false, sttFallbackProvider: null });
+    expect(issues).toEqual(['AUDIO_STT_FALLBACK_ENABLED']);
   });
 
-  test('deepgram primary with openai fallback', () => {
-    expect(policy.readLimits({ AUDIO_STT_FALLBACK_PROVIDER: ' openai ' }).limits.sttFallbackProvider).toBe('openai');
-    expect(policy.readLimits({ AUDIO_STT_FALLBACK_PROVIDER: 'none' }).limits.sttFallbackProvider).toBeNull();
-    expect(policy.readLimits({ AUDIO_STT_FALLBACK_PROVIDER: '' }).limits.sttFallbackProvider).toBeNull();
+  test('the old AUDIO_STT_FALLBACK_PROVIDER variable no longer turns anything on', () => {
+    const { limits } = policy.readLimits({ AUDIO_STT_FALLBACK_PROVIDER: 'openai' });
+    expect(limits).toMatchObject({ sttFallbackEnabled: false, sttFallbackProvider: null });
+  });
+
+  test('the retry backoff schedule and its ceiling', () => {
+    expect(policy.STT_BACKOFF_MS).toEqual([15000, 60000, 300000]);
+    expect(policy.MAX_STT_BACKOFF_MS).toBe(300000);
   });
 
   test.each([
@@ -67,8 +80,7 @@ describe('audio limits', () => {
     ['AUDIO_STT_TIMEOUT_MS', '3600000', 'sttTimeoutMs', 300000],
     ['AUDIO_STT_MAX_ATTEMPTS', '0', 'sttMaxAttempts', 3],
     ['AUDIO_STT_MAX_ATTEMPTS', '4', 'sttMaxAttempts', 3],
-    ['AUDIO_STT_PROVIDER', 'whisper', 'sttProvider', 'deepgram'],
-    ['AUDIO_STT_FALLBACK_PROVIDER', 'google', 'sttFallbackProvider', null]
+    ['AUDIO_STT_PROVIDER', 'whisper', 'sttProvider', 'deepgram']
   ])('%s=%p is ignored (default used) and reported by name', (name, value, key, fallback) => {
     const { limits, issues } = policy.readLimits({ [name]: value });
     expect(limits[key]).toBe(fallback);
@@ -93,7 +105,7 @@ describe('audio limits', () => {
   });
 
   test('the public config exposes limits only, never provider names or keys', () => {
-    const env = { AUDIO_STT_ENABLED: 'true', AUDIO_STT_FALLBACK_PROVIDER: 'openai', DEEPGRAM_API_KEY: 'dg-secret-value', OPENAI_API_KEY: 'sk-secret-value' };
+    const env = { AUDIO_STT_ENABLED: 'true', AUDIO_STT_FALLBACK_ENABLED: 'true', DEEPGRAM_API_KEY: 'dg-secret-value', OPENAI_API_KEY: 'sk-secret-value' };
     const config = policy.publicConfig(env, { role: 'teacher' });
     expect(config).toEqual({ enabled: true, maxFileBytes: 41943040, maxDurationSeconds: 420, minDurationSeconds: 5,
       dailyMinutesPerTeacher: 120, monthlyMinutesPerTeacher: 1500 });

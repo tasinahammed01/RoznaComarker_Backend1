@@ -32,14 +32,18 @@ function readInteger(env, name, fallback, minimum, maximum, issues) {
   return value;
 }
 
-function readProvider(env, name, fallback, issues, { allowNone }) {
+function readProvider(env, name, fallback, issues) {
   const raw = env[name];
   if (raw === undefined || String(raw).trim() === '') return fallback;
   const value = String(raw).trim().toLowerCase();
-  if (allowNone && value === 'none') return null;
   if (!PROVIDERS.includes(value)) { issues.push(name); return fallback; }
   return value;
 }
+
+// Transcription retry schedule (job worker): the wait after attempt 1, 2 and 3. The last value is also the ceiling for a provider's
+// Retry-After hint.
+const STT_BACKOFF_MS = Object.freeze([15000, 60000, 300000]);
+const MAX_STT_BACKOFF_MS = STT_BACKOFF_MS[STT_BACKOFF_MS.length - 1];
 
 /** { limits (frozen), issues: [variable names that were ignored] }. */
 function readLimits(env = process.env) {
@@ -51,12 +55,12 @@ function readLimits(env = process.env) {
     limits.dailyMinutesPerTeacher = INTEGER_SETTINGS[2][2];
     limits.monthlyMinutesPerTeacher = INTEGER_SETTINGS[3][2];
   }
-  limits.sttProvider = readProvider(env, 'AUDIO_STT_PROVIDER', 'deepgram', issues, { allowNone: false });
-  limits.sttFallbackProvider = readProvider(env, 'AUDIO_STT_FALLBACK_PROVIDER', null, issues, { allowNone: true });
-  if (limits.sttFallbackProvider && limits.sttFallbackProvider === limits.sttProvider) {
-    issues.push('AUDIO_STT_FALLBACK_PROVIDER');
-    limits.sttFallbackProvider = null;
-  }
+  limits.sttProvider = readProvider(env, 'AUDIO_STT_PROVIDER', 'deepgram', issues);
+  // The OpenAI fallback is an explicit opt-in (AUDIO_STT_FALLBACK_ENABLED=true): recordings may be the voices of students under 18, so they never
+  // reach a second vendor by default. It exists only behind Deepgram; with OpenAI as the primary there is nothing to fall back to.
+  limits.sttFallbackEnabled = String(env.AUDIO_STT_FALLBACK_ENABLED || '').trim().toLowerCase() === 'true';
+  if (limits.sttFallbackEnabled && limits.sttProvider !== 'deepgram') { issues.push('AUDIO_STT_FALLBACK_ENABLED'); limits.sttFallbackEnabled = false; }
+  limits.sttFallbackProvider = limits.sttFallbackEnabled ? 'openai' : null;
   return {
     limits: Object.freeze({
       maxFileBytes: limits.maxFileBytes,
@@ -68,6 +72,7 @@ function readLimits(env = process.env) {
       sttTimeoutMs: limits.sttTimeoutMs,
       sttMaxAttempts: limits.sttMaxAttempts,
       sttProvider: limits.sttProvider,
+      sttFallbackEnabled: limits.sttFallbackEnabled,
       sttFallbackProvider: limits.sttFallbackProvider
     }),
     issues
@@ -89,4 +94,5 @@ function publicConfig(env = process.env, { role } = {}) {
   };
 }
 
-module.exports = { audioSttEnabled, readLimits, maxAcceptedDurationSeconds, publicConfig, PROVIDERS, MIN_DURATION_SECONDS, DURATION_TOLERANCE_SECONDS };
+module.exports = { audioSttEnabled, readLimits, maxAcceptedDurationSeconds, publicConfig, PROVIDERS, MIN_DURATION_SECONDS, DURATION_TOLERANCE_SECONDS,
+  STT_BACKOFF_MS, MAX_STT_BACKOFF_MS };

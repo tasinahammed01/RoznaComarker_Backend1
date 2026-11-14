@@ -50,10 +50,10 @@ function normalize(body, { headerRequestId = null } = {}) {
   });
 }
 
-async function transcribe({ audio, contentType, env = process.env, fetchImpl, signal, timeoutMs }) {
+async function transcribe({ audio, contentType, env = process.env, fetchImpl, signal, timeoutMs, now }) {
   const { url, headers } = buildRequest({ env, contentType });
   const { json, headers: responseHeaders } = await requestJson({ provider: PROVIDER, url, init: { method: 'POST', headers, body: audio },
-    fetchImpl, timeoutMs, signal });
+    fetchImpl, timeoutMs, signal, now });
   return normalize(json, { headerRequestId: header(responseHeaders, 'dg-request-id') });
 }
 
