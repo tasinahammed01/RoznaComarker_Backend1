@@ -18,6 +18,8 @@ const { TERMINAL_MESSAGES } = require('./speakingAssessment.service');
 
 const APPLICABLE = ['CONTENT', 'ORGANIZATION', 'GRAMMAR', 'VOCABULARY'];
 const NOT_ASSESSABLE = new Set(['SPEAKING_NOT_ENGLISH', 'SPEAKING_UNINTELLIGIBLE', 'SPEAKING_TRANSCRIPT_TOO_LONG']);
+/** Stage 7d: why a recording is not assessable, as a short code, so pages show their own fixed text (never the server's). */
+const NOT_ASSESSABLE_REASON = Object.freeze({ SPEAKING_NOT_ENGLISH: 'not_english', SPEAKING_UNINTELLIGIBLE: 'unintelligible', SPEAKING_TRANSCRIPT_TOO_LONG: 'too_long' });
 const CORRECTION_FIELDS = ['id', 'category', 'symbol', 'symbolLabel', 'quotedText', 'startChar', 'endChar', 'message', 'suggestedText'];
 const OFF_TOPIC_NOTE = 'This answer did not address the task, so the score is capped.';
 /** Where each removed filler stood in the assessed text, for the "show filler words" toggle. Only { offset, text }; out-of-range ones dropped. */
@@ -81,6 +83,7 @@ async function readResult(context) {
   const out = {
     submissionId: String(submission._id), state,
     message: state === 'not_enough_speech' || state === 'not_assessable' ? TERMINAL_MESSAGES[submission.evaluationErrorCode] || null : null,
+    reason: state === 'not_assessable' ? NOT_ASSESSABLE_REASON[submission.evaluationErrorCode] || null : null,
     marksVisible,
     assessedText: recording?.status === 'ready' ? String(recording.derived?.assessorText || '') : null,
     fluency: recording?.status === 'ready' ? fluencyBlock(recording.derived?.fluency) : null,

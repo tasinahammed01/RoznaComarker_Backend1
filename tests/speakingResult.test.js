@@ -62,8 +62,8 @@ describe('a ready result', () => {
     expect(res.status).toBe(200);
     expect(res.headers['cache-control']).toBe('private, no-store');
     const data = res.body.data;
-    expect(Object.keys(data).sort()).toEqual(['assessedText', 'corrections', 'fillers', 'fluency', 'marksVisible', 'message', 'result', 'state', 'submissionId'].sort());
-    expect(data).toMatchObject({ submissionId: String(submission._id), state: 'ready', marksVisible: true, message: null, assessedText: TEXTS.WEAK });
+    expect(Object.keys(data).sort()).toEqual(['assessedText', 'corrections', 'fillers', 'fluency', 'marksVisible', 'message', 'reason', 'result', 'state', 'submissionId'].sort());
+    expect(data).toMatchObject({ submissionId: String(submission._id), state: 'ready', marksVisible: true, message: null, reason: null, assessedText: TEXTS.WEAK });
     expect(Object.keys(data.result).sort()).toEqual(['actionSteps', 'assessedAt', 'categories', 'criteria', 'grade', 'improvements', 'maxScore', 'overallScore', 'scoreNote',
       'strengths', 'summary', 'teacherComments'].sort());
     expect(data.result.overallScore).toBe(50);
@@ -197,7 +197,7 @@ describe('every state', () => {
     const { submission } = await assessedSubmission('My town is small. I like it.', h.output());
     for (const token of [f.student.token, f.teacher.token]) {
       const data = (await result(submission._id, token)).body.data;
-      expect(data).toMatchObject({ state: 'not_enough_speech', message: assessment.TERMINAL_MESSAGES.SPEAKING_NOT_ENOUGH_SPEECH, result: null });
+      expect(data).toMatchObject({ state: 'not_enough_speech', message: assessment.TERMINAL_MESSAGES.SPEAKING_NOT_ENOUGH_SPEECH, reason: null, result: null });
     }
     expect((await result(submission._id, f.teacher.token)).body.data.canRetryAssessment).toBe(false);
   });
@@ -205,6 +205,22 @@ describe('every state', () => {
   test('not assessable (not English): the clear state and message', async () => {
     const { submission } = await assessedSubmission(TEXTS.SPANISH, h.output({ assessable: false, reason: 'not_english' }));
     expect((await result(submission._id, f.student.token)).body.data).toMatchObject({ state: 'not_assessable', message: assessment.TERMINAL_MESSAGES.SPEAKING_NOT_ENGLISH });
+  });
+
+  // Stage 7d: the reason as a short code, so a page shows its own fixed text and never the server's.
+  test.each([
+    ['not_english', TEXTS.SPANISH, 'not_english'],
+    ['unintelligible', TEXTS.GARBLED, 'unintelligible']
+  ])('not assessable (%s): both audiences get the reason code', async (_name, text, reason) => {
+    const { submission } = await assessedSubmission(text, h.output({ assessable: false, reason }));
+    for (const token of [f.student.token, f.teacher.token]) {
+      expect((await result(submission._id, token)).body.data).toMatchObject({ state: 'not_assessable', reason, result: null });
+    }
+  });
+
+  test('the reason is null in every other state', async () => {
+    const { submission } = await assessedSubmission(TEXTS.MEDIUM, '{"broken":true}');
+    for (const token of [f.student.token, f.teacher.token]) expect((await result(submission._id, token)).body.data.reason).toBeNull();
   });
 
   test('failed: the teacher sees the code and can retry; the student sees that the teacher has it', async () => {
