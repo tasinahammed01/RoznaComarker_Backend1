@@ -53,7 +53,7 @@ async function teacherView(req, res) {
   try {
     const context = await service.accessFor(req.params.submissionId, req.user);
     if (!context || context.role !== 'teacher') return res.status(404).json({ success: false, code: 'NOT_FOUND', message: 'Not found.' });
-    return res.json({ success: true, data: service.teacherView(context) });
+    return res.json({ success: true, data: service.teacherView({ ...context, studentName: await service.studentNameFor(context.submission) }) });
   } catch (error) { return respondError(res, error, 'speaking_teacher_view_failed'); }
 }
 

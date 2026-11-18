@@ -439,6 +439,18 @@ describe('the teacher\'s view of a speaking submission', () => {
     expect((await request(app).get(`/api/speaking/submissions/${submission._id}`).set(auth(f.otherTeacher.token))).status).toBe(404);
     expect((await request(app).get(`/api/speaking/submissions/${submission._id}`).set(auth(f.student.token))).status).toBe(403);
   });
+
+  // Stage 7e: the teacher page says whose recording it is (the display name only; never the email).
+  test('the owning teacher gets the display name of the student (of the guest, for a guest), never an email', async () => {
+    const { submission } = await makeAudioSubmission(f, { status: 'ready' });
+    const res = await request(app).get(`/api/speaking/submissions/${submission._id}`).set(auth(f.teacher.token));
+    expect(res.body.data.studentName).toBe(f.student.user.displayName);
+    expect(JSON.stringify(res.body)).not.toContain(f.student.user.email);
+    const guest = await makeAudioSubmission({ ...f, student: await require('./helpers/speakingFixtures').person('student', 'guest-owner') }, { status: 'ready', mode: 'guest' });
+    const guestView = await request(app).get(`/api/speaking/submissions/${guest.submission._id}`).set(auth(f.teacher.token));
+    expect(guestView.body.data.studentName).toBe('Guest Speaker');
+    expect(JSON.stringify(guestView.body)).not.toContain('guest.speaker@example.com');
+  });
 });
 
 describe('the essay recovery worker never selects an audio submission', () => {

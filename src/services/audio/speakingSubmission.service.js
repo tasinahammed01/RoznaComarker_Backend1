@@ -55,10 +55,10 @@ function studentView({ submission, recording, assignment, marked = false, now = 
   };
 }
 
-/** What the owning teacher sees: the job state too (codes and counts, never provider fields). */
-function teacherView({ submission, recording }) {
+/** What the owning teacher sees: the job state too (codes and counts, never provider fields). studentName: the display name only (stage 7e). */
+function teacherView({ submission, recording, studentName = null }) {
   return {
-    id: String(submission._id), assignmentId: String(submission.assignment), studentId: submission.student ? String(submission.student) : null,
+    id: String(submission._id), assignmentId: String(submission.assignment), studentId: submission.student ? String(submission.student) : null, studentName,
     sourceKind: 'audio', status: submission.status, submittedAt: submission.submittedAt, isLate: Boolean(submission.isLate),
     recording: recording ? { status: recording.status, attempts: recording.attempts, lastErrorCode: recording.lastErrorCode || null,
       durationSeconds: recording.durationSeconds ?? null, sizeBytes: recording.sizeBytes, contentType: recording.contentType, queuedAt: recording.queuedAt,
@@ -68,8 +68,15 @@ function teacherView({ submission, recording }) {
 }
 
 const RECORDING_FIELDS = '_id status attempts lastErrorCode durationSeconds sizeBytes contentType queuedAt readyAt failedAt cancelledAt wordTimingsAvailable audioDeletedAt audioFileId submissionId owner storageChargedTo storageChargedMB';
-const SUBMISSION_FIELDS = '_id student assignment class sourceKind status submittedAt isLate feedback +audioRecording';
+const SUBMISSION_FIELDS = '_id student assignment class sourceKind status submittedAt isLate feedback submissionMode guest.displayName +audioRecording';
 const loadRecording = id => (id ? AudioRecording.findById(id).select(RECORDING_FIELDS).lean() : null);
+
+/** Who made the recording, for the owning teacher's page: the display name (a guest's display name for a guest). Never an email. */
+async function studentNameFor(submission) {
+  if (submission?.submissionMode === 'guest') return String(submission.guest?.displayName || 'Guest').slice(0, 120);
+  const user = submission?.student ? await User.findById(submission.student).select('displayName').lean() : null;
+  return String(user?.displayName || 'Student').slice(0, 120);
+}
 
 // Marked = a result exists (an assessed or teacher-overridden result, or legacy feedback). The empty feedback document the assessor creates when
 // a run starts, a failed run, or "not enough speech" are not marked: the student can still replace the recording.
@@ -268,4 +275,4 @@ async function retryTranscription({ user, submissionId }) {
 }
 
 module.exports = { SpeakingError, REQUEST_ID, UNAVAILABLE_MESSAGE, prepareStudentUpload, commitStudentUpload, accessFor, studentStatus, retryTranscription,
-  studentView, teacherView, isMarked, storageMBFor, releaseStorage, loadRecording };
+  studentView, teacherView, studentNameFor, isMarked, storageMBFor, releaseStorage, loadRecording };
