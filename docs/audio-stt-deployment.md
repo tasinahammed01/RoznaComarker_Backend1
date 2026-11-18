@@ -114,7 +114,29 @@ An invalid value is ignored, the default is used, and the variable is reported b
 - **Trial script.** `SPEAKING_TRIAL=call-openrouter node scripts/speakingAssessmentTrial.js` runs the synthetic benchmark against the real
   model with a dev key. It prints scores, tokens and the cost OpenRouter reports. It never runs in tests or in the app.
 
+## Guests on speaking assignments (stage 10)
+
+- A teacher can allow guests on a speaking assignment, as on an essay. Guests use the assignment's guest link and QR code; their recording is
+  stored as the teacher's (file, storage and speech-to-text minutes), and the teacher's credits are checked before anything is kept.
+- A guest must accept the notice before uploading. Its wording and version live in `src/config/speakingGuestNotice.js`; change the text, change
+  the version. The accepted version and time are stored with the submission.
+- Both `GUEST_SUBMISSION_ENABLED=true` and `AUDIO_STT_ENABLED=true` are needed; with either off, the guest speaking routes are closed.
+
+### Known limit: one transcription at a time per teacher (accepted for v1)
+
+Every guest recording (and every recording a teacher uploads for a student) is owned by the teacher, and a teacher holds one transcription
+reservation at a time (see "One transcription in flight per teacher" above). A class of 30 guests is therefore transcribed one recording after
+another: with the default worker, roughly the sum of the 30 provider calls. Students see "Transcribing" until their turn. Accepted for v1;
+revisit if classes report long waits.
+
+## Production-safety list (found, not fixed)
+
+| Item | Where | Effect | Status |
+|---|---|---|---|
+| The essay guest email footer says "© RoznaHub" and links to `support@roznahub.com`; the brand is Rubrilo. | `email.service.js`, `guestEmailHtml` | Guests see another brand in essay emails. The speaking guest emails do not use this footer. | Not fixed (essay email unchanged on purpose). |
+| The guest result email is retried every 15 minutes, with no end, when the teacher turns guest access off after a guest's work was marked. | `guestResultNotification.service.js` | One extra query and a warning log line every 15 minutes per such submission; no email is sent. Speaking behaves the same. | Not fixed. |
+
 ## Not in this stage
 
-Guests and the recovery portal, teacher upload on a student's behalf, transcript editing and re-marking, the feedback PDF, the frontend, and
-recording in the browser.
+Transcript editing and re-marking, the feedback PDF for speaking, recording in the browser, and replacing a recording as a guest (a second
+recording through the guest link is a new submission).
