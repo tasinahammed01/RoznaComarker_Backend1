@@ -103,10 +103,10 @@ const GUARDED = [
 
 const ALLOWED = {
   'DELETE /api/submissions/:submissionId': 'removal supports speaking: it deletes the recording, its audio and releases its storage (speakingUpload.test.js)',
-  'POST /api/submissions/:submissionId/guest-access/revoke': 'guest link management, not an essay feature; the controller refuses registered submissions and no guest speaking flow exists yet',
+  'POST /api/submissions/:submissionId/guest-access/revoke': 'guest link management, not an essay feature; the controller refuses registered submissions; it revokes a guest recording too (speakingGuest.test.js)',
   'GET /api/submissions/:submissionId/guest-access/recovery-link': 'guest link management (as above)',
-  'POST /api/submissions/:submissionId/guest-access/recovery-link': 'guest link management (as above)',
-  'POST /api/guest/submissions/:submissionId/recover': 'answers the same public 202 for every id (no enumeration); a guard here would make speaking ids distinguishable',
+  'POST /api/submissions/:submissionId/guest-access/recovery-link': 'guest link management (as above); a guest recording gets a link to the guest speaking page (speakingGuest.test.js)',
+  'POST /api/guest/submissions/:submissionId/recover': 'answers the same public answer for every id (no enumeration); a guest recording gets a link to the guest speaking page (speakingGuest.test.js)',
   'GET /api/pdf/download-worksheet/:submissionId': 'takes a WorksheetSubmission id (another collection); a Submission id finds nothing there',
   'GET /api/pdf/student-worksheet-result/:submissionId': 'takes a WorksheetSubmission id (another collection)',
   'POST /api/speaking/submissions/:submissionId/retry-transcription': 'the speaking feature itself',
@@ -118,7 +118,11 @@ const ALLOWED = {
   // Stage 9: the speaking teacher upload. Every query requires sourceKind 'audio' and this teacher's upload; any other id answers 404
   // (speakingTeacherUpload.test.js, "only speaking teacher uploads").
   'POST /api/speaking/assignments/:assignmentId/teacher-uploads/:submissionId/send': 'the speaking feature itself: Send or Resend for a recording the teacher uploaded',
-  'POST /api/speaking/assignments/:assignmentId/teacher-uploads/:submissionId/retry': 'the speaking feature itself: transcription or marking again for a recording the teacher uploaded'
+  'POST /api/speaking/assignments/:assignmentId/teacher-uploads/:submissionId/retry': 'the speaking feature itself: transcription or marking again for a recording the teacher uploaded',
+  // Stage 10: guests on speaking assignments. Both need the guest's own link (or a read-only portal session) AND a recording; anything else
+  // (another guest, a student, a teacher, an essay guest submission) answers one 404 (speakingGuest.test.js and the test below).
+  'GET /api/guest/speaking/submissions/:submissionId': 'the speaking feature itself: the guest\'s own speaking result',
+  'GET /api/guest/speaking/submissions/:submissionId/media': 'the speaking feature itself: the guest\'s own recording (playback)'
 };
 
 /** Every route (all methods) of every router mounted in app.js whose path has :submissionId. Same reading as tests/helpers/studentRouteScan.js. */
@@ -208,6 +212,22 @@ describe('each guarded route refuses a speaking submission, with no side effects
     for (const answer of answers.filter(a => a.status === 404)) expect(answer).toMatchObject({ notFound: true });
     expect(answers.some(a => a.notFound)).toBe(true);
     expect(await snapshot()).toEqual(before);
+  });
+});
+
+describe('the guest speaking routes (stage 10) refuse an essay guest submission, with no side effects', () => {
+  test.each(['GET /api/guest/speaking/submissions/:submissionId', 'GET /api/guest/speaking/submissions/:submissionId/media'])('%s', async (route) => {
+    const issued = access.issueToken();
+    const essayGuest = await Submission.create({ submissionMode: 'guest', assignment: f.essay._id, class: f.klass._id, qrToken: f.essay.qrToken, submittedAt: new Date(),
+      status: 'submitted', guest: { displayName: 'Essay Guest', normalizedEmail: 'essay.guest@example.com', accessHash: issued.accessHash, expiresAt: issued.expiresAt } });
+    await Assignment.updateOne({ _id: f.essay._id }, { $set: { allowGuestSubmission: true } });
+    const before = await snapshot();
+    const res = await request(app).get(urlFor(route, essayGuest._id)).set({ 'X-Guest-Token': issued.token });
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('GUEST_LINK_INVALID');
+    expect(await snapshot()).toEqual(before);
+    // The control: the guest's own link opens the speaking route for their recording.
+    expect((await request(app).get(urlFor(route, guest.submission._id)).set({ 'X-Guest-Token': guestToken })).status).toBe(200);
   });
 });
 

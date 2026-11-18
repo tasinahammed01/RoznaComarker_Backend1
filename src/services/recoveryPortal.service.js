@@ -118,6 +118,12 @@ const listStatus = (submission, feedback) => {
   return status === 'complete' ? 'ready' : ['failed', 'blocked'].includes(status) ? 'failed' : 'processing';
 };
 
+/** A guest recording's list status from the speaking result state (speakingResult.stateOf, as the student sees it). */
+const speakingListStatus = (submission, recording, feedback) => {
+  const state = require('./audio/speakingResult.service').stateOf({ recording: recording || null, submission, feedback, audience: 'student' });
+  return state === 'ready' ? 'ready' : ['transcribing', 'assessing'].includes(state) ? 'processing' : 'failed';
+};
+
 // Old records can carry a missing, null or invalid assignment/class id. String() of those gave "undefined", "null" or e.g.
 // "legacy-class", and one such value in an $in query threw a CastError that failed the WHOLE list (503 RECOVERY_FAILED). Ids are now
 // checked first; a row that cannot be read is skipped and logged with its submission id and a fixed reason code only.
@@ -145,7 +151,8 @@ const LIST_SCAN_CAP = 1000;
 // Exactly what a guest row reads: the row itself (_id, assignment, dates, teacherUpload.uploadedBy) and the result page's status
 // (canonicalResultState.guestResultStatus: the stage statuses, hashes and versions; only the `source` of each correction; for
 // exact-source submissions the page-level source fields, never the per-word data).
-const GUEST_LIST_FIELDS = ['_id', 'assignment', 'submittedAt', 'createdAt', 'teacherUpload.uploadedBy',
+// sourceKind and audioRecording (stage 10): a guest recording is listed with kind 'speaking' and the speaking result state.
+const GUEST_LIST_FIELDS = ['_id', 'assignment', 'submittedAt', 'createdAt', 'teacherUpload.uploadedBy', 'sourceKind', 'audioRecording',
   'assessmentStatus', 'assessmentCompletedAt', 'ocrStatus', 'ocrErrorCode',
   'correctionStatus', 'correctionError', 'correctionRetry', 'correctionSourceHash', 'correctionStatistics', 'correctionTranscriptLayoutVersion',
   'evaluationStatus', 'evaluationError', 'evaluationErrorCode', 'evaluationJobId', 'evaluationPolicyHash', 'evaluationRubricSourceHash', 'evaluationVersion',
@@ -202,6 +209,9 @@ async function listAssignments(emailNormalized) {
     const classById = new Map(classes.map(c => [String(c._id), c]));
     const feedbacks = guestSubs.length ? await require('../models/SubmissionFeedback').find({ submissionId: { $in: guestSubs.map(x => x._id) } }).lean() : [];
     const feedbackBySubmission = new Map(feedbacks.map(fb => [String(fb.submissionId), fb]));
+    const recordingIds = guestSubs.filter(s => s.sourceKind === 'audio' && s.audioRecording).map(s => s.audioRecording);
+    const recordings = recordingIds.length ? await require('../models/AudioRecording').find({ _id: { $in: recordingIds } }).select('_id status').lean() : [];
+    const recordingById = new Map(recordings.map(r => [String(r._id), r]));
     stage = 'account_lookup';
     const memberClassIds = [...new Set(accountSubs.map(s => idString(s.class)))];
     const memberOf = account && memberClassIds.length ? new Set((await require('../models/membership.model')
@@ -225,17 +235,21 @@ async function listAssignments(emailNormalized) {
       const { assignment, classDoc } = place;
       // Guest submissions need an assignment open to guests; work a teacher uploaded is listed whatever that setting is.
       if (assignment.allowGuestSubmission !== true && !s.teacherUpload?.uploadedBy) return [];
-      return [{ id: String(s._id), assignmentTitle: String(assignment.title || '').slice(0, 200), className: String(classDoc.name || '').slice(0, 120),
-        submittedAt: s.submittedAt || s.createdAt || null, status: listStatus(s, feedbackBySubmission.get(String(s._id)) || null) }];
+      const row = { id: String(s._id), assignmentTitle: String(assignment.title || '').slice(0, 200), className: String(classDoc.name || '').slice(0, 120),
+        submittedAt: s.submittedAt || s.createdAt || null };
+      // A recording: the speaking result state (the essay rule reads OCR fields a recording never has) and its kind, so it opens the speaking page.
+      if (s.sourceKind === 'audio') return [{ ...row, status: speakingListStatus(s, recordingById.get(String(s.audioRecording)), feedbackBySubmission.get(String(s._id)) || null),
+        kind: 'speaking' }];
+      return [{ ...row, status: listStatus(s, feedbackBySubmission.get(String(s._id)) || null) }];
     }));
     // Account work: essays in classes the student is still an active member of. Only the student, signed in, can open it.
     const accountRows = accountSubs.flatMap(s => mapRow(s, () => {
       const place = placeOf(s);
       if (!place || !memberOf.has(String(place.classDoc._id))) return [];
       const { assignment, classDoc } = place;
-      if (assignment.resourceType && assignment.resourceType !== 'essay') return [];
+      if (assignment.resourceType && !['essay', 'speaking'].includes(assignment.resourceType)) return [];
       return [{ access: 'signIn', assignmentTitle: String(assignment.title || '').slice(0, 200), className: String(classDoc.name || '').slice(0, 120),
-        submittedAt: s.submittedAt || s.createdAt || null }];
+        submittedAt: s.submittedAt || s.createdAt || null, ...(assignment.resourceType === 'speaking' ? { kind: 'speaking' } : {}) }];
     }));
     const time = row => { const at = row.submittedAt ? new Date(row.submittedAt).getTime() : 0; return Number.isFinite(at) ? at : 0; };
     return [...guestRows, ...accountRows.sort((a, b) => time(b) - time(a)).map((row, index) => ({ id: `account-${index + 1}`, ...row }))].slice(0, MAX_LIST);

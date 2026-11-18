@@ -40,6 +40,22 @@ describe('teacher-uploaded recording: the feedback email (speaking)', () => {
     expect(`${text}${html}`).not.toMatch(/SECRET TRANSCRIPT|87|answer\.wav/);
   });
 
+  test('a guest (stage 10): the private link with its expiry and the "keep it private" note; no sign-in line', () => {
+    const { text, html } = buildTeacherUploadSpeakingFeedbackEmail(input({ needsLogin: false, expiresAt: new Date('2026-12-16T00:00:00Z'),
+      link: 'https://app.example.test/guest/speaking/s1#token' }));
+    expect(text).toContain('Your teacher uploaded a recording for this assignment. It was marked like your own recording, and your feedback is ready.');
+    expect(text).toContain('This private link opens your feedback without an account until 16 December 2026.');
+    expect(text).toContain('Keep this link private');
+    expect(text).not.toContain('Sign in to Rubrilo');
+    expect(html).toContain('Keep this link private.');
+  });
+
+  test('a member\'s email is unchanged by the guest variant (no private-link note)', () => {
+    const { text, html } = buildTeacherUploadSpeakingFeedbackEmail(input());
+    expect(text).not.toContain('Keep this link private');
+    expect(html).not.toContain('Keep this link private');
+  });
+
   test('the essay email is unchanged', () => {
     const { text } = essay.buildTeacherUploadFeedbackEmail(input({ link: 'https://app.example.test/x' }));
     expect(text).toContain('uploaded your handwritten work for "Describe your town" and your feedback is ready.');

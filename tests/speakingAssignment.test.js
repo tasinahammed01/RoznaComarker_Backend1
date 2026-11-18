@@ -88,7 +88,7 @@ describe('creating a speaking assignment', () => {
     const seeded = await SavedRubric.findOne({ teacher: f.teacher.user._id, name: 'Speaking rubric', writingType: 'speaking' }).lean();
     expect(seeded.rubricData.criteria.map(c => c.weight)).toEqual([25, 20, 20, 20, 15]);
     expect(stored).toMatchObject({ title: 'Talk about your weekend', instructions: 'Speak for two minutes.', resourceType: 'speaking', writingType: 'speaking',
-      resourceId: null, allowGuestSubmission: false, allowResubmission: false, requireAdaptiveBeforeResubmission: false, allowLateResubmission: false,
+      resourceId: null, allowGuestSubmission: true /* stage 10: speaking assignments may take guests */, allowResubmission: false, requireAdaptiveBeforeResubmission: false, allowLateResubmission: false,
       speaking: { maxRecordingSeconds: null, rubricRef: seeded._id } });
     const again = await create({ title: 'Second talk' });
     expect((await Assignment.findById(again.body.data._id).lean()).speaking.rubricRef).toEqual(seeded._id);
@@ -243,9 +243,9 @@ describe('essay-only features refuse or hide a speaking assignment', () => {
     expect(fs.existsSync(submissions) ? fs.readdirSync(submissions) : []).toEqual([]);
   });
 
-  test('the recovery portal lists no speaking assignment (existing essay-only filter)', () => {
+  test('the recovery portal lists account work for essays and speaking only (stage 10; speaking rows carry kind: speakingGuest.test.js)', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'recoveryPortal.service.js'), 'utf8');
-    expect(source).toMatch(/resourceType && assignment\.resourceType !== 'essay'\) return \[\]/);
+    expect(source).toMatch(/resourceType && !\['essay', 'speaking'\]\.includes\(assignment\.resourceType\)\) return \[\]/);
   });
 
   test('the Improved Writing Model refuses a speaking submission (existing essay-only filter)', async () => {

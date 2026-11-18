@@ -36,6 +36,10 @@ function returnUrl(submissionId, token) {
   // Fragments are never sent to HTTP servers or in Referrer headers.
   return frontendLink(`/guest/results/${submissionId}#${token}`);
 }
+/** A guest's speaking submission opens its own page (stage 10); essays keep returnUrl. */
+function speakingReturnUrl(submissionId, token) { return frontendLink(`/guest/speaking/${submissionId}#${token}`); }
+/** The return link of a stored guest submission, by its kind (sourceKind 'audio': the speaking page). */
+const returnUrlFor = (submission, token) => (submission?.sourceKind === 'audio' ? speakingReturnUrl : returnUrl)(submission._id, token);
 async function authorize(submissionId, token) {
   if (!/^[a-f\d]{24}$/i.test(String(submissionId || '')) || !/^[\w-]{43}$/.test(String(token || ''))) {
     logger.warn({ event: 'guest_link_rejected', tokenPresent: Boolean(token), tokenLength: String(token || '').length,
@@ -84,4 +88,4 @@ async function requireGuestAccess(req, res, next) {
   } catch (error) { res.status(error.statusCode || 503).json({ success: false,
     message: error.statusCode ? error.message : 'Results are temporarily unavailable.', code: error.code }); }
 }
-module.exports = { fail, hash, identity, issueToken, frontendLink, returnUrl, authorize, requireGuestAccess };
+module.exports = { fail, hash, identity, issueToken, frontendLink, returnUrl, speakingReturnUrl, returnUrlFor, authorize, requireGuestAccess };

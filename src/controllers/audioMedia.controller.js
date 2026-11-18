@@ -1,7 +1,8 @@
 'use strict';
 // Private audio for one speaking submission (routes/audio.routes.js). Never a static mount and not secureFile.controller.js:
-//   media     the student who owns it and the owning teacher: inline, with single byte-range requests (seeking in a player)
-//   download  the owning teacher only: an attachment
+//   media       the student who owns it and the owning teacher: inline, with single byte-range requests (seeking in a player)
+//   download    the owning teacher only: an attachment
+//   guestMedia  the guest who owns it (stage 10, routes/speakingGuest.routes.js, after its guest access check): as media
 // Anyone else gets 404, the same as an id that does not exist. The Content-Type is the format sniffed at upload (stored on the recording),
 // never the client's claim; the file name sent is neutral (never the stored or the original name). Cache-Control (private, no-store) is set
 // by the router; X-Content-Type-Options: nosniff here.
@@ -9,7 +10,7 @@ const fs = require('fs');
 const File = require('../models/File');
 const { FORMATS } = require('../middlewares/audioUpload.middleware');
 const { resolveStoredAudioPath } = require('../services/audio/storage');
-const { accessFor } = require('../services/audio/speakingSubmission.service');
+const { accessFor, loadRecording } = require('../services/audio/speakingSubmission.service');
 const logger = require('../utils/logger');
 
 const NOT_FOUND = { success: false, code: 'NOT_FOUND', message: 'Not found.' };
@@ -28,18 +29,23 @@ function parseRange(header, size) {
   return start >= size || end < start ? 'unsatisfiable' : { start, end };
 }
 
-async function locate(req, { teacherOnly }) {
-  const context = await accessFor(req.params.submissionId, req.user);
-  if (!context || (teacherOnly && context.role !== 'teacher')) return null;
-  const { recording } = context;
+/** The stored file of a recording: { absolute, size, contentType, extension }, or null (deleted, unknown type, missing on disk). */
+async function fileOf(recording) {
   if (!recording || recording.audioDeletedAt || !EXTENSION[recording.contentType]) return null;
   const file = await File.findById(recording.audioFileId).select('path').lean();
   const absolute = file ? resolveStoredAudioPath(file.path) : null;
   if (!absolute) return null;
   try {
     const stat = await fs.promises.stat(absolute);
-    return stat.isFile() ? { context, absolute, size: stat.size, contentType: recording.contentType, extension: EXTENSION[recording.contentType] } : null;
+    return stat.isFile() ? { absolute, size: stat.size, contentType: recording.contentType, extension: EXTENSION[recording.contentType] } : null;
   } catch { return null; }
+}
+
+async function locate(req, { teacherOnly }) {
+  const context = await accessFor(req.params.submissionId, req.user);
+  if (!context || (teacherOnly && context.role !== 'teacher')) return null;
+  const found = await fileOf(context.recording);
+  return found ? { context, ...found } : null;
 }
 
 function send(req, res, found, disposition) {
@@ -67,6 +73,18 @@ const handler = ({ teacherOnly, disposition }) => async (req, res) => {
 };
 
 const media = handler({ teacherOnly: false, disposition: found => `inline; filename="recording${found.extension}"` });
+/** The guest's own recording: req.guestSubmission is a speaking submission the guest access check already allowed. */
+async function guestMedia(req, res) {
+  try {
+    const submission = await require('../models/Submission').findById(req.guestSubmission._id).select('+audioRecording').lean();
+    const found = await fileOf(await loadRecording(submission?.audioRecording));
+    if (!found) return res.status(404).json(NOT_FOUND);
+    return send(req, res, found, `inline; filename="recording${found.extension}"`);
+  } catch (error) {
+    logger.warn({ event: 'audio_media_failed', errorName: String(error?.name || 'Error').slice(0, 60) });
+    return res.status(404).json(NOT_FOUND);
+  }
+}
 const download = handler({ teacherOnly: true, disposition: (found, req) => `attachment; filename="speaking-${req.params.submissionId}${found.extension}"` });
 
-module.exports = { media, download, parseRange };
+module.exports = { media, download, guestMedia, parseRange };

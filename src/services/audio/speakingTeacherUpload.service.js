@@ -10,7 +10,7 @@
 // - the same teacher-facing statuses (uploaded, reading, processing, waiting_credits, marked, failed) plus not_marked (the recording could not
 //   be marked: not enough speech, not English, unintelligible, too long); codes only, never provider text.
 // Speaking-specific: the recording, its file, its storage and its speech-to-text minutes belong to the teacher; one recording per student
-// (new or replace; there are no pages to add); a guest cannot be emailed until guest speaking results exist (stage 10).
+// (new or replace; there are no pages to add). A guest is emailed a private link to the guest speaking page (stage 10), as an essay guest is.
 const mongoose = require('mongoose');
 const Assignment = require('../../models/assignment.model');
 const Class = require('../../models/class.model');
@@ -33,7 +33,6 @@ const LIST_CAP = 500;
 const EMAIL_STATUSES_TO_QUEUE = ['none', 'failed'];
 const RESEND_COOLDOWN_MS = 60 * 1000;
 const REQUEST_ID = /^[a-f0-9-]{36}$/i;
-const GUEST_EMAIL = 'Feedback emails for guests are not available for speaking assignments yet. Save without sending, or add the student to the class.';
 const NO_RESULT = 'This recording has no feedback yet, so there is nothing to email. Retry it first, or upload a new recording.';
 
 function fail(statusCode, message, code, details) {
@@ -205,7 +204,6 @@ async function save({ req, teacher, ctx, now = () => new Date() }) {
     const raced = await replay();
     if (raced) return raced;
     const match = await matchStudent(ctx, row.email);
-    if (sendEmail && match.kind === 'guest') throw fail(409, GUEST_EMAIL, 'TEACHER_UPLOAD_GUEST_EMAIL_UNAVAILABLE');
     const existing = await existingFor(ctx, match, row.email);
     if (existing && (!existing.teacherUpload || existing.sourceKind !== 'audio'))
       throw fail(409, 'This student already submitted their own recording for this assignment.', 'STUDENT_ALREADY_SUBMITTED');
@@ -286,14 +284,13 @@ async function withoutResult(doc) {
   return Boolean(doc.audioRecording && await AudioRecording.exists({ _id: doc.audioRecording, status: { $in: ['failed', 'cancelled'] } }));
 }
 
-/** Send, or Resend: the essay flow's rules (teacherUpload.service requestSend) for a speaking upload. A guest is refused (stage 10). */
+/** Send, or Resend: the essay flow's rules (teacherUpload.service requestSend) for a speaking upload, members and guests alike. */
 async function requestSend({ teacher, assignmentId, submissionId, resend = false, requestId = null, now = new Date() }) {
   const ctx = await ownedContext(teacher._id, assignmentId);
   if (!mongoose.isValidObjectId(submissionId)) throw notFound();
   const owned = { _id: submissionId, assignment: ctx.assignment._id, class: ctx.classDoc._id, 'teacherUpload.uploadedBy': teacher._id, sourceKind: 'audio' };
   const doc = await Submission.findOne(owned).select('+audioRecording +teacherUpload _id submissionMode evaluationStatus assessmentStatus').lean();
   if (!doc) throw notFound();
-  if (doc.submissionMode === 'guest') throw fail(409, GUEST_EMAIL, 'TEACHER_UPLOAD_GUEST_EMAIL_UNAVAILABLE');
   if (await withoutResult(doc)) throw fail(409, NO_RESULT, 'TEACHER_UPLOAD_MARKING_FAILED');
   if (resend === true) {
     if (typeof requestId !== 'string' || !REQUEST_ID.test(requestId)) throw fail(400, 'A valid request id is required.', 'TEACHER_UPLOAD_INVALID_REQUEST');
@@ -374,4 +371,4 @@ async function retry({ teacher, assignmentId, submissionId }) {
 }
 
 module.exports = { ownedContext, check, list, prepare, save, requestSend, retry, requeueHeldEmail, holdEmailsWithoutResult, statusOf, creditSummary,
-  speakingReserved, GUEST_EMAIL };
+  speakingReserved };

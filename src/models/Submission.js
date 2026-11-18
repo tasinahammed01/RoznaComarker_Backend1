@@ -44,7 +44,9 @@ const submissionSchema = new Schema(
       recoveredAt: Date,
       // Links issued by email recovery. A resend ADDS a link and never invalidates the student's other links, so a third party
       // who knows the email cannot cut off a working link. Hashes only; the newest 10 are kept.
-      recoveryAccess: { type: [{ _id: false, hash: String, expiresAt: Date, createdAt: Date }], select: false, default: undefined }
+      recoveryAccess: { type: [{ _id: false, hash: String, expiresAt: Date, createdAt: Date }], select: false, default: undefined },
+      // A guest's recording (stage 10): the notice version accepted and when (config/speakingGuestNotice.js). Never read back unless asked for.
+      consent: { type: { _id: false, version: { type: String, maxlength: 40 }, acceptedAt: Date }, select: false, default: undefined }
     },
     guestRequestKey: { type: String, select: false },
     registeredRequestKey: { type: String, select: false },

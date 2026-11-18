@@ -788,7 +788,8 @@ async function createAssignment(req, res) {
           class: classDoc._id,
           teacher: teacherId,
           qrToken,
-          allowGuestSubmission: resolvedResourceType === 'essay' && allowGuestSubmission === true,
+          // Guests: essays, and speaking (stage 10: guest recordings, routes/speakingGuest.routes.js).
+          allowGuestSubmission: ['essay', 'speaking'].includes(resolvedResourceType) && allowGuestSubmission === true,
           allowLateResubmission: !speaking && typeof allowLateResubmission === 'boolean' ? allowLateResubmission : undefined,
           showMarksToStudent: typeof showMarksToStudent === 'boolean' ? showMarksToStudent : undefined,
           allowResubmission: resolvedResourceType === 'essay' && allowResubmission === true,
@@ -966,7 +967,7 @@ async function updateAssignment(req, res) {
     if (typeof allowGuestSubmission !== 'undefined') {
       if (typeof allowGuestSubmission !== 'boolean') return sendError(res, 400, 'allowGuestSubmission must be a boolean');
       if (allowGuestSubmission === true && assignment.allowGuestSubmission !== true && !guestFeature.guestSubmissionEnabled()) return sendError(res, 403, guestFeature.message);
-      assignment.allowGuestSubmission = (!assignment.resourceType || assignment.resourceType === 'essay') && allowGuestSubmission === true;
+      assignment.allowGuestSubmission = (!assignment.resourceType || ['essay', 'speaking'].includes(assignment.resourceType)) && allowGuestSubmission === true;
     }
     if (typeof showMarksToStudent !== 'undefined') {
       if (typeof showMarksToStudent !== 'boolean') {

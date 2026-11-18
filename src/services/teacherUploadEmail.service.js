@@ -27,8 +27,7 @@ const RATE_RETRY_MS = 60 * 1000;
 const RECOVERY_LINKS_KEPT = 10;
 const WORKER_INTERVAL_MS = 30 * 1000;
 // The server refused this recipient (or accepted nobody): retrying the same address would only delay the Resend button.
-// GUEST_SPEAKING_UNAVAILABLE: a guest's teacher-uploaded recording has no guest result page yet (stage 10); never sent.
-const FINAL_CODES = ['RECIPIENT_MISSING', 'TEMPLATE_FAILURE', 'PROVIDER_REJECTED', 'NO_ACCEPTED_RECIPIENT', 'SMTP_NOT_ACCEPTED', 'GUEST_SPEAKING_UNAVAILABLE'];
+const FINAL_CODES = ['RECIPIENT_MISSING', 'TEMPLATE_FAILURE', 'PROVIDER_REJECTED', 'NO_ACCEPTED_RECIPIENT', 'SMTP_NOT_ACCEPTED'];
 const count = value => (Number.isInteger(value) && value >= 0 ? value : undefined);
 /** The SMTP answer fields stored on the email state (only the ones the server gave). */
 function deliveryFields(delivery, startedAt, finishedAt) {
@@ -72,9 +71,17 @@ async function messageFor(doc, lease) {
     User.findById(doc.teacherUpload.uploadedBy).select('displayName').lean()
   ]);
   const common = { teacherName: teacher?.displayName || '', assignmentTitle: assignment?.title || '' };
-  // A recording (stage 9): its own wording and the student's speaking page; members only (guest speaking results come with stage 10).
+  // A recording (stage 9): its own wording. A member: their speaking page (they sign in). A guest (stage 10): a new private link to the guest
+  // speaking page, added as for an essay guest (earlier links keep working).
   if (doc.sourceKind === 'audio') {
-    if (doc.submissionMode === 'guest') return { error: 'GUEST_SPEAKING_UNAVAILABLE' };
+    if (doc.submissionMode === 'guest') {
+      const issued = access.issueToken();
+      const stored = await Submission.updateOne({ _id: doc._id, 'teacherUpload.email.status': 'sending', 'teacherUpload.email.leaseUntil': lease }, {
+        $push: { 'guest.recoveryAccess': { $each: [{ hash: issued.accessHash, expiresAt: issued.expiresAt, createdAt: new Date() }], $slice: -RECOVERY_LINKS_KEPT } } });
+      if (!stored.modifiedCount) return null;
+      return { ...common, kind: 'speaking', to: doc.guest.normalizedEmail, studentName: doc.guest.displayName, link: access.speakingReturnUrl(doc._id, issued.token),
+        expiresAt: issued.expiresAt, needsLogin: false, issuedHash: issued.accessHash };
+    }
     const student = await User.findById(doc.student).select('email displayName').lean();
     if (!student?.email) return { error: 'RECIPIENT_MISSING' };
     return { ...common, kind: 'speaking', to: student.email, studentName: student.displayName || '', needsLogin: true,

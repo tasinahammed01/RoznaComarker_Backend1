@@ -201,6 +201,8 @@ app.use("/api/assignments", assignmentRoutes);
 app.use("/api/files", fileRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/submissions", submissionRoutes);
+// Guests on speaking assignments (stage 10): before /api/guest, and it answers every request that reaches it.
+app.use('/api/guest/speaking', require('./routes/speakingGuest.routes'));
 app.use('/api/guest', require('./routes/guestSubmission.routes'));
 app.use('/api/recovery', require('./routes/recoveryPortal.routes'));
 app.use("/api/feedback", feedbackRoutes);

@@ -180,11 +180,12 @@ describe('a guest (anyone who is not a class member)', () => {
     expect(sub).toEqual(expect.objectContaining({ submissionMode: 'guest', guest: expect.objectContaining({ displayName: 'Guest Speaker', normalizedEmail: 'guest.speaker@example.com' }) }));
   });
 
-  test('"Save and send" for a guest is refused before anything is kept (guest speaking results come with stage 10)', async () => {
+  test('"Save and send" for a guest: saved, the email queued (stage 10: the guest speaking page exists); nothing is sent before marking', async () => {
     const res = await save({ address: 'guest@example.com', send: true });
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe('TEACHER_UPLOAD_GUEST_EMAIL_UNAVAILABLE');
-    await expectNothingKept();
+    expect(res.status).toBe(200);
+    expect(res.body.data.item).toEqual(expect.objectContaining({ account: 'guest', emailStatus: 'queued' }));
+    await emailWorker.run();
+    expect(email.sendTeacherUploadFeedbackEmail).not.toHaveBeenCalled();
   });
 
   test('a student of another class is a guest here (as in the essay flow)', async () => {
@@ -324,15 +325,15 @@ describe('check and list (the dialog and the submissions list)', () => {
 });
 
 describe('Send, Resend and the email worker', () => {
-  test('Send: none -> queued (once); a guest or work without a result: refused', async () => {
+  test('Send: none -> queued (once), for a member and a guest alike; work without a result: refused', async () => {
     const member = (await save()).body.data.item.submissionId;
     const sent = await request(app).post(`${base()}/${member}/send`).set(auth(f.teacher.token)).send({});
     expect(sent.body.data).toEqual(expect.objectContaining({ alreadyRequested: false, item: expect.objectContaining({ emailStatus: 'queued' }) }));
     expect((await request(app).post(`${base()}/${member}/send`).set(auth(f.teacher.token)).send({})).body.data.alreadyRequested).toBe(true);
     const guest = (await save({ name: 'G', address: 'g@example.com' })).body.data.item.submissionId;
-    const refused = await request(app).post(`${base()}/${guest}/send`).set(auth(f.teacher.token)).send({});
-    expect(refused.status).toBe(409);
-    expect(refused.body.code).toBe('TEACHER_UPLOAD_GUEST_EMAIL_UNAVAILABLE');
+    const guestSent = await request(app).post(`${base()}/${guest}/send`).set(auth(f.teacher.token)).send({});
+    expect(guestSent.status).toBe(200);
+    expect(guestSent.body.data.item.emailStatus).toBe('queued');
     await Submission.updateOne({ _id: member }, { $set: { evaluationStatus: 'failed', evaluationErrorCode: 'SPEAKING_NOT_ENOUGH_SPEECH', 'teacherUpload.email.status': 'none' } });
     const noResult = await request(app).post(`${base()}/${member}/send`).set(auth(f.teacher.token)).send({});
     expect(noResult.status).toBe(409);
@@ -368,12 +369,20 @@ describe('Send, Resend and the email worker', () => {
     expect((await AudioRecording.findById((await stored(failedStt)).audioRecording).lean()).status).toBe('queued');
   });
 
-  test('a guest speaking email is never sent, even if one ended up queued', async () => {
-    const id = (await save({ name: 'G', address: 'g@example.com' })).body.data.item.submissionId;
-    await Submission.updateOne({ _id: id }, { $set: { 'teacherUpload.email.status': 'queued', evaluationStatus: 'completed', assessmentStatus: 'complete' } });
+  test('a guest (stage 10): once marked, the speaking email with a new private link to the guest speaking page (it opens it); earlier links kept', async () => {
+    const id = (await save({ name: 'Gia Guest', address: 'g@example.com', send: true })).body.data.item.submissionId;
+    await Submission.updateOne({ _id: id }, { $set: { evaluationStatus: 'completed', assessmentStatus: 'complete', writingCorrections: [] } });
     await emailWorker.run();
-    expect(email.sendTeacherUploadFeedbackEmail).not.toHaveBeenCalled();
-    expect((await stored(id)).teacherUpload.email).toEqual(expect.objectContaining({ status: 'failed', lastErrorCode: 'GUEST_SPEAKING_UNAVAILABLE' }));
+    expect(email.sendTeacherUploadFeedbackEmail).toHaveBeenCalledTimes(1);
+    const message = email.sendTeacherUploadFeedbackEmail.mock.calls[0][0];
+    expect(message).toEqual(expect.objectContaining({ kind: 'speaking', to: 'g@example.com', studentName: 'Gia Guest', needsLogin: false, expiresAt: expect.any(Date) }));
+    const link = new URL(message.link);
+    expect(link.pathname).toBe(`/guest/speaking/${id}`);
+    expect(await access.authorize(id, link.hash.slice(1))).toBeTruthy();
+    const sub = await Submission.findById(id).select('+teacherUpload +guest.recoveryAccess').lean();
+    expect(sub.teacherUpload.email.status).toBe('sent');
+    expect(sub.guest.recoveryAccess).toHaveLength(1);
+    expect(JSON.stringify(message)).not.toMatch(/transcript|\.wav|overallScore/i);
   });
 });
 

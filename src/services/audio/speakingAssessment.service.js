@@ -236,8 +236,9 @@ async function runSpeakingAssessment(recordingId, { now = () => new Date(), env 
   if (!locked.matchedCount) { await finish(); return { status: 'superseded' }; }
   Object.assign(context, { runId });
   if (accountingEnabled) await assessmentCompletion.start({ runId, submission, teacherId, sourceHash });
+  // A guest's recording (stage 10) has no student: its feedback is a guest's, as for essay guests.
   await SubmissionFeedback.findOneAndUpdate({ submissionId }, { $set: { submissionId, classId: submission.class, studentId: submission.student,
-    submissionMode: 'registered', teacherId, evaluationJobId: runId } }, { upsert: true, runValidators: true, setDefaultsOnInsert: true });
+    submissionMode: submission.submissionMode === 'guest' ? 'guest' : 'registered', teacherId, evaluationJobId: runId } }, { upsert: true, runValidators: true, setDefaultsOnInsert: true });
 
   let result;
   try {
