@@ -4,13 +4,16 @@
 const { SttError } = require('./errors');
 
 const TRANSCRIPT_SCHEMA_VERSION = 'audio-transcript-v1';
-const DERIVED_TEXT_VERSION = 'audio-derived-text-v1';
-const FLUENCY_METRICS_VERSION = 'audio-fluency-v1';
+// v2 (stage 12): the filler set below grew (mm, hmm, mhm, er, erm), which changes the hidden fillers and the filler figures. Results stored
+// with v1 keep their own version and values (derived texts and metrics are stored with the result, not recomputed on read).
+const DERIVED_TEXT_VERSION = 'audio-derived-text-v2';
+const FLUENCY_METRICS_VERSION = 'audio-fluency-v2';
 const PAUSE_THRESHOLD_SECONDS = 1;
 // Fields that identify the provider and its run. Server and teacher tooling only: never sent to a student or guest (later stages enforce it).
 const SERVER_ONLY_FIELDS = Object.freeze(['provider', 'model', 'providerModelVersion', 'providerRequestId']);
-// Deepgram's filler words (filler_words=true), always spelled this way whatever their spoken length.
-const FILLERS = new Set(['uh', 'um', 'mhmm', 'mm-mm', 'uh-uh', 'uh-huh', 'nuh-uh']);
+// The one filler set (fluency metrics and hidden fillers), matched on a word's plain lower-case text. Deepgram's spellings (filler_words=true)
+// plus what OpenRouter Scribe writes ("Um,", "mm,", "Hmm.", "er", "erm", "mhm" become um, mm, hmm, er, erm, mhm after stripping punctuation).
+const FILLERS = new Set(['uh', 'um', 'mhmm', 'mm-mm', 'uh-uh', 'uh-huh', 'nuh-uh', 'mm', 'hmm', 'mhm', 'er', 'erm']);
 
 const round = (value, digits) => { const factor = 10 ** digits; return Math.round(value * factor) / factor; };
 const finite = value => typeof value === 'number' && Number.isFinite(value);

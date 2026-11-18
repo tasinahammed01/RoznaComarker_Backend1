@@ -203,6 +203,19 @@ describe('payloads never name the speech-to-text provider or model', () => {
     for (const res of answers) { expect(res.status).toBe(200); expect(JSON.stringify(res.body)).not.toMatch(FORBIDDEN); }
   });
 
+  test('a result stored before the filler change (audio-fluency-v1, audio-derived-text-v1) still renders with its stored figures', async () => {
+    const made = await h.readyRecording(f, 'My town is small and quiet. I like the river and the market very much because they are near my house.');
+    const stored = await AudioRecording.findById(made.recording._id).select('+derived').lean();
+    expect(stored.derived).toMatchObject({ derivedTextVersion: 'audio-derived-text-v1', fluency: { metricsVersion: 'audio-fluency-v1' } });
+    await assessment.enqueueAssessment(made.recording._id);
+    await assessment.runSpeakingAssessment(made.recording._id, { env: h.TEST_ENV, fetchImpl: h.fakeOpenRouter(h.output()) });
+    const res = await request(app).get(`/api/speaking/submissions/${made.submission._id}/result`).set({ Authorization: `Bearer ${f.student.token}` });
+    expect(res.status).toBe(200);
+    expect(res.body.data.fluency).toEqual({ wordsPerMinute: stored.derived.fluency.wordsPerMinute, fillersPer100Words: stored.derived.fluency.fillersPer100Words,
+      pausesOverOneSecond: stored.derived.fluency.pausesOverThreshold, longestPauseSeconds: stored.derived.fluency.longestPauseSeconds,
+      repetitions: stored.derived.fluency.repetitionCount });
+  });
+
   test('the guest\'s own link', async () => {
     await mongoose.connection.collection('assignments').updateOne({ _id: f.assignment._id }, { $set: { allowGuestSubmission: true } });
     const { submission } = await scribeTranscribed('guest');

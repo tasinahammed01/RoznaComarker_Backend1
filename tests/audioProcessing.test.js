@@ -168,10 +168,10 @@ describe('processing', () => {
     expect(saved.processingQueue).toBeUndefined();
     expect(saved.transcript.words).toHaveLength(21);
     expect(saved.transcript.providerRequestId).toBe('0b3f2c1e-1111-4222-8333-944455556666');
-    expect(saved.derived).toMatchObject({ derivedTextVersion: 'audio-derived-text-v1',
+    expect(saved.derived).toMatchObject({ derivedTextVersion: 'audio-derived-text-v2',
       assessorText: 'So I I went to the the market. It was, very busy. Then I went I went home.',
       displayText: { text: 'So I I went to the the market. It was, very busy. Then I went I went home.' },
-      fluency: { metricsVersion: 'audio-fluency-v1', available: true, wordsPerMinute: 145.9 } });
+      fluency: { metricsVersion: 'audio-fluency-v2', available: true, wordsPerMinute: 145.9 } });
   });
 
   test('an OpenAI-fallback transcript is stored with Speaking Coach data marked unavailable', async () => {

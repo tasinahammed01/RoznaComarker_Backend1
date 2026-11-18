@@ -191,7 +191,7 @@ describe('derived texts (pure, from the stored word list only)', () => {
   test('derived texts are versioned and never change the raw words', () => {
     const before = JSON.stringify(words);
     const derived = transcript.deriveTexts(words);
-    expect(derived.derivedTextVersion).toBe('audio-derived-text-v1');
+    expect(derived.derivedTextVersion).toBe('audio-derived-text-v2');
     expect(JSON.stringify(words)).toBe(before);
   });
 });
@@ -199,14 +199,14 @@ describe('derived texts (pure, from the stored word list only)', () => {
 describe('fluency metrics (no AI, from the raw timings)', () => {
   test('from the fixture', () => {
     expect(transcript.fluencyMetrics(deepgram.normalize(FIXTURE))).toEqual({
-      metricsVersion: 'audio-fluency-v1', available: true, totalWords: 21, spokenWords: 18, fillerCount: 3,
+      metricsVersion: 'audio-fluency-v2', available: true, totalWords: 21, spokenWords: 18, fillerCount: 3,
       speakingSeconds: 7.4, wordsPerMinute: 145.9, fillersPer100Words: 14.3,
       pauseThresholdSeconds: 1, pausesOverThreshold: 1, longestPauseSeconds: 1.4, totalPauseSecondsOverThreshold: 1.4, repetitionCount: 3
     });
   });
 
   test('unavailable without word timings (OpenAI fallback)', () => {
-    expect(transcript.fluencyMetrics({ wordTimingsAvailable: false, words: [] })).toEqual({ metricsVersion: 'audio-fluency-v1', available: false,
+    expect(transcript.fluencyMetrics({ wordTimingsAvailable: false, words: [] })).toEqual({ metricsVersion: 'audio-fluency-v2', available: false,
       reason: 'WORD_TIMINGS_UNAVAILABLE' });
   });
 
