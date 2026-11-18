@@ -1,14 +1,14 @@
 # Audio upload and speech-to-text: deployment notes (DRAFT)
 
-Status: draft for review. Backend only, stages 0 to 5. Nothing here is live: the feature is off until `AUDIO_STT_ENABLED=true`.
+Status: draft for review. Backend only, stages 0 to 6. Nothing here is live: the feature is off until `AUDIO_STT_ENABLED=true`.
 
 ## Production steps
 
 1. Deploy the backend code.
 2. Run `npm ci` in `backend`. The lockfile changed: `music-metadata` 12.3.2 is pinned exactly.
 3. Run `npm run migrate:audio-indexes` once. Production connects with automatic index creation off, so the app does not create these
-   indexes itself. The script only adds the 7 audio indexes (2 on `audiorecordings`, 5 on `audiousageledgers`). It is safe to run again
-   and never drops anything.
+   indexes itself. The script only adds the 8 audio indexes (3 on `audiorecordings`, 5 on `audiousageledgers`). It is safe to run again
+   and never drops anything. Stage 6 added `audio_recording_assessment_v1`: run the script again after deploying stage 6.
 4. Set the speech-to-text key (`DEEPGRAM_API_KEY`) on the server. Keep it out of the repository.
 5. Check that the Nginx body limit allows the upload size: 40 MB by default, plus multipart overhead.
 6. Turn the feature on with `AUDIO_STT_ENABLED=true` and restart with PM2. The transcription worker starts only while the flag is on.
@@ -29,6 +29,10 @@ Status: draft for review. Backend only, stages 0 to 5. Nothing here is live: the
 | `AUDIO_STT_TIMEOUT_MS` | `300000` | Time limit for one provider call. Allowed range is 10 s to 10 min. |
 | `AUDIO_STT_MAX_ATTEMPTS` | `3` | Attempts per recording, from 1 to 3. The waits between attempts are 15 s, 60 s and 5 min. |
 | `SPEAKING_UPLOAD_RATE_LIMIT_MAX` | `30` | Uploads per user per 15 minutes. |
+| `SPEAKING_MIN_WORDS` | `30` | Fewest words (fillers not counted) a speaking answer needs to be assessed. Allowed range is 5 to 200. Fewer words means "not enough speech to assess", with no AI call and no charge. |
+| `SPEAKING_ASSESSMENT_ZDR` | `false` | Opt-in: ask OpenRouter to route the speaking assessor only to zero-data-retention endpoints that do not collect data. Off by default because it can leave no endpoint for the configured model. |
+
+The speaking assessor uses the essay assessment model settings (`ASSESSMENT_AI_MODEL`, `OPENROUTER_API_KEY` and the assessment budgets). It has no settings of its own beyond the two above.
 
 An invalid value is ignored, the default is used, and the variable is reported by name only.
 
@@ -89,7 +93,28 @@ An invalid value is ignored, the default is used, and the variable is reported b
 - Audio counts against the student's storage quota.
 - It is released exactly as charged when the submission is removed or the recording is replaced.
 
+## Speaking assessment (stage 6)
+
+- **When it runs.** A recording is queued for assessment automatically when its transcript is ready. The audio worker runs it right after the transcription sweep.
+- **Rubric.** A speaking assignment uses the teacher's own saved rubric. When the teacher picks none, an editable copy of the default
+  speaking rubric is created for them once: Task and content 25, Organisation and coherence 20, Grammar 20, Vocabulary 20, Fluency 15.
+  Teachers edit it in the saved-rubric library.
+- **What the assessor sees.** It receives the assessed text (punctuated, fillers removed, repetitions kept), fluency figures computed by software
+  (words per minute, filler rate, pauses over 1 s, repetitions), the task and the rubric. All of it is sent as a data block.
+- **How it is scored.** The model picks one level per criterion; the score is computed from those levels. Pronunciation, spelling,
+  punctuation and capitalisation are never judged.
+- **Credits.** The check uses the same wallet the charge uses: the institution wallet for a class in an institution, otherwise the
+  teacher's own. With no credits the assessment is blocked (`INSUFFICIENT_ASSESSMENT_CREDITS`), as for essays.
+- **Charging.** One credit is charged only when a result is stored. "Not enough speech", not English, unintelligible, failed or invalid
+  results are never charged.
+- **Retry.** The owning teacher can retry a failed or blocked assessment: `POST /api/speaking/submissions/:id/retry-assessment`.
+- **Results.** `GET /api/speaking/submissions/:id/result` serves the owning student and the owning teacher.
+- **Startup log.** The prompt version is logged at startup on a line with `event: speaking_assessment_contract`. It is not part of the
+  runtime contract fingerprint.
+- **Trial script.** `SPEAKING_TRIAL=call-openrouter node scripts/speakingAssessmentTrial.js` runs the synthetic benchmark against the real
+  model with a dev key. It prints scores, tokens and the cost OpenRouter reports. It never runs in tests or in the app.
+
 ## Not in this stage
 
-Assessment and credits, rubric use, guests and the recovery portal, teacher upload on a student's behalf, the frontend, and recording in the
-browser.
+Guests and the recovery portal, teacher upload on a student's behalf, transcript editing and re-marking, the feedback PDF, the frontend, and
+recording in the browser.

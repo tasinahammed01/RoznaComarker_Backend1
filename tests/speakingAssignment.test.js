@@ -60,10 +60,12 @@ describe('assignment capabilities', () => {
     expect(caps.assignmentCapabilities(assignment)).toEqual(expected);
   });
 
-  test('speaking: no essay writing controls, no rubric yet, no resubmission or late resubmission, marks hidden until marking exists', () => {
+  // Stage 6: speaking results now have marks, so the teacher gets the "show marks to students" control. The essay rubric editor (rubric)
+  // stays off: the speaking rubric is a saved rubric edited in the rubric library.
+  test('speaking: no essay writing controls or essay rubric editor, no resubmission or late resubmission; marks can be shown or hidden', () => {
     expect(caps.assignmentType({ resourceType: 'speaking' })).toBe('speaking');
     expect(caps.assignmentCapabilities({ resourceType: 'speaking' })).toEqual({ type: 'speaking', deadline: true, instructions: true,
-      showMarksToStudent: false, allowLateResubmission: false, allowResubmission: false, requireAdaptiveBeforeResubmission: false, rubric: false,
+      showMarksToStudent: true, allowLateResubmission: false, allowResubmission: false, requireAdaptiveBeforeResubmission: false, rubric: false,
       writingControls: false });
   });
 
@@ -82,9 +84,15 @@ describe('creating a speaking assignment', () => {
       rubric: 'Ideas | Language', rubrics: { criteria: [{ name: 'Ideas', levels: [] }] } });
     expect(res.status).toBeLessThan(300);
     const stored = await Assignment.findById(res.body.data._id).lean();
+    // Stage 6: without a chosen rubric, the teacher's own editable copy of the default speaking rubric is created once and referenced.
+    const seeded = await SavedRubric.findOne({ teacher: f.teacher.user._id, name: 'Speaking rubric', writingType: 'speaking' }).lean();
+    expect(seeded.rubricData.criteria.map(c => c.weight)).toEqual([25, 20, 20, 20, 15]);
     expect(stored).toMatchObject({ title: 'Talk about your weekend', instructions: 'Speak for two minutes.', resourceType: 'speaking', writingType: 'speaking',
       resourceId: null, allowGuestSubmission: false, allowResubmission: false, requireAdaptiveBeforeResubmission: false, allowLateResubmission: false,
-      speaking: { maxRecordingSeconds: null, rubricRef: null } });
+      speaking: { maxRecordingSeconds: null, rubricRef: seeded._id } });
+    const again = await create({ title: 'Second talk' });
+    expect((await Assignment.findById(again.body.data._id).lean()).speaking.rubricRef).toEqual(seeded._id);
+    expect(await SavedRubric.countDocuments({ teacher: f.teacher.user._id, writingType: 'speaking' })).toBe(1);
     expect(stored.rubric ?? null).toBeNull();
     expect(stored.rubrics ?? null).toBeNull();
     expect(stored.deadline).toBeTruthy();

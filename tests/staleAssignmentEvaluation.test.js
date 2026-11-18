@@ -83,7 +83,8 @@ describe('assignment stale evaluation service', () => {
     const summary = await service.summarize(assignment);
 
     expect(Submission.find).toHaveBeenCalledTimes(1);
-    expect(Submission.find).toHaveBeenCalledWith({ assignment: 'assignment-1' });
+    // Stage 6: speaking results (sourceKind 'audio') are excluded explicitly; essays have no sourceKind, so every essay still matches.
+    expect(Submission.find).toHaveBeenCalledWith({ assignment: 'assignment-1', sourceKind: { $ne: 'audio' } });
     expect(summary).toEqual({
       assignmentId: 'assignment-1',
       eligibleCount: 1,

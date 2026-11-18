@@ -67,6 +67,8 @@ async function start() {
   if (require('./services/referenceFiles/policy').referenceFilesEnabled()) void require('./services/referenceFiles/referenceFile.service').resumeInBackground();
   // Audio transcription jobs (AUDIO_STT_ENABLED, default off): null while off, so nothing starts.
   audioWorker = require('./services/audio/processing').startAudioWorkerIfEnabled();
+  // The speaking assessor's own contract (not part of the runtime contract fingerprint): one line, versions only.
+  { const speakingPrompt = require('./services/audio/speakingAssessmentPrompt'); logger.info({ event: 'speaking_assessment_contract', promptVersion: speakingPrompt.PROMPT_VERSION, schemaVersion: speakingPrompt.SCHEMA_VERSION }); }
   const pdfEngine = String(process.env.PDF_REPORT_ENGINE || "puppeteer").toLowerCase();
   if (pdfEngine !== "puppeteer") throw new Error("Unsupported PDF_REPORT_ENGINE configuration.");
   pdfBrowserManager.validateBrowserRuntime();

@@ -135,6 +135,9 @@ async function processAudioRecording(id, { transcribe = defaultTranscribe, now =
       speakingCoachDataAvailable: transcript.speakingCoachDataAvailable, transcript, derived }), { writeTranscriptOnce: true });
     if (!stored.modifiedCount) { await release('discarded'); log('audio_transcription_discarded', { ...context, reason: 'not_current' }); return { status: 'discarded' }; }
     await usage.consumeReservation(reservation.key, { now });
+    // Stage 6: a ready recording is queued for its speaking assessment (run by the sweep below; its own lease and attempts).
+    await require('./speakingAssessment.service').enqueueAssessment(claimed._id, { now })
+      .catch(error => logger.warn({ event: 'speaking_assessment_enqueue_failed', recordingId: key, errorName: String(error?.name || 'Error').slice(0, 60) }));
     reservationKey = null;
     log('audio_transcription_ready', { ...context, durationMs: Date.now() - startedAt, wordCount: transcript.words.length,
       wordTimingsAvailable: transcript.wordTimingsAvailable, fallbackUsed: Boolean(result.fallbackUsed) });
@@ -199,7 +202,10 @@ function resumeAudioRecordings(options = {}) {
       const outcome = await processAudioRecording(doc._id, options);
       if (outcome.status !== 'skipped') processed++;
     }
-    return { found: batch.length, capped, processed, exhausted: exhausted.modifiedCount || 0 };
+    // Then the speaking assessments that are due (services/audio/speakingAssessment.service.js); a failure there never stops transcription.
+    const assessments = await require('./speakingAssessment.service').sweepAssessments({ now, env, fetchImpl: options.assessmentFetchImpl })
+      .catch(error => { logger.warn({ event: 'speaking_assessment_sweep_failed', errorName: String(error?.name || 'Error').slice(0, 60) }); return null; });
+    return { found: batch.length, capped, processed, exhausted: exhausted.modifiedCount || 0, ...(assessments ? { assessments } : {}) };
   })().catch(error => {
     logger.warn({ event: 'audio_transcription_sweep_failed', errorName: String(error?.name || 'Error').slice(0, 60) });
     return { found: 0, capped: false, processed: 0, exhausted: 0, failed: true };

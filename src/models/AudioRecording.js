@@ -58,6 +58,14 @@ const audioRecordingSchema = new Schema({
   cancelledAt: { type: Date, default: null },
   lastErrorCode: { type: String, trim: true, maxlength: 64, default: null },
 
+  // Speaking assessment job (services/audio/speakingAssessment.service.js): the queue flag and lease live here, not on the Submission.
+  // The result itself is the standard Submission/SubmissionFeedback state.
+  assessmentQueue: { type: Boolean, default: undefined, select: false },
+  assessmentAttempts: { type: Number, min: 0, default: 0 },
+  assessmentNextAttemptAt: { type: Date, default: null },
+  assessmentLeaseUntil: { type: Date, default: null, select: false },
+  assessmentAttemptKey: { type: String, default: undefined, select: false },
+
   // Summary of the stored transcript (safe to read without loading it).
   transcriptSchemaVersion: { type: String, default: null },
   wordTimingsAvailable: { type: Boolean, default: null },
@@ -72,6 +80,8 @@ const audioRecordingSchema = new Schema({
 audioRecordingSchema.index({ owner: 1, requestId: 1 }, { unique: true, name: 'audio_recording_request_v1' });
 audioRecordingSchema.index({ processingQueue: 1, nextAttemptAt: 1, leaseUntil: 1 },
   { name: 'audio_recording_processing_v1', partialFilterExpression: { processingQueue: true } });
+audioRecordingSchema.index({ assessmentQueue: 1, assessmentNextAttemptAt: 1, assessmentLeaseUntil: 1 },
+  { name: 'audio_recording_assessment_v1', partialFilterExpression: { assessmentQueue: true } });
 
 const immutable = () => Object.assign(new Error('The raw transcript cannot be changed; edits are appended.'), { code: 'AUDIO_TRANSCRIPT_IMMUTABLE' });
 const touchesTranscript = key => key === 'transcript' || key.startsWith('transcript.');
@@ -98,7 +108,8 @@ audioRecordingSchema.pre('save', function guardSave() {
 
 // Defence in depth: whatever serialises this document never carries the worker fields, the hash, the transcript or the edits.
 audioRecordingSchema.set('toJSON', { transform(_doc, ret) {
-  for (const key of ['leaseUntil', 'attemptKey', 'processingQueue', 'audioSha256', 'transcript', 'derived', 'editedRevisions']) delete ret[key];
+  for (const key of ['leaseUntil', 'attemptKey', 'processingQueue', 'audioSha256', 'transcript', 'derived', 'editedRevisions', 'assessmentQueue',
+    'assessmentLeaseUntil', 'assessmentAttemptKey']) delete ret[key];
   return ret;
 } });
 

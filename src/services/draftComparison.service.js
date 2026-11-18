@@ -371,7 +371,8 @@ function progressFromHistory(entries) {
 }
 
 async function historiesForFilter(filter) {
-  const submissions = await visibleSubmissions(await Submission.find(filter).select('+teacherAnnotations').sort({ submittedAt: 1 }).lean(), 'Submission', { selected: true });
+  // Essay progress only: speaking results (sourceKind 'audio') are a different scale and never mixed in. Essays have no sourceKind.
+  const submissions = await visibleSubmissions(await Submission.find({ ...filter, sourceKind: { $ne: 'audio' } }).select('+teacherAnnotations').sort({ submittedAt: 1 }).lean(), 'Submission', { selected: true });
   if (!submissions.length) return { submissions, grouped: new Map() };
   const ids = submissions.map((item) => item._id);
   const assignmentIds = [...new Set(submissions.map((item) => String(item.assignment)).filter(Boolean))];

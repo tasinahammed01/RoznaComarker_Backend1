@@ -7,7 +7,7 @@ if (require.main === module) require('dotenv').config();   // CLI only: requirin
 const mongoose = require('mongoose');
 
 const AUDIO_INDEXES = Object.freeze({
-  AudioRecording: ['audio_recording_request_v1', 'audio_recording_processing_v1'],
+  AudioRecording: ['audio_recording_request_v1', 'audio_recording_processing_v1', 'audio_recording_assessment_v1'],
   AudioUsageLedger: ['audio_usage_key_v1', 'audio_usage_teacher_month_v1', 'audio_usage_inflight_teacher_v1', 'audio_usage_inflight_uploader_v1',
     'audio_usage_recording_v1']
 });

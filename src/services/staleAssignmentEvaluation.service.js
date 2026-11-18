@@ -28,7 +28,8 @@ async function currentHashes(assignment) {
 }
 
 async function classify(assignment) {
-  const submissions = await Submission.find({ assignment: assignment._id });
+  // Essay evaluations only: a speaking result (sourceKind 'audio') has its own assessor and is never re-run by this pass.
+  const submissions = await Submission.find({ assignment: assignment._id, sourceKind: { $ne: 'audio' } });
   const ids = submissions.map((submission) => submission._id);
   const feedback = ids.length
     ? await SubmissionFeedback.find({ submissionId: { $in: ids } }).lean()

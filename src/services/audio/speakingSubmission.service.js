@@ -71,9 +71,12 @@ const RECORDING_FIELDS = '_id status attempts lastErrorCode durationSeconds size
 const SUBMISSION_FIELDS = '_id student assignment class sourceKind status submittedAt isLate feedback +audioRecording';
 const loadRecording = id => (id ? AudioRecording.findById(id).select(RECORDING_FIELDS).lean() : null);
 
+// Marked = a result exists (an assessed or teacher-overridden result, or legacy feedback). The empty feedback document the assessor creates when
+// a run starts, a failed run, or "not enough speech" are not marked: the student can still replace the recording.
 async function isMarked(submission) {
   if (submission.feedback) return true;
-  return Boolean(await SubmissionFeedback.exists({ submissionId: submission._id }));
+  return Boolean(await SubmissionFeedback.exists({ submissionId: submission._id,
+    $or: [{ evaluationStatus: { $in: ['completed', 'partial', 'stale'] } }, { overriddenByTeacher: true }] }));
 }
 
 // ---- Context ------------------------------------------------------------------------------------------------------------------------------
@@ -232,7 +235,7 @@ async function accessFor(submissionId, user) {
     if (assignment && sameId(assignment.class, submission.class) && await Class.exists({ _id: submission.class, teacher: user._id })) role = 'teacher';
   }
   if (!role) return null;
-  const assignment = await Assignment.findById(submission.assignment).select('_id deadline speaking teacher').lean();
+  const assignment = await Assignment.findById(submission.assignment).select('_id deadline speaking teacher showMarksToStudent').lean();
   return { role, submission, assignment, recording: await loadRecording(submission.audioRecording) };
 }
 

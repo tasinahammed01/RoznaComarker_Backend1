@@ -767,6 +767,8 @@ async function createAssignment(req, res) {
     if (speaking) {
       try { speakingSettings = await speakingAssignment.parseSpeakingSettings(req.body?.speaking, { teacherId }); }
       catch (error) { if (error.code) return sendSpeakingSettingsError(res, error); throw error; }
+      // No rubric chosen: the teacher's own editable copy of the default speaking rubric (created once).
+      if (!speakingSettings.rubricRef) speakingSettings.rubricRef = await require('../services/audio/speakingRubric').ensureDefaultSpeakingRubric(teacherId);
     }
 
     for (let attempt = 0; attempt < 5; attempt += 1) {

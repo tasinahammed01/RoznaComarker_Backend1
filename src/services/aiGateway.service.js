@@ -61,7 +61,8 @@ function correctionRequestPolicy({provider,model,feature,responseFormat='json',r
       correctionRequestEndpoint:provider==='openrouter'?'/chat/completions':null,
       correctionResponseFormat:responseFormat==='json'?(responseSchema?'json_schema_strict':'json_object'):null}};
 }
-const isAssessmentFeature = feature => /^(?:semantic_rubric_assessment|rubric_completion(?:_repair)?|rubric_from_file|submission_feedback)$/u.test(feature);
+// speaking_assessment (audio + speech-to-text, stage 6) gets the same assessment authority: the one approved model, the strict profile, no fallbacks.
+const isAssessmentFeature = feature => /^(?:semantic_rubric_assessment|rubric_completion(?:_repair)?|rubric_from_file|submission_feedback|speaking_assessment)$/u.test(feature);
 const RETRYABLE_HTTP = new Set([408, 429, 500, 502, 503, 504]);
 const DEFAULTS = Object.freeze({
   attemptTimeoutMs: 30000,
@@ -441,6 +442,9 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
         delete body.temperature;
       }
       body.provider={require_parameters:true,allow_fallbacks:false};
+      // Opt-in (SPEAKING_ASSESSMENT_ZDR=true, default off): route the speaking assessor only to zero-data-retention endpoints that do not
+      // collect data. Off by default because it can leave no endpoint for the configured model (OpenRouter then refuses the request).
+      if(feature==='speaking_assessment'&&text(env.SPEAKING_ASSESSMENT_ZDR).toLowerCase()==='true')Object.assign(body.provider,{zdr:true,data_collection:'deny'});
     }
     if(isCorrectionFeature(feature)&&isStrictCorrectionModel(entry.model)){
       if(entry.model!==CLAUDE_CORRECTION_MODEL&&feature==='teacher_comment_draft')

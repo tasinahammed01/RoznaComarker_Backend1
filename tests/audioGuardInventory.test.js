@@ -111,6 +111,8 @@ const ALLOWED = {
   'GET /api/pdf/student-worksheet-result/:submissionId': 'takes a WorksheetSubmission id (another collection)',
   'POST /api/speaking/submissions/:submissionId/retry-transcription': 'the speaking feature itself',
   'GET /api/speaking/submissions/:submissionId': 'the speaking feature itself (teacher view)',
+  'GET /api/speaking/submissions/:submissionId/result': 'the speaking feature itself: the assessment result for the owning student or teacher (speakingResult.test.js)',
+  'POST /api/speaking/submissions/:submissionId/retry-assessment': 'the speaking feature itself: the owning teacher re-queues a failed or blocked assessment',
   'GET /api/audio/submissions/:submissionId/media': 'the speaking feature itself (playback)',
   'GET /api/audio/submissions/:submissionId/download': 'the speaking feature itself (teacher download)'
 };

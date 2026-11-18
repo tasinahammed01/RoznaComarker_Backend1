@@ -430,6 +430,9 @@ describe('the worker', () => {
     const text = fs.readFileSync(path.join(__dirname, '..', 'src', 'server.js'), 'utf8');
     expect(text).toMatch(/audioWorker = require\('\.\/services\/audio\/processing'\)\.startAudioWorkerIfEnabled\(\)/);
     expect(text).toMatch(/audioWorker\?\.stop\(\)/);
-    expect(text.match(/services\/audio\//g)).toHaveLength(1);
+    // The worker is started in exactly one place. Stage 6 adds one more audio reference: the speaking prompt module, read only to log its
+    // versions on one line at startup (it starts nothing).
+    expect(text.match(/services\/audio\/processing/g)).toHaveLength(1);
+    expect((text.match(/services\/audio\/[\w.]+/g) || []).sort()).toEqual(['services/audio/processing', 'services/audio/speakingAssessmentPrompt']);
   });
 });

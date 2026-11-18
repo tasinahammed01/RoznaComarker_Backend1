@@ -367,7 +367,8 @@ describe('deadline, one submission per student, replacement before marking', () 
   });
 
   test.each([
-    ['a feedback document exists', async (submission) => { await SubmissionFeedback.collection.insertOne({ submissionId: submission._id, createdAt: new Date() }); }],
+    // Stage 6: "marked" means a stored result (a completed assessment), not the empty document an assessment run starts with.
+    ['a completed assessment exists', async (submission) => { await SubmissionFeedback.collection.insertOne({ submissionId: submission._id, evaluationStatus: 'completed', createdAt: new Date() }); }],
     ['the submission has feedback', async (submission) => { await Submission.updateOne({ _id: submission._id }, { $set: { feedback: new mongoose.Types.ObjectId() } }); }]
   ])('replacing after marking (%s): 409, nothing changes, the new file and its storage are released', async (_label, mark) => {
     await upload();

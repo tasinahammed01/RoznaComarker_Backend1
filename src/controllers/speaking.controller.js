@@ -57,4 +57,26 @@ async function teacherView(req, res) {
   } catch (error) { return respondError(res, error, 'speaking_teacher_view_failed'); }
 }
 
-module.exports = { prepare, commit, maxDurationFor, myStatus, retry, teacherView };
+/** The result (stage 6): the owning student or teacher; 404 for anyone else. */
+async function result(req, res) {
+  try {
+    const context = await service.accessFor(req.params.submissionId, req.user);
+    if (!context) return res.status(404).json({ success: false, code: 'NOT_FOUND', message: 'Not found.' });
+    return res.json({ success: true, data: await require('../services/audio/speakingResult.service').readResult(context) });
+  } catch (error) { return respondError(res, error, 'speaking_result_failed'); }
+}
+
+/** The owning teacher queues a failed or blocked assessment again; 404 for anyone else. */
+async function retryAssessment(req, res) {
+  try {
+    const context = await service.accessFor(req.params.submissionId, req.user);
+    if (!context || context.role !== 'teacher') return res.status(404).json({ success: false, code: 'NOT_FOUND', message: 'Not found.' });
+    await require('../services/audio/speakingAssessment.service').retryAssessment({ context });
+    return res.json({ success: true, data: await require('../services/audio/speakingResult.service').readResult(context) });
+  } catch (error) {
+    if (error?.statusCode && error.code) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+    return respondError(res, error, 'speaking_retry_assessment_failed');
+  }
+}
+
+module.exports = { prepare, commit, maxDurationFor, myStatus, retry, teacherView, result, retryAssessment };

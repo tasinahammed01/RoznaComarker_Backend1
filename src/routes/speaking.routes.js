@@ -6,6 +6,8 @@
 //   GET  /:assignmentId/my                                class student: their own status and the limits
 //   POST /submissions/:submissionId/retry-transcription   the student who owns it or the owning teacher; 404 for anyone else
 //   GET  /submissions/:submissionId                       the owning teacher: the job state; 404 for other teachers
+//   GET  /submissions/:submissionId/result                the assessment result: the owning student or teacher; 404 for anyone else
+//   POST /submissions/:submissionId/retry-assessment      the owning teacher: a failed or blocked assessment again; 404 for anyone else
 // Playback and download are private audio routes in audio.routes.js.
 const router = require('express').Router();
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
@@ -27,6 +29,8 @@ router.use((_req, res, next) => { res.set('Cache-Control', 'private, no-store');
 
 router.post('/submissions/:submissionId/retry-transcription', verifyJwtToken, retryLimiter, controller.retry);
 router.get('/submissions/:submissionId', verifyJwtToken, requireRole('teacher'), controller.teacherView);
+router.get('/submissions/:submissionId/result', verifyJwtToken, controller.result);
+router.post('/submissions/:submissionId/retry-assessment', verifyJwtToken, retryLimiter, controller.retryAssessment);
 router.get('/:assignmentId/my', verifyJwtToken, requireRole('student'), controller.myStatus);
 router.post('/:assignmentId', verifyJwtToken, requireRole('student'), uploadLimiter, controller.prepare,
   ...audioUpload({ maxDurationSeconds: controller.maxDurationFor }), controller.commit);

@@ -10,7 +10,7 @@ const { ensureAudioIndexes, AUDIO_INDEX_NAMES, AUDIO_INDEXES, main } = require('
 beforeAll(connectInMemoryMongo);
 afterAll(disconnectInMemoryMongo);
 
-const RECORDING_INDEXES = ['audio_recording_request_v1', 'audio_recording_processing_v1'];
+const RECORDING_INDEXES = ['audio_recording_request_v1', 'audio_recording_processing_v1', 'audio_recording_assessment_v1'];
 const LEDGER_INDEXES = ['audio_usage_key_v1', 'audio_usage_teacher_month_v1', 'audio_usage_inflight_teacher_v1', 'audio_usage_inflight_uploader_v1',
   'audio_usage_recording_v1'];
 
@@ -34,6 +34,8 @@ test('creates every index on an empty database, twice without error, and leaves 
   expect(recording.audio_recording_request_v1).toEqual({ name: 'audio_recording_request_v1', key: { owner: 1, requestId: 1 }, unique: true });
   expect(recording.audio_recording_processing_v1).toEqual({ name: 'audio_recording_processing_v1', key: { processingQueue: 1, nextAttemptAt: 1, leaseUntil: 1 },
     partialFilterExpression: { processingQueue: true } });
+  expect(recording.audio_recording_assessment_v1).toEqual({ name: 'audio_recording_assessment_v1',
+    key: { assessmentQueue: 1, assessmentNextAttemptAt: 1, assessmentLeaseUntil: 1 }, partialFilterExpression: { assessmentQueue: true } });
   expect(recording.someone_elses_index).toBeTruthy();
   const ledger = Object.fromEntries(first.AudioUsageLedger.map(index => [index.name, index]));
   expect(ledger.audio_usage_key_v1).toEqual({ name: 'audio_usage_key_v1', key: { key: 1 }, unique: true });

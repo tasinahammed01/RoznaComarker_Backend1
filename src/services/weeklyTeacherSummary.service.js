@@ -37,7 +37,8 @@ function assessedEntry(document, feedback, live = false) {
 async function progressForWindow({ teacherId, classIds, assignmentIds, start, end }) {
   if (!classIds.length || !assignmentIds.length) return { studentsImproved: 0, improvedRevisions: 0,
     averageRevisionScoreDelta: null, issuesCorrected: 0, strongestImprovedCategory: null, improvedByClass: new Map() };
-  const scope = { class: { $in: classIds }, assignment: { $in: assignmentIds } };
+  // Essay revisions only: speaking results (sourceKind 'audio') are never mixed in (revisions have no sourceKind, so they all match).
+  const scope = { class: { $in: classIds }, assignment: { $in: assignmentIds }, sourceKind: { $ne: 'audio' } };
   const [windowArchives, windowLive] = await Promise.all([
     SubmissionRevision.find({ ...scope, draftNumber: { $gt: 1 }, assessmentCompletedAt: { $gt: start, $lte: end } }).lean(),
     Submission.find({ ...scope, draftNumber: { $gt: 1 }, assessmentCompletedAt: { $gt: start, $lte: end } }).lean()
