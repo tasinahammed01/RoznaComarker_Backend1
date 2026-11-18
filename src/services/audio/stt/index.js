@@ -8,7 +8,7 @@ const logger = require('../../../utils/logger');
 const { readLimits } = require('../policy');
 const { SttError } = require('./errors');
 
-const PROVIDERS = Object.freeze({ deepgram: require('./deepgram'), openai: require('./openai') });
+const PROVIDERS = Object.freeze({ deepgram: require('./deepgram'), openai: require('./openai'), 'openrouter-scribe': require('./openrouterScribe') });
 
 const effectiveTimeoutMs = (env = process.env) => readLimits(env).limits.sttTimeoutMs;
 

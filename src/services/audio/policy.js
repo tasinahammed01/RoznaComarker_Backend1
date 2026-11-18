@@ -6,7 +6,8 @@
 /** AUDIO_STT_ENABLED=true turns the feature on. Anything else, or unset, leaves it off. */
 const audioSttEnabled = (env = process.env) => String(env.AUDIO_STT_ENABLED || '').trim().toLowerCase() === 'true';
 
-const PROVIDERS = Object.freeze(['deepgram', 'openai']);
+// openrouter-scribe: ElevenLabs Scribe v2 through OpenRouter (services/audio/stt/openrouterScribe.js). Chosen only by setting it here.
+const PROVIDERS = Object.freeze(['deepgram', 'openai', 'openrouter-scribe']);
 // Fixed rules (not configurable): a recording must be at least 5 s long, and the measured duration may exceed the maximum by 1 s (encoders
 // pad the last frame, so a 7:00 recording can measure 7:00.4).
 const MIN_DURATION_SECONDS = 5;
@@ -20,8 +21,18 @@ const INTEGER_SETTINGS = Object.freeze([
   ['AUDIO_DAILY_MINUTES_PER_TEACHER', 'dailyMinutesPerTeacher', 120, 1, 100000],
   ['AUDIO_MONTHLY_MINUTES_PER_TEACHER', 'monthlyMinutesPerTeacher', 1500, 1, 1000000],
   ['AUDIO_STT_TIMEOUT_MS', 'sttTimeoutMs', 300000, 10000, 600000],
-  ['AUDIO_STT_MAX_ATTEMPTS', 'sttMaxAttempts', 3, 1, 3]
+  ['AUDIO_STT_MAX_ATTEMPTS', 'sttMaxAttempts', 3, 1, 3],
+  // OpenRouter Scribe only: its multipart upload limit is 25 MB (a larger file gets a 400) and there is no base64 route for Scribe, so the
+  // upload limit with this provider is min(AUDIO_MAX_FILE_BYTES, this). Default 20 MiB keeps a margin; the ceiling stays under 25 MB.
+  ['AUDIO_STT_OPENROUTER_MAX_FILE_BYTES', 'openrouterMaxFileBytes', 20 * 1024 * 1024, 1024 * 1024, 25000000]
 ]);
+const OPENROUTER_CAP_SETTING = INTEGER_SETTINGS.find(([name]) => name === 'AUDIO_STT_OPENROUTER_MAX_FILE_BYTES');
+
+/** The OpenRouter Scribe upload cap in bytes (AUDIO_STT_OPENROUTER_MAX_FILE_BYTES, default 20 MiB; an invalid value gives the default). */
+function openrouterMaxFileBytes(env = process.env) {
+  const [name, , fallback, minimum, maximum] = OPENROUTER_CAP_SETTING;
+  return readInteger(env, name, fallback, minimum, maximum, []);
+}
 
 function readInteger(env, name, fallback, minimum, maximum, issues) {
   const raw = env[name];
@@ -61,9 +72,11 @@ function readLimits(env = process.env) {
   limits.sttFallbackEnabled = String(env.AUDIO_STT_FALLBACK_ENABLED || '').trim().toLowerCase() === 'true';
   if (limits.sttFallbackEnabled && limits.sttProvider !== 'deepgram') { issues.push('AUDIO_STT_FALLBACK_ENABLED'); limits.sttFallbackEnabled = false; }
   limits.sttFallbackProvider = limits.sttFallbackEnabled ? 'openai' : null;
+  // With OpenRouter Scribe the upload itself is refused above the provider cap (the same AUDIO_TOO_LARGE answer, with the capped size).
+  const maxFileBytes = limits.sttProvider === 'openrouter-scribe' ? Math.min(limits.maxFileBytes, limits.openrouterMaxFileBytes) : limits.maxFileBytes;
   return {
     limits: Object.freeze({
-      maxFileBytes: limits.maxFileBytes,
+      maxFileBytes,
       maxDurationSeconds: limits.maxDurationSeconds,
       durationToleranceSeconds: DURATION_TOLERANCE_SECONDS,
       minDurationSeconds: MIN_DURATION_SECONDS,
@@ -94,5 +107,5 @@ function publicConfig(env = process.env, { role } = {}) {
   };
 }
 
-module.exports = { audioSttEnabled, readLimits, maxAcceptedDurationSeconds, publicConfig, PROVIDERS, MIN_DURATION_SECONDS, DURATION_TOLERANCE_SECONDS,
-  STT_BACKOFF_MS, MAX_STT_BACKOFF_MS };
+module.exports = { audioSttEnabled, readLimits, maxAcceptedDurationSeconds, publicConfig, openrouterMaxFileBytes, PROVIDERS, MIN_DURATION_SECONDS,
+  DURATION_TOLERANCE_SECONDS, STT_BACKOFF_MS, MAX_STT_BACKOFF_MS };

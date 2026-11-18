@@ -219,7 +219,8 @@ describe('normalisation edge cases (synthetic bodies)', () => {
   });
 
   test('a word without a valid confidence is an unreadable answer (retryable), not a crash', () => {
-    expect(() => scribe.normalize(body([w('Hello', 0, 0.4, undefined)]), { model: 'm' })).toThrow(expect.objectContaining({ code: 'AUDIO_STT_BAD_RESPONSE' }));
+    expect(() => scribe.normalize(body([w('Hello', 0, 0.4, null)]), { model: 'm' })).toThrow(expect.objectContaining({ code: 'AUDIO_STT_BAD_RESPONSE' }));
+    expect(() => scribe.normalize(body([w('Hello', 0, 0.4, 1.2)]), { model: 'm' })).toThrow(expect.objectContaining({ code: 'AUDIO_STT_BAD_RESPONSE' }));
     expect(() => scribe.normalize({ text: 'x' }, { model: 'm' })).toThrow(expect.objectContaining({ code: 'AUDIO_STT_BAD_RESPONSE' }));
   });
 

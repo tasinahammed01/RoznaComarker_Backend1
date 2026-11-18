@@ -14,9 +14,14 @@ const MESSAGES = Object.freeze({
   AUDIO_STT_NETWORK: 'The speech-to-text provider could not be reached.',
   AUDIO_STT_TIMEOUT: 'The speech-to-text provider took too long to answer.',
   AUDIO_STT_CANCELLED: 'Transcription was cancelled.',
-  AUDIO_STT_BAD_RESPONSE: 'The speech-to-text provider sent an unreadable answer.'
+  AUDIO_STT_BAD_RESPONSE: 'The speech-to-text provider sent an unreadable answer.',
+  // Operational (OpenRouter 402: credits or in-flight budget): not the student's problem; retried later, Retry-After honoured.
+  AUDIO_STT_PROVIDER_CREDITS: 'The speech-to-text account has no credit available right now.',
+  // The answer failed the suspicious-response check twice (services/audio/stt/transcriptGuard.js): final, nothing stored or charged.
+  AUDIO_STT_UNRELIABLE_RESULT: 'The speech-to-text result looked incomplete or garbled.'
 });
-const RETRYABLE = new Set(['AUDIO_STT_RATE_LIMITED', 'AUDIO_STT_PROVIDER_ERROR', 'AUDIO_STT_NETWORK', 'AUDIO_STT_TIMEOUT', 'AUDIO_STT_BAD_RESPONSE']);
+const RETRYABLE = new Set(['AUDIO_STT_RATE_LIMITED', 'AUDIO_STT_PROVIDER_ERROR', 'AUDIO_STT_NETWORK', 'AUDIO_STT_TIMEOUT', 'AUDIO_STT_BAD_RESPONSE',
+  'AUDIO_STT_PROVIDER_CREDITS']);
 
 class SttError extends Error {
   constructor(code, { provider = null, httpStatus = null, detail = null, retryAfterMs = null } = {}) {
