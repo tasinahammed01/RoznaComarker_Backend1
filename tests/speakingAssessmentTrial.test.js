@@ -42,6 +42,42 @@ test('run directly without the switch: exits 1, prints no key', () => {
   expect(run.stdout + run.stderr).not.toContain('sk-or-placeholder-should-never-print');
 });
 
+describe('with the switch and an injected fake provider (stage 7b output)', () => {
+  const h = require('./helpers/speakingAssessmentFixtures');
+  const env = { ...h.TEST_ENV, NODE_ENV: 'development', SPEAKING_TRIAL: trial.SWITCH, OPENROUTER_API_KEY: 'sk-or-placeholder-should-never-print' };
+  const capture = async (argv, reply) => {
+    const lines = [];
+    const log = jest.spyOn(console, 'log').mockImplementation((...args) => lines.push(args.join(' ')));
+    const err = jest.spyOn(console, 'error').mockImplementation((...args) => lines.push(args.join(' ')));
+    try { await trial.main(argv, env, { fetchImpl: h.fakeOpenRouter(reply) }); } finally { log.mockRestore(); err.mockRestore(); }
+    return lines.join('\n');
+  };
+
+  test('a rejected reply prints the validation sub-code', async () => {
+    const out = await capture(['--case', 'medium', '--max', '1'], h.output({ summary: 'You used 47 different linking words, which is excellent work overall.' }));
+    expect(out).toMatch(/- medium: FAILED AI_OUTPUT_VALIDATION_FAILED \(SPEAKING_OUTPUT_NUMBER\)/);
+  });
+
+  test('--show-feedback prints the feedback, each criterion comment and the fluency figures sent; never the key or the prompt', async () => {
+    const out = await capture(['--case', 'weak', '--show-feedback'], h.output({ level: 'Developing' }));
+    expect(out).toMatch(/- weak: score 50/);
+    expect(out).toContain('summary: A clear answer about your town');
+    expect(out).toContain('Task and content (Developing): The answer explains the main ideas clearly');
+    expect(out).toContain('strength: You stayed on the topic');
+    expect(out).toContain('improvement: Try linking your ideas');
+    expect(out).toMatch(/fluency sent: \d+(\.\d+)? words per minute, [\d.]+ fillers per 100 words, \d+ pauses over 1 s, \d+ repetitions/);
+    expect(out).not.toContain('sk-or-placeholder');
+    expect(out).not.toContain('You are the speaking assessor');
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test('without --show-feedback no feedback text is printed', async () => {
+    const out = await capture(['--case', 'weak'], h.output({ level: 'Developing' }));
+    expect(out).not.toContain('summary:');
+    expect(out).not.toContain('fluency sent');
+  });
+});
+
 test('the source never prints the environment, a key or the prompt', () => {
   const source = fs.readFileSync(SCRIPT, 'utf8');
   for (const line of source.split('\n').filter(l => /console\.(log|error)/.test(l))) {

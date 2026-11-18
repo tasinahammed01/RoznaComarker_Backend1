@@ -19,6 +19,14 @@ const { TERMINAL_MESSAGES } = require('./speakingAssessment.service');
 const APPLICABLE = ['CONTENT', 'ORGANIZATION', 'GRAMMAR', 'VOCABULARY'];
 const NOT_ASSESSABLE = new Set(['SPEAKING_NOT_ENGLISH', 'SPEAKING_UNINTELLIGIBLE', 'SPEAKING_TRANSCRIPT_TOO_LONG']);
 const CORRECTION_FIELDS = ['id', 'category', 'symbol', 'symbolLabel', 'quotedText', 'startChar', 'endChar', 'message', 'suggestedText'];
+const OFF_TOPIC_NOTE = 'This answer did not address the task, so the score is capped.';
+/** Where each removed filler stood in the assessed text, for the "show filler words" toggle. Only { offset, text }; out-of-range ones dropped. */
+function fillersOf(recording) {
+  const text = String(recording?.derived?.assessorText || '');
+  const list = recording?.status === 'ready' && Array.isArray(recording.derived?.displayText?.fillers) ? recording.derived.displayText.fillers : [];
+  return list.filter(item => Number.isInteger(item?.offset) && item.offset >= 0 && item.offset <= text.length && typeof item.text === 'string' && item.text.trim())
+    .map(item => ({ offset: item.offset, text: item.text.slice(0, 40) }));
+}
 const pick = (object, keys) => Object.fromEntries(keys.filter(key => object?.[key] !== undefined).map(key => [key, object[key]]));
 
 /** One state for both audiences; the student never sees 'blocked' or 'failed' (both are 'awaiting_teacher' for them). */
@@ -47,6 +55,7 @@ function resultBlock(feedback, { marksVisible }) {
     summary: speaking.summary || '', strengths: speaking.strengths || [], improvements: speaking.improvements || [],
     actionSteps: (feedback.detailedFeedback?.actionSteps || []).map(step => ({ priority: step.priority, action: step.action })),
     teacherComments: feedback.teacherComments || '',
+    scoreNote: feedback.scoringAudit?.offTopicCap?.applied ? OFF_TOPIC_NOTE : null,
     assessedAt: feedback.updatedAt || null
   };
 }
@@ -75,6 +84,7 @@ async function readResult(context) {
     marksVisible,
     assessedText: recording?.status === 'ready' ? String(recording.derived?.assessorText || '') : null,
     fluency: recording?.status === 'ready' ? fluencyBlock(recording.derived?.fluency) : null,
+    fillers: fillersOf(recording),
     result: ready_ ? resultBlock(feedback, { marksVisible }) : null,
     corrections
   };
@@ -82,7 +92,8 @@ async function readResult(context) {
   return { ...out, errorCode: ['failed', 'blocked', 'not_enough_speech', 'not_assessable'].includes(state) ? submission.evaluationErrorCode || null : null,
     runStatus: submission.assessmentStatus || null, relevance: stored?.scoringAudit?.relevance || null,
     droppedCorrections: ready_ ? Number(stored?.scoringAudit?.droppedCorrections || 0) : null, rubricSource: stored?.scoringAudit?.rubricSource || null,
+    offTopicCap: ready_ && stored?.scoringAudit?.offTopicCap?.applied ? { cap: stored.scoringAudit.offTopicCap.cap, uncappedScore: stored.scoringAudit.offTopicCap.uncappedScore } : null,
     canRetryAssessment: ['failed', 'blocked'].includes(state) };
 }
 
-module.exports = { readResult, stateOf };
+module.exports = { readResult, stateOf, OFF_TOPIC_NOTE };

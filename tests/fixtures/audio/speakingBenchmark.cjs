@@ -33,8 +33,9 @@ module.exports = [
   { name: 'strong', text: STRONG, reply: h => h.output({ level: 'Excellent' }), expect: { status: 'completed', score: [100, 100], corrections: 0 } },
   { name: 'filler-heavy', text: MEDIUM, fluency: { fillersPer100: 22 }, reply: h => h.output({ level: 'Good', levels: { 'speaking-fluency': 'Developing' } }),
     expect: { status: 'completed', score: [71, 72], corrections: 0 } },
+  // Stage 7b: the rubric gives 62.5; an off-topic answer is capped at SPEAKING_OFF_TOPIC_SCORE_CAP (default 50).
   { name: 'off-topic', text: OFF_TOPIC, reply: h => h.output({ relevance: 'off_topic', level: 'Good', levels: { 'speaking-task': 'Beginning' } }),
-    expect: { status: 'completed', score: [55, 70], relevance: 'off_topic' } },
+    expect: { status: 'completed', score: [50, 50], relevance: 'off_topic' } },
   { name: 'off-topic but scored as on task (inconsistent: rejected)', text: OFF_TOPIC, reply: h => h.output({ relevance: 'off_topic', level: 'Good' }),
     expect: { status: 'failed', code: 'AI_OUTPUT_VALIDATION_FAILED' } },
   { name: 'too short', text: 'My town is small and quiet. I like it.', reply: null, expect: { status: 'not_assessable', code: 'SPEAKING_NOT_ENOUGH_SPEECH', calls: 0 } },

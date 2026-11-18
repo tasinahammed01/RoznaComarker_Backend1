@@ -55,6 +55,19 @@ const TERMINAL_MESSAGES = Object.freeze({
 });
 const NOT_CHARGEABLE = new Set(Object.keys(TERMINAL_MESSAGES));
 
+const DEFAULT_OFF_TOPIC_CAP = 50;
+const TASK_CRITERION_ID = 'speaking-task';
+/**
+ * SPEAKING_OFF_TOPIC_SCORE_CAP: whole number 0..100, default 50. When the assessor reports the answer as off topic, and the rubric has the task
+ * criterion (the default speaking rubric and its copies), the overall score is capped there. A rubric without that criterion is never capped.
+ * Deterministic and after the model: the prompt is unchanged, and the essay rubric code is used as is (its levels and points stay).
+ */
+function offTopicScoreCap(env = process.env) {
+  const raw = String(env.SPEAKING_OFF_TOPIC_SCORE_CAP ?? '').trim();
+  const value = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  return Number.isInteger(value) && value >= 0 && value <= 100 ? value : DEFAULT_OFF_TOPIC_CAP;
+}
+
 /** SPEAKING_MIN_WORDS: whole number 5..200, default 30 (about 15 to 20 seconds of speech; fewer words cannot show organisation or range). */
 function minWords(env = process.env) {
   const raw = String(env.SPEAKING_MIN_WORDS ?? '').trim();
@@ -246,7 +259,12 @@ async function runSpeakingAssessment(recordingId, { now = () => new Date(), env 
   if (!value.assessable) return terminal(value.reason === 'not_english' ? 'SPEAKING_NOT_ENGLISH' : 'SPEAKING_UNINTELLIGIBLE', runId);
 
   try {
-    const custom = calculateCustomRubricScore(rubric.rubric, value.criteria);
+    const scored = calculateCustomRubricScore(rubric.rubric, value.criteria);
+    const cap = offTopicScoreCap(env);
+    const capApplies = value.relevance === 'off_topic' && rubric.rubric.criteria.some(c => c.id === TASK_CRITERION_ID) && scored.overallScore > cap;
+    const offTopicCap = capApplies ? { applied: true, cap, uncappedScore: scored.overallScore } : { applied: false };
+    // The stored custom-rubric result keeps every level and point; only its total follows the cap, so every reader sees one score.
+    const custom = capApplies ? { ...scored, overallScore: cap } : scored;
     const legend = require('../correctionLegendResolver.service').fallbackLegend();
     const labels = new Map(legend.groups.flatMap(group => (group.symbols || []).map(item => [item.symbol, item.label])));
     const corrections = value.corrections.map((item, index) => ({ id: `speaking-${sourceHash.slice(0, 12)}-${index + 1}`, ...item,
@@ -270,7 +288,7 @@ async function runSpeakingAssessment(recordingId, { now = () => new Date(), env 
         scoreOutOf5: Math.round(c.configuredLevelPercentage / 20 * 10) / 10 })), overallComments: value.summary },
       scoringAudit: { version: SCORING_VERSION, overallMethod: 'custom_rubric_weighted_total', rubricSource: rubric.source, notApplicable: [...speakingRubric.NOT_APPLICABLE],
         builtInDerivation: 'speaking_default_criteria', promptVersion: prompt.PROMPT_VERSION, schemaVersion: prompt.SCHEMA_VERSION, relevance: value.relevance,
-        wordCount, minWords: minWords(env), droppedCorrections: value.droppedCorrections,
+        wordCount, minWords: minWords(env), droppedCorrections: value.droppedCorrections, offTopicCap,
         usage: { inputTokens: usage.prompt_tokens ?? null, outputTokens: usage.completion_tokens ?? null, costUsd: typeof usage.cost === 'number' ? usage.cost : null } },
       detailedFeedback, detailedFeedbackSourceHash: sourceHash, detailedFeedbackVersion: detailedFeedbackService.VERSION
     }, $unset: { evaluationPolicyHash: 1, evaluationPolicy: 1, evaluationBuiltInContextHash: 1, analysisInputHash: 1 } }, { new: true, runValidators: true });
@@ -316,5 +334,5 @@ async function retryAssessment({ context, now = () => new Date() }) {
 }
 
 module.exports = { ASSESSMENT_VERSION, EVALUATION_VERSION, SOURCE_VERSION, SCORING_VERSION, DEFAULT_MIN_WORDS, MAX_ATTEMPTS, MAX_ASSESSED_CHARS, SWEEP_CAP,
-  TERMINAL_MESSAGES, NOT_CHARGEABLE, minWords, countWords, nonLatinShare, enqueueAssessment, assessmentSweepQuery, sweepAssessments, runSpeakingAssessment,
+  TERMINAL_MESSAGES, NOT_CHARGEABLE, DEFAULT_OFF_TOPIC_CAP, offTopicScoreCap, minWords, countWords, nonLatinShare, enqueueAssessment, assessmentSweepQuery, sweepAssessments, runSpeakingAssessment,
   retryAssessment };

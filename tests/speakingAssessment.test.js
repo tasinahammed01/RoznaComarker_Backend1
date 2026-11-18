@@ -266,6 +266,66 @@ describe('edge cases', () => {
   });
 });
 
+describe('off-topic score cap (SPEAKING_OFF_TOPIC_SCORE_CAP, default 50; stage 7b)', () => {
+  const OFF = (levels = {}) => h.output({ relevance: 'off_topic', level: 'Good', levels: { 'speaking-task': 'Beginning', ...levels } });
+  const stored = async submission => SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
+
+  test('an off-topic answer is capped at 50: stored score, grade and the audit agree; the rubric levels and points are unchanged', async () => {
+    const { submission, outcome } = await assessed(TEXTS.OFF_TOPIC, OFF());
+    expect(outcome).toMatchObject({ status: 'completed', overallScore: 50 });
+    const fb = await stored(submission);
+    expect(fb.overallScore).toBe(50);
+    expect(fb.grade).toBe(require('../src/services/rubricLanguageScoring.service').gradeFromOverallScore(50));
+    expect(fb.scoringAudit.offTopicCap).toEqual({ applied: true, cap: 50, uncappedScore: 62.5 });
+    expect(fb.customRubricScores.criteria.map(c => c.selectedLevel)).toEqual(['Beginning', 'Good', 'Good', 'Good', 'Good']);
+    expect(fb.customRubricScores.criteria.reduce((sum, c) => sum + c.weightedPoints, 0)).toBe(62.5);
+  });
+
+  test('on topic: never capped, even with a low task level', async () => {
+    const { submission } = await assessed(TEXTS.MEDIUM, h.output({ level: 'Excellent', levels: { 'speaking-task': 'Beginning' } }));
+    const fb = await stored(submission);
+    expect(fb.overallScore).toBe(81.25);
+    expect(fb.scoringAudit.offTopicCap).toEqual({ applied: false });
+  });
+
+  test('an uncapped score already at or below the cap: unchanged, recorded as not applied', async () => {
+    const { submission } = await assessed(TEXTS.OFF_TOPIC, OFF({ 'speaking-organisation': 'Developing', 'speaking-grammar': 'Developing', 'speaking-vocabulary': 'Developing', 'speaking-fluency': 'Developing' }));
+    const fb = await stored(submission);
+    expect(fb.overallScore).toBe(43.75);
+    expect(fb.scoringAudit.offTopicCap).toEqual({ applied: false });
+  });
+
+  test.each([['0', 0], ['100', 62.5], ['49', 49], ['101', 50], ['-1', 50], ['abc', 50], ['', 50], ['50.5', 50]])('SPEAKING_OFF_TOPIC_SCORE_CAP=%p gives %p', async (value, expected) => {
+    const made = await h.readyRecording(f, TEXTS.OFF_TOPIC);
+    await queue(made.recording._id);
+    await run(made.recording._id, h.fakeOpenRouter(OFF()), { env: { ...h.TEST_ENV, SPEAKING_OFF_TOPIC_SCORE_CAP: value } });
+    expect((await stored(made.submission)).overallScore).toBe(expected);
+  });
+
+  test('a custom rubric with no task criterion is never capped (no task criterion to judge relevance against)', async () => {
+    const SavedRubric = require('../src/models/savedRubric.model');
+    const rubric = await SavedRubric.create({ teacher: f.teacher.user._id, name: 'Own speaking rubric', rubricData: { totalPoints: 100, criteria: [
+      { id: 'own-ideas', name: 'Ideas', weight: 60, levels: [{ title: 'Strong', score: 2, description: 'Clear ideas.' }, { title: 'Weak', score: 1, description: 'Few ideas.' }] },
+      { id: 'own-language', name: 'Language', weight: 40, levels: [{ title: 'Strong', score: 2, description: 'Accurate.' }, { title: 'Weak', score: 1, description: 'Many errors.' }] }] } });
+    await Assignment.updateOne({ _id: f.assignment._id }, { $set: { 'speaking.rubricRef': rubric._id } });
+    const reply = { assessable: true, notAssessableReason: 'none', relevance: 'off_topic', corrections: [],
+      criteria: [{ criterionId: 'own-ideas', level: 'Strong', comment: 'The answer gives clear ideas with an example.' },
+        { criterionId: 'own-language', level: 'Strong', comment: 'The answer uses accurate language throughout.' }],
+      strengths: ['You spoke clearly and kept going without stopping.'], improvements: ['Answer the question that was set by the teacher.'],
+      summary: 'A clear answer, but it is about a different topic from the one set.' };
+    const { submission, outcome } = await assessed(TEXTS.OFF_TOPIC, reply);
+    expect(outcome.status).toBe('completed');
+    const fb = await stored(submission);
+    expect(fb.overallScore).toBe(100);
+    expect(fb.scoringAudit.offTopicCap).toEqual({ applied: false });
+  });
+
+  test('the cap never touches the assessor prompt', () => {
+    expect(prompt.SYSTEM).not.toMatch(/\bcapped\b|score cap|SCORE_CAP|at most \d+ points/i);
+    expect(prompt.PROMPT_VERSION).toBe('speaking-assessment-prompt-v1');
+  });
+});
+
 describe('corrections: offsets into the exact assessed text', () => {
   const corrections = [
     { category: 'GRAMMAR', symbol: 'AGR', quotedText: 'It have', occurrence: 1, suggestedText: 'It has', message: 'Use has with it.' },

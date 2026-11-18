@@ -62,10 +62,10 @@ describe('a ready result', () => {
     expect(res.status).toBe(200);
     expect(res.headers['cache-control']).toBe('private, no-store');
     const data = res.body.data;
-    expect(Object.keys(data).sort()).toEqual(['assessedText', 'corrections', 'fluency', 'marksVisible', 'message', 'result', 'state', 'submissionId'].sort());
+    expect(Object.keys(data).sort()).toEqual(['assessedText', 'corrections', 'fillers', 'fluency', 'marksVisible', 'message', 'result', 'state', 'submissionId'].sort());
     expect(data).toMatchObject({ submissionId: String(submission._id), state: 'ready', marksVisible: true, message: null, assessedText: TEXTS.WEAK });
-    expect(Object.keys(data.result).sort()).toEqual(['actionSteps', 'assessedAt', 'categories', 'criteria', 'grade', 'improvements', 'maxScore', 'overallScore', 'strengths',
-      'summary', 'teacherComments'].sort());
+    expect(Object.keys(data.result).sort()).toEqual(['actionSteps', 'assessedAt', 'categories', 'criteria', 'grade', 'improvements', 'maxScore', 'overallScore', 'scoreNote',
+      'strengths', 'summary', 'teacherComments'].sort());
     expect(data.result.overallScore).toBe(50);
     expect(data.result.criteria).toHaveLength(5);
     expect(data.result.criteria[0]).toEqual({ criterionId: 'speaking-task', title: 'Task and content', level: 'Developing', weightPercent: 25, points: 12.5,
@@ -105,6 +105,62 @@ describe('a ready result', () => {
     expect((await result(essay._id, f.student.token)).status).toBe(404);
     delete process.env.AUDIO_STT_ENABLED;
     expect((await result(submission._id, f.student.token)).status).toBe(404);
+  });
+});
+
+describe('filler positions (stage 7b): for the fillers toggle', () => {
+  test('both audiences get { offset, text } into the assessed text; never the internal word index', async () => {
+    const { submission, recording } = await assessedSubmission();
+    await AudioRecording.collection.updateOne({ _id: recording._id }, { $set: { 'derived.displayText.fillers': [
+      { wordIndex: 3, offset: 0, text: 'Um,' }, { wordIndex: 9, offset: 18, text: 'uh' }, { wordIndex: 99, offset: 99999, text: 'er' }] } });
+    for (const token of [f.student.token, f.teacher.token]) {
+      const data = (await result(submission._id, token)).body.data;
+      expect(data.fillers).toEqual([{ offset: 0, text: 'Um,' }, { offset: 18, text: 'uh' }]);
+      expect(JSON.stringify(data)).not.toContain('wordIndex');
+    }
+  });
+
+  test('no fillers, or a recording not ready yet: an empty list', async () => {
+    const { submission } = await assessedSubmission();
+    expect((await result(submission._id, f.student.token)).body.data.fillers).toEqual([]);
+    const classmate = await require('./helpers/speakingFixtures').person('student', 'classmate-fillers');
+    await require('../src/models/membership.model').create({ student: classmate.user._id, class: f.klass._id, status: 'active' });
+    const pending = await makeAudioSubmission({ ...f, student: classmate }, { status: 'queued' });
+    await AudioRecording.collection.updateOne({ _id: pending.recording._id }, { $set: { 'derived.assessorText': 'Um, I think so.',
+      'derived.displayText.fillers': [{ wordIndex: 0, offset: 0, text: 'Um,' }] } });
+    expect((await result(pending.submission._id, classmate.token)).body.data.fillers).toEqual([]);
+  });
+});
+
+describe('off-topic score cap in the result (stage 7b)', () => {
+  const OFF = h.output({ relevance: 'off_topic', level: 'Good', levels: { 'speaking-task': 'Beginning' } });
+  test('the student sees the capped score and the fixed note, never the uncapped score or the cap value', async () => {
+    const { submission } = await assessedSubmission(TEXTS.OFF_TOPIC, OFF);
+    const data = (await result(submission._id, f.student.token)).body.data;
+    expect(data.result).toMatchObject({ overallScore: 50, scoreNote: 'This answer did not address the task, so the score is capped.' });
+    expect(JSON.stringify(data)).not.toMatch(/62\.5|uncapped|offTopicCap|"cap"/);
+  });
+
+  test('the teacher sees the note and why: the cap and the uncapped score', async () => {
+    const { submission } = await assessedSubmission(TEXTS.OFF_TOPIC, OFF);
+    const data = (await result(submission._id, f.teacher.token)).body.data;
+    expect(data.result).toMatchObject({ overallScore: 50, scoreNote: 'This answer did not address the task, so the score is capped.' });
+    expect(data.offTopicCap).toEqual({ cap: 50, uncappedScore: 62.5 });
+  });
+
+  test('marks hidden: the note stays, no numbers', async () => {
+    const { submission } = await assessedSubmission(TEXTS.OFF_TOPIC, OFF);
+    await Assignment.updateOne({ _id: f.assignment._id }, { $set: { showMarksToStudent: false } });
+    const data = (await result(submission._id, f.student.token)).body.data;
+    expect(data.result.scoreNote).toBe('This answer did not address the task, so the score is capped.');
+    expect(data.result.overallScore).toBeUndefined();
+  });
+
+  test('on topic: no note', async () => {
+    const { submission } = await assessedSubmission();
+    const data = (await result(submission._id, f.teacher.token)).body.data;
+    expect(data.result.scoreNote).toBeNull();
+    expect(data.offTopicCap).toBeNull();
   });
 });
 
