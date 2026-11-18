@@ -19,6 +19,11 @@ jest.mock('../src/middlewares/jwtAuth.middleware', () => ({ verifyJwtToken: (req
 jest.mock('../src/middlewares/usage.middleware', () => ({
   enforceStorageLimitFromUploadedFiles: () => (_req, _res, next) => next(),
 }));
+// Speaking (stage 5) added a database check to these essay upload routes: a speaking assignment is refused before its upload is read
+// (essayOnly.middleware.js; proved by tests/audioGuardInventory.test.js and tests/speakingUpload.test.js). This suite has no database, so the
+// check is passed through here, like the other database-backed middleware it replaces.
+jest.mock('../src/middlewares/essayOnly.middleware', () => ({ ...jest.requireActual('../src/middlewares/essayOnly.middleware'),
+  refuseSpeakingEssayUpload: () => (_req, _res, next) => next() }));
 jest.mock('../src/middlewares/rateLimit.middleware', () => ({
   createUserRateLimiter: () => (_req, _res, next) => next(),
   createSensitiveRateLimiter: () => (_req, _res, next) => next(),
