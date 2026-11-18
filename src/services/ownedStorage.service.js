@@ -4,6 +4,7 @@ const path = require('path');
 const Class = require('../models/class.model');
 const Submission = require('../models/Submission');
 const File = require('../models/File');
+const AudioRecording = require('../models/AudioRecording');
 
 const id = (value) => String(value?._id || value || '').trim();
 async function bytesFor(file) {
@@ -15,8 +16,12 @@ async function bytesFor(file) {
 }
 async function calculateOwnedStorageUsage(userId) {
   const classIds = await Class.find({ teacher: userId }).distinct('_id');
-  const submissions = classIds.length ? await Submission.find({ class: { $in: classIds } }).select('file files').lean() : [];
-  const referenced = new Set(submissions.flatMap((submission) => [submission.file, ...(submission.files || [])]).map(id).filter(Boolean));
+  const submissions = classIds.length ? await Submission.find({ class: { $in: classIds } }).select('file files +audioRecording').lean() : [];
+  // Speaking submissions keep their audio in a File referenced by their AudioRecording (the uploader's own File is also counted below).
+  const recordingIds = submissions.map((submission) => submission.audioRecording).filter(Boolean);
+  const audioFiles = recordingIds.length ? await AudioRecording.find({ _id: { $in: recordingIds } }).select('audioFileId').lean() : [];
+  const referenced = new Set([...submissions.flatMap((submission) => [submission.file, ...(submission.files || [])]),
+    ...audioFiles.map((recording) => recording.audioFileId)].map(id).filter(Boolean));
   const query = referenced.size ? { $or: [{ uploadedBy: userId }, { _id: { $in: [...referenced] } }] } : { uploadedBy: userId };
   // Raster pages are processing artifacts; the original upload is charged once.
   const files = await File.find({ ...query, sourceFileId: { $exists: false } }).select('_id path sizeBytes').lean();

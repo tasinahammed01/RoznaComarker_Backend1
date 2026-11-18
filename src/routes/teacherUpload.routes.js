@@ -8,6 +8,8 @@ const { requireRole } = require('../middlewares/role.middleware');
 const { createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
 const { upload, setUploadType, handleUploadError, validateUploadedFileSignature, detectSignatureKind } = require('../middlewares/upload.middleware');
 const controller = require('../controllers/teacherUpload.controller');
+// Teacher uploads are essay work: a speaking (audio) submission is refused.
+const { refuseAudioSubmission } = require('../middlewares/essayOnly.middleware');
 
 const { preflightImage, enforceImagePreflight } = require('../middlewares/imagePreflight.middleware');
 
@@ -88,7 +90,7 @@ router.post('/image-preflight', verifyJwtToken, requireRole('teacher'), prefligh
   teacherUploadError, signatureCheck, requireAllowedSignatures, controller.source, preflightImage);
 router.post('/', verifyJwtToken, requireRole('teacher'), uploadLimiter, setUploadType('submissions'), upload.array('files', 20), teacherUploadError,
   signatureCheck, requireAllowedSignatures, controller.source, recheckWhenStale, enforceImagePreflight, controller.save);
-router.post('/:submissionId/send', verifyJwtToken, requireRole('teacher'), sendLimiter, controller.send);
-router.post('/:submissionId/retry', verifyJwtToken, requireRole('teacher'), retryLimiter, controller.retry);
+router.post('/:submissionId/send', verifyJwtToken, requireRole('teacher'), refuseAudioSubmission, sendLimiter, controller.send);
+router.post('/:submissionId/retry', verifyJwtToken, requireRole('teacher'), refuseAudioSubmission, retryLimiter, controller.retry);
 
 module.exports = router;

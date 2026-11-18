@@ -24,6 +24,11 @@ const submissionSchema = new Schema(
       required: function () { return this.submissionMode !== 'guest'; }
     },
     submissionMode: { type: String, enum: ['registered', 'guest'], default: 'registered' },
+    // Speaking work (audio + speech-to-text): 'audio'; essays leave it unset. An audio submission has no files and never gets ocrStatus, so
+    // the essay recovery worker never selects it; essay-only routes refuse it (middlewares/essayOnly.middleware.js). Its audio, words and
+    // transcript live in AudioRecording (audioRecording, never selected unless asked: no student surface needs the id).
+    sourceKind: { type: String, enum: ['audio'], default: undefined },
+    audioRecording: { type: Schema.Types.ObjectId, ref: 'AudioRecording', default: undefined, select: false },
     guest: {
       displayName: { type: String, maxlength: 120 },
       normalizedEmail: { type: String, maxlength: 254, select: false },

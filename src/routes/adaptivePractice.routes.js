@@ -8,17 +8,20 @@ const { requireRole } = require('../middlewares/role.middleware');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
 const { createSensitiveRateLimiter, createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
 const { createUserConcurrencyGuard } = require('../middlewares/concurrency.middleware');
+// Practice is built from an essay's corrections: a speaking (audio) submission is refused.
+const { refuseAudioSubmission } = require('../middlewares/essayOnly.middleware');
 
 const router = express.Router();
 const validateSubmission = [
   verifyJwtToken,
   requireRole('student'),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
-  handleValidationResult
+  handleValidationResult,
+  refuseAudioSubmission
 ];
 
 router.get('/teacher/submissions/:submissionId/progress', verifyJwtToken, requireRole('teacher'),
-  param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult, controller.getTeacherProgress);
+  param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult, refuseAudioSubmission, controller.getTeacherProgress);
 router.get('/teacher/sessions/:sessionId/activities/:activityId/attempts', verifyJwtToken, requireRole('teacher'),
   param('sessionId').isMongoId().withMessage('Invalid session id'),
   param('activityId').isString().trim().notEmpty().isLength({ max: 100 }),

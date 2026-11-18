@@ -223,6 +223,66 @@ describe('what reaches a student', () => {
   });
 });
 
+// Speaking (audio + speech-to-text, stage 5). The two new Submission paths cannot carry a sentinel (an enum and an ObjectId), so each has its
+// own decision, checked here:
+//   Submission.sourceKind      ARRIVES as 'audio': the student page needs it to show a recording instead of an essay
+//   Submission.audioRecording  NEVER arrives (select: false): no student surface needs the recording id (playback is by submission id)
+// Every AudioRecording path the filler can reach (provider fields inside the transcript, words, edits, hash, lease, attempt key, request id,
+// minutes and storage accounting, error codes) is filled with a sentinel; none may reach a student surface. SPEAKING_ALLOWED lists exceptions.
+const SPEAKING_ALLOWED = {};
+describe('speaking: what reaches a student', () => {
+  let speaking, speakingResponses, speakingFiller;
+  beforeAll(async () => {
+    process.env.AUDIO_STT_ENABLED = 'true';
+    const Assignment = require('../src/models/assignment.model');
+    const AudioRecording = require('../src/models/AudioRecording');
+    const { makeAudioSubmission } = require('./helpers/speakingFixtures');
+    const assignment = await Assignment.create({ title: 'Speaking task', writingType: 'speaking', resourceType: 'speaking', class: f.IDS.class, teacher: f.IDS.teacher,
+      deadline: new Date(Date.now() + 86400000), qrToken: `speaking-noleak-${Date.now()}`, speaking: { maxRecordingSeconds: null, rubricRef: null } });
+    speaking = await makeAudioSubmission({ student: { user: f.student }, teacher: { user: f.teacher }, assignment, klass: { _id: f.IDS.class } }, { status: 'failed' });
+    speaking.assignment = assignment;
+    speakingFiller = sentinelFiller();
+    await speakingFiller.fillModel(AudioRecording);
+    const asStudent = url => request(app).get(url).set('Authorization', `Bearer ${studentJwt}`);
+    speakingResponses = {
+      'speaking status': await asStudent(`/api/speaking/${assignment._id}/my`),
+      'my submissions': await asStudent('/api/submissions/my'),
+      'my submission (essay route, speaking assignment)': await asStudent(`/api/submissions/assignment/${assignment._id}/my`),
+      'my assignments': await asStudent('/api/assignments/my'),
+      'retry transcription': await request(app).post(`/api/speaking/submissions/${speaking.submission._id}/retry-transcription`).set('Authorization', `Bearer ${studentJwt}`)
+    };
+  });
+  afterAll(() => { delete process.env.AUDIO_STT_ENABLED; });
+
+  test('controls: every surface answered 200, and the recording really holds the sentinels', async () => {
+    expect(Object.entries(speakingResponses).filter(([, res]) => res.status !== 200).map(([name, res]) => `${name}: ${res.status}`)).toEqual([]);
+    const raw = JSON.stringify(await require('../src/models/AudioRecording').collection.findOne({ _id: speaking.recording._id }));
+    // (Dates are not filled; lastErrorCode was filled too but the retry call above cleared it, after the other surfaces had read it.)
+    for (const path of ['transcript', 'derived', 'editedRevisions', 'audioSha256', 'attemptKey', 'transcriptSchemaVersion', 'audioDeletionReason']) expect(raw).toContain(`LEAK_AudioRecording.${path}`);
+    expect(JSON.stringify(speakingResponses['my submissions'].body)).toContain(String(speaking.submission._id));
+  });
+
+  test('no AudioRecording sentinel outside SPEAKING_ALLOWED, on any speaking surface', () => {
+    const seen = {};
+    for (const [name, res] of Object.entries(speakingResponses)) for (const sentinel of sentinelsIn(res.body, speakingFiller.numbers)) {
+      if (sentinel.startsWith('AudioRecording.') && !(sentinel in SPEAKING_ALLOWED)) (seen[sentinel] ||= []).push(name);
+    }
+    expect(seen).toEqual({});
+  });
+
+  test('Submission.sourceKind arrives as "audio"; Submission.audioRecording never arrives; no provider, hash or lease key name either', () => {
+    const mine = speakingResponses['my submissions'].body.data.find(item => String(item._id) === String(speaking.submission._id));
+    expect(mine.sourceKind).toBe('audio');
+    expect(mine).not.toHaveProperty('audioRecording');
+    expect(speakingResponses['my submission (essay route, speaking assignment)'].body.data).not.toHaveProperty('audioRecording');
+    for (const res of Object.values(speakingResponses)) {
+      const text = JSON.stringify(res.body);
+      expect(text).not.toContain(String(speaking.recording._id));
+      expect(text).not.toMatch(/"(audioRecording|audioSha256|attemptKey|leaseUntil|processingQueue|transcript|derived|editedRevisions|minutesChargedTo|storageChargedTo|storageChargedMB|requestId|providerRequestId)"/);
+    }
+  });
+});
+
 describe('the guard itself', () => {
   test('a path added to a schema later is filled and, not being allowed, is reported', async () => {
     expect((await Submission.collection.findOne({ _id: f.IDS.registered }))[NEW_PATH]).toContain(`LEAK_Submission.${NEW_PATH}`);

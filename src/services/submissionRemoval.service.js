@@ -13,6 +13,7 @@ const AdaptivePracticeSession = require('../models/AdaptivePracticeSession');
 const AdaptivePracticeAttempt = require('../models/AdaptivePracticeAttempt');
 const Upload = require('../models/Upload');
 const File = require('../models/File');
+const AudioRecording = require('../models/AudioRecording');
 const Notification = require('../models/notification.model');
 const User = require('../models/user.model');
 const logger = require('../utils/logger');
@@ -109,13 +110,19 @@ async function collectCleanupContext(submission) {
   ] }).select('_id path').lean() : [];
   const originalPaths = uniqueIds([...fileDocs.map(doc => doc.path),
     ...uploadDocs.flatMap(doc => [doc.originalFilePath, doc.processedFilePath])]);
+  // Speaking (audio) submissions: their recordings and audio files. Storage is released exactly as charged (storageChargedMB), not re-measured.
+  const audioRecordings = submission.sourceKind === 'audio'
+    ? await AudioRecording.find({ submissionId: submission._id }).select('_id audioFileId storageChargedTo storageChargedMB').lean() : [];
+  const audioFileIds = uniqueIds(audioRecordings.map(recording => recording.audioFileId));
+  const audioFiles = audioFileIds.length ? await File.find({ _id: { $in: audioFileIds } }).select('_id path').lean() : [];
   const physicalPaths = uniqueIds([
     ...fileDocs.map((doc) => doc.path),
     ...derived.map(doc => doc.path),
-    ...uploadDocs.flatMap((doc) => [doc.originalFilePath, doc.processedFilePath])
+    ...uploadDocs.flatMap((doc) => [doc.originalFilePath, doc.processedFilePath]),
+    ...audioFiles.map(doc => doc.path)
   ]);
-  return { fileIds: uniqueIds([...fileIds, ...derived.map(doc => doc._id)]), physicalPaths,
-    storageBytes: await physicalFileSize(originalPaths) };
+  return { fileIds: uniqueIds([...fileIds, ...derived.map(doc => doc._id), ...audioFiles.map(doc => doc._id)]), physicalPaths,
+    storageBytes: await physicalFileSize(originalPaths), audioRecordings };
 }
 
 async function deleteDatabaseState(context, mongoSession = null) {
@@ -138,6 +145,12 @@ async function deleteDatabaseState(context, mongoSession = null) {
   await Upload.deleteMany({ submissionId: submission._id }, options);
   await Notification.deleteMany({ 'data.submissionId': String(submission._id) }, options);
   if (context.fileIds.length) await File.deleteMany({ _id: { $in: context.fileIds } }, options);
+  for (const recording of context.audioRecordings || []) {
+    const charged = Number(recording.storageChargedMB) || 0;
+    if (recording.storageChargedTo && charged > 0) await User.updateOne({ _id: recording.storageChargedTo }, [{ $set: {
+      'usage.storageMB': { $max: [0, { $subtract: [{ $ifNull: ['$usage.storageMB', 0] }, charged] }] } } }], { ...options, updatePipeline: true });
+  }
+  if (context.audioRecordings?.length) await AudioRecording.deleteMany({ _id: { $in: context.audioRecordings.map(recording => recording._id) } }, options);
 
   const storageMB = Number((context.storageBytes / (1024 * 1024)).toFixed(2));
   await User.updateOne({ _id: submission.student }, [{ $set: {
@@ -156,6 +169,8 @@ async function removeSubmissionForTeacher(submissionId, teacherId) {
   const authorized = await loadAuthorizedContext(submissionId, teacherId);
   const cleanup = await collectCleanupContext(authorized.submission);
   const context = { ...authorized, ...cleanup };
+  // A transcription still running is cancelled first, so its minutes reservation is released and a late result has nowhere to go.
+  for (const recording of context.audioRecordings || []) await require('./audio/processing').cancelAudioRecording(recording._id);
   const mongoSession = await mongoose.startSession();
   try {
     try {

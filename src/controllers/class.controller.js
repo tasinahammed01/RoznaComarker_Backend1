@@ -583,6 +583,8 @@ async function getClassSummary(req, res) {
     // - WorksheetSubmission → worksheet assignments          (only has `assignmentId`, no `class`)
     const { countsByAssignment } = await currentRosterAssignmentCounts(activeAssignments, [
       { type: 'essay', model: Submission, assignmentField: 'assignment', studentField: 'student' },
+      // Speaking work is a Submission too (sourceKind 'audio').
+      { type: 'speaking', model: Submission, assignmentField: 'assignment', studentField: 'student' },
       { type: 'flashcard', model: FlashcardSubmission, assignmentField: 'assignmentId', studentField: 'userId' },
       { type: 'worksheet', model: WorksheetSubmission, assignmentField: 'assignmentId', studentField: 'studentId' }
     ]);

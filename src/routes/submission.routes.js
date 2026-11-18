@@ -13,6 +13,8 @@ const {
 
 const { param } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
+// Essay-only routes refuse a speaking (audio) submission or assignment (tests/audioGuardInventory.test.js).
+const { refuseAudioSubmission, refuseSpeakingEssayUpload } = require('../middlewares/essayOnly.middleware');
 
 const { createSensitiveRateLimiter, createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
 const { createUserConcurrencyGuard } = require('../middlewares/concurrency.middleware');
@@ -119,6 +121,7 @@ router.post(
   uploadUserLimiter,
   param('qrToken').isString().trim().notEmpty().withMessage('Invalid QR'),
   handleValidationResult,
+  refuseSpeakingEssayUpload('qrToken'),
   setUploadType('submissions'),
   upload.fields([
     { name: 'files', maxCount: 20 },
@@ -216,6 +219,7 @@ router.post(
   uploadUserLimiter,
   param('assignmentId').isMongoId().withMessage('Invalid assignment id'),
   handleValidationResult,
+  refuseSpeakingEssayUpload('assignmentId'),
   setUploadType('submissions'),
   upload.fields([
     { name: 'files', maxCount: 20 },
@@ -311,6 +315,7 @@ router.get(
   requireRole(['student', 'teacher']),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   submissionController.getDraftComparison
 );
 
@@ -329,6 +334,7 @@ const getOcrCorrectionsMiddleware = [
   requireRole(['student', 'teacher']),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   submissionController.getOcrCorrections
 ];
 
@@ -341,24 +347,24 @@ const annotationLimiter = createUserRateLimiter({
   limit: Number(process.env.ANNOTATION_RATE_LIMIT_MAX) > 0 ? Number(process.env.ANNOTATION_RATE_LIMIT_MAX) : 120,
   event: 'ANNOTATION_RATE_LIMITED', reason: 'teacher_annotation_user', responseCode: 'ANNOTATION_RATE_LIMITED'
 });
-router.get('/:submissionId/teacher-annotations', verifyJwtToken, teacherAnnotations.get);
-router.get('/:submissionId/teacher-annotations/history', verifyJwtToken, teacherAnnotations.history);
-router.get('/:submissionId/teacher-annotations/preview', verifyJwtToken, teacherAnnotations.preview);
-router.post('/:submissionId/teacher-annotations', verifyJwtToken, annotationLimiter, teacherAnnotations.mutate);
-router.post('/:submissionId/teacher-annotations/bulk', verifyJwtToken, annotationLimiter, teacherAnnotations.bulk);
-router.post('/:submissionId/teacher-annotations/score-review', verifyJwtToken, annotationLimiter, teacherAnnotations.scoreReview);
+router.get('/:submissionId/teacher-annotations', verifyJwtToken, refuseAudioSubmission, teacherAnnotations.get);
+router.get('/:submissionId/teacher-annotations/history', verifyJwtToken, refuseAudioSubmission, teacherAnnotations.history);
+router.get('/:submissionId/teacher-annotations/preview', verifyJwtToken, refuseAudioSubmission, teacherAnnotations.preview);
+router.post('/:submissionId/teacher-annotations', verifyJwtToken, refuseAudioSubmission, annotationLimiter, teacherAnnotations.mutate);
+router.post('/:submissionId/teacher-annotations/bulk', verifyJwtToken, refuseAudioSubmission, annotationLimiter, teacherAnnotations.bulk);
+router.post('/:submissionId/teacher-annotations/score-review', verifyJwtToken, refuseAudioSubmission, annotationLimiter, teacherAnnotations.scoreReview);
 // Improved Writing Model, one per submission (IMPROVED_WRITING_MODEL_ENABLED). Student: their own submission's submitted text or
 // { available: false }. Teacher (owner of the submission's assignment and class; other teachers 404, students 403): the panel, save/submit,
 // and an AI draft from this student's writing. WRITING_MODEL_RATE_LIMIT_MAX (saves, default 60) and WRITING_MODEL_AI_RATE_LIMIT_MAX (AI
 // drafts, default 10) per 15 minutes per teacher; an AI draft also runs one at a time per teacher.
 const writingModel = require('../controllers/writingModel.controller');
 const wmLimit = (name, fallback) => Number(process.env[name]) > 0 ? Number(process.env[name]) : fallback;
-router.get('/:submissionId/writing-model', noStore, verifyJwtToken, writingModel.forStudent);
-router.get('/:submissionId/writing-model/teacher', noStore, verifyJwtToken, requireRole('teacher'), writingModel.get);
-router.put('/:submissionId/writing-model/teacher', noStore, verifyJwtToken, requireRole('teacher'),
+router.get('/:submissionId/writing-model', noStore, verifyJwtToken, refuseAudioSubmission, writingModel.forStudent);
+router.get('/:submissionId/writing-model/teacher', noStore, verifyJwtToken, requireRole('teacher'), refuseAudioSubmission, writingModel.get);
+router.put('/:submissionId/writing-model/teacher', noStore, verifyJwtToken, requireRole('teacher'), refuseAudioSubmission,
   createUserRateLimiter({ windowMs: 15 * 60 * 1000, limit: wmLimit('WRITING_MODEL_RATE_LIMIT_MAX', 60), event: 'WRITING_MODEL_RATE_LIMITED', reason: 'writing_model_save', responseCode: 'WRITING_MODEL_RATE_LIMITED' }),
   writingModel.save);
-router.post('/:submissionId/writing-model/teacher/generate-draft', noStore, verifyJwtToken, requireRole('teacher'),
+router.post('/:submissionId/writing-model/teacher/generate-draft', noStore, verifyJwtToken, requireRole('teacher'), refuseAudioSubmission,
   createUserRateLimiter({ windowMs: 15 * 60 * 1000, limit: wmLimit('WRITING_MODEL_AI_RATE_LIMIT_MAX', 10), event: 'AI_GENERATION_RATE_LIMITED', reason: 'writing_model_draft', responseCode: 'WRITING_MODEL_RATE_LIMITED' }),
   createUserConcurrencyGuard({ operation: 'writing_model_draft', maxConcurrent: 1 }), writingModel.generateDraft);
 
@@ -370,8 +376,8 @@ const evaluationLimiter = createUserRateLimiter({
   limit: Number(process.env.TEACHER_EVALUATION_RATE_LIMIT_MAX) > 0 ? Number(process.env.TEACHER_EVALUATION_RATE_LIMIT_MAX) : 60,
   event: 'TEACHER_EVALUATION_RATE_LIMITED', reason: 'teacher_evaluation_user', responseCode: 'TEACHER_EVALUATION_RATE_LIMITED'
 });
-router.get('/:submissionId/teacher-evaluation', verifyJwtToken, teacherEvaluation.get);
-router.post('/:submissionId/teacher-evaluation', verifyJwtToken, evaluationLimiter, teacherEvaluation.save);
+router.get('/:submissionId/teacher-evaluation', verifyJwtToken, refuseAudioSubmission, teacherEvaluation.get);
+router.post('/:submissionId/teacher-evaluation', verifyJwtToken, refuseAudioSubmission, evaluationLimiter, teacherEvaluation.save);
 
 router.get(
   '/:submissionId/ocr-corrections',
@@ -387,19 +393,19 @@ router.post(
 router.post('/:submissionId/ocr-corrections/regenerate', createSensitiveRateLimiter(), verifyJwtToken, requireRole('teacher'),
   createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'ocr_correction_retry_user' }),
   createUserConcurrencyGuard({ operation: 'ocr_correction_retry', maxConcurrent: 2 }),
-  param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult,
+  param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult, refuseAudioSubmission,
   submissionController.regenerateCanonicalCorrections);
 
 // Task 20: retry the failed correction stage only (teacher, student; the guest route is in guestSubmission.routes.js). No credit, no re-score.
 router.post('/:submissionId/corrections/retry', createSensitiveRateLimiter(), verifyJwtToken,
   createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'correction_stage_retry_user' }),
-  submissionController.retryCorrectionStage);
+  refuseAudioSubmission, submissionController.retryCorrectionStage);
 
 router.post('/:submissionId/evaluation/retry', verifyJwtToken, requireRole('teacher'),
   createSensitiveRateLimiter(),
   createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'evaluation_retry_user' }),
   createUserConcurrencyGuard({ operation: 'evaluation_retry', maxConcurrent: 2 }),
-  param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult,
+  param('submissionId').isMongoId().withMessage('Invalid submission id'), handleValidationResult, refuseAudioSubmission,
   submissionController.retryCanonicalEvaluation);
 
 router.get(
@@ -412,10 +418,10 @@ router.get(
 );
 
 // Keep the established QR routes ahead of this generic submission-ID prefix.
-router.post('/:submissionId/source-review',verifyJwtToken,requireRole('teacher'),reviewLimiter,param('submissionId').isMongoId(),handleValidationResult,humanReview.prepare);
-router.get('/:submissionId/source-review/:itemId/crop',verifyJwtToken,requireRole('teacher'),reviewLimiter,createUserConcurrencyGuard({operation:'source_review_crop',maxConcurrent:2}),param('submissionId').isMongoId(),param('itemId').matches(/^[a-f0-9]{64}$/),handleValidationResult,humanReview.crop);
-router.post('/:submissionId/source-review/:itemId/resolve',verifyJwtToken,requireRole('teacher'),reviewLimiter,createUserConcurrencyGuard({operation:'source_review_resolve',maxConcurrent:1}),param('submissionId').isMongoId(),param('itemId').matches(/^[a-f0-9]{64}$/),handleValidationResult,humanReview.resolve);
-router.get('/:submissionId/source-review/page/:pageIndex',verifyJwtToken,requireRole('teacher'),reviewLimiter,param('submissionId').isMongoId(),param('pageIndex').matches(/^(0|[1-9]\d*)$/),handleValidationResult,humanReview.page);
-router.get('/:submissionId/source-review/page/:pageIndex/image',verifyJwtToken,requireRole('teacher'),reviewLimiter,createUserConcurrencyGuard({operation:'source_review_page_image',maxConcurrent:2}),param('submissionId').isMongoId(),param('pageIndex').matches(/^(0|[1-9]\d*)$/),handleValidationResult,humanReview.pageImage);
-router.post('/:submissionId/source-review/page/:pageIndex/resolve',verifyJwtToken,requireRole('teacher'),reviewLimiter,createUserConcurrencyGuard({operation:'source_review_resolve',maxConcurrent:1}),param('submissionId').isMongoId(),param('pageIndex').matches(/^(0|[1-9]\d*)$/),handleValidationResult,humanReview.pageResolve);
+router.post('/:submissionId/source-review',verifyJwtToken,requireRole('teacher'),reviewLimiter,param('submissionId').isMongoId(),handleValidationResult,refuseAudioSubmission,humanReview.prepare);
+router.get('/:submissionId/source-review/:itemId/crop',verifyJwtToken,requireRole('teacher'),reviewLimiter,createUserConcurrencyGuard({operation:'source_review_crop',maxConcurrent:2}),param('submissionId').isMongoId(),param('itemId').matches(/^[a-f0-9]{64}$/),handleValidationResult,refuseAudioSubmission,humanReview.crop);
+router.post('/:submissionId/source-review/:itemId/resolve',verifyJwtToken,requireRole('teacher'),reviewLimiter,createUserConcurrencyGuard({operation:'source_review_resolve',maxConcurrent:1}),param('submissionId').isMongoId(),param('itemId').matches(/^[a-f0-9]{64}$/),handleValidationResult,refuseAudioSubmission,humanReview.resolve);
+router.get('/:submissionId/source-review/page/:pageIndex',verifyJwtToken,requireRole('teacher'),reviewLimiter,param('submissionId').isMongoId(),param('pageIndex').matches(/^(0|[1-9]\d*)$/),handleValidationResult,refuseAudioSubmission,humanReview.page);
+router.get('/:submissionId/source-review/page/:pageIndex/image',verifyJwtToken,requireRole('teacher'),reviewLimiter,createUserConcurrencyGuard({operation:'source_review_page_image',maxConcurrent:2}),param('submissionId').isMongoId(),param('pageIndex').matches(/^(0|[1-9]\d*)$/),handleValidationResult,refuseAudioSubmission,humanReview.pageImage);
+router.post('/:submissionId/source-review/page/:pageIndex/resolve',verifyJwtToken,requireRole('teacher'),reviewLimiter,createUserConcurrencyGuard({operation:'source_review_resolve',maxConcurrent:1}),param('submissionId').isMongoId(),param('pageIndex').matches(/^(0|[1-9]\d*)$/),handleValidationResult,refuseAudioSubmission,humanReview.pageResolve);
 module.exports = router;

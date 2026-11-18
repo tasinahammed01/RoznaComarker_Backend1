@@ -158,6 +158,18 @@ async function cancelAudioRecording(id, { now = () => new Date() } = {}) {
   return { cancelled: true };
 }
 
+/**
+ * failed -> queued with fresh attempts (the retry endpoint). Only a failed recording whose audio is still kept; the stored transcript, if
+ * any, is never touched. Returns { retried }.
+ */
+async function retryAudioRecording(id, { now = () => new Date() } = {}) {
+  const at = now();
+  const result = await AudioRecording.updateOne({ _id: id, status: 'failed', audioDeletedAt: null },
+    { $set: { status: 'queued', attempts: 0, queuedAt: at, nextAttemptAt: at, failedAt: null, lastErrorCode: null, leaseUntil: null, processingQueue: true } });
+  if (result.modifiedCount) log('audio_transcription_retry_requested', { recordingId: String(id) });
+  return { retried: result.modifiedCount === 1 };
+}
+
 /** The sweep's query: work that is due, as an inclusion projection with a limit (one more than the cap, to tell when it was capped). No sort. */
 function sweepQuery(now, limits) {
   return { filter: due(now, limits.sttMaxAttempts), projection: { ...PROJECTION }, limit: SWEEP_CAP + 1 };
@@ -196,6 +208,7 @@ function resumeAudioRecordings(options = {}) {
 }
 
 /** Starts the timer (it never keeps the process alive) and one sweep now. Returns { intervalMs, timer, stop(), idle() }. */
+let activeWorker = null;
 function startAudioWorker({ intervalMs = DEFAULT_INTERVAL_MS, ...options } = {}) {
   let stopped = false;
   let current = null;
@@ -204,7 +217,15 @@ function startAudioWorker({ intervalMs = DEFAULT_INTERVAL_MS, ...options } = {})
   timer.unref();
   void run();
   log('audio_transcription_worker_started', { intervalMs });
-  return { intervalMs, timer, stop() { stopped = true; clearInterval(timer); }, idle: () => current || Promise.resolve() };
+  const worker = { intervalMs, timer, run, stop() { stopped = true; clearInterval(timer); if (activeWorker === worker) activeWorker = null; }, idle: () => current || Promise.resolve() };
+  activeWorker = worker;
+  return worker;
+}
+
+/** New work was queued: sweep now instead of at the next tick. Does nothing unless this process runs the worker (never in tests). */
+function kickAudioWorker() {
+  const worker = activeWorker;
+  if (worker) setImmediate(() => { void worker.run(); });
 }
 
 /** null while AUDIO_STT_ENABLED is off: the worker never starts. */
@@ -212,5 +233,5 @@ function startAudioWorkerIfEnabled(env = process.env, options = {}) {
   return audioSttEnabled(env) ? startAudioWorker({ ...options, env }) : null;
 }
 
-module.exports = { SWEEP_CAP, leaseMsFor, backoffMs, enqueue, claim, processAudioRecording, cancelAudioRecording, sweepQuery, resumeAudioRecordings,
-  startAudioWorker, startAudioWorkerIfEnabled };
+module.exports = { SWEEP_CAP, leaseMsFor, backoffMs, enqueue, claim, processAudioRecording, cancelAudioRecording, retryAudioRecording, sweepQuery,
+  resumeAudioRecordings, startAudioWorker, startAudioWorkerIfEnabled, kickAudioWorker };

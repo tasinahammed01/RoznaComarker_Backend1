@@ -4,10 +4,10 @@
 //   1. before any byte is written: the MIME type and the extension must both name the same supported format;
 //   2. the size limit (AUDIO_MAX_FILE_BYTES, read per request) is enforced while streaming: JSON 413;
 //   3. the first bytes must be that format (magic bytes);
-//   4. the duration is measured (whole-file scan) and must be 5 s .. 420 s + 1 s, with no video track;
+//   4. the duration is measured and must be 5 s .. the maximum + 1 s (420 s, or less per request: maxDurationSeconds), with no video track;
 //   5. next() with req.audioUpload. The file is deleted when the response finishes unless the next handler calls req.audioUpload.commit().
 // Every failure path deletes what was written. Stored names are random UUIDs; the original name is never used on disk, in a response or in a log.
-// No route uses this yet (upload routes arrive in a later stage).
+// Used by routes/speaking.routes.js (class students' recordings).
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -58,7 +58,7 @@ const REFUSALS = Object.freeze({
   AUDIO_TOO_LARGE: [413, tooLargeMessage],
   AUDIO_TOO_LONG: [413, tooLargeMessage],
   AUDIO_TOO_SHORT: [422, limits => `This recording is shorter than ${limits.minDurationSeconds} seconds. Please record a longer answer and upload it again.`],
-  AUDIO_UNREADABLE: [422, () => 'This recording could not be read. It may be damaged. Please upload it again.'],
+  AUDIO_UNREADABLE: [422, () => "We couldn't read the length of this recording. Save it as MP3 or M4A and upload it again."],
   AUDIO_DURATION_UNAVAILABLE: [503, () => 'Recordings cannot be checked right now. Please try again in a few minutes.'],
   AUDIO_UPLOAD_FAILED: [400, () => 'The upload could not be read. Please try again.']
 });
@@ -83,12 +83,16 @@ async function readHead(filePath) {
 }
 
 /**
- * The middleware chain. `measureDuration(filePath)` is injectable (tests); it defaults to the music-metadata scan.
+ * The middleware chain. `measureDuration(filePath)` is injectable (tests); it defaults to the music-metadata scan. `maxDurationSeconds(req)`
+ * (optional) lowers the maximum for one request (a speaking assignment's own limit); it never raises it above the policy.
  * On success: req.audioUpload = { path, filename, storedPath, format, contentType, extension, sizeBytes, durationSeconds, hasVideo, sha256, commit() }.
  */
-function audioUpload({ measureDuration = duration.measureAudioDuration, env = process.env } = {}) {
+function audioUpload({ measureDuration = duration.measureAudioDuration, env = process.env, maxDurationSeconds } = {}) {
   function receive(req, res, next) {
-    const limits = readLimits(env).limits;
+    const policyLimits = readLimits(env).limits;
+    const own = typeof maxDurationSeconds === 'function' ? Number(maxDurationSeconds(req)) : NaN;
+    const limits = Number.isFinite(own) && own > 0 && own < policyLimits.maxDurationSeconds
+      ? Object.freeze({ ...policyLimits, maxDurationSeconds: own }) : policyLimits;
     req.audioUploadLimits = limits;
     const written = [];
     req.audioUploadWritten = written;

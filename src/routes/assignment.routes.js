@@ -15,6 +15,8 @@ const { body, param } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
 
 const { enforceUsageLimit } = require('../middlewares/usage.middleware');
+const { refuseSpeakingAssignment } = require('../middlewares/essayOnly.middleware');
+const { creatableTypes } = require('../services/audio/speakingAssignment');
 
 const router = express.Router();
 
@@ -96,7 +98,8 @@ router.post(
   body('allowResubmission').optional().isBoolean().withMessage('allowResubmission must be a boolean'),
   body('maxDrafts').optional({ values: 'null' }).isInt({ min: 2, max: 10 }).withMessage('maxDrafts must be a whole number from 2 to 10').bail().toInt(),
   body('requireAdaptiveBeforeResubmission').optional().isBoolean().withMessage('requireAdaptiveBeforeResubmission must be a boolean'),
-  body('resourceType').optional().isIn(['essay', 'flashcard', 'worksheet']).withMessage('resourceType must be essay, flashcard, or worksheet'),
+  // 'speaking' only while AUDIO_STT_ENABLED is on; while off the answer is exactly what it was before speaking existed.
+  body('resourceType').optional().custom(value => creatableTypes().includes(value)).withMessage('resourceType must be essay, flashcard, or worksheet'),
   body('resourceId').optional({ nullable: true }).isString().withMessage('resourceId must be a string'),
   handleValidationResult,
   enforceUsageLimit('assignments', 1),
@@ -186,6 +189,7 @@ router.patch(
   body('rubrics').optional({ nullable: true }),
   body('rubricDesigner').optional({ nullable: true }),
   handleValidationResult,
+  refuseSpeakingAssignment('id'),
   assignmentController.updateAssignmentRubrics
 );
 
@@ -211,6 +215,7 @@ router.post(
   param('id').isMongoId().withMessage('Invalid assignment id'),
   body('prompt').isString().trim().notEmpty().withMessage('prompt is required'),
   handleValidationResult,
+  refuseSpeakingAssignment('id'),
   assignmentController.generateRubricDesignerFromPrompt
 );
 
@@ -221,6 +226,7 @@ router.post(
   requireRole('teacher'),
   param('id').isMongoId().withMessage('Invalid assignment id'),
   handleValidationResult,
+  refuseSpeakingAssignment('id'),
   rubricUpload.single('file'),
   assignmentController.uploadRubricFileForAssignment
 );
