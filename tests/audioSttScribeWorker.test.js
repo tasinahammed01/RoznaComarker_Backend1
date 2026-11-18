@@ -244,12 +244,10 @@ describe('payloads never name the speech-to-text provider or model', () => {
       expect(JSON.stringify(student)).not.toMatch(/AUDIO_STT|credit|openrouter|\bscribe\b|elevenlabs|deepgram|policy/i);
     });
 
-    test('AUDIO_STT_UNRELIABLE_RESULT and other failures keep the usual state with no reason (the "try again / record again" text)', async () => {
-      for (const code of ['AUDIO_STT_UNRELIABLE_RESULT', 'AUDIO_STT_TIMEOUT', 'AUDIO_STT_REJECTED']) {
-        const { submission } = await failedWith(code);
-        const student = (await request(app).get(`/api/speaking/submissions/${submission._id}/result`).set(auth(f.student.token))).body.data;
-        expect({ code, ...student }).toMatchObject({ code, state: 'transcription_failed', reason: null, message: null });
-      }
+    test.each(['AUDIO_STT_UNRELIABLE_RESULT', 'AUDIO_STT_TIMEOUT', 'AUDIO_STT_REJECTED'])('%s keeps the usual state with no reason (the "try again / record again" text)', async (code) => {
+      const { submission } = await failedWith(code);
+      const student = (await request(app).get(`/api/speaking/submissions/${submission._id}/result`).set(auth(f.student.token))).body.data;
+      expect(student).toMatchObject({ state: 'transcription_failed', reason: null, message: null });
     });
 
     test('the guest\'s own link gets the same fixed message', async () => {

@@ -4,11 +4,14 @@
 // only once (no failover loop). Otherwise it is never called and never receives audio. Retries over time belong to the job worker, not here.
 // One metric line per provider attempt: provider, outcome, code, status, timing and sizes; never text, names, paths or keys.
 // AUDIO_STT_UNRELIABLE_RESULT (OpenRouter Scribe's suspicious-response check) is retried ONCE here, inside the same job attempt (so the
-// minutes reserved for that attempt are counted once); a second suspicious answer is final. Only reason codes and numbers are logged.
+// minutes reserved for that attempt are counted once). A clean second answer is used. When both answers are suspicious: a HARD flag in either
+// fails; two SOFT-only answers (end gap, speaking-rate window: what silence looks like) that agree (transcriptGuard.compareRuns) are accepted,
+// otherwise it fails with RUNS_DISAGREE. Only reason codes and numbers are logged.
 const fs = require('fs');
 const logger = require('../../../utils/logger');
 const { readLimits } = require('../policy');
 const { SttError } = require('./errors');
+const { compareRuns } = require('./transcriptGuard');
 
 const PROVIDERS = Object.freeze({ deepgram: require('./deepgram'), openai: require('./openai'), 'openrouter-scribe': require('./openrouterScribe') });
 
@@ -44,7 +47,9 @@ async function attempt(name, { audio, contentType, env, fetchImpl, signal, timeo
  */
 const UNRELIABLE = 'AUDIO_STT_UNRELIABLE_RESULT';
 const logUnreliable = (provider, error, retry) => logger.metric({ event: 'audio_stt_unreliable_result', provider, retry,
-  reasons: Array.isArray(error.reasons) ? error.reasons : [], metrics: error.metrics || {} });
+  reasons: Array.isArray(error.reasons) ? error.reasons : [], metrics: error.metrics || {}, ...(error.comparison ? { comparison: error.comparison } : {}) });
+// Hard flags of a suspicious answer; anything unclassified counts as hard (safe side).
+const hardOf = error => (Array.isArray(error?.hard) ? error.hard : Array.isArray(error?.reasons) ? error.reasons : ['UNCLASSIFIED']);
 
 async function transcribe({ filePath, contentType, env = process.env, fetchImpl, signal, timeoutMs, now, expectedDurationSeconds = null } = {}) {
   const { limits } = readLimits(env);
@@ -61,15 +66,29 @@ async function transcribe({ filePath, contentType, env = process.env, fetchImpl,
     if (primary.code === UNRELIABLE) {
       attempts.push({ provider: limits.sttProvider, outcome: 'suspicious', code: UNRELIABLE });
       logUnreliable(limits.sttProvider, primary, 'first');
-      // Once more; whatever this second call throws (a second suspicious answer, a provider error) is what the job worker sees.
+      // Once more; a provider error on this second call is what the job worker sees.
+      let second;
       try {
         const transcript = await attempt(limits.sttProvider, options);
         attempts.push({ provider: limits.sttProvider, outcome: 'ok', code: null });
         return { transcript, attempts, fallbackUsed: false };
-      } catch (second) {
-        if (second.code === UNRELIABLE) logUnreliable(limits.sttProvider, second, 'second');
-        throw second;
+      } catch (caught) {
+        if (caught.code !== UNRELIABLE) throw caught;
+        second = caught;
       }
+      if (!hardOf(primary).length && !hardOf(second).length && primary.transcript && second.transcript) {
+        const comparison = compareRuns(primary.transcript, second.transcript, { durationSeconds: expectedDurationSeconds });
+        if (comparison.agree) {
+          attempts.push({ provider: limits.sttProvider, outcome: 'accepted_soft', code: null });
+          logger.metric({ event: 'audio_stt_soft_flag_accepted', provider: limits.sttProvider,
+            reasons: [...new Set([...(primary.reasons || []), ...(second.reasons || [])])], comparison });
+          return { transcript: second.transcript, attempts, fallbackUsed: false };
+        }
+        second.reasons = [...(second.reasons || []), 'RUNS_DISAGREE'];
+        second.comparison = comparison;
+      }
+      logUnreliable(limits.sttProvider, second, 'second');
+      throw second;
     }
     attempts.push({ provider: limits.sttProvider, outcome: 'failed', code: primary.code });
     if (!fallbackAllowed(limits, env, primary)) throw primary;

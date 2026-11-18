@@ -111,13 +111,14 @@ const forcedSuspicious = env => String(env.AUDIO_STT_GUARD_FORCE_SUSPICIOUS || '
 
 /** The suspicious-response check on the raw answer (before clamping), against our own duration scan when known. */
 function inspect(body, { expectedDurationSeconds = null, env = process.env } = {}) {
-  if (forcedSuspicious(env)) return { ok: false, reasons: ['FORCED_FOR_TESTING'], metrics: {} };
+  if (forcedSuspicious(env)) return { ok: false, reasons: ['FORCED_FOR_TESTING'], hard: ['FORCED_FOR_TESTING'], soft: [], metrics: {} };
   return inspectWords(body.words, { providerDurationSeconds: body.duration, expectedDurationSeconds });
 }
 
 /**
  * One request; returns the stored transcript. Throws SttError (see classifyError and services/audio/stt/request.js), and
- * AUDIO_STT_UNRELIABLE_RESULT (with `reasons` and numeric `metrics`) when the answer fails the check; services/audio/stt/index.js retries once.
+ * AUDIO_STT_UNRELIABLE_RESULT when the answer fails the check: `reasons`, `hard`, `soft` (codes), numeric `metrics`, and the normalised
+ * `transcript` (kept in memory only, so services/audio/stt/index.js can compare two soft-flagged runs and accept the silence as real).
  */
 async function transcribe({ audio, contentType, env = process.env, fetchImpl, signal, timeoutMs, now, expectedDurationSeconds = null }) {
   const key = String(env[KEY_VARIABLE] || '').trim();
@@ -140,7 +141,10 @@ async function transcribe({ audio, contentType, env = process.env, fetchImpl, si
   if (!report.ok) {
     const error = new SttError('AUDIO_STT_UNRELIABLE_RESULT', { provider: PROVIDER });
     error.reasons = report.reasons;
+    error.hard = report.hard || report.reasons;              // anything not classified counts as hard (safe side)
+    error.soft = report.soft || [];
     error.metrics = report.metrics;
+    error.transcript = transcript;
     throw error;
   }
   return transcript;

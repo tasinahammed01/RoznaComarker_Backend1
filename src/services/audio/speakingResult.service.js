@@ -15,6 +15,7 @@ const { buildStudentCorrectionView } = require('../studentCorrectionView.service
 const { finalFeedback } = require('../teacherEvaluation.service');
 const { ASSESSMENT_CATEGORY_LABELS } = require('../../constants/assessmentCategories');
 const { TERMINAL_MESSAGES } = require('./speakingAssessment.service');
+const { OPERATIONAL_CODES, STT_UNAVAILABLE_MESSAGE } = require('./stt/errors');
 
 const APPLICABLE = ['CONTENT', 'ORGANIZATION', 'GRAMMAR', 'VOCABULARY'];
 const NOT_ASSESSABLE = new Set(['SPEAKING_NOT_ENGLISH', 'SPEAKING_UNINTELLIGIBLE', 'SPEAKING_TRANSCRIPT_TOO_LONG']);
@@ -73,17 +74,20 @@ async function readResult(context) {
   const audience = context.role === 'teacher' ? 'teacher' : 'student';
   const submission = await Submission.findById(context.submission._id)
     .select('_id assignment evaluationStatus evaluationErrorCode assessmentStatus writingCorrections correctionStatistics').lean();
-  const recording = context.recording ? await AudioRecording.findById(context.recording._id).select('_id status +derived').lean() : null;
+  const recording = context.recording ? await AudioRecording.findById(context.recording._id).select('_id status lastErrorCode +derived').lean() : null;
   const stored = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
   const feedback = stored ? finalFeedback(stored, submission) : null;
   const state = stateOf({ recording, submission, feedback, audience });
   const marksVisible = audience === 'teacher' || context.assignment?.showMarksToStudent !== false;
   const ready_ = state === 'ready' && feedback;
   const corrections = ready_ ? buildStudentCorrectionView(submission, { overlay: null }).corrections.map(c => pick(c, CORRECTION_FIELDS)) : [];
+  // Speech-to-text out of service (our account or configuration, never the recording): one fixed message and reason, no code, no provider.
+  const sttUnavailable = state === 'transcription_failed' && OPERATIONAL_CODES.includes(recording?.lastErrorCode);
   const out = {
     submissionId: String(submission._id), state,
-    message: state === 'not_enough_speech' || state === 'not_assessable' ? TERMINAL_MESSAGES[submission.evaluationErrorCode] || null : null,
-    reason: state === 'not_assessable' ? NOT_ASSESSABLE_REASON[submission.evaluationErrorCode] || null : null,
+    message: state === 'not_enough_speech' || state === 'not_assessable' ? TERMINAL_MESSAGES[submission.evaluationErrorCode] || null
+      : sttUnavailable ? STT_UNAVAILABLE_MESSAGE : null,
+    reason: state === 'not_assessable' ? NOT_ASSESSABLE_REASON[submission.evaluationErrorCode] || null : sttUnavailable ? 'stt_unavailable' : null,
     marksVisible,
     assessedText: recording?.status === 'ready' ? String(recording.derived?.assessorText || '') : null,
     fluency: recording?.status === 'ready' ? fluencyBlock(recording.derived?.fluency) : null,

@@ -127,7 +127,8 @@ bodies.
 | `speaking_guest_submission_created`, `speaking_teacher_upload_saved` | A guest upload / a teacher upload saved | One per upload |
 | `teacher_upload_email_sent` / `_not_sent` | Feedback emails for teacher uploads (essay and speaking) | `sent` after marking |
 | `audio_stt_provider_usage` | `openrouter-scribe` only: `seconds` and `costUsd` OpenRouter reported for one call | One per call; about $0.0000611 per second |
-| `audio_stt_unreliable_result` | `openrouter-scribe` only: an answer failed the check; `retry` (`first`/`second`), `reasons` (codes) and `metrics` (numbers) | Rare; `second` means the recording failed with `AUDIO_STT_UNRELIABLE_RESULT` |
+| `audio_stt_unreliable_result` | `openrouter-scribe` only: an answer was flagged; `retry` (`first`/`second`), `reasons` (codes), `metrics` (numbers) and, when two soft-flagged runs were compared, `comparison` | Rare; `second` means the recording failed with `AUDIO_STT_UNRELIABLE_RESULT` |
+| `audio_stt_soft_flag_accepted` | `openrouter-scribe` only: two soft-flagged runs agreed (real silence); `reasons` and `comparison` (numbers) | Occasional (long pauses, early stop) |
 | `audio_stt_provider_credits` (warning) | `openrouter-scribe` only: OpenRouter answered 402 (credits or in-flight budget); retried after `Retry-After` | Never; top up or raise the key's budget |
 
 Grep, for example: `pm2 logs <backend-app> --lines 2000 | grep -E "audio_stt_attempt|speaking_assessment_(completed|failed|blocked)"`.
@@ -214,9 +215,11 @@ Deepgram stays the default. Scribe is used only when `AUDIO_STT_PROVIDER=openrou
 
 - **Switching on:** set `AUDIO_STT_PROVIDER=openrouter-scribe` (the backend's existing `OPENROUTER_API_KEY` is used), then
   `pm2 restart <backend-app> --update-env`. Optional: `AUDIO_STT_OPENROUTER_MODEL`, `AUDIO_STT_OPENROUTER_MAX_FILE_BYTES` (section 2).
-- **Key budget (advised):** the OpenRouter key is shared with marking. Set a credit limit on the key in the OpenRouter dashboard and keep an eye
-  on `audio_stt_provider_credits` warnings: a 402 (out of credit, or too many requests in flight for the balance) is retried after its
-  `Retry-After` and is never shown to a student as their problem, but recordings wait until credit is available.
+- **Set a spend cap on the shared OpenRouter key (do this before switching on):** the same `OPENROUTER_API_KEY` pays for marking and for
+  speech-to-text, so a burst of recordings can use credit that marking needs (and the reverse). In the OpenRouter dashboard give the key a
+  credit limit, and keep an eye on `audio_stt_provider_credits` warnings: a 402 (out of credit, or too many requests in flight for the
+  balance) is retried after its `Retry-After`; if it still fails, students, guests and teachers see "Speech-to-text is temporarily
+  unavailable. Please try again later." (never a problem with their recording, never a provider name).
 - **What is sent:** one multipart request per call to `https://openrouter.ai/api/v1/audio/transcriptions` (fixed; `OPENROUTER_BASE_URL` does not
   apply): model, the recording (named `audio.<ext>`, never the original name), `verbose_json`, word and segment timings, English, and
   `provider: { zdr: true, allow_fallbacks: false }` (zero data retention, no silent re-routing). If OpenRouter has no zero-retention endpoint
@@ -240,25 +243,40 @@ Deepgram stays the default. Scribe is used only when `AUDIO_STT_PROVIDER=openrou
 Scribe was measured to sometimes return text squashed into zero-length words with duplicated text, or to lose a stretch silently while later
 words are still timed up to the end. Every Scribe answer is checked against our own duration scan before it is stored:
 
-| Check (reason code) | Fails when | Real speech measured | Failures measured |
-|---|---|---|---|
-| `ZERO_LENGTH_RUN` / `ZERO_LENGTH_SHARE` | 10 zero-length words in a row, or over 2% (and at least 5) | 0 | 131 words, a run of 89 |
-| `WORDS_BEYOND_DURATION` | a word ends more than 1 s after the end of the audio | 0 | 0 |
-| `OVERLAPPING_WORDS` | over 1% (and at least 3) overlapping word pairs | 0 | 0 |
-| `DUPLICATED_BLOCK` | 20+ words twice in a row, one copy in under half the time of the other | longest plain repeat 387 words, same pace | 266 and 133 words |
-| `END_GAP` | speech ends more than 15 s before the end of the audio | at most 1.33 s | 6.3 s and 0.04 s |
-| `DURATION_MISMATCH` | the provider heard a length that differs from ours by more than 2 s and 5% | 0 s | 0 s |
-| `RATE_DROPOUT` / `RATE_BURST` | a 30 s window under 0.2x / over 2x the median speaking rate (60 s of speech or more) | 0.82x to 1.54x | 0.06x; 2.55x |
+| Check (reason code) | Kind | Flags when | Real speech measured | Failures measured |
+|---|---|---|---|---|
+| `ZERO_LENGTH_RUN` / `ZERO_LENGTH_SHARE` | hard | 10 zero-length words in a row, or over 2% (and at least 5) | 0 | 131 words, a run of 89 |
+| `WORDS_BEYOND_DURATION` | hard | a word ends more than 1 s after the end of the audio | 0 | 0 |
+| `OVERLAPPING_WORDS` | hard | over 1% (and at least 3) overlapping word pairs | 0 | 0 |
+| `DUPLICATED_BLOCK` | hard | 20+ words twice in a row, one copy in under half the time of the other | longest plain repeat 387 words, same pace | 266 and 133 words |
+| `DURATION_MISMATCH` | hard | the provider heard a length that differs from ours by more than 2 s and 5% | 0 s | 0 s |
+| `END_GAP` | soft | speech ends more than 15 s before the end of the audio | at most 1.33 s | 6.3 s and 0.04 s |
+| `RATE_DROPOUT` / `RATE_BURST` | soft | a 30 s window under 0.2x / over 2x the median speaking rate (60 s of speech or more) | 0.82x to 1.54x | 0.06x; 2.55x |
 
-Calibration: speaking-A (45 s), speaking-B (142 s) and two runs of a 417 s real-speech file pass; both looped-speech failures fail
-(`tests/fixtures/audio/openrouter-scribe`, `tests/audioSttGuard.test.js`).
+**Hard** flags describe answers no correct transcript produces. **Soft** flags are exactly what silence in the audio looks like (a student who
+thinks for a while, or stops talking before stopping the recorder), so they alone never fail a recording whose runs agree.
 
-- **Behaviour:** a suspicious answer is requested once more, inside the same attempt. If the second answer is also suspicious, the recording
-  fails with `AUDIO_STT_UNRELIABLE_RESULT`: no transcript is stored, no minutes and no credit are charged, no assessment runs, the student
-  sees the usual "could not be turned into text" state and can record again (or the teacher can retry). Logs carry reason codes and numbers
-  only (`audio_stt_unreliable_result`).
-- **Limits of a transcript-only check:** a student who is silent for 30 s or more in the middle of an answer, or who stops talking more than
-  15 s before ending the recording, looks like a dropout and is asked to record again. There is no audio energy check on the server.
+Calibration: speaking-A (45 s), speaking-B (142 s) and two runs of a 417 s real-speech file pass; both looped-speech failures fail (hard
+flags) (`tests/fixtures/audio/openrouter-scribe`, `tests/audioSttGuard.test.js`). Real speech with silence, built from the real A and B
+timings: a 30 s silence between them is not flagged at all (it spans two windows: lowest window 0.48x); 45 s gives `RATE_DROPOUT` (a window
+with no words); a student who stops talking 20 s before the end gives `END_GAP` (20.4 s).
+
+- **Behaviour:** a flagged answer is requested once more, inside the same attempt (the teacher's minutes are counted once).
+  - A clean second answer is used.
+  - A **hard** flag in either answer: the recording fails with `AUDIO_STT_UNRELIABLE_RESULT`.
+  - **Soft** flags only in both answers: the two runs are compared. They agree when the total word count differs by at most 2% and, in each
+    third of the recording, the non-filler word count differs by at most max(2 words, 3% of that third) (measured on real repeats: only
+    fillers differ). Agreeing runs mean the silence is real: the second answer is stored (`audio_stt_soft_flag_accepted`). Disagreeing runs
+    fail with `AUDIO_STT_UNRELIABLE_RESULT` (reason `RUNS_DISAGREE`).
+  - On failure no transcript is stored, no minutes and no credit are charged, no assessment runs; the student sees the usual "We couldn't
+    turn this recording into text." state and can record again (or the teacher can retry).
+  - Logs carry reason codes and numbers only: `audio_stt_unreliable_result` (with the run-to-run `comparison` when runs were compared) and
+    `audio_stt_soft_flag_accepted` (`comparison`: word counts, `wordCountDiffShare`, non-filler words per third, `maxThirdDiff`).
+- **Limits of a transcript-only check:** there is no audio energy check on the server, so silence is recognised only by two runs agreeing.
+  A soft-flagged recording costs two provider calls.
+- **Operational failures are not the recording's fault:** `AUDIO_STT_PROVIDER_CREDITS` (402) and `AUDIO_STT_NOT_CONFIGURED` (missing or
+  refused key, or no zero-retention endpoint) show "Speech-to-text is temporarily unavailable. Please try again later." to students, guests
+  and teachers (the result answers `reason: 'stt_unavailable'`; no code or provider name), and do not ask for a new recording.
 - **Manual test (development only):** `AUDIO_STT_GUARD_FORCE_SUSPICIOUS=true` makes every Scribe answer fail the check (reason
   `FORCED_FOR_TESTING`). It is honoured only when `NODE_ENV` is `development` or `test`; in production, staging or with `NODE_ENV` unset it is
   ignored.

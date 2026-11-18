@@ -3,8 +3,8 @@
 // is kept or logged (metrics are numbers, reasons are codes). Scribe was measured to sometimes squash text into zero-length words, append
 // duplicated text, or silently lose a stretch while later timestamps still run to the end of the file. Thresholds were calibrated on real
 // responses (tests/fixtures/audio/openrouter-scribe): every real-speech run passes and both looped-speech failures fail (tests/audioSttGuard).
-// Limits of a transcript-only check: a student who is silent for 30 s or more in the middle of an answer, or who stops speaking more than 15 s
-// before the end, looks the same as a dropout; such a recording fails as unreliable and the student is asked to record again.
+// Limits of a transcript-only check: a long silence in the middle of an answer, or a student who stops speaking more than 15 s before the end,
+// looks the same as a dropout. Those checks are therefore SOFT (stage 12f): the answer is accepted when a second run agrees (compareRuns).
 const finite = value => typeof value === 'number' && Number.isFinite(value);
 
 const THRESHOLDS = Object.freeze({
@@ -27,6 +27,15 @@ const THRESHOLDS = Object.freeze({
   // the dropout failure fell to 0.06x, the duplicated-text failure rose to 2.5x. Only with at least 60 s of speech.
   windowSeconds: 30, windowRulesMinSpeechSeconds: 60, dropoutRatio: 0.2, burstRatio: 2
 });
+
+// Stage 12f. HARD: no correct answer looks like this (fail after the single retry). SOFT: silence in the audio looks exactly like this (the end
+// gap and the 30 s speaking-rate window); a soft-only answer is accepted when a second run agrees with the first (services/audio/stt/index.js).
+const HARD_REASONS = Object.freeze(['ZERO_LENGTH_RUN', 'ZERO_LENGTH_SHARE', 'DUPLICATED_BLOCK', 'WORDS_BEYOND_DURATION', 'OVERLAPPING_WORDS',
+  'DURATION_MISMATCH', 'FORCED_FOR_TESTING']);
+const SOFT_REASONS = Object.freeze(['END_GAP', 'RATE_DROPOUT', 'RATE_BURST']);
+// Two runs agree when the total word count differs by at most 2% and, in each third of the recording, the non-filler word count differs by at
+// most max(2 words, 3% of that third). Measured on real repeats: only fillers differ ("mm"/"um", one dropped); non-filler counts were identical.
+const AGREEMENT = Object.freeze({ wordCountShare: 0.02, thirdMinWords: 2, thirdShare: 0.03 });
 
 const token = text => String(text ?? '').toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
 
@@ -76,7 +85,7 @@ function inspectWords(words, { providerDurationSeconds = null, expectedDurationS
   const expected = finite(expectedDurationSeconds) && expectedDurationSeconds > 0 ? expectedDurationSeconds : null;
   const provider = finite(providerDurationSeconds) && providerDurationSeconds > 0 ? providerDurationSeconds : null;
   const duration = expected ?? provider;
-  if (!list.length) return { ok: true, reasons: [], metrics: { words: 0, durationSeconds: duration } };   // no speech: "not enough speech" later
+  if (!list.length) return { ok: true, reasons: [], hard: [], soft: [], metrics: { words: 0, durationSeconds: duration } };   // no speech: "not enough speech" later
   const reasons = [];
 
   let zero = 0, run = 0, longestZero = 0, overlaps = 0;
@@ -100,9 +109,12 @@ function inspectWords(words, { providerDurationSeconds = null, expectedDurationS
   if (windows && windows.highest > t.burstRatio) reasons.push('RATE_BURST');
 
   const round = (value, digits = 2) => (value === null ? null : Math.round(value * 10 ** digits) / 10 ** digits);
+  const hard = reasons.filter(reason => HARD_REASONS.includes(reason)), soft = reasons.filter(reason => SOFT_REASONS.includes(reason));
   return {
     ok: reasons.length === 0,
-    reasons,
+    reasons: [...hard, ...soft],
+    hard,
+    soft,
     metrics: { words: list.length, durationSeconds: duration, providerDurationSeconds: provider, zeroLengthWords: zero, longestZeroLengthRun: longestZero,
       wordsBeyondDuration: beyond, overlappingPairs: overlaps, longestRepeatedBlock: repeated.longest, longestCompressedRepeat: repeated.compressed,
       endGapSeconds: round(endGap),
@@ -111,4 +123,34 @@ function inspectWords(words, { providerDurationSeconds = null, expectedDurationS
   };
 }
 
-module.exports = { THRESHOLDS, inspectWords, repeatedBlocks };
+/** Non-filler words per third of the recording (by start time), from a stored-schema transcript. */
+function nonFillerThirds(transcript, durationSeconds) {
+  const counts = [0, 0, 0];
+  const third = durationSeconds / 3;
+  for (const w of transcript?.words || []) {
+    if (w.isFiller || !finite(w.start)) continue;
+    counts[Math.min(2, Math.max(0, Math.floor(w.start / third)))]++;
+  }
+  return counts;
+}
+
+/**
+ * Do two answers for the same recording agree (stage 12f)? Both are stored-schema transcripts (fillers marked). durationSeconds: our duration
+ * scan when known, else the transcripts' own. Returns { agree } plus the numbers that were compared (logged; no text).
+ */
+function compareRuns(first, second, { durationSeconds = null } = {}) {
+  const fallback = Math.max(first?.durationSeconds || 0, second?.durationSeconds || 0,
+    ...[...(first?.words || []), ...(second?.words || [])].map(w => w.end || 0));
+  const duration = finite(durationSeconds) && durationSeconds > 0 ? durationSeconds : fallback;
+  const wordsFirst = first?.words?.length || 0, wordsSecond = second?.words?.length || 0;
+  const share = wordsFirst ? Math.abs(wordsSecond - wordsFirst) / wordsFirst : (wordsSecond ? 1 : 0);
+  const thirdsFirst = nonFillerThirds(first, duration), thirdsSecond = nonFillerThirds(second, duration);
+  const diffs = thirdsFirst.map((count, i) => Math.abs(count - thirdsSecond[i]));
+  const tolerances = thirdsFirst.map(count => Math.max(AGREEMENT.thirdMinWords, count * AGREEMENT.thirdShare));
+  const round = (value, digits) => Math.round(value * 10 ** digits) / 10 ** digits;
+  return { agree: share <= AGREEMENT.wordCountShare && diffs.every((diff, i) => diff <= tolerances[i]), wordsFirst, wordsSecond,
+    wordCountDiffShare: round(share, 4), nonFillerThirdsFirst: thirdsFirst, nonFillerThirdsSecond: thirdsSecond, maxThirdDiff: Math.max(...diffs),
+    thirdTolerances: tolerances.map(value => round(value, 2)) };
+}
+
+module.exports = { THRESHOLDS, HARD_REASONS, SOFT_REASONS, AGREEMENT, inspectWords, repeatedBlocks, compareRuns };

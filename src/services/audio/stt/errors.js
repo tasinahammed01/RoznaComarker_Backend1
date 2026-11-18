@@ -22,6 +22,10 @@ const MESSAGES = Object.freeze({
 });
 const RETRYABLE = new Set(['AUDIO_STT_RATE_LIMITED', 'AUDIO_STT_PROVIDER_ERROR', 'AUDIO_STT_NETWORK', 'AUDIO_STT_TIMEOUT', 'AUDIO_STT_BAD_RESPONSE',
   'AUDIO_STT_PROVIDER_CREDITS']);
+// Operational failures (stage 12f): our account or configuration, never the recording. Students, guests and teachers see one fixed message for
+// them (frontend utils/speaking-messages.ts has the same text) instead of "could not be turned into text". No provider is named.
+const OPERATIONAL_CODES = Object.freeze(['AUDIO_STT_PROVIDER_CREDITS', 'AUDIO_STT_NOT_CONFIGURED']);
+const STT_UNAVAILABLE_MESSAGE = 'Speech-to-text is temporarily unavailable. Please try again later.';
 
 class SttError extends Error {
   constructor(code, { provider = null, httpStatus = null, detail = null, retryAfterMs = null } = {}) {
@@ -59,4 +63,4 @@ function fromHttpStatus(status, provider, { retryAfter = null, nowMs = Date.now(
   return new SttError(code, { provider, httpStatus: status, retryAfterMs: retryAfterHintMs(retryAfter, nowMs) });
 }
 
-module.exports = { SttError, fromHttpStatus, retryAfterHintMs, MESSAGES };
+module.exports = { SttError, fromHttpStatus, retryAfterHintMs, MESSAGES, OPERATIONAL_CODES, STT_UNAVAILABLE_MESSAGE };
