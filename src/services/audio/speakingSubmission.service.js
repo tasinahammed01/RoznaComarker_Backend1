@@ -45,11 +45,12 @@ const mediaUrl = submissionId => `/api/audio/submissions/${submissionId}/media`;
 const deadlinePassed = (assignment, now) => Boolean(assignment?.deadline && now.getTime() > new Date(assignment.deadline).getTime());
 
 /** What the student (owner) sees. */
-function studentView({ submission, recording, assignment, marked = false, now = new Date() }) {
+/** teacherUploaded (stage 9): the teacher uploaded this recording for the student; only the teacher can replace it. */
+function studentView({ submission, recording, assignment, marked = false, teacherUploaded = false, now = new Date() }) {
   return {
     id: String(submission._id), assignmentId: String(submission.assignment), sourceKind: 'audio', status: submission.status,
     submittedAt: submission.submittedAt, isLate: Boolean(submission.isLate),
-    canReplace: !marked && !deadlinePassed(assignment, now),
+    canReplace: !marked && !teacherUploaded && !deadlinePassed(assignment, now),
     recording: { state: STATE[recording?.status] || 'failed', durationSeconds: recording?.durationSeconds ?? null, contentType: recording?.contentType || null,
       mediaUrl: mediaUrl(submission._id), canRetry: recording?.status === 'failed' && !recording?.audioDeletedAt }
   };
@@ -70,6 +71,8 @@ function teacherView({ submission, recording, studentName = null }) {
 const RECORDING_FIELDS = '_id status attempts lastErrorCode durationSeconds sizeBytes contentType queuedAt readyAt failedAt cancelledAt wordTimingsAvailable audioDeletedAt audioFileId submissionId owner storageChargedTo storageChargedMB';
 const SUBMISSION_FIELDS = '_id student assignment class sourceKind status submittedAt isLate feedback submissionMode guest.displayName +audioRecording';
 const loadRecording = id => (id ? AudioRecording.findById(id).select(RECORDING_FIELDS).lean() : null);
+/** Whether a teacher uploaded this submission for the student (stage 9). */
+const uploadedByTeacher = async id => Boolean(id && await Submission.exists({ _id: id, 'teacherUpload.uploadedBy': { $exists: true } }));
 
 /** Who made the recording, for the owning teacher's page: the display name (a guest's display name for a guest). Never an email. */
 async function studentNameFor(submission) {
@@ -127,6 +130,7 @@ async function prepareStudentUpload({ user, assignmentId, requestId, env = proce
   if (existing) {
     if (existing.sourceKind !== 'audio') throw fail(409, 'SPEAKING_UPLOAD_CONFLICT', 'This submission cannot take a recording.');
     if (await isMarked(existing)) throw fail(409, 'SPEAKING_ALREADY_MARKED', 'Your teacher has already marked this recording, so it can no longer be replaced.');
+    if (await uploadedByTeacher(existing._id)) throw fail(409, 'SPEAKING_UPLOADED_BY_TEACHER', 'Your teacher uploaded this recording for you, so only your teacher can replace it.');
     if (deadlinePassed(assignment, new Date())) throw fail(403, 'DEADLINE_PASSED', 'Deadline passed');
   } else {
     const limit = getLimit(await ensureActivePlan(user), 'submissions');
@@ -256,7 +260,7 @@ async function studentStatus({ user, assignmentId, env = process.env }) {
   const limitsOut = { maxRecordingSeconds: effectiveMaxRecordingSeconds(found.assignment, limits), minDurationSeconds: limits.minDurationSeconds, maxFileBytes: limits.maxFileBytes };
   if (!submission) return { submission: null, limits: limitsOut };
   return { submission: studentView({ submission, recording: await loadRecording(submission.audioRecording), assignment: found.assignment,
-    marked: await isMarked(submission) }), limits: limitsOut };
+    marked: await isMarked(submission), teacherUploaded: await uploadedByTeacher(submission._id) }), limits: limitsOut };
 }
 
 /** Requeues a failed transcription (the owning student or teacher). */
@@ -271,8 +275,11 @@ async function retryTranscription({ user, submissionId }) {
   processing.kickAudioWorker();
   const recording = await loadRecording(context.recording._id);
   return context.role === 'teacher' ? teacherView({ submission: context.submission, recording })
-    : studentView({ submission: context.submission, recording, assignment: context.assignment, marked: await isMarked(context.submission) });
+    : studentView({ submission: context.submission, recording, assignment: context.assignment, marked: await isMarked(context.submission),
+      teacherUploaded: await uploadedByTeacher(context.submission._id) });
 }
 
 module.exports = { SpeakingError, REQUEST_ID, UNAVAILABLE_MESSAGE, prepareStudentUpload, commitStudentUpload, accessFor, studentStatus, retryTranscription,
-  studentView, teacherView, studentNameFor, isMarked, storageMBFor, releaseStorage, loadRecording };
+  studentView, teacherView, studentNameFor, isMarked, storageMBFor, releaseStorage, loadRecording,
+  // Shared with the teacher upload (stage 9): storage on the uploader, removal of a replaced recording, the teacher's minutes.
+  reserveStorage, discardRecording, teacherHasMinutes };

@@ -27,7 +27,8 @@ const RATE_RETRY_MS = 60 * 1000;
 const RECOVERY_LINKS_KEPT = 10;
 const WORKER_INTERVAL_MS = 30 * 1000;
 // The server refused this recipient (or accepted nobody): retrying the same address would only delay the Resend button.
-const FINAL_CODES = ['RECIPIENT_MISSING', 'TEMPLATE_FAILURE', 'PROVIDER_REJECTED', 'NO_ACCEPTED_RECIPIENT', 'SMTP_NOT_ACCEPTED'];
+// GUEST_SPEAKING_UNAVAILABLE: a guest's teacher-uploaded recording has no guest result page yet (stage 10); never sent.
+const FINAL_CODES = ['RECIPIENT_MISSING', 'TEMPLATE_FAILURE', 'PROVIDER_REJECTED', 'NO_ACCEPTED_RECIPIENT', 'SMTP_NOT_ACCEPTED', 'GUEST_SPEAKING_UNAVAILABLE'];
 const count = value => (Number.isInteger(value) && value >= 0 ? value : undefined);
 /** The SMTP answer fields stored on the email state (only the ones the server gave). */
 function deliveryFields(delivery, startedAt, finishedAt) {
@@ -71,6 +72,14 @@ async function messageFor(doc, lease) {
     User.findById(doc.teacherUpload.uploadedBy).select('displayName').lean()
   ]);
   const common = { teacherName: teacher?.displayName || '', assignmentTitle: assignment?.title || '' };
+  // A recording (stage 9): its own wording and the student's speaking page; members only (guest speaking results come with stage 10).
+  if (doc.sourceKind === 'audio') {
+    if (doc.submissionMode === 'guest') return { error: 'GUEST_SPEAKING_UNAVAILABLE' };
+    const student = await User.findById(doc.student).select('email displayName').lean();
+    if (!student?.email) return { error: 'RECIPIENT_MISSING' };
+    return { ...common, kind: 'speaking', to: student.email, studentName: student.displayName || '', needsLogin: true,
+      link: access.frontendLink(`/student/my-classes/detail/my-speaking/${doc.assignment}?classId=${doc.class}`) };
+  }
   if (doc.submissionMode === 'guest') {
     const issued = access.issueToken();
     const stored = await Submission.updateOne({ _id: doc._id, 'teacherUpload.email.status': 'sending', 'teacherUpload.email.leaseUntil': lease }, {
@@ -89,7 +98,7 @@ async function sendOne(candidate, now) {
   const lease = new Date(now.getTime() + LEASE_MS);
   const claimed = await Submission.findOneAndUpdate({ _id: candidate._id, 'teacherUpload.email.status': 'queued', assessmentStatus: 'complete', ...due(now) },
     { $set: { 'teacherUpload.email.status': 'sending', 'teacherUpload.email.leaseUntil': lease }, $inc: { 'teacherUpload.email.attempts': 1 } },
-    { returnDocument: 'after' }).select('+teacherUpload +guest.normalizedEmail _id submissionMode student assignment class guest.displayName').lean();
+    { returnDocument: 'after' }).select('+teacherUpload +guest.normalizedEmail _id submissionMode sourceKind student assignment class guest.displayName').lean();
   if (!claimed) return 'skipped';                                        // another worker took it, or it changed
   const owned = { _id: claimed._id, 'teacherUpload.email.status': 'sending', 'teacherUpload.email.leaseUntil': lease };
   const teacherId = claimed.teacherUpload.uploadedBy;
@@ -148,6 +157,8 @@ async function holdForFailedMarking() {
 async function run({ batchSize = 25, now = new Date() } = {}) {
   await settleInterrupted(now);
   await holdForFailedMarking();
+  // Recordings (stage 9): one that ended without a result (transcription failed, could not be marked) holds its email the same way.
+  await require('./audio/speakingTeacherUpload.service').holdEmailsWithoutResult();
   const candidates = await Submission.find({ 'teacherUpload.email.status': 'queued', assessmentStatus: 'complete', ...due(now) })
     .sort({ 'teacherUpload.email.requestedAt': 1 }).limit(batchSize).select('_id').lean();
   const outcome = { sent: 0, retry: 0, failed: 0, deferred: 0, skipped: 0 };

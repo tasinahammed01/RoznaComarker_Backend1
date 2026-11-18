@@ -114,7 +114,11 @@ const ALLOWED = {
   'GET /api/speaking/submissions/:submissionId/result': 'the speaking feature itself: the assessment result for the owning student or teacher (speakingResult.test.js)',
   'POST /api/speaking/submissions/:submissionId/retry-assessment': 'the speaking feature itself: the owning teacher re-queues a failed or blocked assessment',
   'GET /api/audio/submissions/:submissionId/media': 'the speaking feature itself (playback)',
-  'GET /api/audio/submissions/:submissionId/download': 'the speaking feature itself (teacher download)'
+  'GET /api/audio/submissions/:submissionId/download': 'the speaking feature itself (teacher download)',
+  // Stage 9: the speaking teacher upload. Every query requires sourceKind 'audio' and this teacher's upload; any other id answers 404
+  // (speakingTeacherUpload.test.js, "only speaking teacher uploads").
+  'POST /api/speaking/assignments/:assignmentId/teacher-uploads/:submissionId/send': 'the speaking feature itself: Send or Resend for a recording the teacher uploaded',
+  'POST /api/speaking/assignments/:assignmentId/teacher-uploads/:submissionId/retry': 'the speaking feature itself: transcription or marking again for a recording the teacher uploaded'
 };
 
 /** Every route (all methods) of every router mounted in app.js whose path has :submissionId. Same reading as tests/helpers/studentRouteScan.js. */

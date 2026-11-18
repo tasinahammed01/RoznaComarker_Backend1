@@ -87,7 +87,8 @@ async function readHead(filePath) {
  * (optional) lowers the maximum for one request (a speaking assignment's own limit); it never raises it above the policy.
  * On success: req.audioUpload = { path, filename, storedPath, format, contentType, extension, sizeBytes, durationSeconds, hasVideo, sha256, commit() }.
  */
-function audioUpload({ measureDuration = duration.measureAudioDuration, env = process.env, maxDurationSeconds } = {}) {
+// maxFields: text fields allowed before the file (default 5; the teacher upload sends 6: name, email, requestKey, batchId, mode, send).
+function audioUpload({ measureDuration = duration.measureAudioDuration, env = process.env, maxDurationSeconds, maxFields = 5 } = {}) {
   function receive(req, res, next) {
     const policyLimits = readLimits(env).limits;
     const own = typeof maxDurationSeconds === 'function' ? Number(maxDurationSeconds(req)) : NaN;
@@ -111,7 +112,7 @@ function audioUpload({ measureDuration = duration.measureAudioDuration, env = pr
     const parse = multer({
       storage,
       // busboy stops a file as soon as it REACHES fileSize, so "+ 1" makes AUDIO_MAX_FILE_BYTES itself allowed and one byte more refused.
-      limits: { fileSize: limits.maxFileBytes + 1, files: 1, fields: 5, fieldSize: 1024, parts: 7 },
+      limits: { fileSize: limits.maxFileBytes + 1, files: 1, fields: maxFields, fieldSize: 1024, parts: maxFields + 2 },
       fileFilter: (_req, file, cb) => {
         const byMime = formatOfMime(bareMime(file.mimetype));
         const byExtension = formatOfExtension(path.extname(String(file.originalname || '')).toLowerCase());

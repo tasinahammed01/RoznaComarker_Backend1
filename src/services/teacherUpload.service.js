@@ -464,5 +464,6 @@ async function retryMarking({ teacher, assignmentId, submissionId }) {
   });
 }
 
-module.exports = { MAX_PAGES_PER_STUDENT, RESEND_COOLDOWN_MS, ownedContext, creditSummary, check, save, list, requestSend, retryMarking, sourceFor, statusOf,
+// withTeacherLease is shared with the speaking teacher upload (stage 9), so one teacher's essay and speaking saves reserve credits one at a time.
+module.exports = { MAX_PAGES_PER_STUDENT, RESEND_COOLDOWN_MS, ownedContext, creditSummary, withTeacherLease, check, save, list, requestSend, retryMarking, sourceFor, statusOf,
   failureCodeOf, logTransition, logCurrentStatus, CREDIT_BLOCK };

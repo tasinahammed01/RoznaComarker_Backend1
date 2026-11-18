@@ -199,13 +199,18 @@ async function testEmailConfig() {
 module.exports = {
   // Feedback for work a teacher uploaded ("Save and send" or Send). Never throws: { success, code, delivery } with a safe failure
   // code; delivery = { acceptedCount, rejectedCount, responseCode, enhancedStatus, messageId } when the server answered.
-  async sendTeacherUploadFeedbackEmail({ to, studentName, teacherName, assignmentTitle, link, expiresAt = null, needsLogin = false }) {
+  // kind 'speaking' (stage 9): a teacher-uploaded recording, its own template (teacherUploadSpeakingEmailTemplate.js); the essay one is unchanged.
+  async sendTeacherUploadFeedbackEmail({ to, studentName, teacherName, assignmentTitle, link, expiresAt = null, needsLogin = false, kind = 'essay' }) {
     let delivery = null;
     try {
       const readiness = emailReadiness();
       if (!readiness.ready) throw Object.assign(new Error('Email configuration unavailable'), { code: readiness.code });
       let content;
-      try { content = require('./teacherUploadEmailTemplate').buildTeacherUploadFeedbackEmail({ studentName, teacherName, assignmentTitle, link, expiresAt, needsLogin }); }
+      try {
+        content = kind === 'speaking'
+          ? require('./teacherUploadSpeakingEmailTemplate').buildTeacherUploadSpeakingFeedbackEmail({ studentName, teacherName, assignmentTitle, link })
+          : require('./teacherUploadEmailTemplate').buildTeacherUploadFeedbackEmail({ studentName, teacherName, assignmentTitle, link, expiresAt, needsLogin });
+      }
       catch { throw Object.assign(new Error('Email template unavailable'), { code: 'TEMPLATE_FAILURE' }); }
       const result = await getTransporter().sendMail({
         from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,

@@ -43,8 +43,15 @@ async function myStatus(req, res) {
   catch (error) { return respondError(res, error, 'speaking_status_failed'); }
 }
 
+const requeueHeldEmail = id => require('../services/audio/speakingTeacherUpload.service').requeueHeldEmail(id);
+
 async function retry(req, res) {
-  try { return res.json({ success: true, data: await service.retryTranscription({ user: req.user, submissionId: req.params.submissionId }) }); }
+  try {
+    const data = await service.retryTranscription({ user: req.user, submissionId: req.params.submissionId });
+    // A teacher upload whose email was held (no result yet) is queued again: sent once, when the new marking succeeds (stage 9).
+    await requeueHeldEmail(req.params.submissionId);
+    return res.json({ success: true, data });
+  }
   catch (error) { return respondError(res, error, 'speaking_retry_failed'); }
 }
 
@@ -72,6 +79,7 @@ async function retryAssessment(req, res) {
     const context = await service.accessFor(req.params.submissionId, req.user);
     if (!context || context.role !== 'teacher') return res.status(404).json({ success: false, code: 'NOT_FOUND', message: 'Not found.' });
     await require('../services/audio/speakingAssessment.service').retryAssessment({ context });
+    await requeueHeldEmail(req.params.submissionId);
     return res.json({ success: true, data: await require('../services/audio/speakingResult.service').readResult(context) });
   } catch (error) {
     if (error?.statusCode && error.code) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
