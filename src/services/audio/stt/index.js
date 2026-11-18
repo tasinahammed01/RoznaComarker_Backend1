@@ -3,6 +3,8 @@
 // opt-in: it runs only when AUDIO_STT_FALLBACK_ENABLED=true AND OPENAI_API_KEY is set AND the primary failed with a retryable error, and then
 // only once (no failover loop). Otherwise it is never called and never receives audio. Retries over time belong to the job worker, not here.
 // One metric line per provider attempt: provider, outcome, code, status, timing and sizes; never text, names, paths or keys.
+// AUDIO_STT_UNRELIABLE_RESULT (OpenRouter Scribe's suspicious-response check) is retried ONCE here, inside the same job attempt (so the
+// minutes reserved for that attempt are counted once); a second suspicious answer is final. Only reason codes and numbers are logged.
 const fs = require('fs');
 const logger = require('../../../utils/logger');
 const { readLimits } = require('../policy');
@@ -18,10 +20,10 @@ function fallbackAllowed(limits, env, primaryError) {
   return Boolean(String(env[PROVIDERS[limits.sttFallbackProvider].KEY_VARIABLE] || '').trim());
 }
 
-async function attempt(name, { audio, contentType, env, fetchImpl, signal, timeoutMs, now }) {
+async function attempt(name, { audio, contentType, env, fetchImpl, signal, timeoutMs, now, expectedDurationSeconds }) {
   const startedAt = Date.now();
   try {
-    const transcript = await PROVIDERS[name].transcribe({ audio, contentType, env, fetchImpl, signal, timeoutMs, now });
+    const transcript = await PROVIDERS[name].transcribe({ audio, contentType, env, fetchImpl, signal, timeoutMs, now, expectedDurationSeconds });
     logger.metric({ event: 'audio_stt_attempt', provider: name, outcome: 'ok', code: null, durationMs: Date.now() - startedAt,
       audioBytes: Number(audio.size) || 0, wordCount: transcript.words.length, wordTimingsAvailable: transcript.wordTimingsAvailable,
       providerRequestId: transcript.providerRequestId });
@@ -40,18 +42,35 @@ async function attempt(name, { audio, contentType, env, fetchImpl, signal, timeo
  * Throws SttError: code, retryable, provider, httpStatus and, after a failed fallback, primaryCode.
  * `timeoutMs` overrides AUDIO_STT_TIMEOUT_MS (tests); `fetchImpl` defaults to the global fetch.
  */
-async function transcribe({ filePath, contentType, env = process.env, fetchImpl, signal, timeoutMs, now } = {}) {
+const UNRELIABLE = 'AUDIO_STT_UNRELIABLE_RESULT';
+const logUnreliable = (provider, error, retry) => logger.metric({ event: 'audio_stt_unreliable_result', provider, retry,
+  reasons: Array.isArray(error.reasons) ? error.reasons : [], metrics: error.metrics || {} });
+
+async function transcribe({ filePath, contentType, env = process.env, fetchImpl, signal, timeoutMs, now, expectedDurationSeconds = null } = {}) {
   const { limits } = readLimits(env);
   const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : limits.sttTimeoutMs;
   let audio;
   try { audio = await fs.openAsBlob(filePath, { type: contentType }); } catch { throw new SttError('AUDIO_STT_FILE_UNAVAILABLE'); }
-  const options = { audio, contentType, env, fetchImpl, signal, timeoutMs: deadline, now };
+  const options = { audio, contentType, env, fetchImpl, signal, timeoutMs: deadline, now, expectedDurationSeconds };
   const attempts = [];
   try {
     const transcript = await attempt(limits.sttProvider, options);
     attempts.push({ provider: limits.sttProvider, outcome: 'ok', code: null });
     return { transcript, attempts, fallbackUsed: false };
   } catch (primary) {
+    if (primary.code === UNRELIABLE) {
+      attempts.push({ provider: limits.sttProvider, outcome: 'suspicious', code: UNRELIABLE });
+      logUnreliable(limits.sttProvider, primary, 'first');
+      // Once more; whatever this second call throws (a second suspicious answer, a provider error) is what the job worker sees.
+      try {
+        const transcript = await attempt(limits.sttProvider, options);
+        attempts.push({ provider: limits.sttProvider, outcome: 'ok', code: null });
+        return { transcript, attempts, fallbackUsed: false };
+      } catch (second) {
+        if (second.code === UNRELIABLE) logUnreliable(limits.sttProvider, second, 'second');
+        throw second;
+      }
+    }
     attempts.push({ provider: limits.sttProvider, outcome: 'failed', code: primary.code });
     if (!fallbackAllowed(limits, env, primary)) throw primary;
     try {

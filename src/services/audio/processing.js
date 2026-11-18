@@ -32,7 +32,8 @@ const PROJECTION = Object.freeze({ _id: 1, nextAttemptAt: 1, createdAt: 1 });
 const running = new Map();
 
 const defaultTranscribe = options => require('./stt').transcribe(options);
-const leaseMsFor = limits => limits.sttTimeoutMs * (limits.sttFallbackEnabled ? 2 : 1) + LEASE_MARGIN_MS;
+// Two provider calls can happen in one attempt: the OpenAI fallback, or OpenRouter Scribe's single retry of a suspicious answer.
+const leaseMsFor = limits => limits.sttTimeoutMs * (limits.sttFallbackEnabled || limits.sttProvider === 'openrouter-scribe' ? 2 : 1) + LEASE_MARGIN_MS;
 /** The wait after attempt n (1-based): the schedule, or a longer Retry-After hint, never above 5 min. */
 const backoffMs = (attempt, retryAfterMs) => Math.min(MAX_STT_BACKOFF_MS,
   Math.max(STT_BACKOFF_MS[Math.min(Math.max(attempt, 1), STT_BACKOFF_MS.length) - 1], Number.isFinite(retryAfterMs) ? retryAfterMs : 0));
@@ -119,7 +120,8 @@ async function processAudioRecording(id, { transcribe = defaultTranscribe, now =
     let result;
     const startedAt = Date.now();
     try {
-      result = await transcribe({ filePath, contentType: claimed.contentType, env, signal: controller.signal });
+      // Our own duration scan (from upload) lets the Scribe check tell a truncated or garbled answer from a short recording.
+      result = await transcribe({ filePath, contentType: claimed.contentType, env, signal: controller.signal, expectedDurationSeconds: claimed.durationSeconds ?? null });
     } catch (caught) {
       await release(controller.signal.aborted ? 'cancelled' : 'failed');
       if (controller.signal.aborted) { log('audio_transcription_discarded', { ...context, reason: 'cancelled' }); return { status: 'discarded' }; }

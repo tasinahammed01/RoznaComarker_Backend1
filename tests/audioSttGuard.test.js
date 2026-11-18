@@ -58,7 +58,7 @@ describe('thresholds (documented in docs/audio-stt-deployment.md)', () => {
     expect(guard.THRESHOLDS).toEqual({
       zeroLengthRunWords: 10, zeroLengthShare: 0.02, zeroLengthMinWords: 5,
       beyondDurationSeconds: 1, overlapShare: 0.01, overlapMinPairs: 3,
-      duplicateBlockWords: 20, endGapSeconds: 15, durationMismatchSeconds: 2, durationMismatchShare: 0.05,
+      duplicateBlockWords: 20, duplicateTimeRatio: 0.5, endGapSeconds: 15, durationMismatchSeconds: 2, durationMismatchShare: 0.05,
       windowSeconds: 30, windowRulesMinSpeechSeconds: 60, dropoutRatio: 0.2, burstRatio: 2
     });
     expect(Object.isFrozen(guard.THRESHOLDS)).toBe(true);
@@ -128,11 +128,21 @@ describe('each rule on synthetic word lists', () => {
     expect(guard.inspectWords(w, { providerDurationSeconds: 120, expectedDurationSeconds: 120 }).reasons).toContain('OVERLAPPING_WORDS');
   });
 
-  test('DUPLICATED_BLOCK: 20 words repeated back to back (19 do not; a student repeating a short phrase is normal)', () => {
+  test('DUPLICATED_BLOCK: 20 words twice in a row, the second copy in under half the time (text that was not spoken twice); 19 words do not', () => {
     const block = n => { const head = speech(40, 0.5, 15, i => `head${i}`); const phrase = Array.from({ length: n }, (_, i) => `p${i}`);
-      const rep = speech(n * 2, 15, 15 + n * 0.8, i => phrase[i % n]); const tail = speech(200, 15 + n * 0.8 + 0.5, 119, i => `tail${i}`); return [...head, ...rep, ...tail]; };
+      const spoken = speech(n, 15, 15 + n * 0.4, i => phrase[i]); const squeezed = speech(n, 15 + n * 0.4, 15 + n * 0.4 + 2, i => phrase[i]);
+      const tail = speech(200, 15 + n * 0.4 + 2.5, 119, i => `tail${i}`); return [...head, ...spoken, ...squeezed, ...tail]; };
     expect(guard.inspectWords(block(20), { providerDurationSeconds: 120, expectedDurationSeconds: 120 }).reasons).toContain('DUPLICATED_BLOCK');
     expect(guard.inspectWords(block(19), { providerDurationSeconds: 120, expectedDurationSeconds: 120 }).reasons).not.toContain('DUPLICATED_BLOCK');
+  });
+
+  test('a block of 20+ words genuinely spoken twice (same pace) is speech, not duplication (the real A+B+A+B+A file repeats 387 words)', () => {
+    const phrase = Array.from({ length: 30 }, (_, i) => `p${i}`);
+    const words = [...speech(40, 0.5, 15, i => `head${i}`), ...speech(60, 15, 39, i => phrase[i % 30]), ...speech(180, 39.5, 119, i => `tail${i}`)];
+    const report = guard.inspectWords(words, { providerDurationSeconds: 120, expectedDurationSeconds: 120 });
+    expect(report.metrics.longestRepeatedBlock).toBe(30);
+    expect(report.reasons).not.toContain('DUPLICATED_BLOCK');
+    expect(inspect(FIX('speaking-ababa-real-417s-run1')).metrics.longestRepeatedBlock).toBeGreaterThanOrEqual(380);
   });
 
   test('END_GAP: speech ends more than 15 s before the end of the audio (our duration scan); 14 s is allowed', () => {

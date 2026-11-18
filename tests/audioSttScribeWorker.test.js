@@ -3,6 +3,8 @@
 // payloads. In-memory MongoDB; the provider is a fake fetch behind the real adapter (a tripwire blocks the real network).
 process.env.JWT_SECRET = 'audio-scribe-worker-secret';
 process.env.NODE_ENV = 'test';
+process.env.GUEST_SUBMISSION_ENABLED = 'true';
+process.env.FRONTEND_URL = 'https://school.example';
 process.env.UPLOAD_BASE_PATH = `uploads/audio-scribe-worker-${process.pid}`;
 for (const name of ['AUTH_READ_RATE_LIMIT_MAX', 'AUTH_WRITE_RATE_LIMIT_MAX', 'BASELINE_RATE_LIMIT_MAX', 'COARSE_IP_RATE_LIMIT_MAX', 'SENSITIVE_RATE_LIMIT_MAX']) process.env[name] = '1000000';
 const fs = require('fs');
@@ -174,7 +176,8 @@ describe('upload size cap with Scribe: min(AUDIO_MAX_FILE_BYTES, AUDIO_STT_OPENR
 });
 
 describe('payloads never name the speech-to-text provider or model', () => {
-  const FORBIDDEN = /openrouter|scribe|elevenlabs|deepgram|providerRequestId|gen-stt|"words"|utterances/i;
+  // Word boundaries: "described" in the assessment's own text is not the provider name.
+  const FORBIDDEN = /openrouter|\bscribe\b|scribe-v2|elevenlabs|deepgram|providerRequestId|gen-stt|"words"|utterances/i;
   let f;
   beforeEach(async () => { await seedTestPlans(); f = await seedSpeaking(); await h.personalCredits(f.teacher.user, 5); process.env.AUDIO_STT_ENABLED = 'true'; });
   afterEach(() => { delete process.env.AUDIO_STT_ENABLED; });
@@ -201,6 +204,7 @@ describe('payloads never name the speech-to-text provider or model', () => {
   });
 
   test('the guest\'s own link', async () => {
+    await mongoose.connection.collection('assignments').updateOne({ _id: f.assignment._id }, { $set: { allowGuestSubmission: true } });
     const { submission } = await scribeTranscribed('guest');
     const issued = access.issueToken();
     await mongoose.connection.collection('submissions').updateOne({ _id: submission._id }, { $set: { 'guest.accessHash': issued.accessHash, 'guest.expiresAt': issued.expiresAt } });

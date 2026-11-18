@@ -11,6 +11,7 @@ const { openrouterMaxFileBytes } = require('../policy');
 const { SttError, retryAfterHintMs } = require('./errors');
 const { requestJson, header } = require('./request');
 const { word, buildTranscript } = require('./transcript');
+const { inspectWords } = require('./transcriptGuard');
 
 const PROVIDER = 'openrouter-scribe';
 const DEFAULT_MODEL = 'elevenlabs/scribe-v2';
@@ -101,8 +102,24 @@ function logUsage(body, model) {
     costUsd: finite(usage.cost) ? usage.cost : null });
 }
 
-/** One request; returns the stored transcript. Throws SttError (see classifyError and services/audio/stt/request.js). */
-async function transcribe({ audio, contentType, env = process.env, fetchImpl, signal, timeoutMs, now }) {
+/**
+ * AUDIO_STT_GUARD_FORCE_SUSPICIOUS=true makes every answer fail the check, for a manual test of the unreliable path. Honoured only when
+ * NODE_ENV is development or test; refused (ignored) in production, staging or when NODE_ENV is unset.
+ */
+const forcedSuspicious = env => String(env.AUDIO_STT_GUARD_FORCE_SUSPICIOUS || '').trim().toLowerCase() === 'true'
+  && ['development', 'test'].includes(String(env.NODE_ENV || '').trim().toLowerCase());
+
+/** The suspicious-response check on the raw answer (before clamping), against our own duration scan when known. */
+function inspect(body, { expectedDurationSeconds = null, env = process.env } = {}) {
+  if (forcedSuspicious(env)) return { ok: false, reasons: ['FORCED_FOR_TESTING'], metrics: {} };
+  return inspectWords(body.words, { providerDurationSeconds: body.duration, expectedDurationSeconds });
+}
+
+/**
+ * One request; returns the stored transcript. Throws SttError (see classifyError and services/audio/stt/request.js), and
+ * AUDIO_STT_UNRELIABLE_RESULT (with `reasons` and numeric `metrics`) when the answer fails the check; services/audio/stt/index.js retries once.
+ */
+async function transcribe({ audio, contentType, env = process.env, fetchImpl, signal, timeoutMs, now, expectedDurationSeconds = null }) {
   const key = String(env[KEY_VARIABLE] || '').trim();
   if (!key) throw new SttError('AUDIO_STT_NOT_CONFIGURED', { provider: PROVIDER, detail: `${KEY_VARIABLE} is not set` });
   if (Number(audio?.size) > openrouterMaxFileBytes(env)) throw new SttError('AUDIO_STT_FILE_TOO_LARGE_FOR_PROVIDER', { provider: PROVIDER });
@@ -119,8 +136,15 @@ async function transcribe({ audio, contentType, env = process.env, fetchImpl, si
     init: { method: 'POST', headers: { Authorization: `Bearer ${key}` }, body: form }, fetchImpl, timeoutMs, signal, now, classifyError });
   const transcript = normalize(json, { model, headerRequestId: header(headers, 'x-generation-id') });
   logUsage(json, model);
+  const report = inspect(json, { expectedDurationSeconds, env });
+  if (!report.ok) {
+    const error = new SttError('AUDIO_STT_UNRELIABLE_RESULT', { provider: PROVIDER });
+    error.reasons = report.reasons;
+    error.metrics = report.metrics;
+    throw error;
+  }
   return transcript;
 }
 
 module.exports = { PROVIDER, DEFAULT_MODEL, ENDPOINT, KEY_VARIABLE, DEFAULT_MAX_BYTES, PROVIDER_PREFERENCES, modelFor, splitToken, deriveUtterances, normalize,
-  classifyError, transcribe };
+  classifyError, inspect, transcribe };
