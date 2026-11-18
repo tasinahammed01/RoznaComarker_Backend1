@@ -270,3 +270,145 @@ describe('dev-only switch to trigger the guard on purpose (AUDIO_STT_GUARD_FORCE
     }
   });
 });
+
+// Stage 12f: silence in the audio produces the same signals as a dropout (end gap, the 30 s speaking-rate window), so those are SOFT: a second
+// run that agrees with the first means the silence is real and the transcript is accepted. Everything else is HARD.
+describe('hard and soft flags (stage 12f)', () => {
+  const COMPOSITE = require('./fixtures/audio/openrouter-scribe/speaking-a-silence-b.cjs');
+
+  test('the split', () => {
+    expect(guard.HARD_REASONS).toEqual(['ZERO_LENGTH_RUN', 'ZERO_LENGTH_SHARE', 'DUPLICATED_BLOCK', 'WORDS_BEYOND_DURATION', 'OVERLAPPING_WORDS',
+      'DURATION_MISMATCH', 'FORCED_FOR_TESTING']);
+    expect(guard.SOFT_REASONS).toEqual(['END_GAP', 'RATE_DROPOUT', 'RATE_BURST']);
+    expect(guard.AGREEMENT).toEqual({ wordCountShare: 0.02, thirdMinWords: 2, thirdShare: 0.03 });
+  });
+
+  test('real speech with a 30 s silence (A + 30 s + B): not flagged at all (the silence spans two windows: lowest 0.48x)', () => {
+    const body = COMPOSITE.build({ silenceSeconds: 30 });
+    const report = guard.inspectWords(body.words, { providerDurationSeconds: body.duration, expectedDurationSeconds: body.duration });
+    expect(report).toMatchObject({ ok: true, hard: [], soft: [] });
+    expect(report.metrics.lowestWindowRatio).toBeCloseTo(0.48, 2);
+  });
+
+  test('real speech with a 45 s silence (A + 45 s + B): soft flags only (a window with no words)', () => {
+    const body = COMPOSITE.build({ silenceSeconds: 45 });
+    const report = guard.inspectWords(body.words, { providerDurationSeconds: body.duration, expectedDurationSeconds: body.duration });
+    expect(report.hard).toEqual([]);
+    expect(report.soft).toEqual(['RATE_DROPOUT']);
+    expect(report.reasons).toEqual([...report.hard, ...report.soft]);
+    expect(report.metrics.lowestWindowRatio).toBe(0);
+  });
+
+  test('a student who stops talking 20 s before the recording ends: END_GAP only (soft)', () => {
+    const report = guard.inspectWords(A.words, { providerDurationSeconds: A.duration + 20, expectedDurationSeconds: A.duration + 20 });
+    expect(report).toMatchObject({ hard: [], soft: ['END_GAP'] });
+    expect(report.metrics.endGapSeconds).toBeGreaterThan(20);
+  });
+
+  test('the looped failures carry hard flags', () => {
+    expect(inspect(LOOPED_DUPLICATED).hard).toEqual(expect.arrayContaining(['ZERO_LENGTH_RUN', 'DUPLICATED_BLOCK']));
+    expect(inspect(LOOPED_DROPOUT).hard).toEqual(['DUPLICATED_BLOCK']);
+  });
+
+  describe('comparing two runs (non-filler words per third, total words)', () => {
+    const norm = body => require('../src/services/audio/stt/openrouterScribe').normalize(body, { model: 'elevenlabs/scribe-v2' });
+    const S45 = (options = {}) => norm(COMPOSITE.build({ silenceSeconds: 45, ...options }));
+    test('identical runs agree; filler-only variation agrees', () => {
+      const first = S45();
+      expect(guard.compareRuns(first, first, { durationSeconds: first.durationSeconds })).toMatchObject({ agree: true, wordCountDiffShare: 0 });
+      const varied = guard.compareRuns(first, S45({ fillerVariation: true }), { durationSeconds: first.durationSeconds });
+      expect(varied).toMatchObject({ agree: true, maxThirdDiff: 0 });
+      expect(varied.wordsSecond).toBe(varied.wordsFirst - 1);
+    });
+
+    test('a run that lost text disagrees (per third), even within 2% overall', () => {
+      const first = S45();
+      const lost = guard.compareRuns(first, S45({ dropWords: 5 }), { durationSeconds: first.durationSeconds });
+      expect(lost.wordCountDiffShare).toBeLessThanOrEqual(0.02);
+      expect(lost).toMatchObject({ agree: false, maxThirdDiff: 5 });
+    });
+
+    test('more than 2% fewer words overall disagrees', () => {
+      const first = S45();
+      const result = guard.compareRuns(first, S45({ dropWords: 12 }), { durationSeconds: first.durationSeconds });
+      expect(result.wordCountDiffShare).toBeGreaterThan(0.02);
+      expect(result.agree).toBe(false);
+    });
+
+    test('per-third tolerance: max(2 words, 3% of that third) — 3 lost words in a third of ~113 agree, 4 do not', () => {
+      const first = S45();
+      expect(guard.compareRuns(first, S45({ dropWords: 3 }), { durationSeconds: first.durationSeconds }).agree).toBe(true);
+      expect(guard.compareRuns(first, S45({ dropWords: 4 }), { durationSeconds: first.durationSeconds }).agree).toBe(false);
+    });
+  });
+
+  describe('retry decisions (stt.transcribe)', () => {
+    const go = (bodies, expected) => { const fetchImpl = fakeFetch(bodies); return { fetchImpl, pending: stt.transcribe({ filePath: audioPath, contentType: 'audio/mp4', env: ENV, fetchImpl, expectedDurationSeconds: expected }) }; };
+    const SILENT = COMPOSITE.build({ silenceSeconds: 45 });
+    const SILENT_VARIED = COMPOSITE.build({ silenceSeconds: 45, fillerVariation: true });
+    const SILENT_LOST = COMPOSITE.build({ silenceSeconds: 45, dropWords: 20 });
+    const SUSPICIOUS_A = { ...A, words: A.words.map((w, i) => (i >= 40 && i < 52 ? { ...w, end: w.start } : w)) };
+    // A recording that goes on 20 s after the student stops: the provider hears the whole file too.
+    const A20 = { ...A, duration: A.duration + 20 };
+    const SUSPICIOUS_A20 = { ...SUSPICIOUS_A, duration: A.duration + 20 };
+
+    test('real speech with a 30 s silence: accepted at once, one request (nothing flagged)', async () => {
+      const body = COMPOSITE.build({ silenceSeconds: 30 });
+      const { fetchImpl, pending } = go([body], body.duration);
+      expect((await pending).attempts).toEqual([{ provider: 'openrouter-scribe', outcome: 'ok', code: null }]);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    test('soft flag, runs agree: ACCEPTED (the silence is real); two requests; the second answer is stored', async () => {
+      const { fetchImpl, pending } = go([SILENT, SILENT_VARIED], SILENT.duration);
+      const out = await pending;
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(out.transcript.providerRequestId).toBe('gen-2');
+      expect(out.transcript.words).toHaveLength(SILENT_VARIED.words.length);
+      expect(out.attempts).toEqual([{ provider: 'openrouter-scribe', outcome: 'suspicious', code: 'AUDIO_STT_UNRELIABLE_RESULT' },
+        { provider: 'openrouter-scribe', outcome: 'accepted_soft', code: null }]);
+    });
+
+    test('a student who stops talking 20 s early, two agreeing runs: accepted', async () => {
+      const out = await go([A20, A20], A20.duration).pending;
+      expect(out.transcript.words).toHaveLength(132);
+      expect(out.attempts[1].outcome).toBe('accepted_soft');
+    });
+
+    test('soft flag, runs disagree: AUDIO_STT_UNRELIABLE_RESULT with RUNS_DISAGREE', async () => {
+      const { fetchImpl, pending } = go([SILENT, SILENT_LOST], SILENT.duration);
+      const error = await pending.catch(e => e);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(error).toMatchObject({ code: 'AUDIO_STT_UNRELIABLE_RESULT', retryable: false });
+      expect(error.reasons).toEqual(expect.arrayContaining(['RATE_DROPOUT', 'RUNS_DISAGREE']));
+      expect(error.comparison).toMatchObject({ agree: false });
+    });
+
+    test('a hard flag in either run fails: hard then soft, soft then hard', async () => {
+      const hardFirst = await go([SUSPICIOUS_A20, A20], A20.duration).pending.catch(e => e);
+      expect(hardFirst.code).toBe('AUDIO_STT_UNRELIABLE_RESULT');
+      const hardSecond = await go([A20, SUSPICIOUS_A20], A20.duration).pending.catch(e => e);
+      expect(hardSecond.code).toBe('AUDIO_STT_UNRELIABLE_RESULT');
+      expect(hardSecond.reasons).toEqual(expect.arrayContaining(['ZERO_LENGTH_RUN']));
+    });
+
+    test('hard twice fails; a clean second answer after a hard first is still accepted (as before)', async () => {
+      expect((await go([SUSPICIOUS_A, SUSPICIOUS_A], A.duration).pending.catch(e => e)).code).toBe('AUDIO_STT_UNRELIABLE_RESULT');
+      expect((await go([SUSPICIOUS_A, A], A.duration).pending).attempts[1].outcome).toBe('ok');
+    });
+
+    test('logs: reason codes and the run-to-run comparison numbers only', async () => {
+      const lines = [];
+      const spies = ['log', 'info', 'warn', 'error', 'debug'].map(level => jest.spyOn(console, level).mockImplementation((...args) => lines.push(args.join(' '))));
+      try {
+        await go([SILENT, SILENT_VARIED], SILENT.duration).pending;
+        await go([SILENT, SILENT_LOST], SILENT.duration).pending.catch(() => {});
+      } finally { spies.forEach(spy => spy.mockRestore()); }
+      const text = lines.join('\n');
+      expect(text).toContain('audio_stt_soft_flag_accepted');
+      expect(text).toContain('RUNS_DISAGREE');
+      expect(text).toContain('wordCountDiffShare');
+      for (const forbidden of ['grandmother', 'phones', 'Um,', KEY]) expect({ forbidden, found: text.includes(forbidden) }).toEqual({ forbidden, found: false });
+    });
+  });
+});

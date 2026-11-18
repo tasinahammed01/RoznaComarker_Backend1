@@ -131,6 +131,29 @@ describe('the job worker with OpenRouter Scribe', () => {
     expect(saved.nextAttemptAt.getTime() - T0.getTime()).toBe(120000);
   });
 
+  test('real speech with a 45 s silence (soft flag), two agreeing runs: ready, minutes counted once (stage 12f)', async () => {
+    const COMPOSITE = require('./fixtures/audio/openrouter-scribe/speaking-a-silence-b.cjs');
+    const first = COMPOSITE.build({ silenceSeconds: 45 }), second = COMPOSITE.build({ silenceSeconds: 45, fillerVariation: true });
+    const id = await makeRecording({ durationSeconds: first.duration });
+    const fetchImpl = sequence(first, second);
+    expect(await processing.processAudioRecording(id, { env: ENV, now: clock(), transcribe: realStt(fetchImpl) })).toEqual({ status: 'ready' });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const saved = await reload(id);
+    expect(saved).toMatchObject({ status: 'ready', attempts: 1 });
+    expect(saved.transcript.words).toHaveLength(second.words.length);
+    const ledger = await AudioUsageLedger.find({ recordingId: id }).lean();
+    expect(ledger.map(r => [r.state, r.seconds])).toEqual([['consumed', Math.ceil(first.duration)]]);
+  });
+
+  test('soft flag, runs disagree: failed with AUDIO_STT_UNRELIABLE_RESULT, minutes released (stage 12f)', async () => {
+    const COMPOSITE = require('./fixtures/audio/openrouter-scribe/speaking-a-silence-b.cjs');
+    const first = COMPOSITE.build({ silenceSeconds: 45 }), lost = COMPOSITE.build({ silenceSeconds: 45, dropWords: 20 });
+    const id = await makeRecording({ durationSeconds: first.duration });
+    expect(await processing.processAudioRecording(id, { env: ENV, now: clock(), transcribe: realStt(sequence(first, lost)) }))
+      .toEqual({ status: 'failed', code: 'AUDIO_STT_UNRELIABLE_RESULT' });
+    expect((await AudioUsageLedger.find({ recordingId: id }).lean()).every(r => r.state === 'released')).toBe(true);
+  });
+
   test('the lease covers two provider calls with Scribe (retry once); Deepgram keeps its lease', () => {
     const scribeLimits = policy.readLimits(ENV).limits;
     expect(processing.leaseMsFor(scribeLimits)).toBe(2 * scribeLimits.sttTimeoutMs + 2 * 60 * 1000);
@@ -201,6 +224,44 @@ describe('payloads never name the speech-to-text provider or model', () => {
       await request(app).get(`/api/speaking/submissions/${submission._id}/result`).set(auth(f.teacher.token)),
       await request(app).get(`/api/speaking/submissions/${submission._id}`).set(auth(f.teacher.token))];
     for (const res of answers) { expect(res.status).toBe(200); expect(JSON.stringify(res.body)).not.toMatch(FORBIDDEN); }
+  });
+
+  describe('wording for a failed transcription (stage 12f)', () => {
+    const UNAVAILABLE = 'Speech-to-text is temporarily unavailable. Please try again later.';
+    const auth = token => ({ Authorization: `Bearer ${token}` });
+    async function failedWith(code, mode = 'registered') {
+      const made = await makeAudioSubmission(f, { status: 'failed', seconds: 45, mode });
+      await AudioRecording.collection.updateOne({ _id: made.recording._id }, { $set: { lastErrorCode: code, failedAt: new Date() }, $unset: { processingQueue: 1 } });
+      return made;
+    }
+
+    test.each(['AUDIO_STT_PROVIDER_CREDITS', 'AUDIO_STT_NOT_CONFIGURED'])('%s (operational): the fixed "temporarily unavailable" message for student and teacher', async (code) => {
+      const { submission } = await failedWith(code);
+      const student = (await request(app).get(`/api/speaking/submissions/${submission._id}/result`).set(auth(f.student.token))).body.data;
+      expect(student).toMatchObject({ state: 'transcription_failed', reason: 'stt_unavailable', message: UNAVAILABLE });
+      const teacher = (await request(app).get(`/api/speaking/submissions/${submission._id}/result`).set(auth(f.teacher.token))).body.data;
+      expect(teacher).toMatchObject({ state: 'transcription_failed', reason: 'stt_unavailable', message: UNAVAILABLE });
+      expect(JSON.stringify(student)).not.toMatch(/AUDIO_STT|credit|openrouter|\bscribe\b|elevenlabs|deepgram|policy/i);
+    });
+
+    test('AUDIO_STT_UNRELIABLE_RESULT and other failures keep the usual state with no reason (the "try again / record again" text)', async () => {
+      for (const code of ['AUDIO_STT_UNRELIABLE_RESULT', 'AUDIO_STT_TIMEOUT', 'AUDIO_STT_REJECTED']) {
+        const { submission } = await failedWith(code);
+        const student = (await request(app).get(`/api/speaking/submissions/${submission._id}/result`).set(auth(f.student.token))).body.data;
+        expect({ code, ...student }).toMatchObject({ code, state: 'transcription_failed', reason: null, message: null });
+      }
+    });
+
+    test('the guest\'s own link gets the same fixed message', async () => {
+      await mongoose.connection.collection('assignments').updateOne({ _id: f.assignment._id }, { $set: { allowGuestSubmission: true } });
+      const { submission } = await failedWith('AUDIO_STT_PROVIDER_CREDITS', 'guest');
+      const issued = access.issueToken();
+      await mongoose.connection.collection('submissions').updateOne({ _id: submission._id }, { $set: { 'guest.accessHash': issued.accessHash, 'guest.expiresAt': issued.expiresAt } });
+      const res = await request(app).get(`/api/guest/speaking/submissions/${submission._id}`).set('X-Guest-Token', issued.token);
+      expect(res.status).toBe(200);
+      expect(JSON.stringify(res.body)).toContain(UNAVAILABLE);
+      expect(JSON.stringify(res.body)).not.toMatch(/AUDIO_STT|openrouter|\bscribe\b|elevenlabs|deepgram/i);
+    });
   });
 
   test('a result stored before the filler change (audio-fluency-v1, audio-derived-text-v1) still renders with its stored figures', async () => {
