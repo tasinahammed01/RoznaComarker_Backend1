@@ -25,8 +25,11 @@ All new variables are optional except the key. An invalid value is ignored, the 
 | Variable | Default | Meaning |
 |---|---|---|
 | `AUDIO_STT_ENABLED` | off | `true` turns the whole feature on (routes, speaking assignments, the worker). Anything else is off. |
-| `DEEPGRAM_API_KEY` | none | **Secret.** The speech-to-text key. Without it every transcription fails with `AUDIO_STT_NOT_CONFIGURED` (no crash). |
-| `AUDIO_STT_PROVIDER` | `deepgram` | Primary provider: `deepgram` or `openai`. Keep `deepgram`. |
+| `DEEPGRAM_API_KEY` | none | **Secret.** The speech-to-text key (with the default provider). Without it every transcription fails with `AUDIO_STT_NOT_CONFIGURED` (no crash). Not needed with `openrouter-scribe`. |
+| `AUDIO_STT_PROVIDER` | `deepgram` | Primary provider: `deepgram`, `openai` or `openrouter-scribe` (ElevenLabs Scribe v2 through OpenRouter, section 14). Keep `deepgram` unless you decide otherwise. |
+| `OPENROUTER_API_KEY` | none | **Secret.** The backend's existing OpenRouter key (marking uses it). With `openrouter-scribe` it is also the speech-to-text key. |
+| `AUDIO_STT_OPENROUTER_MODEL` | `elevenlabs/scribe-v2` | `openrouter-scribe` only: the OpenRouter model id (`author/model`). Anything else is ignored. |
+| `AUDIO_STT_OPENROUTER_MAX_FILE_BYTES` | `20971520` (20 MB) | `openrouter-scribe` only: the upload limit becomes the smaller of this and `AUDIO_MAX_FILE_BYTES`. 1 MB to 25,000,000 bytes (OpenRouter refuses multipart uploads over 25 MB and has no other route for Scribe). |
 | `AUDIO_STT_FALLBACK_ENABLED` | `false` | Opt-in OpenAI fallback. Runs only if `true`, `OPENAI_API_KEY` is set, and Deepgram failed with an error worth retrying. Off so that the voices of students who may be under 18 never reach a second vendor without a decision. |
 | `OPENAI_API_KEY` | none | **Secret.** Used only by the opt-in fallback above. |
 | `AUDIO_OPENAI_STT_MODEL` | `gpt-4o-transcribe` | The fallback's model. |
@@ -123,6 +126,9 @@ bodies.
 | `speaking_assessment_contract` | At startup: the speaking prompt and schema versions | Once per start |
 | `speaking_guest_submission_created`, `speaking_teacher_upload_saved` | A guest upload / a teacher upload saved | One per upload |
 | `teacher_upload_email_sent` / `_not_sent` | Feedback emails for teacher uploads (essay and speaking) | `sent` after marking |
+| `audio_stt_provider_usage` | `openrouter-scribe` only: `seconds` and `costUsd` OpenRouter reported for one call | One per call; about $0.0000611 per second |
+| `audio_stt_unreliable_result` | `openrouter-scribe` only: an answer failed the check; `retry` (`first`/`second`), `reasons` (codes) and `metrics` (numbers) | Rare; `second` means the recording failed with `AUDIO_STT_UNRELIABLE_RESULT` |
+| `audio_stt_provider_credits` (warning) | `openrouter-scribe` only: OpenRouter answered 402 (credits or in-flight budget); retried after `Retry-After` | Never; top up or raise the key's budget |
 
 Grep, for example: `pm2 logs <backend-app> --lines 2000 | grep -E "audio_stt_attempt|speaking_assessment_(completed|failed|blocked)"`.
 
@@ -186,6 +192,8 @@ progress). Run it after launch and from time to time; report anything it lists b
   `audiousageledgers`) are harmless to the old code and can stay. Speaking submissions are `Submission` documents with
   `sourceKind: 'audio'`; the old code does not know them, so turn the flag off first and leave them in place (do not delete them by hand).
 - Keys can stay in `.env`; nothing reads them while the flag is off.
+- **OpenRouter Scribe back to Deepgram:** set `AUDIO_STT_PROVIDER=deepgram` (or remove it), make sure `DEEPGRAM_API_KEY` is set, and
+  `pm2 restart <backend-app> --update-env`. Recordings already transcribed keep their transcript; queued ones use Deepgram from the next attempt.
 
 ## 13. Speaking assessment details
 
@@ -199,3 +207,58 @@ progress). Run it after launch and from time to time; report anything it lists b
   new recording is the way forward.
 - **Startup log.** `speaking_assessment_contract` carries the prompt version. It is not part of the runtime contract fingerprint (the essay
   fingerprint is unchanged by this feature).
+
+## 14. Optional provider: ElevenLabs Scribe v2 through OpenRouter (`openrouter-scribe`)
+
+Deepgram stays the default. Scribe is used only when `AUDIO_STT_PROVIDER=openrouter-scribe` is set; then no Deepgram key is needed.
+
+- **Switching on:** set `AUDIO_STT_PROVIDER=openrouter-scribe` (the backend's existing `OPENROUTER_API_KEY` is used), then
+  `pm2 restart <backend-app> --update-env`. Optional: `AUDIO_STT_OPENROUTER_MODEL`, `AUDIO_STT_OPENROUTER_MAX_FILE_BYTES` (section 2).
+- **Key budget (advised):** the OpenRouter key is shared with marking. Set a credit limit on the key in the OpenRouter dashboard and keep an eye
+  on `audio_stt_provider_credits` warnings: a 402 (out of credit, or too many requests in flight for the balance) is retried after its
+  `Retry-After` and is never shown to a student as their problem, but recordings wait until credit is available.
+- **What is sent:** one multipart request per call to `https://openrouter.ai/api/v1/audio/transcriptions` (fixed; `OPENROUTER_BASE_URL` does not
+  apply): model, the recording (named `audio.<ext>`, never the original name), `verbose_json`, word and segment timings, English, and
+  `provider: { zdr: true, allow_fallbacks: false }` (zero data retention, no silent re-routing). If OpenRouter has no zero-retention endpoint
+  for the model it answers 404 at "Filter by Data Policy"; that is reported as `AUDIO_STT_NOT_CONFIGURED`.
+- **Limits:** uploads are refused above min(`AUDIO_MAX_FILE_BYTES`, `AUDIO_STT_OPENROUTER_MAX_FILE_BYTES`) = 20 MB by default, with the usual
+  "too large" message (the 7-minute limit is unchanged). A larger file reaching the provider (for example after the cap was lowered) fails with
+  `AUDIO_STT_FILE_TOO_LARGE_FOR_PROVIDER`; OpenRouter's own 400 "exceeds the 25 MB multipart upload limit" maps to the same code. Nothing is
+  re-encoded. A 7-minute recording is about 7 MB as 128 kbps M4A or MP3, 10 MB at 192 kbps, and 13 MB as 16 kHz mono WAV; CD-quality WAV
+  (44.1 kHz stereo) passes 20 MB after about 2 minutes, so such a file is refused at upload with the "too large" message.
+- **Cost:** about $0.0000611 per second ($0.026 for 7 minutes), reported per call in `audio_stt_provider_usage`. A suspicious answer is asked
+  for again once, so that recording can cost twice; the teacher's minutes are counted once per attempt.
+- **What is stored:** the same transcript schema as Deepgram (provider `openrouter-scribe`, model, the OpenRouter generation id as request id,
+  words with plain and punctuated text, per-word confidence, utterances derived from sentence ends and gaps of 1 s or more, times clamped to
+  the file length). Provider and model live in the raw transcript only (server side); no student, guest or teacher payload carries them.
+- **Fillers:** Scribe keeps "um", "uh", "mm", "hmm", "er"... The filler set used by the fluency figures includes them
+  (`audio-fluency-v2`, `audio-derived-text-v2`). Results stored before keep their v1 figures. Measured: filler spelling and count can differ
+  slightly between two runs of the same file ("mm" / "um" / "uh"); the rest of the text was identical.
+
+### The suspicious-response check (`services/audio/stt/transcriptGuard.js`)
+
+Scribe was measured to sometimes return text squashed into zero-length words with duplicated text, or to lose a stretch silently while later
+words are still timed up to the end. Every Scribe answer is checked against our own duration scan before it is stored:
+
+| Check (reason code) | Fails when | Real speech measured | Failures measured |
+|---|---|---|---|
+| `ZERO_LENGTH_RUN` / `ZERO_LENGTH_SHARE` | 10 zero-length words in a row, or over 2% (and at least 5) | 0 | 131 words, a run of 89 |
+| `WORDS_BEYOND_DURATION` | a word ends more than 1 s after the end of the audio | 0 | 0 |
+| `OVERLAPPING_WORDS` | over 1% (and at least 3) overlapping word pairs | 0 | 0 |
+| `DUPLICATED_BLOCK` | 20+ words twice in a row, one copy in under half the time of the other | longest plain repeat 387 words, same pace | 266 and 133 words |
+| `END_GAP` | speech ends more than 15 s before the end of the audio | at most 1.33 s | 6.3 s and 0.04 s |
+| `DURATION_MISMATCH` | the provider heard a length that differs from ours by more than 2 s and 5% | 0 s | 0 s |
+| `RATE_DROPOUT` / `RATE_BURST` | a 30 s window under 0.2x / over 2x the median speaking rate (60 s of speech or more) | 0.82x to 1.54x | 0.06x; 2.55x |
+
+Calibration: speaking-A (45 s), speaking-B (142 s) and two runs of a 417 s real-speech file pass; both looped-speech failures fail
+(`tests/fixtures/audio/openrouter-scribe`, `tests/audioSttGuard.test.js`).
+
+- **Behaviour:** a suspicious answer is requested once more, inside the same attempt. If the second answer is also suspicious, the recording
+  fails with `AUDIO_STT_UNRELIABLE_RESULT`: no transcript is stored, no minutes and no credit are charged, no assessment runs, the student
+  sees the usual "could not be turned into text" state and can record again (or the teacher can retry). Logs carry reason codes and numbers
+  only (`audio_stt_unreliable_result`).
+- **Limits of a transcript-only check:** a student who is silent for 30 s or more in the middle of an answer, or who stops talking more than
+  15 s before ending the recording, looks like a dropout and is asked to record again. There is no audio energy check on the server.
+- **Manual test (development only):** `AUDIO_STT_GUARD_FORCE_SUSPICIOUS=true` makes every Scribe answer fail the check (reason
+  `FORCED_FOR_TESTING`). It is honoured only when `NODE_ENV` is `development` or `test`; in production, staging or with `NODE_ENV` unset it is
+  ignored.
