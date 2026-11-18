@@ -173,6 +173,14 @@ describe('each rule on synthetic word lists', () => {
     expect(guard.inspectWords([], { providerDurationSeconds: 30, expectedDurationSeconds: 30 })).toMatchObject({ ok: true, reasons: [] });
   });
 
+  test('END_GAP is measured against OUR duration scan when we have it (provider 385 s, ours 400 s: within the mismatch tolerance)', () => {
+    const words = speech(900, 0.5, 383.7);
+    const report = guard.inspectWords(words, { providerDurationSeconds: 385, expectedDurationSeconds: 400 });
+    expect(report.reasons).toEqual(['END_GAP']);
+    expect(report.metrics.durationSeconds).toBe(400);
+    expect(guard.inspectWords(words, { providerDurationSeconds: 385 }).ok).toBe(true);
+  });
+
   test('without our duration scan, the provider duration is used', () => {
     expect(guard.inspectWords(speech(250, 0.5, 100), { providerDurationSeconds: 116 }).reasons).toContain('END_GAP');
   });
