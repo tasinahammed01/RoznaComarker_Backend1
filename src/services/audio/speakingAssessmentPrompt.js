@@ -9,9 +9,11 @@
 //   exact keys and types, one valid level per criterion, length and count caps, every number in free text taken from the input, no
 //   pronunciation, spelling, punctuation or capitalisation judgement, no prompt text or markup. Corrections must quote the assessed text; a quote
 //   that cannot be found there is dropped (counted), never placed by guesswork.
+// - v2 (stage 7d): a normal speaking-rate range, so a fast (or slow) but fluent speaker is never marked down for rate alone. The model is told
+//   not to quote the range, because the numbers check would reject feedback that does (100 to 180 are not in DATA).
 const { allowedNumbers } = require('../assignmentReportSummary.service');
 
-const PROMPT_VERSION = 'speaking-assessment-prompt-v1';
+const PROMPT_VERSION = 'speaking-assessment-prompt-v2';
 const SCHEMA_VERSION = 'speaking-assessment-schema-v1';
 const FEATURE = 'speaking_assessment';
 const CANARY = 'RUBRILO-SPEAKING-ASSESSOR-7Q2';
@@ -28,6 +30,7 @@ const SYSTEM = [
   'Rules for machine-transcribed speech:',
   '- Punctuation, capitalisation and spelling were added by the machine. Never assess, mention or correct them.',
   '- Filler words (um, uh, like) were removed from assessedText; repetitions and self-corrections were kept. Fillers, pauses and repetitions are part of fluency, and the fluency figures in DATA (computed by software) describe them. Judge fluency from those figures and from repetitions or restarts in the text.',
+  '- Speaking rate: About 100 to 180 words per minute is a normal speaking rate. Never lower fluency only because the rate is high or low; judge fluency by pauses, fillers, repetitions, restarts and how smoothly the ideas flow. Do not mention this range in your feedback.',
   '- Pronunciation, accent and intonation cannot be judged from text. Never score, mention or guess them.',
   '- The machine\'s confidence in a word is never a score. Do not mention it.',
   'Assess against the task (title and description) and the teacher\'s rubric in DATA. For every rubric criterion choose exactly one of its level titles, with a short comment that explains the choice using evidence from the answer.',

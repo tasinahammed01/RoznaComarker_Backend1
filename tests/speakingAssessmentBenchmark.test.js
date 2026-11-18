@@ -33,15 +33,40 @@ beforeEach(async () => { await clearDatabase(); await seedTestPlans(); await Aud
 test('the benchmark has at least 12 transcripts covering the required kinds', () => {
   expect(CASES.length).toBeGreaterThanOrEqual(12);
   const names = CASES.map(c => c.name).join(' | ');
-  for (const kind of ['weak', 'medium', 'strong', 'filler-heavy', 'off-topic', 'too short', 'repeated', 'prompt injection', 'mixed language', 'very long'])
+  for (const kind of ['weak', 'medium', 'strong', 'filler-heavy', 'off-topic', 'too short', 'repeated', 'prompt injection', 'mixed language', 'very long',
+    'varied long answer', 'fast speaker'])
     expect(names).toContain(kind);
+});
+
+test('every case: the recording is at least as long as the speech in its fluency figures, and within the default 7 minute limit', () => {
+  for (const item of CASES) {
+    const { fluency, seconds } = h.caseRecording(item);
+    expect({ name: item.name, longEnough: seconds >= fluency.speakingSeconds, withinLimit: seconds <= 420 })
+      .toEqual({ name: item.name, longEnough: true, withinLimit: true });
+  }
+});
+
+test('the varied long answers: no repeated sentence, the stated length and pace', () => {
+  const varied = CASES.filter(c => c.name.startsWith('varied long answer'));
+  expect(varied).toHaveLength(2);
+  for (const item of varied) {
+    const sentences = item.text.split(/(?<=[.!?;])\s+/);
+    expect(new Set(sentences).size).toBe(sentences.length);
+  }
+  const [normal, fast] = varied.map(item => h.caseRecording(item).fluency);
+  expect(normal.spokenWords).toBeGreaterThanOrEqual(950);
+  expect(normal.spokenWords).toBeLessThanOrEqual(1050);
+  expect(normal.wordsPerMinute).toBeCloseTo(150, 0);
+  expect(fast.spokenWords).toBeGreaterThanOrEqual(1150);
+  expect(fast.spokenWords).toBeLessThanOrEqual(1250);
+  expect(fast.wordsPerMinute).toBeCloseTo(175, 0);
 });
 
 describe.each(CASES.map(c => [c.name, c]))('%s', (_name, item) => {
   test('pipeline outcome, charge and stored result', async () => {
     const f = await seedSpeaking();
     await h.personalCredits(f.teacher.user, 3);
-    const made = await h.readyRecording(f, item.text, { fluency: h.fluencyFor(item.text, item.fluency || {}), seconds: item.seconds || 60 });
+    const made = await h.readyRecording(f, item.text, h.caseRecording(item));
     await assessment.enqueueAssessment(made.recording._id);
     const fetchImpl = h.fakeOpenRouter(item.reply ? item.reply(h) : h.output());
     const outcome = await assessment.runSpeakingAssessment(made.recording._id, { env: h.TEST_ENV, fetchImpl });

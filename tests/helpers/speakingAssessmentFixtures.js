@@ -66,15 +66,22 @@ async function institutionCredits(f, credits) {
 }
 
 /** A synthetic word list: words, one filler after every 12th word, 0.35 s per word, a 1.4 s pause every 40 words. */
-function fluencyFor(text, { fillersPer100 = null } = {}) {
+function fluencyFor(text, { fillersPer100 = null, wordsPerMinute = null } = {}) {
   const words = String(text).split(/\s+/).filter(Boolean).length;
   const fillers = fillersPer100 == null ? Math.floor(words / 12) : Math.round(words * fillersPer100 / 100);
   const total = words + fillers;
-  const seconds = Math.round((total * 0.35 + Math.floor(words / 40) * 1.4) * 100) / 100;
+  // wordsPerMinute: the speech lasts exactly as long as that pace needs (pauses included); otherwise about 0.35 s per word plus the pauses.
+  const seconds = wordsPerMinute ? Math.round(words / wordsPerMinute * 60 * 100) / 100 : Math.round((total * 0.35 + Math.floor(words / 40) * 1.4) * 100) / 100;
   return { metricsVersion: 'audio-fluency-v1', available: true, totalWords: total, spokenWords: words, fillerCount: fillers, speakingSeconds: seconds,
     wordsPerMinute: seconds > 0 ? Math.round(words / (seconds / 60) * 10) / 10 : 0, fillersPer100Words: total ? Math.round(fillers * 1000 / total) / 10 : 0,
     pauseThresholdSeconds: 1, pausesOverThreshold: Math.floor(words / 40), longestPauseSeconds: words >= 40 ? 1.4 : 0,
     totalPauseSecondsOverThreshold: Math.round(Math.floor(words / 40) * 1.4 * 100) / 100, repetitionCount: 0 };
+}
+
+/** A benchmark case's fluency figures and recording length: the recording is the speech plus 2 seconds (never shorter than the speech). */
+function caseRecording(item) {
+  const fluency = fluencyFor(item.text, item.fluency || {});
+  return { fluency, seconds: item.seconds || Math.max(6, Math.ceil(fluency.speakingSeconds) + 2) };
 }
 
 /** A ready, linked recording whose stored derived texts hold `text` (as the transcription worker stores them). */
@@ -95,5 +102,5 @@ function longAnswer(words) {
   return out.join(' ');
 }
 
-module.exports = { MODEL, TEST_ENV, DEFAULT_IDS, output, fakeOpenRouter, personalCredits, institutionCredits, fluencyFor, readyRecording, longAnswer,
+module.exports = { MODEL, TEST_ENV, DEFAULT_IDS, output, fakeOpenRouter, personalCredits, institutionCredits, fluencyFor, caseRecording, readyRecording, longAnswer,
   objectId: () => new mongoose.Types.ObjectId() };

@@ -322,7 +322,20 @@ describe('off-topic score cap (SPEAKING_OFF_TOPIC_SCORE_CAP, default 50; stage 7
 
   test('the cap never touches the assessor prompt', () => {
     expect(prompt.SYSTEM).not.toMatch(/\bcapped\b|score cap|SCORE_CAP|at most \d+ points/i);
-    expect(prompt.PROMPT_VERSION).toBe('speaking-assessment-prompt-v1');
+    expect(prompt.PROMPT_VERSION).toBe('speaking-assessment-prompt-v2');
+  });
+});
+
+describe('speaking rate guidance (prompt v2): a fast or slow but fluent speaker is not marked down for rate alone', () => {
+  test('the prompt gives the normal range, forbids lowering fluency for rate alone, and says what fluency is judged by', () => {
+    expect(prompt.SYSTEM).toContain('About 100 to 180 words per minute is a normal speaking rate.');
+    expect(prompt.SYSTEM).toContain('Never lower fluency only because the rate is high or low');
+    expect(prompt.SYSTEM).toMatch(/judge fluency by pauses, fillers, repetitions, restarts and how smoothly the ideas flow/);
+    expect(prompt.SYSTEM).toContain('Do not mention this range in your feedback.');
+  });
+  test('the version is logged on its own line at startup (the server reads PROMPT_VERSION)', () => {
+    const server = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'server.js'), 'utf8');
+    expect(server).toMatch(/event: 'speaking_assessment_contract', promptVersion: speakingPrompt\.PROMPT_VERSION/);
   });
 });
 

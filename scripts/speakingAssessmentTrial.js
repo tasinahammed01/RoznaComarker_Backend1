@@ -25,7 +25,7 @@ async function main(argv = process.argv.slice(2), env = process.env, deps = {}) 
   const assessment = require('../src/services/audio/speakingAssessment.service');
   const { resolveSpeakingRubric } = require('../src/services/audio/speakingRubric');
   const { calculateCustomRubricScore } = require('../src/services/assignmentRubric.service');
-  const { fluencyFor } = require('../tests/helpers/speakingAssessmentFixtures');
+  const { caseRecording } = require('../tests/helpers/speakingAssessmentFixtures');
   const cases = require('../tests/fixtures/audio/speakingBenchmark.cjs');
   let config;
   try { config = gateway.getAssessmentAIConfig(env); } catch { return refuse('the assessment model is not configured (OPENROUTER_API_KEY / ASSESSMENT_AI_MODEL).'); }
@@ -42,8 +42,8 @@ async function main(argv = process.argv.slice(2), env = process.env, deps = {}) 
     const words = assessment.countWords(item.text);
     if (words < assessment.minWords(env)) { console.log(`- ${item.name}: not enough speech (${words} words), no call`); continue; }
     if (assessment.nonLatinShare(item.text) > 0.3) { console.log(`- ${item.name}: mostly another script, no call`); continue; }
-    const fluency = fluencyFor(item.text, item.fluency || {});
-    const input = prompt.buildInput({ assignment, rubric, assessedText: item.text, fluency, durationSeconds: item.seconds || 60, wordCount: words });
+    const { fluency, seconds } = caseRecording(item);
+    const input = prompt.buildInput({ assignment, rubric, assessedText: item.text, fluency, durationSeconds: seconds, wordCount: words });
     try {
       const result = await gateway.generate({ feature: prompt.FEATURE, config, env, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), messages: prompt.messagesFor(input), maxOutputTokens: 3000, temperature: 0,
         responseFormat: 'json', responseSchema: prompt.responseSchema(rubric), schemaName: prompt.FEATURE, metadata: { purpose: 'speaking_trial' },

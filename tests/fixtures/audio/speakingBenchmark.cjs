@@ -4,6 +4,8 @@
 // pipeline must do with it. Used by tests/speakingAssessmentBenchmark.test.js (mocked) and by scripts/speakingAssessmentTrial.js (opt-in, real).
 // Task for every case: "Describe your town" (the fixture assignment).
 const { longAnswer } = require('../../helpers/speakingAssessmentFixtures');
+const { variedAnswer } = require('./speakingLongVaried.cjs');
+// Recording length: derived from each case's fluency figures (tests/helpers caseRecording), so it always matches the speech.
 
 const WEAK = 'My town is small. It have one school and one shop. I go to school by walk. There is river. People is friendly. I like my town because it is quiet. In my town we have a park and I play football there with my friend after school every day.';
 const MEDIUM = 'I live in a town near the river. It is not very big but it has everything we need, like a market, two schools and a small hospital. '
@@ -51,9 +53,19 @@ module.exports = [
   { name: 'non-English (Latin script; the model says so)', text: SPANISH, reply: h => h.output({ assessable: false, reason: 'not_english' }),
     expect: { status: 'not_assessable', code: 'SPEAKING_NOT_ENGLISH', calls: 1 } },
   { name: 'unintelligible', text: GARBLED, reply: h => h.output({ assessable: false, reason: 'unintelligible' }), expect: { status: 'not_assessable', code: 'SPEAKING_UNINTELLIGIBLE' } },
-  { name: 'very long answer (about 1,200 words, within 7 minutes)', text: longAnswer(1200), seconds: 410,
+  // Repetitive on purpose (6 sentences repeated): about 1,200 words at about 175 words per minute fits in 7 minutes.
+  { name: 'very long answer (about 1,200 words, within 7 minutes)', text: longAnswer(1200), fluency: { wordsPerMinute: 175 },
     reply: h => h.output({ level: 'Good', corrections: [{ category: 'GRAMMAR', symbol: 'VF', quotedText: 'builded', occurrence: 3, suggestedText: 'built', message: 'Built is the past form.' }] }),
     expect: { status: 'completed', score: [75, 75], corrections: 1 } },
+  // Varied, good quality, no repeated sentence (tests/fixtures/audio/speakingLongVaried.cjs). 1,200 words at 150 words per minute would be
+  // 8 minutes, over the 7 minute limit, so the 150 wpm case uses about 1,000 words and the fast-speaker case all 1,214 words at 175 wpm.
+  { name: 'varied long answer (about 1,000 words at about 150 words per minute)', text: variedAnswer(950), fluency: { wordsPerMinute: 150, fillersPer100: 3 },
+    reply: h => h.output({ level: 'Excellent' }), expect: { status: 'completed', score: [100, 100], corrections: 0 } },
+  { name: 'varied long answer, fast speaker (about 1,200 words at about 175 words per minute)', text: variedAnswer(Infinity), fluency: { wordsPerMinute: 175, fillersPer100: 3 },
+    reply: h => h.output({ level: 'Excellent' }), expect: { status: 'completed', score: [100, 100], corrections: 0 } },
+  { name: 'feedback quoting the speaking-rate range (rejected: 180 is not in the data)', text: MEDIUM,
+    reply: h => h.output({ summary: 'Your pace was normal, between 100 and 180 words per minute, and your ideas were clear.' }),
+    expect: { status: 'failed', code: 'AI_OUTPUT_VALIDATION_FAILED' } },
   { name: 'feedback with an invented number (rejected)', text: MEDIUM, reply: h => h.output({ summary: 'You used 47 different linking words, which is excellent work overall.' }),
     expect: { status: 'failed', code: 'AI_OUTPUT_VALIDATION_FAILED' } },
   { name: 'feedback judging pronunciation (rejected)', text: MEDIUM, reply: h => h.output({ comment: 'Your pronunciation of the longer words was clear and easy to follow.' }),

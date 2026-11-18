@@ -71,6 +71,16 @@ describe('with the switch and an injected fake provider (stage 7b output)', () =
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  test.each(['very long', 'varied long answer'])('the recording length sent for %s is never shorter than its speech', async (name) => {
+    const out = await capture(['--case', name, '--show-feedback'], h.output({ level: 'Good' }));
+    const sent = [...out.matchAll(/words in ([\d.]+) s of speech; recording (\d+) s/g)];
+    expect(sent.length).toBeGreaterThan(0);
+    for (const [, speech, recording] of sent) {
+      expect(Number(recording)).toBeGreaterThanOrEqual(Number(speech));
+      expect(Number(recording)).toBeLessThanOrEqual(420);
+    }
+  });
+
   test('without --show-feedback no feedback text is printed', async () => {
     const out = await capture(['--case', 'weak'], h.output({ level: 'Developing' }));
     expect(out).not.toContain('summary:');
