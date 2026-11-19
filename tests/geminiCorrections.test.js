@@ -69,7 +69,7 @@ test('Gemini requires and preserves the model educational explanation without a 
   expect(schema.$defs.finding.required).toContain('message');
   expect(schema.$defs.finding.properties.message.maxLength).toBe(240);
   expect(body.messages[0].content).toContain('senior English grammar reviewer');
-  expect(body.messages[1].content).toContain('gemini-corrections-v2-mechanics-checklist');
+  expect(body.messages[1].content).toContain('gemini-corrections-v3-whole-word-occurrence');
   expect(body.messages[1].content.endsWith('transcript=She go home.')).toBe(true);
   expect(fetchImpl).toHaveBeenCalledTimes(1);
 });

@@ -412,7 +412,7 @@
     "transcriptText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
     "correctionTranscriptLayoutVersion": "ocr-layout-v5-native-text",
     "correctionVersion": "canonical-8-source-grounded",
-    "correctionSourceHash": "7045b0c2cb1c9d503a613deac33f8c17f4c9a437cb9d12594ceae9893a4437b7",
+    "correctionSourceHash": "d86c3723a12b3bda165fe001949b5ccd8c78b4fe996fb665a073f50a0d61520f",
     "writingCorrections": [
      {
       "fileId": "0000000000000000000000f1",
@@ -953,7 +953,7 @@
      "transcriptText": "I goes to the park every day. I ate a apple and I dont like it. She goes home and she is realy tired.",
      "correctionTranscriptLayoutVersion": "ocr-layout-v5-native-text",
      "correctionVersion": "canonical-8-source-grounded",
-     "correctionSourceHash": "7045b0c2cb1c9d503a613deac33f8c17f4c9a437cb9d12594ceae9893a4437b7",
+     "correctionSourceHash": "d86c3723a12b3bda165fe001949b5ccd8c78b4fe996fb665a073f50a0d61520f",
      "writingCorrections": [
       {
        "fileId": "0000000000000000000000f1",
@@ -1945,7 +1945,7 @@
     "transcriptComplete": true,
     "transcriptLayoutVersion": "ocr-layout-v5-native-text",
     "correctionCurrent": true,
-    "correctionSourceHash": "7045b0c2cb1c9d503a613deac33f8c17f4c9a437cb9d12594ceae9893a4437b7",
+    "correctionSourceHash": "d86c3723a12b3bda165fe001949b5ccd8c78b4fe996fb665a073f50a0d61520f",
     "evaluationStatus": "completed",
     "assessmentStatus": "complete",
     "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
@@ -1955,10 +1955,10 @@
     "assessmentVersion": "writing-rubric-100-v5-teacher-policy",
     "evaluationErrorCode": null,
     "detailedFeedbackStatus": "completed",
-    "detailedFeedbackSourceHash": "7045b0c2cb1c9d503a613deac33f8c17f4c9a437cb9d12594ceae9893a4437b7",
+    "detailedFeedbackSourceHash": "d86c3723a12b3bda165fe001949b5ccd8c78b4fe996fb665a073f50a0d61520f",
     "detailedFeedback": {
      "status": "completed",
-     "sourceHash": "7045b0c2cb1c9d503a613deac33f8c17f4c9a437cb9d12594ceae9893a4437b7",
+     "sourceHash": "d86c3723a12b3bda165fe001949b5ccd8c78b4fe996fb665a073f50a0d61520f",
      "evaluationVersion": "canonical-detailed-feedback-2",
      "areasForImprovement": [
       {
@@ -2067,7 +2067,7 @@
      "summary": "Short paragraph."
     },
     "overriddenByTeacher": true,
-    "evaluationSourceHash": "7045b0c2cb1c9d503a613deac33f8c17f4c9a437cb9d12594ceae9893a4437b7",
+    "evaluationSourceHash": "d86c3723a12b3bda165fe001949b5ccd8c78b4fe996fb665a073f50a0d61520f",
     "evaluation": {
      "categoryScores": {
       "GRAMMAR": {
@@ -2278,7 +2278,7 @@
      }
     },
     "overallScore": 82,
-    "evaluationSourceHash": "7045b0c2cb1c9d503a613deac33f8c17f4c9a437cb9d12594ceae9893a4437b7",
+    "evaluationSourceHash": "d86c3723a12b3bda165fe001949b5ccd8c78b4fe996fb665a073f50a0d61520f",
     "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
     "evaluationRubricSourceHash": "804aa28a8608e4d036fa6d03162ed1f3d1ee00b102db1a92ef310720c50b9574",
     "evaluationPolicyHash": "9cad237b79d82ce5e0ae570b59b7b545743579304f97a15d146402b67f8e7117",
@@ -2287,7 +2287,7 @@
     "grade": "F",
     "detailedFeedback": {
      "status": "completed",
-     "sourceHash": "7045b0c2cb1c9d503a613deac33f8c17f4c9a437cb9d12594ceae9893a4437b7",
+     "sourceHash": "d86c3723a12b3bda165fe001949b5ccd8c78b4fe996fb665a073f50a0d61520f",
      "evaluationVersion": "canonical-detailed-feedback-2",
      "areasForImprovement": [
       {
@@ -2395,7 +2395,7 @@
      ],
      "summary": "Short paragraph."
     },
-    "detailedFeedbackSourceHash": "7045b0c2cb1c9d503a613deac33f8c17f4c9a437cb9d12594ceae9893a4437b7",
+    "detailedFeedbackSourceHash": "d86c3723a12b3bda165fe001949b5ccd8c78b4fe996fb665a073f50a0d61520f",
     "teacherComments": "Teacher review complete.",
     "rubricDesigner": null,
     "scoringAudit": {
@@ -2597,7 +2597,7 @@
      "active": false
     },
     "previousEvaluation": null,
-    "correctionSourceHash": "7045b0c2cb1c9d503a613deac33f8c17f4c9a437cb9d12594ceae9893a4437b7",
+    "correctionSourceHash": "d86c3723a12b3bda165fe001949b5ccd8c78b4fe996fb665a073f50a0d61520f",
     "marksVisible": true
    }
   }
@@ -2667,7 +2667,7 @@
      },
      "detailedFeedback": {
       "status": "completed",
-      "sourceHash": "dd39eba89981d4e8dcc01e354cabc000338509a9485b9f2cf00ec55b69787ca6",
+      "sourceHash": "74a5b2caf580c0d247e0a8f78321f8bd830c4430779870fa605594164a0ed76d",
       "evaluationVersion": "canonical-detailed-feedback-2",
       "areasForImprovement": [
        {
@@ -2802,7 +2802,7 @@
      "evaluationStatus": "completed",
      "assessmentStatus": "complete",
      "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
-     "correctionSourceHash": "dd39eba89981d4e8dcc01e354cabc000338509a9485b9f2cf00ec55b69787ca6",
+     "correctionSourceHash": "74a5b2caf580c0d247e0a8f78321f8bd830c4430779870fa605594164a0ed76d",
      "correctionStatistics": {
       "content": 0,
       "grammar": 3,
@@ -3985,7 +3985,7 @@
     "transcriptComplete": true,
     "transcriptLayoutVersion": "ocr-layout-v5-native-text",
     "correctionCurrent": true,
-    "correctionSourceHash": "dd39eba89981d4e8dcc01e354cabc000338509a9485b9f2cf00ec55b69787ca6",
+    "correctionSourceHash": "74a5b2caf580c0d247e0a8f78321f8bd830c4430779870fa605594164a0ed76d",
     "evaluationStatus": "completed",
     "assessmentStatus": "complete",
     "assessmentCompletedAt": "2026-10-01T09:00:00.000Z",
@@ -3995,10 +3995,10 @@
     "assessmentVersion": "writing-rubric-100-v5-teacher-policy",
     "evaluationErrorCode": null,
     "detailedFeedbackStatus": "completed",
-    "detailedFeedbackSourceHash": "dd39eba89981d4e8dcc01e354cabc000338509a9485b9f2cf00ec55b69787ca6",
+    "detailedFeedbackSourceHash": "74a5b2caf580c0d247e0a8f78321f8bd830c4430779870fa605594164a0ed76d",
     "detailedFeedback": {
      "status": "completed",
-     "sourceHash": "dd39eba89981d4e8dcc01e354cabc000338509a9485b9f2cf00ec55b69787ca6",
+     "sourceHash": "74a5b2caf580c0d247e0a8f78321f8bd830c4430779870fa605594164a0ed76d",
      "evaluationVersion": "canonical-detailed-feedback-2",
      "areasForImprovement": [
       {
@@ -4107,7 +4107,7 @@
      "summary": "Short paragraph."
     },
     "overriddenByTeacher": true,
-    "evaluationSourceHash": "dd39eba89981d4e8dcc01e354cabc000338509a9485b9f2cf00ec55b69787ca6",
+    "evaluationSourceHash": "74a5b2caf580c0d247e0a8f78321f8bd830c4430779870fa605594164a0ed76d",
     "evaluation": {
      "categoryScores": {
       "GRAMMAR": {
@@ -4317,7 +4317,7 @@
      }
     },
     "overallScore": 82,
-    "evaluationSourceHash": "dd39eba89981d4e8dcc01e354cabc000338509a9485b9f2cf00ec55b69787ca6",
+    "evaluationSourceHash": "74a5b2caf580c0d247e0a8f78321f8bd830c4430779870fa605594164a0ed76d",
     "evaluationVersion": "canonical-evaluation-9-fixed-skill-isolation",
     "evaluationRubricSourceHash": "804aa28a8608e4d036fa6d03162ed1f3d1ee00b102db1a92ef310720c50b9574",
     "evaluationPolicyHash": "9cad237b79d82ce5e0ae570b59b7b545743579304f97a15d146402b67f8e7117",
@@ -4326,7 +4326,7 @@
     "grade": "F",
     "detailedFeedback": {
      "status": "completed",
-     "sourceHash": "dd39eba89981d4e8dcc01e354cabc000338509a9485b9f2cf00ec55b69787ca6",
+     "sourceHash": "74a5b2caf580c0d247e0a8f78321f8bd830c4430779870fa605594164a0ed76d",
      "evaluationVersion": "canonical-detailed-feedback-2",
      "areasForImprovement": [
       {
@@ -4434,7 +4434,7 @@
      ],
      "summary": "Short paragraph."
     },
-    "detailedFeedbackSourceHash": "dd39eba89981d4e8dcc01e354cabc000338509a9485b9f2cf00ec55b69787ca6",
+    "detailedFeedbackSourceHash": "74a5b2caf580c0d247e0a8f78321f8bd830c4430779870fa605594164a0ed76d",
     "teacherComments": "Teacher review complete.",
     "rubricDesigner": null,
     "scoringAudit": {
@@ -4636,7 +4636,7 @@
      "active": false
     },
     "previousEvaluation": null,
-    "correctionSourceHash": "dd39eba89981d4e8dcc01e354cabc000338509a9485b9f2cf00ec55b69787ca6",
+    "correctionSourceHash": "74a5b2caf580c0d247e0a8f78321f8bd830c4430779870fa605594164a0ed76d",
     "marksVisible": true
    }
   }

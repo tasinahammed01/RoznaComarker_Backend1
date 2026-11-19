@@ -187,7 +187,8 @@ describe('immutable teacher policy and rubric evidence', () => {
   test('strictness changes a defensible confidence threshold while grounding remains mandatory', () => {
     const source = input('Society controls people.'), legend = semantic.compactSemanticLegend(source.legend);
     const candidate = finding('CONTENT', 'DEV', source.transcript, { confidence: .74, severity: 'low' });
-    expect(() => semantic.validateCorrections([candidate], { ...source, legend, policy: { strictness: 'balanced' } })).toThrow();
+    // Below the balanced bar the finding is dropped; a reply holding only such findings is zero findings, not a failure.
+    expect(semantic.validateCorrections([candidate], { ...source, legend, policy: { strictness: 'balanced' } })).toMatchObject({ corrections: [], diagnostics: { allFindingsRejected: { benign: true, reasons: { LOW_CONFIDENCE: 1 } } } });
     expect(semantic.validateCorrections([candidate], { ...source, legend, policy: { strictness: 'strict' } }).corrections).toHaveLength(1);
     expect(() => semantic.validateCorrections([{ ...candidate, quotedText: 'Invented claim' }],
       { ...source, legend, policy: { strictness: 'strict' } })).toThrow();

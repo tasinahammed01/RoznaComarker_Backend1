@@ -36,7 +36,7 @@ test('scoring refuses GPT54 Mini and remains sole Astra, independently from sour
 });
 test('frozen quality fixture has seven separate expected symbols and unchanged prompt identity',()=>{
  expect(fixture.defects.map(f=>f.symbol)).toEqual(['AGR','SP','P','SPC','COL','REL','CONC']);
- expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-v15-mechanics-checklist');
+ expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-v16-whole-word-occurrence');
  expect(fixture.negativeControls.filter(c=>fixture.mixed.transcript.includes(c))).toHaveLength(4);
 });
 test('GPT54 Mini and Claude share the four-slot correction gate without job contamination',async()=>{

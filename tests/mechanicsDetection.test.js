@@ -92,10 +92,10 @@ describe('mechanics checklist in the correction prompt', () => {
 
   test('the prompt versions change with the new instructions; the schema does not', () => {
     expect(semantic.contractVersions(gateway.GEMINI_CORRECTION_MODEL)).toMatchObject({
-      promptVersion: 'gemini-corrections-v2-mechanics-checklist', schemaVersion: 'semantic-corrections-v16-compact-explanations' });
+      promptVersion: 'gemini-corrections-v3-whole-word-occurrence', schemaVersion: 'semantic-corrections-v16-compact-explanations' });
     expect(semantic.contractVersions(gateway.DEEPSEEK_CORRECTION_MODEL)).toMatchObject({
-      promptVersion: 'deepseek-corrections-v3-mechanics-checklist', schemaVersion: 'semantic-corrections-v16-compact-explanations' });
-    expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-v15-mechanics-checklist');
+      promptVersion: 'deepseek-corrections-v4-whole-word-occurrence', schemaVersion: 'semantic-corrections-v16-compact-explanations' });
+    expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-v16-whole-word-occurrence');
     expect(semantic.SEMANTIC_SCHEMA_VERSION).toBe('semantic-corrections-v15-compact-symbol-map');
   });
 });
