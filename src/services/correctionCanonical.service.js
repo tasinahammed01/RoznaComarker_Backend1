@@ -19,10 +19,19 @@ function getCanonicalCategoryForCorrectionCode(code, legend = defaultLegend()) {
   return legendIndex(legend).get(String(code || '').trim().toUpperCase())?.category || null;
 }
 
+const WORD_CHARACTER = /[\p{L}\p{M}\p{N}]/u;
+const SINGLE_WORD = /^[\p{L}\p{M}\p{N}]+(?:['’-][\p{L}\p{M}\p{N}]+)*$/u;
+
 function locateQuote(text, quote, occurrence) {
   if (!text || !quote) return null;
   const starts = [];
   for (let at = text.indexOf(quote); at >= 0; at = text.indexOf(quote, at + 1)) starts.push(at);
+  // Models count a one-word quote ("i", "we", "the") as a word, never inside "with", "went" or "Grandfather".
+  // Only when such inner matches exist, and only if that whole-word occurrence exists; otherwise unchanged.
+  if (SINGLE_WORD.test(quote) && Number.isInteger(occurrence) && occurrence >= 0) {
+    const whole = starts.filter(at => !WORD_CHARACTER.test(text[at - 1] || '') && !WORD_CHARACTER.test(text[at + quote.length] || ''));
+    if (whole.length < starts.length && whole[occurrence] != null) return { start: whole[occurrence], end: whole[occurrence] + quote.length };
+  }
   if (Number.isInteger(occurrence) && occurrence >= 0 && starts[occurrence] != null)
     return { start: starts[occurrence], end: starts[occurrence] + quote.length };
   if (starts.length === 1) return { start: starts[0], end: starts[0] + quote.length };
@@ -64,8 +73,10 @@ function correctionGroundingReason(raw, text, spans, range, mapped) {
     const normalize = (value) => String(value || '').normalize('NFKC').replace(/\s+/gu, ' ').trim();
     const source = normalize(quotedText);
     const suggestion = normalize(raw.suggestedText);
+    // Spacing fixes differ only in whitespace (" ," -> ","), so SPC compares the exact text.
     if (symbol === 'SP' ? source.toLocaleLowerCase() === suggestion.toLocaleLowerCase()
-      : source === suggestion) return 'NO_OP_CORRECTION';
+      : symbol === 'SPC' ? quotedText.normalize('NFKC') === String(raw.suggestedText).normalize('NFKC')
+        : source === suggestion) return 'NO_OP_CORRECTION';
   }
   return null;
 }

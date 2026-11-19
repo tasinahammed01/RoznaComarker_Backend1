@@ -35,8 +35,8 @@ test('scoring refuses Gemini and remains sole Astra, independently from source/O
 });
 test('frozen quality fixture has seven separate expected symbols and unchanged prompt identity',()=>{
  expect(fixture.defects.map(f=>f.symbol)).toEqual(['AGR','SP','P','SPC','COL','REL','CONC']);
- expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-v14-symbol-review-map');
- expect(semantic.contractVersions(gateway.GEMINI_CORRECTION_MODEL)).toMatchObject({promptVersion:'gemini-corrections-v1-expert-explanations',schemaVersion:'semantic-corrections-v16-compact-explanations'});
+ expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-v16-whole-word-occurrence');
+ expect(semantic.contractVersions(gateway.GEMINI_CORRECTION_MODEL)).toMatchObject({promptVersion:'gemini-corrections-v3-whole-word-occurrence',schemaVersion:'semantic-corrections-v16-compact-explanations'});
  expect(fixture.negativeControls.filter(c=>fixture.mixed.transcript.includes(c))).toHaveLength(4);
 });
 test('Gemini and Claude share the four-slot correction gate without job contamination',async()=>{

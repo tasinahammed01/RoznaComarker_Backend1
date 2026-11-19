@@ -71,11 +71,11 @@ describe('prompt parity: no usable files means exactly the base prompt', () => {
 
   test('the runtime fingerprint is the base one while REFERENCE_FILES_ENABLED is off, and changes only when it is on', () => {
     const env = { NODE_ENV: 'test', APP_DEPLOYMENT_REVISION: 'parity', ASSESSMENT_AI_MODEL: 'openai/gpt-6-astra' };
-    expect(runtimeContractFingerprint(env).contractHash).toBe('2535dc03f6277564');
+    expect(runtimeContractFingerprint(env).contractHash).toBe('ac34c94f8d5ce970');
     // Only "true" (any case, trimmed) switches it on: see policy.referenceFilesEnabled.
-    for (const off of ['false', '', '1', 'yes', 'on']) expect(runtimeContractFingerprint({ ...env, REFERENCE_FILES_ENABLED: off }).contractHash).toBe('2535dc03f6277564');
+    for (const off of ['false', '', '1', 'yes', 'on']) expect(runtimeContractFingerprint({ ...env, REFERENCE_FILES_ENABLED: off }).contractHash).toBe('ac34c94f8d5ce970');
     const on = runtimeContractFingerprint({ ...env, REFERENCE_FILES_ENABLED: 'true' });
-    expect(on.contractHash).not.toBe('2535dc03f6277564');
+    expect(on.contractHash).not.toBe('ac34c94f8d5ce970');
     expect(on.contracts.referenceContext).toBe('reference-context-v1');
   });
 });

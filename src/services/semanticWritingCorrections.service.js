@@ -13,16 +13,20 @@ const { semanticCorrectionsSchema, CORRECTION_CATEGORIES, CORRECTION_KINDS,
 const logger = require('../utils/logger');
 const compactWire = require('./compactCorrectionWire.service');
 
-const SEMANTIC_PROMPT_VERSION = 'semantic-corrections-v14-symbol-review-map';
+const SEMANTIC_PROMPT_VERSION = 'semantic-corrections-v16-whole-word-occurrence';
 const SEMANTIC_SCHEMA_VERSION = 'semantic-corrections-v15-compact-symbol-map';
 function contractVersions(model = require('./aiGateway.service').correctionModel()) {
   if (model === require('./aiGateway.service').GEMINI_CORRECTION_MODEL)
-    return { promptVersion: 'gemini-corrections-v1-expert-explanations', schemaVersion: 'semantic-corrections-v16-compact-explanations', wireVersion: compactWire.EXPLANATION_VERSION };
+    return { promptVersion: 'gemini-corrections-v3-whole-word-occurrence', schemaVersion: 'semantic-corrections-v16-compact-explanations', wireVersion: compactWire.EXPLANATION_VERSION };
   return model === require('./aiGateway.service').DEEPSEEK_CORRECTION_MODEL
-    ? { promptVersion: 'deepseek-corrections-v2-bounded-output', schemaVersion: 'semantic-corrections-v16-compact-explanations', wireVersion: compactWire.DEEPSEEK_VERSION }
+    ? { promptVersion: 'deepseek-corrections-v4-whole-word-occurrence', schemaVersion: 'semantic-corrections-v16-compact-explanations', wireVersion: compactWire.DEEPSEEK_VERSION }
     : { promptVersion: SEMANTIC_PROMPT_VERSION, schemaVersion: SEMANTIC_SCHEMA_VERSION, wireVersion: compactWire.VERSION };
 }
 const CATEGORY_REVIEW_POLICY_VERSION = 'astra-category-review-v7-organization-checklist';
+// Mechanics errors teachers reported as missed. Prompt guidance only: findings still pass the same validation and confidence rules.
+// The validator counts a one-word quote the same way (correctionCanonical.locateQuote).
+const OCCURRENCE_RULE = 'Occurrence exception: when quotedText is a single whole word, count only whole-word matches (the "i" inside "with" or "tired" and the "we" inside "went" are not occurrences of "i" or "we").';
+const MECHANICS_CHECKLIST = 'MECHANICS checklist: check every sentence for each item. CAP: a standalone lowercase "i" (also i\'m, i\'ve, i\'ll); a lowercase letter that starts a sentence, including after . ? !; a capital letter on an ordinary word in the middle of a sentence or in the middle of a word ("my Friend went To school", "iS"). Not CAP errors: proper nouns, acronyms, the pronoun I, titles, and abbreviations such as Dr. or e.g. followed by a lowercase word. SPC: a space before , . ; : ? ! ("hi , how are you ?"); a missing space after , ; : ? ! or after a sentence-ending full stop when a word follows ("apples,bananas", "pears.It"). Not SPC errors: decimals, times, thousands separators, abbreviations such as U.S. or e.g., web or e-mail addresses, and ellipses. For SPC, quote the word together with its punctuation ("hi ," -> "hi,"; "pears.It" -> "pears. It"), never whitespace or punctuation alone. Report each CAP and SPC error separately. Clear CAP and SPC errors are never trivial refinements: report them at every strictness, including Friendly.';
 const DEFAULT_NO_FINDING_REASON = 'No validated canonical findings were returned after the category review.';
 const SEMANTIC_CATEGORIES = new Set(CORRECTION_CATEGORIES);
 const OMIT_CONTEXT_KEYS = new Set(['_id', '__v', 'createdAt', 'updatedAt', 'student', 'teacher', 'class', 'files', 'fileUrls', 'images']);
@@ -200,6 +204,8 @@ function buildSemanticRequest({ transcript, assignment = {}, legend: resolvedLeg
     'Symbol determines canonical category. Do not duplicate one underlying error or misclassify spelling/case/punctuation as Vocabulary or Grammar/Mechanics as Content. Use only supplied symbols.',
     ...(!explanations ? ['Return all independently supported findings within the configured output budget, not representative examples. Do not omit a valid lower-priority error because other errors were found. Insufficient evidence means no finding; never fill a category quota.'] : []),
     'Distinct symbols: P is missing, incorrect or misplaced punctuation; SPC is incorrect whitespace with otherwise correct punctuation. Do not label a space before a correct comma as P. If both defects exist, use separate exact spans only for independent problems.',
+    ...(selected.includes('MECHANICS') ? [MECHANICS_CHECKLIST] : []),
+    OCCURRENCE_RULE,
     'COH concerns logical progression; CO concerns links between ideas. TS concerns the controlling opening idea; CONC concerns whole-document closure. REL concerns off-topic material; TA concerns an explicit unmet task requirement. WC concerns lexical meaning; COL concerns conventional word combinations. SP concerns misspelled words; WF concerns a correctly spelled but wrong derived word form. FRAG is an incomplete clause used as a sentence; RO joins independent clauses incorrectly.',
     ...(recovery ? ['CONTENT: task relevance/achievement, claim clarity/development/support; infer no absent task requirements. GRAMMAR: verbs, agreement, fragments/run-ons, order/articles/prepositions. VOCABULARY: choice/form, countability, register/repetition/collocation. MECHANICS: spelling/punctuation/case/spacing/provable format.'] : [
       'CONTENT concerns meaning: inspect each significant claim against supplied assignment requirements for relevance, development, task achievement, clarity and support. Distinguish specific weakness from holistic observation; never infer absent requirements.',
@@ -452,6 +458,7 @@ function preferStrongerAuditConfig(config) {
 
 // The reader writes this for a word it could not read at all. It is the reader's mark, not the student's writing.
 const UNREADABLE_WORD = '[?]';
+const BENIGN_REJECTIONS = new Set(['NO_OP_CORRECTION', 'LOW_CONFIDENCE']);
 const MAX_WORD_LEVEL_WORDS = 4;
 /** A finding about the unreadable word itself. A finding about a whole sentence, or about the whole piece, may contain the mark and stays. */
 function targetsUnreadableWord(item, legendObject) {
@@ -579,6 +586,12 @@ function validateCorrections(found, { transcript, legend, spans = [], env = proc
     , rejectionDiagnostics, categoryRemapCount: categoryRemaps.length, categoryRemaps
   };
   if (corrections.length && !accepted.length) {
+    // Every finding was a no-op or below the confidence bar: a reviewed reply with nothing to report, not a broken one.
+    // Any other rejection (missing quote, schema, symbol, location...) keeps the fail-and-retry behaviour.
+    const benign = Object.keys(rejectionReasons).every(code => BENIGN_REJECTIONS.has(code));
+    logger.warn({ event: 'correction_reply_all_findings_rejected', outcome: benign ? 'kept_as_zero_findings' : 'failed_structural',
+      provider, model, attemptIndex, rejectedCount: corrections.length, reasons: { ...rejectionReasons } });
+    if (benign) return { corrections: [], diagnostics: { ...diagnostics, allFindingsRejected: { benign: true, reasons: { ...rejectionReasons } } } };
     const error = semanticError('SEMANTIC_SCHEMA_INVALID', 'canonical_validation',
       'Semantic analysis returned no acceptable grounded corrections');
     error.rejectionReasons = rejectionReasons;

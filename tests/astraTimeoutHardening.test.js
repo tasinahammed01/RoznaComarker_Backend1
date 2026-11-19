@@ -123,7 +123,7 @@ describe('safe output and configuration envelopes',()=>{
     const main=semantic.buildSemanticRequest(input),compact=semantic.buildSemanticRequest({...input,analysisMode:'compact_recovery'});
     expect(compact.promptCharacters).toBeLessThan(main.promptCharacters*.85);
     for(const value of [transcript,'teacherEvaluationPolicy','reviewedSymbols','COH','CONC','PU','TS'])expect(compact.messages[1].content).toContain(value);
-    expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-v14-symbol-review-map');
+    expect(semantic.SEMANTIC_PROMPT_VERSION).toBe('semantic-corrections-v16-whole-word-occurrence');
     expect(main.tokenProfile).toMatchObject({estimation:'characters_divided_by_four',responseSchemaTokens:expect.any(Number)});
   });
 });
