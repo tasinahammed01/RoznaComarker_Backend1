@@ -64,8 +64,10 @@ function correctionGroundingReason(raw, text, spans, range, mapped) {
     const normalize = (value) => String(value || '').normalize('NFKC').replace(/\s+/gu, ' ').trim();
     const source = normalize(quotedText);
     const suggestion = normalize(raw.suggestedText);
+    // Spacing fixes differ only in whitespace (" ," -> ","), so SPC compares the exact text.
     if (symbol === 'SP' ? source.toLocaleLowerCase() === suggestion.toLocaleLowerCase()
-      : source === suggestion) return 'NO_OP_CORRECTION';
+      : symbol === 'SPC' ? quotedText.normalize('NFKC') === String(raw.suggestedText).normalize('NFKC')
+        : source === suggestion) return 'NO_OP_CORRECTION';
   }
   return null;
 }

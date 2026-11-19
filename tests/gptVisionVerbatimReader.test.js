@@ -268,7 +268,7 @@ describe('cache binding, switch-over and fingerprint', () => {
   test('the runtime fingerprint changes with the verbatim reader, its settings and the second reader, and not for the default', () => {
     const { runtimeContractFingerprint } = require('../src/services/runtimeContractFingerprint.service');
     const base = runtimeContractFingerprint({ NODE_ENV: 'test' });
-    expect(base.contractHash).toBe('d3702de2a5f7a860');
+    expect(base.contractHash).toBe('8e673e2f932f2a42');
     expect(base.contracts).not.toHaveProperty('sourceReader');
     const g = runtimeContractFingerprint({ NODE_ENV: 'test', ...env });
     expect(g.contracts).toMatchObject({ sourceReader: 'verbatim_json', sourceReaderVersion: verbatim().VERSION, sourceModel: GEMINI, sourceReasoning: 'low', sourceTemperature: '0', sourceSecondReader: 'off' });
