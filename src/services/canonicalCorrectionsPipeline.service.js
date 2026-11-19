@@ -74,6 +74,11 @@ function buildCorrectionSourceHash({ transcript, pages = [], assignment = {},
     categoryReviewPolicyVersion: semantic.CATEGORY_REVIEW_POLICY_VERSION, transcriptLayoutVersion } });
 }
 
+// Exact-source essays are read from a photo or scan of the page. The validator treats letter gaps there as handwriting (HANDWRITING_LETTER_GAP).
+function correctionSourceKind(doc) {
+  return require('../utils/sourceFidelity').isExact(doc) ? 'exact_source' : undefined;
+}
+
 function plannedSemanticAttempts(config = {}) {
   const modelCount = Array.isArray(config.chain) ? config.chain.length : (config.fallback ? 2 : 1);
   return (1 + Number(config.primaryRetries || 0))
@@ -232,7 +237,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false, correct
     timestamp: new Date(semanticStartedAt).toISOString(), correctionSourceHash: hash });
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'aiOnlyStarted' });
   try {
-    semanticRun = await semanticCoordinator.analyze({ transcript, assignment, legend, transcriptHash: hash, spans,
+    semanticRun = await semanticCoordinator.analyze({ transcript, assignment, legend, transcriptHash: hash, spans, sourceKind: correctionSourceKind(doc),
       policy: assessmentPolicy.policy, transcriptComplete: canonicalTranscript.isComplete,
       deadlineAt: execution.correctionDeadlineAt,
       submissionId: String(doc._id), assessmentRunId: doc.assessmentRunId || jobId,
@@ -640,7 +645,7 @@ function buildSemanticSourceKey(baseSourceKey, env = process.env) {
     capabilities: executionPolicy.modelCapabilities(require('./aiGateway.service').correctionModel(env), env) })).digest('hex');
 }
 
-module.exports = { wordsFromSubmission, orderedPageIdentity, buildCorrectionSourceHash, plannedSemanticAttempts,
+module.exports = { wordsFromSubmission, orderedPageIdentity, buildCorrectionSourceHash, plannedSemanticAttempts, correctionSourceKind,
   buildCorrectionReviewIdentity,
   buildSemanticSourceKey, hasHolisticCoverageMismatch, holisticCoverageMismatchCategories,
   blockEvaluationAfterCorrectionFailure, generateAndPersist, safePersistenceError };

@@ -458,7 +458,30 @@ function preferStrongerAuditConfig(config) {
 
 // The reader writes this for a word it could not read at all. It is the reader's mark, not the student's writing.
 const UNREADABLE_WORD = '[?]';
-const BENIGN_REJECTIONS = new Set(['NO_OP_CORRECTION', 'LOW_CONFIDENCE']);
+const BENIGN_REJECTIONS = new Set(['NO_OP_CORRECTION', 'LOW_CONFIDENCE', 'HANDWRITING_LETTER_GAP']);
+// On an exact-source (photographed) page a gap between two letters is how the hand wrote, not a spacing error: "a bout" -> "about".
+// True only when the fix just removes whitespace that sits between two letters; spaces next to punctuation, added spaces and any other
+// change keep the finding.
+function removesOnlyLetterGaps(quotedText, suggestedText) {
+  const quote = String(quotedText || '').normalize('NFKC'), fix = String(suggestedText || '').normalize('NFKC');
+  if (quote.length > 500 || fix.length >= quote.length || !/\p{L}\s+\p{L}/u.test(quote)) return false;
+  const memo = new Map();
+  const match = (i, j, removed) => {
+    const key = i * 1024 + j * 2 + (removed ? 1 : 0);
+    if (memo.has(key)) return memo.get(key);
+    let result;
+    if (i === quote.length) result = j === fix.length && removed;
+    else {
+      result = j < fix.length && quote[i] === fix[j] && match(i + 1, j + 1, removed);
+      if (!result && /\s/u.test(quote[i]) && /\p{L}/u.test(quote[i - 1] || '')) {
+        let end = i; while (end < quote.length && /\s/u.test(quote[end])) end += 1;
+        result = /\p{L}/u.test(quote[end] || '') && match(end, j, true);
+      }
+    }
+    memo.set(key, result); return result;
+  };
+  return match(0, 0, false);
+}
 const MAX_WORD_LEVEL_WORDS = 4;
 /** A finding about the unreadable word itself. A finding about a whole sentence, or about the whole piece, may contain the mark and stays. */
 function targetsUnreadableWord(item, legendObject) {
@@ -471,7 +494,7 @@ function targetsUnreadableWord(item, legendObject) {
 }
 
 function validateCorrections(found, { transcript, legend, spans = [], env = process.env,
-  provider = null, model = null, attemptIndex = null, policy: policyInput, transcriptComplete } = {}) {
+  provider = null, model = null, attemptIndex = null, policy: policyInput, transcriptComplete, sourceKind } = {}) {
   const legendObject = { groups: (legend || []).map((group) => ({ key: group.category, label: group.label,
     color: group.color, symbols: group.symbols })) };
   // Removed before anything else: a reply holding only such findings is an empty result, not a reply with nothing acceptable.
@@ -571,6 +594,9 @@ function validateCorrections(found, { transcript, legend, spans = [], env = proc
         || 'INVALID_LOCATION';
       reject(reason, canonicalCategory, item, candidateIndex, 'location_validation'); continue;
     }
+    if (sourceKind === 'exact_source' && symbol === 'SPC' && removesOnlyLetterGaps(item.quotedText, item.suggestedText)) {
+      reject('HANDWRITING_LETTER_GAP', canonicalCategory, item, candidateIndex, 'source_kind_validation'); continue;
+    }
     accepted.push(normalized);
     acceptedSymbolCounts[symbol] += 1;
     perCategory[canonicalCategory] = (perCategory[canonicalCategory] || 0) + 1;
@@ -641,7 +667,7 @@ async function analyze(input, dependencies = {}) {
         transcript: input.transcript, legend: request.legend, spans: input.spans || [], env: dependencies.env || process.env,
         provider: attemptMeta.provider || null, model: attemptMeta.model || null,
         attemptIndex: Number.isInteger(attemptMeta.attemptIndex) ? attemptMeta.attemptIndex : null,
-        policy: input.policy, transcriptComplete: input.transcriptComplete
+        policy: input.policy, transcriptComplete: input.transcriptComplete, sourceKind: input.sourceKind
       });
       semanticGroundingMs += now() - groundingStartedAt;
       validated.categoryReviews = parsed.categoryReviews;
@@ -696,7 +722,7 @@ async function analyze(input, dependencies = {}) {
         const checked = validateCorrections(parsed.corrections, { transcript: input.transcript, legend: request.legend,
           spans: input.spans || [], env: dependencies.env || process.env, provider: attemptMeta.provider || null,
           model: attemptMeta.model || null, attemptIndex: Number.isInteger(attemptMeta.attemptIndex) ? attemptMeta.attemptIndex : null,
-          policy: input.policy, transcriptComplete: input.transcriptComplete });
+          policy: input.policy, transcriptComplete: input.transcriptComplete, sourceKind: input.sourceKind });
         checked.categoryReviews = parsed.categoryReviews;
         checked.symbolReviewCoverage = parsed.symbolReviewCoverage;
         return checked;
