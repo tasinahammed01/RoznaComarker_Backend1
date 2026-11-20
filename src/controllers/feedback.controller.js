@@ -2677,15 +2677,21 @@ async function generateTeacherCommentDraft(req, res) {
       return sendError(res, 409, "AI feedback is not available for this submission yet.");
     if (feedback.detailedFeedbackSourceHash !== submission.correctionSourceHash) delete feedback.detailedFeedback;
     logger.info({ event: "teacher_comment_ai_draft_started", submissionId: String(submission._id) });
-    const draft = await require("../services/teacherComments.service").generateTeacherCommentDraft(feedback, submission._id);
+    const draft = await require("../services/teacherCommentDraft.service").generateTeacherCommentDraft(feedback, submission._id);
     logger.info({ event: "teacher_comment_ai_draft_completed", submissionId: String(submission._id), durationMs: Date.now() - startedAt });
     return sendSuccess(res, draft);
   } catch (error) {
     logger.warn({ event: "teacher_comment_draft_failed", feature: "teacher_comment_draft",
-      submissionId: req.params.submissionId, code: error.code || "TEACHER_COMMENT_DRAFT_FAILED" });
-    return sendError(res, error.code === "TEACHER_COMMENT_SOURCE_INSUFFICIENT" ? 409 : 503,
-      error.code === "TEACHER_COMMENT_SOURCE_INSUFFICIENT" ? "AI feedback is not available for this submission yet."
-        : "Unable to generate a comment right now. Please try again.");
+      submissionId: req.params.submissionId, code: error.code || "TEACHER_COMMENT_DRAFT_FAILED",
+      finalFailureCode: error.finalFailureCode || null, attemptCount: error.attemptCount ?? null });
+    if (error.code === "TEACHER_COMMENT_SOURCE_INSUFFICIENT")
+      return sendError(res, 409, "AI feedback is not available for this submission yet.");
+    // The draft did not fit even after the shorter retry: clicking again will not help.
+    if (error.code === "TEACHER_COMMENT_DRAFT_TOO_LONG")
+      return res.status(503).json({ success: false, code: "TEACHER_COMMENT_DRAFT_NOT_POSSIBLE",
+        message: "A comment could not be drafted for this submission. Please write the comment yourself." });
+    return res.status(503).json({ success: false, code: "TEACHER_COMMENT_DRAFT_TRY_AGAIN",
+      message: "Unable to generate a comment right now. Please try again." });
   }
 }
 

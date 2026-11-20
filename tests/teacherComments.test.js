@@ -61,7 +61,7 @@ describe('canonical teacher comments', () => {
       expect(url).toContain('/chat/completions'); expect(body.model).toBe('anthropic/claude-haiku-5.5');
       expect(body.reasoning).toEqual({ effort: 'none' });
       expect(body.provider).toEqual({ require_parameters: true, allow_fallbacks: false });
-      expect(body.max_tokens).toBe(240); expect(body.response_format.json_schema.name).toBe('teacher_comment_draft');
+      expect(body.max_tokens).toBe(900); expect(body.response_format.json_schema.name).toBe('teacher_comment_draft');
       const input = JSON.stringify(body.messages);
       expect(input).toContain('main idea'); expect(input).not.toContain('Keep my saved comment');
       expect(input).not.toContain(student.email); expect(input).not.toContain('overallScore');
