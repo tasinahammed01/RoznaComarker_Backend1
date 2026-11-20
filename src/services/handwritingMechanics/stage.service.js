@@ -30,10 +30,10 @@ function settings(env = process.env) {
     return value;
   };
   return { enabled: String(env?.HANDWRITING_MECHANICS_CHECK_ENABLED ?? '').trim().toLowerCase() === 'true',
-    concurrency: number('HANDWRITING_MECHANICS_CONCURRENCY', 4, 1, 16),
+    concurrency: number('HANDWRITING_MECHANICS_CONCURRENCY', 8, 1, 16),
     callTimeoutMs: number('HANDWRITING_MECHANICS_CALL_TIMEOUT_MS', 20000, 1, 120000),
     stageBudgetMs: number('HANDWRITING_MECHANICS_STAGE_BUDGET_MS', 30000, 1, 600000),
-    waitAfterCorrectionMs: number('HANDWRITING_MECHANICS_WAIT_AFTER_CORRECTION_MS', 8000, 0, 120000),
+    waitAfterCorrectionMs: number('HANDWRITING_MECHANICS_WAIT_AFTER_CORRECTION_MS', 12000, 0, 120000),
     maxLines: number('HANDWRITING_MECHANICS_MAX_LINES', 150, 1, 2000),
     linesPerCrop: number('HANDWRITING_MECHANICS_LINES_PER_CROP', 1, 1, 6),
     minConfidence: number('HANDWRITING_MECHANICS_MIN_CONFIDENCE', 0.8, 0.5, 1, false),

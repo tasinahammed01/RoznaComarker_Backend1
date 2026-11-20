@@ -77,7 +77,9 @@ test('flag on: check findings (no-op form included) are validated, merged, saved
   expect(started.pages[0]).toMatchObject({ fileId: 'file-1', pageNumber: 1, startChar: 0 });
   const settled = stage.start.mock.results[0].value.settle.mock.calls[0][0];
   expect(settled.correctionSucceeded).toBe(true);
-  expect(settled.waitMs).toBeLessThanOrEqual(8000);
+  // Default wait 12 s (bounded by the correction deadline, which is further away in this test).
+  expect(settled.waitMs).toBeLessThanOrEqual(12000);
+  expect(settled.waitMs).toBeGreaterThan(8000);
   expect(saved(state)).toEqual([expect.objectContaining({ symbol: 'SPC', quotedText: 'days,', suggestedText: 'days,', detector: DETECTOR, startChar: 11 })]);
   expect(state.handwritingMechanicsCheck).toEqual({ ...summary, findingsAccepted: 1 });
   expect(evaluation.prepareRubricAssessment.mock.calls[0][0].submission.writingCorrections).toEqual([expect.objectContaining({ detector: DETECTOR })]);

@@ -65,12 +65,14 @@ const run = async (e, providerAttempt, env = ON, settle = { correctionSucceeded:
 };
 
 describe('settings, gate and hash identity', () => {
-  test('defaults: off, 1 line per crop, floor 0.80; invalid values fall back and are reported', () => {
-    expect(stage.settings({})).toMatchObject({ enabled: false, concurrency: 4, callTimeoutMs: 20000, stageBudgetMs: 30000,
-      waitAfterCorrectionMs: 8000, maxLines: 150, linesPerCrop: 1, minConfidence: 0.8, invalid: [] });
+  test('defaults: off, 1 line per crop, floor 0.80, concurrency 8, wait 12 s; invalid values fall back and are reported', () => {
+    expect(stage.settings({})).toMatchObject({ enabled: false, concurrency: 8, callTimeoutMs: 20000, stageBudgetMs: 30000,
+      waitAfterCorrectionMs: 12000, maxLines: 150, linesPerCrop: 1, minConfidence: 0.8, invalid: [] });
     expect(stage.settings({ HANDWRITING_MECHANICS_CHECK_ENABLED: 'yes' }).enabled).toBe(false);
     const bad = stage.settings({ ...ON, HANDWRITING_MECHANICS_CONCURRENCY: 'many', HANDWRITING_MECHANICS_MIN_CONFIDENCE: '1.5', HANDWRITING_MECHANICS_LINES_PER_CROP: '0' });
-    expect(bad).toMatchObject({ enabled: true, concurrency: 4, minConfidence: 0.8, linesPerCrop: 1 });
+    expect(bad).toMatchObject({ enabled: true, concurrency: 8, minConfidence: 0.8, linesPerCrop: 1 });
+    expect(stage.settings({ HANDWRITING_MECHANICS_CONCURRENCY: '4', HANDWRITING_MECHANICS_WAIT_AFTER_CORRECTION_MS: '8000' }))
+      .toMatchObject({ concurrency: 4, waitAfterCorrectionMs: 8000 });
     expect(bad.invalid.sort()).toEqual(['HANDWRITING_MECHANICS_CONCURRENCY', 'HANDWRITING_MECHANICS_LINES_PER_CROP', 'HANDWRITING_MECHANICS_MIN_CONFIDENCE']);
     expect(stage.settings({ ...ON, HANDWRITING_MECHANICS_LINES_PER_CROP: '3', HANDWRITING_MECHANICS_MIN_CONFIDENCE: '0.85' })).toMatchObject({ linesPerCrop: 3, minConfidence: 0.85 });
   });
