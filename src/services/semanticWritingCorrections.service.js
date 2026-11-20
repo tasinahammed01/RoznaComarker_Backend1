@@ -494,11 +494,17 @@ function targetsUnreadableWord(item, legendObject) {
 }
 
 function validateCorrections(found, { transcript, legend, spans = [], env = process.env,
-  provider = null, model = null, attemptIndex = null, policy: policyInput, transcriptComplete, sourceKind } = {}) {
+  provider = null, model = null, attemptIndex = null, policy: policyInput, transcriptComplete, sourceKind, trustedDetector = null } = {}) {
   const legendObject = { groups: (legend || []).map((group) => ({ key: group.category, label: group.label,
     color: group.color, symbols: group.symbols })) };
   // Removed before anything else: a reply holding only such findings is an empty result, not a reply with nothing acceptable.
-  const corrections = found.filter(item => !targetsUnreadableWord(item, legendObject));
+  // trustedDetector is set only by the pipeline for the handwriting mechanics check's own findings. Every other caller's items lose
+  // any "detector" field here, so no model reply can claim the check's exceptions.
+  const corrections = found.filter(item => !targetsUnreadableWord(item, legendObject)).map(item => {
+    if (!item || typeof item !== 'object') return item;
+    if (!trustedDetector) { const { detector, ...rest } = item; return rest; }
+    return item.detector === trustedDetector ? { ...item, [canonical.TRUSTED_DETECTOR]: true } : item;
+  });
   const allowedSymbols = new Set((legend || []).flatMap((group) => (group.symbols || [])
     .map((item) => String(item.symbol || '').trim().toUpperCase())));
   const policySnapshot = teacherPolicy.normalizeTeacherEvaluationPolicy(policyInput);
@@ -573,10 +579,14 @@ function validateCorrections(found, { transcript, legend, spans = [], env = proc
       && !/\bmore\b/iu.test(item.suggestedText)) {
       reject('CATEGORY_MISMATCH', canonicalCategory, item, candidateIndex, 'category_validation'); continue;
     }
+    if (trustedDetector && item[canonical.TRUSTED_DETECTOR] !== true) {
+      reject('DETECTOR_MISMATCH', canonicalCategory, item, candidateIndex, 'source_kind_validation'); continue;
+    }
     if (item.severity != null && !policy.SEVERITIES.has(String(item.severity).toLowerCase())) {
       reject('INVALID_SEVERITY', canonicalCategory, item, candidateIndex, 'schema_validation'); continue;
     }
-    if (Number(item.confidence) < thresholds[canonicalCategory]) { reject('LOW_CONFIDENCE', canonicalCategory, item, candidateIndex, 'confidence_validation'); continue; }
+    // The check applied its own configurable floor (HANDWRITING_MECHANICS_MIN_CONFIDENCE) per mark and word; the AI bars stay as they are.
+    if (!trustedDetector && Number(item.confidence) < thresholds[canonicalCategory]) { reject('LOW_CONFIDENCE', canonicalCategory, item, candidateIndex, 'confidence_validation'); continue; }
     const range = canonical.locateQuote(transcript, item.quotedText, Number(item.occurrence));
     if (!range) {
       const anyOccurrence = canonical.locateQuote(transcript, item.quotedText, 0);

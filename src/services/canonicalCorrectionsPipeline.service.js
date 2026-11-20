@@ -17,6 +17,7 @@ const evidenceIdentity = require('./correctionEvidenceIdentity.service');
 const teacherPolicy = require('./teacherEvaluationPolicy.service');
 const { CORRECTION_MODELS } = require('./aiGateway.service');
 const executionPolicy = require('./assessmentExecutionPolicy.service');
+const handwritingMechanics = require('./handwritingMechanics/stage.service');
 const correctionContract = model => semantic.contractVersions?.(model) || { promptVersion: semantic.SEMANTIC_PROMPT_VERSION, schemaVersion: semantic.SEMANTIC_SCHEMA_VERSION };
 
 function deepFreeze(value) {
@@ -63,18 +64,50 @@ function orderedPageIdentity(pages = []) {
   return inputIdentity.pageContentIdentity(pages);
 }
 
+// doc: the essay. The handwriting mechanics check joins the identity only when it applies to it (flag on and exact-source); otherwise
+// nothing is added and the hash is byte-identical to the one before the check existed.
 function buildCorrectionSourceHash({ transcript, pages = [], assignment = {},
-  transcriptLayoutVersion = CANONICAL_TRANSCRIPT_LAYOUT_VERSION, fileContentIdentity = null, legend = {} }) {
+  transcriptLayoutVersion = CANONICAL_TRANSCRIPT_LAYOUT_VERSION, fileContentIdentity = null, legend = {}, doc = null, env = process.env }) {
+  const mechanics = doc ? handwritingMechanics.hashIdentity(doc, env) : null;
   return inputIdentity.correctionInputHash({ transcript, pages, assignment, fileContentIdentity, legend, versions: { version: canonical.VERSION,
     promptVersion: correctionContract().promptVersion, schemaVersion: correctionContract().schemaVersion,
     chunkCoordinatorVersion: semanticCoordinator.VERSION,
     deductionPolicyVersion: canonical.DEDUCTION_POLICY_VERSION,
     correctionPolicyVersion: correctionPolicy.POLICY_VERSION,
     confidenceThresholds: correctionPolicy.confidenceThresholds(),
-    categoryReviewPolicyVersion: semantic.CATEGORY_REVIEW_POLICY_VERSION, transcriptLayoutVersion } });
+    categoryReviewPolicyVersion: semantic.CATEGORY_REVIEW_POLICY_VERSION, transcriptLayoutVersion,
+    ...(mechanics ? { handwritingMechanics: mechanics } : {}) } });
 }
 
 // Exact-source essays are read from a photo or scan of the page. The validator treats letter gaps there as handwriting (HANDWRITING_LETTER_GAP).
+/**
+ * Waits for the handwriting mechanics check within its bound, then validates its findings through the trusted path of
+ * validateCorrections (grounding, letter-gap rule, its own exceptions). Never throws: any problem means no findings from the check.
+ */
+async function settleHandwritingMechanics(check, { doc, transcript, spans, legend, policy, transcriptComplete, correctionSucceeded, correctionDeadlineAt }) {
+  const none = summary => ({ corrections: [], summary: summary || null });
+  if (!check) return none();
+  try {
+    const waitMs = Math.max(0, Math.min(handwritingMechanics.settings().waitAfterCorrectionMs, Number(correctionDeadlineAt) - Date.now() || 0));
+    // The stage bounds its own wait; this outer guard only protects marking if that ever fails.
+    let guard;
+    const result = await Promise.race([check.settle({ correctionSucceeded, waitMs }),
+      new Promise(resolve => { guard = setTimeout(() => resolve(null), waitMs + 3000); })]).finally(() => clearTimeout(guard));
+    if (!result) { check.stop?.('settle_guard'); logger.warn({ event: 'handwriting_mechanics_check_unsettled', submissionId: String(doc._id) }); return none(); }
+    if (!correctionSucceeded || !Array.isArray(result.findings) || !result.findings.length) return none(result.summary);
+    let accepted = [];
+    try {
+      accepted = semantic.validateCorrections(result.findings, { transcript, legend: semantic.compactSemanticLegend(legend), spans, policy,
+        transcriptComplete, sourceKind: 'exact_source', trustedDetector: canonical.HANDWRITING_DETECTOR, provider: 'handwriting_mechanics' }).corrections;
+    } catch { accepted = []; }
+    const summary = result.summary ? { ...result.summary, findingsAccepted: accepted.length } : null;
+    return { corrections: accepted, summary };
+  } catch (error) {
+    logger.warn({ event: 'handwriting_mechanics_check_failed', submissionId: String(doc._id), errorCode: safeErrorCode(error) || 'UNEXPECTED_ERROR' });
+    return none();
+  }
+}
+
 function correctionSourceKind(doc) {
   return require('../utils/sourceFidelity').isExact(doc) ? 'exact_source' : undefined;
 }
@@ -140,7 +173,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false, correct
     ...(assignment.rubric !== undefined ? { rubric: assignment.rubric } : {}),
     ...(assignment.rubrics !== undefined ? { rubrics: assignment.rubrics } : {}) })));
   const hash = buildCorrectionSourceHash({ transcript, pages: canonicalTranscript.pages, assignment,
-    fileContentIdentity: doc.fileContentIdentity || null, legend });
+    fileContentIdentity: doc.fileContentIdentity || null, legend, doc });
   const semanticConfig = getSemanticAIConfig();
   const assignmentHash = inputIdentity.hash(semantic.compactAssignment(assignment));
   const semanticSourceKey = buildSemanticSourceKey(semantic.semanticSourceKey({ correctionSourceHash: hash, config: semanticConfig,
@@ -236,6 +269,16 @@ async function generateAndPersist(doc, { assignment = {}, force = false, correct
   logger.info({ message: 'Assessment pipeline timing', submissionId: String(doc._id), stage: 'semanticStartedAt',
     timestamp: new Date(semanticStartedAt).toISOString(), correctionSourceHash: hash });
   logger.info({ message: 'Canonical correction stage', submissionId: String(doc._id), stage: 'aiOnlyStarted' });
+  // Handwriting spacing and capitals check: runs beside the correction call (inactive unless the flag is on and the essay is
+  // exact-source). It can never fail marking, and the wait for it after the correction call is bounded below.
+  let mechanicsCheck;
+  try {
+    mechanicsCheck = handwritingMechanics.start({ doc, transcript, pages: canonicalTranscript.pages,
+      transcriptComplete: canonicalTranscript.isComplete === true });
+  } catch (error) {
+    logger.warn({ event: 'handwriting_mechanics_check_not_started', submissionId: String(doc._id), errorCode: safeErrorCode(error) || 'UNEXPECTED_ERROR' });
+    mechanicsCheck = null;
+  }
   try {
     semanticRun = await semanticCoordinator.analyze({ transcript, assignment, legend, transcriptHash: hash, spans, sourceKind: correctionSourceKind(doc),
       policy: assessmentPolicy.policy, transcriptComplete: canonicalTranscript.isComplete,
@@ -308,6 +351,10 @@ async function generateAndPersist(doc, { assignment = {}, force = false, correct
     canonicalCorrectionStageSucceeded: !semanticError && semanticRun?.status === 'completed',
     correctionElapsedMs: semanticAiMs, correctionRemainingMs: Math.max(0, execution.correctionDeadlineAt - Date.now()),
     errorCode: safeErrorCode(semanticError) || null });
+  const mechanicsResult = await settleHandwritingMechanics(mechanicsCheck, { doc, transcript, spans, legend,
+    policy: assessmentPolicy.policy, transcriptComplete: canonicalTranscript.isComplete,
+    correctionSucceeded: !semanticError && Boolean(semanticRun), correctionDeadlineAt: execution.correctionDeadlineAt });
+  if (!semanticError && mechanicsResult.corrections.length) ai = [...ai, ...mechanicsResult.corrections];
   const mergeStartedAt = Date.now();
   const merged = canonical.mergeCanonicalCorrections({ aiCorrections: ai });
   const corrections = evidenceIdentity.bindCorrections(merged.corrections, canonicalTranscript, doc);
@@ -411,6 +458,7 @@ async function generateAndPersist(doc, { assignment = {}, force = false, correct
     : { _id: doc._id, ocrJobId: doc.ocrJobId, correctionJobId: jobId }, { $set: {
     ...(retryJobId ? { 'correctionRetry.status': 'completed', 'correctionRetry.finishedAt': new Date() } : {}),
     writingCorrections: corrections, correctionStatistics: combinedStatistics, correctionSourceHash: hash,
+    ...(mechanicsResult.summary ? { handwritingMechanicsCheck: mechanicsResult.summary } : {}),
     correctionOcrJobId: doc.ocrJobId || null, correctionOcrEvidenceHash: evidenceIdentity.ocrEvidenceHash(canonicalTranscript, doc),
     correctionGenerationConfig: { provider: semanticRun?.provider || terminalAttempt?.provider || semanticConfig.provider,
       model: semanticRun?.model || terminalAttempt?.model || semanticConfig.model,
