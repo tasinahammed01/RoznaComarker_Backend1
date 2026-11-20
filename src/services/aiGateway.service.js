@@ -460,7 +460,12 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
       const plainSource=requestProfile==='gpt_vision_exact_plain_v1';
       // Gemini verbatim reader: strict JSON schema, temperature 0 or omitted, reasoning from the environment, Google AI Studio standard tier only.
       const verbatimSource=requestProfile==='gpt_vision_exact_verbatim_v1';
-      const profileModelAllowed=requestProfile==='gpt_vision_exact_v1'
+      // Handwriting spacing and capitals check: one fixed model, strict schema, temperature 0 (seed and tier set below).
+      const mechanicsProfile=require('./handwritingMechanics/profile');
+      const handwritingMechanics=requestProfile===mechanicsProfile.REQUEST_PROFILE;
+      const profileModelAllowed=handwritingMechanics
+        ? entry.model===mechanicsProfile.MODEL&&responseFormat==='json'&&Boolean(responseSchema)&&temperature===0
+        : requestProfile==='gpt_vision_exact_v1'
         ? require('./gptVisionExact/contract').models().includes(entry.model)
         : verbatimSource ? entry.model===require('./gptVisionExact/contract').GEMINI_MODEL&&responseFormat==='json'&&Boolean(responseSchema)&&(temperature===0||temperature===undefined)
         : plainSource ? entry.model===require('./gptVisionExact/contract').QWEN_MODEL&&responseFormat!=='json'&&temperature===0
@@ -470,7 +475,8 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
       delete body.temperature; delete body.max_tokens;
       // DeepSeek and Qwen approved routes advertise max_tokens. Keep legacy request
       // profiles unchanged and never send both token-limit aliases.
-      if (plainSource || verbatimSource || requestProfile==='gpt_vision_exact_v1' && [require('./gptVisionExact/contract').DEEPSEEK_MODEL,require('./gptVisionExact/contract').QWEN_MODEL].includes(entry.model))
+      if (handwritingMechanics) body.max_tokens = mechanicsProfile.MAX_OUTPUT_TOKENS;
+      else if (plainSource || verbatimSource || requestProfile==='gpt_vision_exact_v1' && [require('./gptVisionExact/contract').DEEPSEEK_MODEL,require('./gptVisionExact/contract').QWEN_MODEL].includes(entry.model))
         body.max_tokens = 16000;
       else body.max_completion_tokens = requestProfile==='gpt_vision_exact_v1'?16000:12000;
       body.provider = { require_parameters: true, allow_fallbacks: false };
@@ -487,6 +493,13 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
         body.provider={require_parameters:true,allow_fallbacks:false,only:['google-ai-studio'],ignore:['google-ai-studio/flex','google-ai-studio/priority']};
         if(temperature===0)body.temperature=0;
         body.seed=require('./gptVisionExact/verbatimReader').SEED;
+      }
+      if(handwritingMechanics){
+        // Same tier policy as the verbatim reader, owned here: AI Studio standard only, reproducible first sample, low reasoning.
+        body.provider={require_parameters:true,allow_fallbacks:false,only:['google-ai-studio'],ignore:['google-ai-studio/flex','google-ai-studio/priority']};
+        body.temperature=0;
+        body.seed=mechanicsProfile.SEED;
+        body.reasoning={effort:mechanicsProfile.REASONING_EFFORT};
       }
     }
     const options = {
