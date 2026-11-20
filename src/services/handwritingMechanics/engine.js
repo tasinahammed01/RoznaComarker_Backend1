@@ -7,7 +7,7 @@
 const VERSION = 'handwriting-mechanics-v1';
 const DETECTOR = VERSION;
 const PROMPT_VERSION = 'handwriting-mechanics-prompt-v2';
-const SCHEMA_VERSION = 'handwriting-mechanics-schema-v2';
+const SCHEMA_VERSION = 'handwriting-mechanics-schema-v3';
 const PROPER_NOUN_ANSWERS = ['true', 'false', 'unsure'];
 const MARK_NAMES = Object.freeze({ ',': 'comma', '.': 'full stop', ';': 'semicolon', ':': 'colon', '?': 'question mark', '!': 'exclamation mark' });
 const SENTENCE_END = new Set(['.', '?', '!']);
@@ -144,11 +144,12 @@ function userMessage(group, items) {
 }
 
 const closed = properties => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
-const exactly = (count, items) => ({ type: 'array', minItems: count, maxItems: count, items });
+// No item-count limits in the schema (v3): not proven accepted by the provider's strict mode. parseReply rejects any count mismatch.
+const list = items => ({ type: 'array', items });
 function responseSchema(items) {
   return closed({
-    marks: exactly(items.marks.length, closed({ space_before: { type: 'boolean' }, space_after: { type: 'boolean' }, confidence: { type: 'number' } })),
-    cases: exactly(items.words.length, closed({ case_as_written: { type: 'string', enum: ['capital', 'small', 'unclear'] },
+    marks: list(closed({ space_before: { type: 'boolean' }, space_after: { type: 'boolean' }, confidence: { type: 'number' } })),
+    cases: list(closed({ case_as_written: { type: 'string', enum: ['capital', 'small', 'unclear'] },
       is_proper_noun: { type: 'string', enum: PROPER_NOUN_ANSWERS }, confidence: { type: 'number' } }))
   });
 }

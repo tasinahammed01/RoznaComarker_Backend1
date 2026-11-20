@@ -85,15 +85,15 @@ describe('prompt, schema and reply', () => {
     expect(engine.PROMPT).not.toMatch(/they|have/u);
   });
 
-  test('the schema fixes the exact number of marks and words and asks a confidence per word', () => {
+  test('the schema sends no item-count limits (v3: counts are checked by the parser) and asks a confidence per word', () => {
     const { items } = single('Kids these days , ok');
     const schema = engine.responseSchema(items);
-    expect(schema.properties.marks).toMatchObject({ minItems: 1, maxItems: 1 });
-    expect(schema.properties.cases).toMatchObject({ minItems: 4, maxItems: 4 });
+    expect(JSON.stringify(schema)).not.toMatch(/minItems|maxItems/u);
+    expect(schema.properties.marks.type).toBe('array');
     expect(schema.properties.cases.items.required).toEqual(['case_as_written', 'is_proper_noun', 'confidence']);
     expect(schema.properties.cases.items.properties.is_proper_noun).toEqual({ type: 'string', enum: ['true', 'false', 'unsure'] });
     expect(schema.additionalProperties).toBe(false);
-    expect(engine.SCHEMA_VERSION).toBe('handwriting-mechanics-schema-v2');
+    expect(engine.SCHEMA_VERSION).toBe('handwriting-mechanics-schema-v3');
     expect(engine.PROMPT_VERSION).toBe('handwriting-mechanics-prompt-v2');
     expect(engine.PROMPT).toMatch(/is_proper_noun/u);
     expect(engine.PROMPT).toMatch(/nationality, language, month or day/u);
