@@ -6,8 +6,9 @@
 
 const VERSION = 'handwriting-mechanics-v1';
 const DETECTOR = VERSION;
-const PROMPT_VERSION = 'handwriting-mechanics-prompt-v1';
-const SCHEMA_VERSION = 'handwriting-mechanics-schema-v1';
+const PROMPT_VERSION = 'handwriting-mechanics-prompt-v2';
+const SCHEMA_VERSION = 'handwriting-mechanics-schema-v2';
+const PROPER_NOUN_ANSWERS = ['true', 'false', 'unsure'];
 const MARK_NAMES = Object.freeze({ ',': 'comma', '.': 'full stop', ';': 'semicolon', ':': 'colon', '?': 'question mark', '!': 'exclamation mark' });
 const SENTENCE_END = new Set(['.', '?', '!']);
 const TOKEN = /[\p{L}\p{M}\p{N}]+(?:['’][\p{L}\p{M}\p{N}]+)*|[^\s\p{L}\p{M}\p{N}]/gu;
@@ -19,6 +20,7 @@ const MAX_MESSAGE = 240;
 const PROMPT = `You check handwriting. The image is a crop of a student's handwritten page showing the numbered line or lines given below, top to bottom (cut-off parts of other lines may appear at the top or bottom edge; ignore them). You are given the text of those lines as already transcribed, with their words and punctuation marks numbered. Do not transcribe and do not correct anything. Judge only from the image.
 1. marks: for each numbered punctuation mark, in the given order, report space_before, space_after and confidence (0 to 1). Compare the visible gap between the last letter of the word before and the mark with the normal gap between letters inside a word and with the normal gap between words. A gap clearly at least as wide as a normal word gap is space_before true; if the mark touches or nearly touches the letter, space_before is false. space_after is false when the next word starts right after the mark, true when a normal word gap follows or the mark ends the line. Judge every mark on its own; do not assume the student is consistent.
 2. cases: for each numbered word, in the given order, report case_as_written for the FIRST LETTER of that word as written in the image: "capital", "small" or "unclear", and a confidence (0 to 1). Compare its height and shape with the small letters around it. Ignore where the word is in the sentence and whether it should be a capital. Do not decide whether anything is an error.
+3. is_proper_noun: for each numbered word, "true" if in this text the word could be a name of a person, place, nationality, language, month or day, a title of a work, a brand, or an acronym; "false" if it is clearly an ordinary word; "unsure" otherwise.
 Return only JSON that matches the schema, with exactly one entry per numbered mark and per numbered word.`;
 
 /** text -> tokens with absolute offsets. kind: word | mark (one of MARK_NAMES) | other. */
@@ -45,10 +47,11 @@ function abbreviationDot(tokens, k) {
 
 /**
  * Over the whole transcript: starts = absolute offsets of words that start a sentence (first word, or first word after . ? !
- * that is not an abbreviation dot); abbreviations = offsets of single letters inside "i.e."-style abbreviations.
+ * that is not an abbreviation dot); abbreviations = offsets of single letters inside "i.e."-style abbreviations;
+ * capitalised = lowercased words written with a capital somewhere NOT at a sentence start (a likely name, e.g. "Sam").
  */
 function textContext(transcript) {
-  const tokens = tokenize(transcript), starts = new Set(), abbreviations = new Set();
+  const tokens = tokenize(transcript), starts = new Set(), abbreviations = new Set(), capitalised = new Set();
   let previous = null, previousIndex = -1;
   tokens.forEach((token, k) => {
     if (abbreviationDot(tokens, k)) abbreviations.add(tokens[k - 1].start);
@@ -56,7 +59,10 @@ function textContext(transcript) {
       && !abbreviationDot(tokens, previousIndex)))) starts.add(token.start);
     if (token.kind !== 'other') { previous = token; previousIndex = k; }
   });
-  return { starts, abbreviations };
+  for (const token of tokens) {
+    if (token.kind === 'word' && /^\p{Lu}/u.test(token.text) && !starts.has(token.start)) capitalised.add(token.text.toLocaleLowerCase());
+  }
+  return { starts, abbreviations, capitalised };
 }
 const sentenceStarts = transcript => textContext(transcript).starts;
 
@@ -142,7 +148,8 @@ const exactly = (count, items) => ({ type: 'array', minItems: count, maxItems: c
 function responseSchema(items) {
   return closed({
     marks: exactly(items.marks.length, closed({ space_before: { type: 'boolean' }, space_after: { type: 'boolean' }, confidence: { type: 'number' } })),
-    cases: exactly(items.words.length, closed({ case_as_written: { type: 'string', enum: ['capital', 'small', 'unclear'] }, confidence: { type: 'number' } }))
+    cases: exactly(items.words.length, closed({ case_as_written: { type: 'string', enum: ['capital', 'small', 'unclear'] },
+      is_proper_noun: { type: 'string', enum: PROPER_NOUN_ANSWERS }, confidence: { type: 'number' } }))
   });
 }
 
@@ -154,7 +161,8 @@ function parseReply(content, items) {
   if (!value || !Array.isArray(value.marks) || !Array.isArray(value.cases)) return { ok: false, reason: 'REPLY_SHAPE' };
   if (value.marks.length !== items.marks.length || value.cases.length !== items.words.length) return { ok: false, reason: 'REPLY_COUNT_MISMATCH' };
   if (!value.marks.every(m => m && typeof m.space_before === 'boolean' && typeof m.space_after === 'boolean' && confidenceOk(m.confidence))
-    || !value.cases.every(c => c && ['capital', 'small', 'unclear'].includes(c.case_as_written) && confidenceOk(c.confidence))) {
+    || !value.cases.every(c => c && ['capital', 'small', 'unclear'].includes(c.case_as_written) && PROPER_NOUN_ANSWERS.includes(c.is_proper_noun)
+      && confidenceOk(c.confidence))) {
     return { ok: false, reason: 'REPLY_SHAPE' };
   }
   return { ok: true, marks: value.marks, cases: value.cases };
@@ -166,7 +174,7 @@ const lowerFirst = word => word.charAt(0).toLocaleLowerCase() + word.slice(1);
  * Local CAP and SPC rules. context = textContext(transcript). Returns candidates; nothing below minConfidence is kept.
  * Decimals and times (3.5, 10:30, 1,000) and single-letter abbreviations (i.e., e.g.) are never spacing or capital findings.
  */
-function candidates(items, reply, { starts, abbreviations = new Set(), minConfidence = 0.8 } = {}) {
+function candidates(items, reply, { starts, abbreviations = new Set(), capitalised = new Set(), minConfidence = 0.8 } = {}) {
   const found = [];
   items.marks.forEach((mark, i) => {
     const seen = reply.marks[i];
@@ -180,7 +188,10 @@ function candidates(items, reply, { starts, abbreviations = new Set(), minConfid
     const seen = reply.cases[i];
     if (!(seen.confidence >= minConfidence) || abbreviations.has(word.start)) return;
     const start = starts.has(word.start), lower = /^\p{Ll}/u.test(word.text), upper = /^\p{Lu}/u.test(word.text);
-    if (seen.case_as_written === 'capital' && lower && !start && !LONE_I.test(word.text)) found.push({ symbol: 'CAP', rule: 'capital_mid_sentence', word, confidence: seen.confidence });
+    // A possible name never gets "use a small letter": the model must say it is NOT a proper noun ("unsure" counts as a name),
+    // and the word must not be written with a capital mid-sentence anywhere else in the essay.
+    const ordinaryWord = seen.is_proper_noun === 'false' && !capitalised.has(word.text.toLocaleLowerCase());
+    if (seen.case_as_written === 'capital' && lower && !start && !LONE_I.test(word.text) && ordinaryWord) found.push({ symbol: 'CAP', rule: 'capital_mid_sentence', word, confidence: seen.confidence });
     else if (seen.case_as_written === 'small' && start && (lower || upper)) found.push({ symbol: 'CAP', rule: 'small_sentence_start', word, confidence: seen.confidence });
     else if (seen.case_as_written === 'small' && LONE_I.test(word.text)) found.push({ symbol: 'CAP', rule: 'small_lone_i', word, confidence: seen.confidence });
   });

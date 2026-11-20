@@ -18,7 +18,8 @@ function storedWords(text, boxFor = (i, lineNo) => ({ x: 5 + 10 * i, y: 10 + 10 
 const page = (text, extra = {}) => ({ text, startChar: 0, words: storedWords(text), width: 1000, height: 2000, ...extra });
 const reply = (items, { marks = {}, cases = {} } = {}) => ({
   marks: items.marks.map((m, i) => ({ space_before: false, space_after: true, confidence: 0.95, ...(marks[i] || {}) })),
-  cases: items.words.map((w, i) => ({ case_as_written: /^\p{Lu}/u.test(w.text) ? 'capital' : 'small', confidence: 0.95, ...(cases[i] || {}) }))
+  cases: items.words.map((w, i) => ({ case_as_written: /^\p{Lu}/u.test(w.text) ? 'capital' : 'small', is_proper_noun: 'false', confidence: 0.95,
+    ...(cases[i] || {}) }))
 });
 const single = text => { const lines = engine.pageLines(page(text)); return { lines, items: engine.groupItems([lines[0]]) }; };
 const run = (transcript, items, r, minConfidence = 0.8) => engine.candidates(items, r, { ...engine.textContext(transcript), minConfidence })
@@ -89,8 +90,13 @@ describe('prompt, schema and reply', () => {
     const schema = engine.responseSchema(items);
     expect(schema.properties.marks).toMatchObject({ minItems: 1, maxItems: 1 });
     expect(schema.properties.cases).toMatchObject({ minItems: 4, maxItems: 4 });
-    expect(schema.properties.cases.items.required).toEqual(['case_as_written', 'confidence']);
+    expect(schema.properties.cases.items.required).toEqual(['case_as_written', 'is_proper_noun', 'confidence']);
+    expect(schema.properties.cases.items.properties.is_proper_noun).toEqual({ type: 'string', enum: ['true', 'false', 'unsure'] });
     expect(schema.additionalProperties).toBe(false);
+    expect(engine.SCHEMA_VERSION).toBe('handwriting-mechanics-schema-v2');
+    expect(engine.PROMPT_VERSION).toBe('handwriting-mechanics-prompt-v2');
+    expect(engine.PROMPT).toMatch(/is_proper_noun/u);
+    expect(engine.PROMPT).toMatch(/nationality, language, month or day/u);
   });
 
   test('a reply with a wrong count, a bad value or broken JSON is rejected as a whole', () => {
@@ -105,6 +111,50 @@ describe('prompt, schema and reply', () => {
     expect(engine.parseReply({ ...good, marks: [{ ...good.marks[0], space_before: 'yes' }] }, items)).toEqual({ ok: false, reason: 'REPLY_SHAPE' });
     expect(engine.parseReply({ ...good, cases: good.cases.map(c => ({ ...c, case_as_written: 'upper' })) }, items))
       .toEqual({ ok: false, reason: 'REPLY_SHAPE' });
+    expect(engine.parseReply({ ...good, cases: good.cases.map(c => ({ ...c, is_proper_noun: true })) }, items))
+      .toEqual({ ok: false, reason: 'REPLY_SHAPE' });
+    expect(engine.parseReply({ ...good, cases: good.cases.map(({ is_proper_noun, ...c }) => c) }, items))
+      .toEqual({ ok: false, reason: 'REPLY_SHAPE' });
+  });
+});
+
+describe('proper nouns: "written capital, transcript lowercase, mid-sentence" only for a word that is not a name', () => {
+  const transcript = 'We went to india on monday with an omani friend.';
+  const capitals = (proper) => Object.fromEntries([3, 5, 8].map(i => [i, { case_as_written: 'capital', is_proper_noun: proper }]));
+  test('a name, nationality or day written with a capital gives no finding when the model says proper noun or unsure', () => {
+    const { items } = single(transcript);
+    expect(run(transcript, items, reply(items, { cases: capitals('true') }))).toEqual([]);
+    expect(run(transcript, items, reply(items, { cases: capitals('unsure') }))).toEqual([]);
+    // Only an explicit "false" lets the rule fire (proves the gate, not the words, decides).
+    expect(run(transcript, items, reply(items, { cases: capitals('false') })).map(f => f.quotedText)).toEqual(['india', 'monday', 'omani']);
+  });
+  test('"Kids" and "Out" with is_proper_noun false still give findings', () => {
+    const text = 'We see kids today and feel left out of it.';
+    const { items } = single(text);
+    const found = run(text, items, reply(items, { cases: { 2: { case_as_written: 'capital' }, 7: { case_as_written: 'capital' } } }));
+    expect(found.map(f => f.message)).toEqual(['You wrote "Kids" in the middle of a sentence. Use a small letter: "kids".',
+      'You wrote "Out" in the middle of a sentence. Use a small letter: "out".']);
+  });
+  test('never when the same word is written with a capital mid-sentence elsewhere in the essay (any page)', () => {
+    const text = `We met Sam at school.\nLater sam came home.${PAGE_SEPARATOR}Then we saw sam again.`;
+    const items = engine.groupItems(engine.pageLines(page(text)));
+    const samIndexes = items.words.map((w, i) => (w.text === 'sam' ? i : -1)).filter(i => i >= 0);
+    const cases = Object.fromEntries(samIndexes.map(i => [i, { case_as_written: 'capital' }]));
+    expect(run(text, items, reply(items, { cases }))).toEqual([]);
+    expect(engine.textContext(text).capitalised.has('sam')).toBe(true);
+  });
+  test('a capital only at a sentence start elsewhere does not count as a name ("For example" vs "for")', () => {
+    const text = 'For example, it works. It is good for kids.';
+    expect(engine.textContext(text).capitalised.has('for')).toBe(false);
+    const { items } = single(text);
+    const found = run(text, items, reply(items, { cases: { 7: { case_as_written: 'capital' } } }));
+    expect(found.map(f => f.quotedText)).toEqual(['for']);
+  });
+  test('the other direction is not affected: small letter at a sentence start and the lone "i" ignore is_proper_noun', () => {
+    const text = 'then i left.';
+    const { items } = single(text);
+    const found = run(text, items, reply(items, { cases: { 0: { is_proper_noun: 'true' }, 1: { is_proper_noun: 'unsure' } } }));
+    expect(found.map(f => f.quotedText)).toEqual(['then', 'i']);
   });
 });
 
