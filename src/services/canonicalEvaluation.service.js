@@ -529,7 +529,7 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
           : 'Grammar scoring is disabled by the teacher evaluation policy.'
       },
       MECHANICS: correctionCountsAuthoritativeForScoring ? scoreMechanics({ corrections, wordCount, strictness: policy.strictness,
-        enabled: policy.checks.grammarSpelling }) : {
+        enabled: policy.checks.grammarSpelling, exactSource: require('../utils/sourceFidelity').isExact(submission) }) : {
         ...semantic.categories.MECHANICS,
         score: policy.checks.grammarSpelling ? Math.round(Number(semantic.categories.MECHANICS.score) * 0.5 * 10) / 10 : 10,
         maxScore: 10,
@@ -617,7 +617,7 @@ async function generate({ submission, assignment, prelockedJobId = null, allowDe
         scoringAudit({ corrections, category: 'GRAMMAR', maxScore: RUBRIC_MAX.GRAMMAR,
           wordCount, strictness: policy.strictness }),
         scoringAudit({ corrections, category: 'MECHANICS', maxScore: RUBRIC_MAX.MECHANICS,
-          wordCount, strictness: policy.strictness })
+          wordCount, strictness: policy.strictness, exactSource: require('../utils/sourceFidelity').isExact(submission) })
       ] : [
         { category: 'GRAMMAR', finalScore: rubricScores.GRAMMAR.score,
           scoringSource: 'prepared_rubric', correctionCountsAuthoritativeForScoring: false },

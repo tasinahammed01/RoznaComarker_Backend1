@@ -126,7 +126,7 @@ describe('canonical evaluation write guards', () => {
     expect(mockFindOneAndUpdate.mock.calls[1][1].$set).toMatchObject({ detailedFeedbackSourceHash: 'hash',
       detailedFeedbackVersion: 'canonical-detailed-feedback-2', evaluationProvider: 'openrouter', evaluationModel: 'google/gemini-3.8-flash' });
     expect(mockFindOneAndUpdate.mock.calls[1][1].$set.scoringAudit).toMatchObject({
-      version: 'canonical-scoring-audit-v1',
+      version: 'canonical-scoring-audit-v2',
       overallMethod: 'fixed_six_category_sum',
       categories: [
         expect.objectContaining({ category: 'GRAMMAR', finalScore: 0 }),
@@ -158,6 +158,35 @@ describe('canonical evaluation write guards', () => {
       correctionStats: expect.objectContaining({ total: 46, grammar: 29, mechanics: 4 })
     });
   });
+
+  test.each([[true, 9, 1.5], [false, 6, null]])('exact-source %s: spacing penalty cap reaches the Mechanics score and the audit',
+    async (exact, mechanicsScore, cap) => {
+      {
+        const record = submission(true);
+        const text = 'Essay text written by hand for this check.';
+        if (exact) {
+          const sha = value => require('crypto').createHash('sha256').update(value).digest('hex');
+          Object.assign(record.value, { sourceFidelityMode: 'gpt_vision_exact', sourceFidelityStatus: 'GPT_SOURCE_ACCEPTED',
+            sourceTranscriptExact: text, sourceTranscriptSha256: sha(text), files: ['file-1'],
+            ocrPages: [{ fileId: 'file-1', fileOrder: 0, pageIndex: 0, pageNumber: 1, text, sourceFidelityMode: 'gpt_vision_exact',
+              sourceFidelityVersion: require('../src/services/gptVisionExact/contract').VERSION, sourceFidelityStatus: 'GPT_SOURCE_ACCEPTED',
+              sourceTextExact: text, sourceTextSha256: sha(text) }] });
+          expect(require('../src/utils/sourceFidelity').eligible(record.value)).toBe(true);
+        } else Object.assign(record.value, { files: ['file-1'], ocrPages: [{ fileId: 'file-1', pageNumber: 1, text }] });
+        const mark = (symbol, index) => ({ id: `${symbol}-${index}`, source: 'AI', category: 'MECHANICS', symbol,
+          quotedText: 'Essay', suggestedText: `${symbol}-${index}`, message: 'Concise correction.', correctionKind: 'localized',
+          severity: 'low', confidence: 0.99, startChar: 0, endChar: 5, page: 1, defaultDeduction: 0.25, repetitionFactor: 1, appliedDeduction: 0.25 });
+        record.value.writingCorrections = [...Array.from({ length: 20 }, (_, i) => mark('SPC', i)), ...Array.from({ length: 3 }, (_, i) => mark('CAP', i))];
+        const result = await generate({ submission: record.value, assignment: { title: 'Essay' } });
+        expect(result.status).toBe('completed');
+        const saved = mockFindOneAndUpdate.mock.calls.at(-1)[1].$set;
+        expect(saved.rubricScores.MECHANICS.score).toBe(mechanicsScore);
+        const audit = saved.scoringAudit.categories.find(item => item.category === 'MECHANICS');
+        expect(audit.finalScore).toBe(mechanicsScore);
+        expect(audit.spacingPenaltyCap?.cap ?? null).toBe(cap);
+        expect(saved.scoringAudit.version).toBe('canonical-scoring-audit-v2');
+      }
+    });
 
   test('replaces a stale prepared rubric with exactly one fresh final request', async () => {
     const record = submission(true);

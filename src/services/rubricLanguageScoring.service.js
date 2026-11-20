@@ -11,7 +11,9 @@ const RUBRIC_MAX = Object.freeze({
 
 const ASSESSMENT_VERSION = 'writing-rubric-100-v5-teacher-policy';
 const EVALUATION_VERSION = 'canonical-evaluation-9-fixed-skill-isolation';
-const SCORING_AUDIT_VERSION = 'canonical-scoring-audit-v1';
+const SCORING_AUDIT_VERSION = 'canonical-scoring-audit-v2';
+// Exact-source (photo) essays: the summed Mechanics SPC penalty is capped before tolerance and multiplier.
+const EXACT_SOURCE_SPACING_PENALTY_CAP = 1.5;
 const STRICTNESS_THRESHOLDS = Object.freeze({
   friendly: Object.freeze({ multiplier: 0.60, lowImpactTolerance: 2.0, maxDeductionRatio: 0.35 }),
   balanced: Object.freeze({ multiplier: 0.80, lowImpactTolerance: 1.0, maxDeductionRatio: 0.50 }),
@@ -65,16 +67,30 @@ function partitionCategoryCorrections(corrections, category) {
   return { total, counted, ignored };
 }
 
-function weightedIssuePenalty(corrections, category) {
-  return partitionCategoryCorrections(corrections, category).counted.reduce((total, correction) => {
-    const applied = Number(correction?.appliedDeduction);
-    if (Number.isFinite(applied) && applied >= 0) return total + applied;
-    const base = Number(correction?.defaultDeduction);
-    return total + (Number.isFinite(base) && base >= 0 ? base : 0);
-  }, 0);
+function correctionPenalty(correction) {
+  const applied = Number(correction?.appliedDeduction);
+  if (Number.isFinite(applied) && applied >= 0) return applied;
+  const base = Number(correction?.defaultDeduction);
+  return Number.isFinite(base) && base >= 0 ? base : 0;
 }
 
-function scoringAudit({ corrections, category, maxScore, wordCount, strictness = 'balanced' }) {
+function spacingPenalty(corrections, category, { exactSource = false } = {}) {
+  if (exactSource !== true || category !== 'MECHANICS') return null;
+  const rawPenalty = partitionCategoryCorrections(corrections, category).counted
+    .filter((correction) => String(correction?.symbol || '').toUpperCase() === 'SPC')
+    .reduce((total, correction) => total + correctionPenalty(correction), 0);
+  return { cap: EXACT_SOURCE_SPACING_PENALTY_CAP, rawPenalty,
+    cappedPenalty: Math.min(rawPenalty, EXACT_SOURCE_SPACING_PENALTY_CAP) };
+}
+
+function weightedIssuePenalty(corrections, category, options = {}) {
+  const total = partitionCategoryCorrections(corrections, category).counted
+    .reduce((sum, correction) => sum + correctionPenalty(correction), 0);
+  const spacing = spacingPenalty(corrections, category, options);
+  return spacing ? total - spacing.rawPenalty + spacing.cappedPenalty : total;
+}
+
+function scoringAudit({ corrections, category, maxScore, wordCount, strictness = 'balanced', exactSource = false }) {
   const partition = partitionCategoryCorrections(corrections, category);
   const groups = new Map();
   for (const correction of partition.counted) {
@@ -89,7 +105,8 @@ function scoringAudit({ corrections, category, maxScore, wordCount, strictness =
     if (correction?.id != null) group.correctionIds.push(String(correction.id));
     groups.set(key, group);
   }
-  const scored = scoreFromWeightedIssues({ corrections, category, maxScore, wordCount, strictness });
+  const scored = scoreFromWeightedIssues({ corrections, category, maxScore, wordCount, strictness, exactSource });
+  const spacing = spacingPenalty(corrections, category, { exactSource });
   const ignoredReasons = partition.ignored.reduce((out, item) => {
     out[item.reason] = (out[item.reason] || 0) + 1;
     return out;
@@ -105,8 +122,10 @@ function scoringAudit({ corrections, category, maxScore, wordCount, strictness =
     ignoredIssueCount: partition.ignored.length,
     ignoredReasons,
     basePenalty: auditNumber(basePenalty),
-    repetitionAdjustedPenalty: auditNumber(scored.weightedPenalty),
+    repetitionAdjustedPenalty: auditNumber(weightedIssuePenalty(corrections, category)),
     weightedPenalty: auditNumber(scored.weightedPenalty),
+    ...(spacing ? { spacingPenaltyCap: { cap: spacing.cap, rawPenalty: auditNumber(spacing.rawPenalty),
+      cappedPenalty: auditNumber(spacing.cappedPenalty) } } : {}),
     density: auditNumber(scored.density),
     tolerance: scored.tolerance,
     multiplier: scored.multiplier,
@@ -123,7 +142,7 @@ function scoringAudit({ corrections, category, maxScore, wordCount, strictness =
   };
 }
 
-function scoreFromWeightedIssues({ corrections, category, maxScore, wordCount, strictness = 'balanced' }) {
+function scoreFromWeightedIssues({ corrections, category, maxScore, wordCount, strictness = 'balanced', exactSource = false }) {
   const partition = partitionCategoryCorrections(corrections, category);
   const issueCount = partition.counted.length;
   const thresholds = STRICTNESS_THRESHOLDS[strictness] || STRICTNESS_THRESHOLDS.balanced;
@@ -132,7 +151,7 @@ function scoreFromWeightedIssues({ corrections, category, maxScore, wordCount, s
     totalIssueCount: partition.total.length, ignoredIssueCount: partition.ignored.length,
     tolerance: thresholds.lowImpactTolerance, multiplier: thresholds.multiplier,
     maximumDeduction, cappedDeduction: 0, unroundedScore: 0 };
-  const weightedPenalty = weightedIssuePenalty(corrections, category);
+  const weightedPenalty = weightedIssuePenalty(corrections, category, { exactSource });
   const density = weightedPenalty / Math.max(120, wordCount);
   const adjustedPenalty = Math.max(0, weightedPenalty - thresholds.lowImpactTolerance) * thresholds.multiplier;
   const cappedDeduction = Math.min(maximumDeduction, adjustedPenalty);
@@ -162,9 +181,9 @@ function scoreGrammar({ corrections, wordCount, strictness = 'balanced', enabled
     comment: languageComment('grammar', result.issueCount, result.score, RUBRIC_MAX.GRAMMAR, result.density) };
 }
 
-function scoreMechanics({ corrections, wordCount, strictness = 'balanced', enabled = true }) {
+function scoreMechanics({ corrections, wordCount, strictness = 'balanced', enabled = true, exactSource = false }) {
   const source = enabled ? corrections : [];
-  const result = scoreFromWeightedIssues({ corrections: source, category: 'MECHANICS', maxScore: RUBRIC_MAX.MECHANICS, wordCount, strictness });
+  const result = scoreFromWeightedIssues({ corrections: source, category: 'MECHANICS', maxScore: RUBRIC_MAX.MECHANICS, wordCount, strictness, exactSource });
   return { score: result.score, maxScore: RUBRIC_MAX.MECHANICS, issueCount: result.issueCount,
     comment: languageComment('mechanics', result.issueCount, result.score, RUBRIC_MAX.MECHANICS, result.density) };
 }
@@ -201,6 +220,7 @@ module.exports = {
   ASSESSMENT_VERSION,
   EVALUATION_VERSION,
   SCORING_AUDIT_VERSION,
+  EXACT_SOURCE_SPACING_PENALTY_CAP,
   RUBRIC_MAX,
   SYMBOL_SEVERITY,
   STRICTNESS_THRESHOLDS,
