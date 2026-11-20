@@ -14,6 +14,8 @@ const STUDENT_HIDDEN_KEYS = new Set([...INTERNAL_FIELDS,
   'semanticProvider', 'semanticModel', 'semanticPromptVersion', 'semanticSourceKey', 'correctionGenerationConfig', 'correctionLegendSource', 'correctionLegendVersion',
   'correctionLegendContentHash', 'deductionPolicyVersion', 'languageToolStatus', 'languageToolSourceHash', 'languageToolVersion', 'languageToolMappingVersion',
   'languageToolTranscriptLayoutVersion', 'evaluationDiagnostics', 'evaluationBuiltInContextHash', 'evaluationJobId', 'evaluationError',
+  // Handwriting spacing and capitals check: the internal tag on its findings and its run summary (counts, cost, status)
+  'detector', 'handwritingMechanicsCheck',
   // Workers: who holds the job and when it retries
   'analysisLeaseOwner', 'analysisLeaseExpiresAt', 'analysisAttempt', 'analysisNextRetryAt',
   // Internal identities of runs, evidence and earlier revisions

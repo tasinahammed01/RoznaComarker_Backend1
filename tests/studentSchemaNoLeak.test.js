@@ -97,7 +97,8 @@ const ALLOWED = {
 
 // The fields a pipeline or a provider could add to a stored correction. None is in the schema (a correction is Mixed), so the filler cannot see them.
 const CORRECTION_PROBES = { provider: 'LEAK_correction.provider', model: 'LEAK_correction.model', promptVersion: 'LEAK_correction.promptVersion',
-  rawResponse: 'LEAK_correction.rawResponse', costUsd: 'LEAK_correction.costUsd', tokens: 'LEAK_correction.tokens' };
+  rawResponse: 'LEAK_correction.rawResponse', costUsd: 'LEAK_correction.costUsd', tokens: 'LEAK_correction.tokens',
+  detector: 'LEAK_correction.detector' };
 const NEW_PATH = 'guardProbeFieldAddedLater';
 
 let f, studentJwt, teacherJwt, resendToken, portalSession, teacher, filler, responses;
