@@ -135,7 +135,8 @@ function start({ doc, transcript, pages, transcriptComplete, env = process.env, 
             { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${crop.toString('base64')}` } }] }],
           maxOutputTokens: profile.MAX_OUTPUT_TOKENS, temperature: 0, responseFormat: 'json', responseSchema: engine.responseSchema(items),
           schemaName: 'handwriting_mechanics', attemptTimeoutMs: s.callTimeoutMs, env, now: Date.now, signal: controller.signal,
-          ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}) });
+          // The gateway has no default transport: always hand it one (the verbatim reader does the same).
+          fetchImpl: deps.fetchImpl || global.fetch });
       } catch (error) { bump(summary.callsFailed, safeCode(error)); return; }
       summary.promptTokens += Number(result?.usage?.prompt_tokens) || 0;
       summary.completionTokens += Number(result?.usage?.completion_tokens) || 0;

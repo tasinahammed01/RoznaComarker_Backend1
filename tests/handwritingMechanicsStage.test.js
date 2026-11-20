@@ -252,6 +252,24 @@ describe('running the check', () => {
     await expect(garbage.settle({ correctionSucceeded: true, waitMs: 100 })).resolves.toMatchObject({ findings: [] });
   });
 
+  test('production default path: no injected fetch or provider; the real gateway gets a fetch function (stubbed global.fetch)', async () => {
+    const e = essay({ pages: ['Kids these days , they win.'] });
+    const text = 'Kids these days , they win.';
+    const items = engine.groupItems(engine.pageLines({ text, startChar: 0, words: words(text), width: W, height: H }));
+    const content = JSON.stringify({ marks: items.marks.map(m => ({ space_before: m.before.text === 'days', space_after: true, confidence: 0.9 })),
+      cases: items.words.map(w => ({ case_as_written: /^\p{Lu}/u.test(w.text) ? 'capital' : 'small', is_proper_noun: 'false', confidence: 0.9 })) });
+    const original = global.fetch;
+    global.fetch = jest.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ model: profile.MODEL,
+      choices: [{ finish_reason: 'stop', message: { content } }], usage: { prompt_tokens: 1400, completion_tokens: 60, cost: 0.0012 } }) }));
+    try {
+      const { result } = await run({ ...e, deps: { loadFile: e.deps.loadFile, readFile: e.deps.readFile } }, undefined);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toMatchObject({ model: profile.MODEL, seed: profile.SEED });
+      expect(result).toMatchObject({ status: 'completed', summary: expect.objectContaining({ callsFailed: {}, costUsd: 0.0012 }) });
+      expect(result.findings.map(f => f.quotedText)).toEqual(['days ,']);
+    } finally { global.fetch = original; }
+  });
+
   test('through the real gateway (fetch mocked): the request carries the profile, and cost comes back', async () => {
     const e = essay({ pages: ['Kids these days , they win.'] });
     const bodies = [];
