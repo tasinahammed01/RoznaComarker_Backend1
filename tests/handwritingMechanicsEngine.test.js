@@ -46,6 +46,20 @@ describe('lines and geometry', () => {
     expect(engine.pageLines(page(text))[0].box).toMatchObject({ x0: 50, x1: 230 });
   });
 
+  test('stored exact-source boxes are corners {x0, y0, x1, y1} (as the OCR pipeline saves them): same lines and boxes', () => {
+    const text = 'One two.\n\nThree four';
+    const corners = storedWords(text).map(w => ({ ...w, bbox: { x0: w.bbox.x, y0: w.bbox.y, x1: w.bbox.x + w.bbox.w, y1: w.bbox.y + w.bbox.h } }));
+    const stored = engine.pageLines(page(text, { startChar: 100, words: corners }));
+    expect(stored.map(l => l.reason)).toEqual([null, null]);
+    expect(stored).toEqual(engine.pageLines(page(text, { startChar: 100 })));
+    expect(stored[0].box).toEqual({ x0: 50, x1: 230, y0: 200, y1: 280, wordHeight: 80 });
+    // An empty or broken corner box counts as no box, like the highlights (normalizeOcrWordsFromStored).
+    for (const bad of [{ x0: 5, y0: 10, x1: 5, y1: 14 }, { x0: 5, y0: 10, x1: 13, y1: 9 }, { x0: 'a', y0: 10, x1: 13, y1: 14 }]) {
+      const words = corners.map(w => ({ ...w, bbox: bad }));
+      expect(engine.pageLines(page(text, { words })).map(l => l.reason)).toEqual(['NO_GEOMETRY', 'NO_GEOMETRY']);
+    }
+  });
+
   test('stored words whose text does not match the transcript are ignored; a page without a size is skipped', () => {
     const text = 'aa bb';
     const words = storedWords(text).map(w => ({ ...w, text: 'zz' }));

@@ -66,11 +66,21 @@ function textContext(transcript) {
 }
 const sentenceStarts = transcript => textContext(transcript).starts;
 
-const validBox = box => box && ['x', 'y', 'w', 'h'].every(key => Number.isFinite(Number(box[key]))) && Number(box.w) > 0 && Number(box.h) > 0;
+/**
+ * A word box as percent corners { x0, y0, x1, y1 }, or null. Stored exact-source words keep corners (ocrPipeline storedStudentWord,
+ * read back the same way by normalizeOcrWordsFromStored for the highlights); the reader's in-memory words use { x, y, w, h }.
+ */
+function percentCorners(box) {
+  if (!box || typeof box !== 'object') return null;
+  const stored = ['x0', 'y0', 'x1', 'y1'].every(key => box[key] !== undefined && box[key] !== null);
+  const c = stored ? { x0: Number(box.x0), y0: Number(box.y0), x1: Number(box.x1), y1: Number(box.y1) }
+    : { x0: Number(box.x), y0: Number(box.y), x1: Number(box.x) + Number(box.w), y1: Number(box.y) + Number(box.h) };
+  return Object.values(c).every(Number.isFinite) && c.x1 > c.x0 && c.y1 > c.y0 ? c : null;
+}
 
 /**
- * One exact-source page -> its text lines with a pixel box from the stored token geometry (bbox {x, y, w, h} in percent of the
- * display image). page: { text, startChar, words, width, height }. A line without any boxed token gets box null (skipped later).
+ * One exact-source page -> its text lines with a pixel box from the stored token geometry (bbox in percent of the display image,
+ * stored as corners; see percentCorners). page: { text, startChar, words, width, height }. A line without any boxed token gets box null (skipped later).
  * If any word on the line has no box, the line keeps the full page width so no word is cut off.
  */
 function pageLines(page) {
@@ -86,13 +96,12 @@ function pageLines(page) {
     const tokens = tokenize(lineText, base + start);
     if (!tokens.some(t => t.kind !== 'other')) continue;
     const onLine = words.filter(w => w.sourceStart >= start && w.sourceEnd <= end);
-    const boxed = onLine.filter(w => validBox(w.bbox));
+    const boxed = onLine.map(w => percentCorners(w.bbox)).filter(Boolean);
     const line = { index: lines.length, text: lineText, startChar: base + start, endChar: base + end, tokens, box: null, reason: null };
     if (!(width > 0 && height > 0)) line.reason = 'PAGE_SIZE_MISSING';
     else if (!boxed.length) line.reason = 'NO_GEOMETRY';
     else {
-      const px = boxed.map(w => ({ x0: Number(w.bbox.x) / 100 * width, y0: Number(w.bbox.y) / 100 * height,
-        x1: (Number(w.bbox.x) + Number(w.bbox.w)) / 100 * width, y1: (Number(w.bbox.y) + Number(w.bbox.h)) / 100 * height }));
+      const px = boxed.map(b => ({ x0: b.x0 / 100 * width, y0: b.y0 / 100 * height, x1: b.x1 / 100 * width, y1: b.y1 / 100 * height }));
       const heights = px.map(b => b.y1 - b.y0).sort((a, b) => a - b);
       const covered = token => onLine.some(w => base + w.sourceStart <= token.start && base + w.sourceEnd >= token.end);
       const fullWidth = boxed.length < onLine.length || !tokens.filter(t => t.kind === 'word').every(covered);
