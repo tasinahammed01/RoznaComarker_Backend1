@@ -75,6 +75,28 @@ function barList(items, emptyText) {
   }).join('')}</div>`;
 }
 
+// The page shows the first 3 examples of a type (it offers the other 2 on request); the PDF shows the same first 3.
+const PDF_EXAMPLES = 3;
+/**
+ * The student's sentence with the mistakes marked ('err') or with the corrections in their place ('fix'); "…" where the sentence was cut
+ * and between two parts of a long sentence. Every text escaped.
+ */
+function sentenceHtml(sentence, mode) {
+  const parts = sentence.parts.map(p => (p?.gap ? ' … ' : p?.error ? (mode === 'err' ? `<mark class="err">${esc(p.text)}</mark>`
+    : (p.corrected ? `<mark class="fix">${esc(p.corrected)}</mark>` : '')) : esc(p?.text))).join('');
+  return (sentence.cutStart ? '… ' : '') + parts + (sentence.cutEnd ? '…' : '');
+}
+const hasSentence = e => Boolean(e?.sentence && Array.isArray(e.sentence.parts) && e.sentence.parts.some(p => p?.error));
+/** One example: the sentence (as written, then corrected) when there is one, else the word pair; then the reason. */
+function exampleHtml(e) {
+  const change = hasSentence(e)
+    ? '<p class="sent"><span class="lab">Student wrote</span> ' + sentenceHtml(e.sentence, 'err') + '</p>'
+      + (e.sentence.parts.some(p => p?.error && p.corrected) ? '<p class="sent"><span class="lab">Corrected</span> ' + sentenceHtml(e.sentence, 'fix') + '</p>' : '')
+    : '<p class="change"><del>' + esc(e?.original) + '</del>'
+      + (e?.corrected ? '<span class="arrow" aria-hidden="true"> → </span><ins>' + esc(e.corrected) + '</ins>' : '') + '</p>';
+  return '<li class="example">' + change + (e?.explanation ? '<p class="why">' + esc(e.explanation) + '</p>' : '') + '</li>';
+}
+
 /** Common mistakes: one block per type at least 2 students made ("4 of 6 students", a bar, up to 3 examples), or the empty state. */
 function commonMistakesSection(section) {
   if (!section || typeof section !== 'object') return '';
@@ -83,9 +105,7 @@ function commonMistakesSection(section) {
   const blocks = common.map(t => {
     const students = num(t.studentCount) ?? 0, total = num(t.totalStudents) ?? 0;
     const width = total > 0 ? Math.round((students / total) * 100) : 0;
-    const examples = (Array.isArray(t.examples) ? t.examples : []).map(e => '<li class="example"><p class="change"><del>' + esc(e?.original) + '</del>'
-      + (e?.corrected ? '<span class="arrow" aria-hidden="true"> → </span><ins>' + esc(e.corrected) + '</ins>' : '') + '</p>'
-      + (e?.explanation ? '<p class="why">' + esc(e.explanation) + '</p>' : '') + '</li>').join('');
+    const examples = (Array.isArray(t.examples) ? t.examples : []).slice(0, PDF_EXAMPLES).map(exampleHtml).join('');
     return '<div class="mistake"><div class="bar-head"><span class="bar-label">' + esc(t.typeCode + ' · ' + t.label) + '</span><span class="bar-value">'
       + esc(students + ' of ' + total + ' students') + '</span></div><div class="track"><div class="fill" style="width:' + width + '%;background:' + (CATEGORY_EDGE[t.category] || COLOR.primary) + '"></div></div>'
       + (examples ? '<ul class="examples">' + examples + '</ul>' : '') + '</div>';
@@ -168,7 +188,10 @@ tr.attention td:first-child{box-shadow:inset 1mm 0 0 #ee4e4e}
 .empty{padding:10mm;border:1px solid ${COLOR.border};border-radius:3mm;text-align:center}
 .panel.common{break-inside:auto;page-break-inside:auto}.mistake{margin:0 0 3mm;break-inside:avoid;page-break-inside:avoid}
 .examples{list-style:none;margin:1.5mm 0 0;padding:0}.example{margin:0 0 1.2mm;padding-left:3mm;border-left:2px solid ${COLOR.border}}
-.change{margin:0;font-size:8.5pt}.change del{color:${COLOR.muted}}.change ins{text-decoration:none;font-weight:700;color:${COLOR.title}}.why{margin:.3mm 0 0;color:${COLOR.muted};font-size:8pt}`;
+.change{margin:0;font-size:8.5pt}.change del{color:${COLOR.muted}}.change ins{text-decoration:none;font-weight:700;color:${COLOR.title}}.why{margin:.3mm 0 0;color:${COLOR.muted};font-size:8pt}
+.sent{margin:0 0 .4mm;font-size:8.5pt;overflow-wrap:anywhere}.sent .lab{display:inline-block;min-width:22mm;color:${COLOR.muted};font-size:7pt;text-transform:uppercase;letter-spacing:.03em}
+mark.err{background:#fde8e8;color:#b42318;text-decoration:line-through;padding:0 .4mm;border-radius:.6mm}
+mark.fix{background:#e3f5ec;color:#0f6b46;font-weight:700;padding:0 .4mm;border-radius:.6mm}`;
 
 /**
  * The report as a self-contained HTML document for the PDF renderer.
