@@ -167,14 +167,24 @@ describe('teacher comment draft length handling', () => {
     expect(other).toBeDefined(); expect(other.code).not.toBe('TEACHER_COMMENT_TOO_LONG');
   });
 
-  test('the new validator gives the same verdict as the base validator on every non-length case', () => {
+  // Since formatting is repaired, the new validator may accept what the base one rejected, but only as repaired text the base validator
+  // itself accepts: privacy is never weaker. Content the base rejected (a provider, a mark, too short, too long) stays rejected.
+  test('the new validator is never weaker than the base validator: what it accepts, the base accepts too', () => {
     const base = require('../src/services/teacherComments.service').validateDraft;
     const shortOk = 'Please review the feedback provided and focus on the highlighted areas before your next submission.';
     const cases = ['', comment, shortComment, shortOk, comment + '\nAnother paragraph.', comment.replace('You', 'OpenRouter'),
       shortOk + " You earned 90 marks.", shortOk + " The provider reviewed it.", shortOk + " ```code```", shortOk + " **Bold text**.",
       "Too short.", "This sentence has no ending punctuation but enough words to pass the count"];
     const verdict = (fn, value) => { try { return fn(JSON.stringify({ comment: value })); } catch { return "rejected"; } };
-    for (const value of cases) expect(verdict(service.validateDraft, value)).toEqual(verdict(base, value));
+    for (const value of cases) {
+      const before = verdict(base, value), after = verdict(service.validateDraft, value);
+      if (before !== 'rejected') expect(after).toEqual(before);
+      else if (after !== 'rejected') expect(verdict(base, after.comment)).toEqual(after);
+    }
+    for (const value of [comment.replace('You', 'OpenRouter'), shortOk + " You earned 90 marks.", shortOk + " The provider reviewed it.", "Too short."])
+      expect(verdict(service.validateDraft, value)).toBe("rejected");
+    expect(verdict(service.validateDraft, comment + '\nAnother paragraph.')).toEqual({ comment: comment + ' Another paragraph.' });
+    expect(verdict(service.validateDraft, shortOk + " **Bold text**.")).toEqual({ comment: shortOk + " Bold text." });
     expect(verdict(base, longComment)).toBe("rejected"); expect(verdict(service.validateDraft, longComment)).toBe("rejected");
   });
 });
