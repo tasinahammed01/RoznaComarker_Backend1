@@ -28,6 +28,7 @@ const mongoose = require('mongoose');
 const logger = require('../utils/logger');
 const sourceFidelity = require('../utils/sourceFidelity');
 const { buildCanonicalResultState } = require('./canonicalResultState.service');
+const { located, sentenceSpan, sentenceOf } = require('./reportExampleSentence');
 
 const REPORT_VERSION = 'assignment-report-v1';
 const SCAN_CAP = 3000;
@@ -69,14 +70,19 @@ const FEEDBACK_FIELDS = Object.freeze(['submissionId', 'overallScore', 'grade', 
 // "Common mistakes": thresholds, caps and reads (see the header).
 const COMMON_MIN_STUDENTS = 2;
 const COMMON_TOP_TYPES = 5;
-const COMMON_EXAMPLES = 3;
+// Up to 5 examples per type in the response; the page and the PDF show the first 3 (the page offers the other 2 on request).
+const COMMON_EXAMPLES = 5;
 const EXAMPLE_TEXT_MAX = 80;
 const EXAMPLE_EXPLANATION_MAX = 160;
 const EDITED_BATCH = 20;
 const EDITED_CAP = 100;
 const CORRECTION_TEXT_FIELDS = Object.freeze(['_id', 'draftNumber', 'teacherAnnotations', 'guest.normalizedEmail', 'writingCorrections.id',
   'writingCorrections.symbol', 'writingCorrections.category', 'writingCorrections.quotedText', 'writingCorrections.suggestedText',
-  'writingCorrections.message', 'writingCorrections.source']);
+  'writingCorrections.message', 'writingCorrections.source', 'writingCorrections.startChar', 'writingCorrections.endChar']);
+// The example sentences: the transcript fields only (no corrections, overlay or identity), for the submissions chosen as examples (at most
+// COMMON_TOP_TYPES x COMMON_EXAMPLES), in one read. The text is cut into sentences in memory and never stored or logged.
+const EXAMPLE_TRANSCRIPT_FIELDS = Object.freeze(['_id', 'draftNumber', 'ocrJobId', 'files', 'file', 'fileOrder', 'ocrPages', 'ocrData', 'sourceFidelityMode',
+  'sourceFidelityStatus', 'sourceFidelityVersion', 'sourceHumanReviewSummary', 'sourceTranscriptExact', 'sourceTranscriptSha256']);
 // What the student view needs to place the teacher's overlay on an edited essay: its transcript (pages, files, exact-source fields), the
 // whole correction list and the overlay.
 const EDITED_FIELDS = Object.freeze(['_id', 'draftNumber', 'ocrJobId', 'files', 'file', 'fileOrder', 'ocrPages', 'ocrData', 'sourceFidelityMode',
@@ -306,29 +312,53 @@ function exampleOf(correction) {
   if (!original) return null;
   return { original, corrected: exampleText(correction?.suggestedText, EXAMPLE_TEXT_MAX), explanation: exampleText(correction?.message, EXAMPLE_EXPLANATION_MAX) };
 }
-/** Up to COMMON_EXAMPLES: duplicates removed, the shortest first, one per student before a second from anyone. Deterministic. */
-function pickExamples(candidates) {
-  const seen = new Set(), unique = [];
+const pairKey = c => `${c.original.toLowerCase()}\u0000${c.corrected.toLowerCase()}`;
+/**
+ * Example units: the mistakes of one type that sit in one sentence of one submission form one unit (grouped); without a sentence (no
+ * transcript, or a position that no longer fits) each word pair is a unit, duplicates removed as before.
+ */
+function exampleUnits(candidates, transcripts) {
+  const units = new Map();
   for (const c of candidates) {
-    const key = `${c.original.toLowerCase()}\u0000${c.corrected.toLowerCase()}`;
-    if (!seen.has(key)) { seen.add(key); unique.push(c); }
+    const text = transcripts?.get?.(c.submissionId);
+    const span = text && located(text, c.position) ? sentenceSpan(text, c.position.startChar, c.position.endChar) : null;
+    const key = span ? `s\u0000${c.submissionId}\u0000${span.start}` : `p\u0000${pairKey(c)}`;
+    const unit = units.get(key);
+    if (unit) { if (span) unit.members.push(c); continue; }
+    units.set(key, { student: c.student, submissionId: c.submissionId, text: span ? text : null, members: [c],
+      sentenceKey: span ? text.slice(span.start, span.end).replace(/\s+/gu, ' ').toLowerCase() : null });
   }
-  const size = c => c.original.length + c.corrected.length;
-  unique.sort((a, b) => size(a) - size(b) || (a.original < b.original ? -1 : a.original > b.original ? 1 : 0)
-    || (a.corrected < b.corrected ? -1 : a.corrected > b.corrected ? 1 : 0));
-  const picked = [], students = new Set();
-  for (const c of unique) if (picked.length < COMMON_EXAMPLES && !students.has(c.student)) { picked.push(c); students.add(c.student); }
-  for (const c of unique) if (picked.length < COMMON_EXAMPLES && !picked.includes(c)) picked.push(c);
-  return picked.map(({ original, corrected, explanation }) => ({ original, corrected, explanation }));
+  return [...units.values()].map(u => ({ ...u, members: u.members.sort((a, b) => a.position.startChar - b.position.startChar) }));
+}
+/**
+ * Up to COMMON_EXAMPLES units: those with a sentence first, then the shortest, one per student before a second from anyone; a sentence or a
+ * word pair already shown is not shown again. Deterministic.
+ */
+function pickUnits(units) {
+  const first = u => u.members[0];
+  const size = u => first(u).original.length + first(u).corrected.length;
+  const order = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const sorted = [...units].sort((a, b) => Number(Boolean(b.text)) - Number(Boolean(a.text)) || size(a) - size(b)
+    || order(first(a).original, first(b).original) || order(first(a).corrected, first(b).corrected) || order(a.submissionId, b.submissionId)
+    || first(a).position.startChar - first(b).position.startChar);
+  const picked = [], students = new Set(), shown = new Set();
+  // The same sentence with the same corrections (two students, identical words) is shown once; a different correction is shown.
+  const sameKey = u => `s\u0000${u.sentenceKey}\u0000${u.members.map(pairKey).join('\u0001')}`;
+  const take = u => { picked.push(u); students.add(u.student); for (const m of u.members) shown.add(pairKey(m)); if (u.sentenceKey) shown.add(sameKey(u)); };
+  const fresh = u => (u.sentenceKey ? !shown.has(sameKey(u)) : !shown.has(pairKey(first(u))));
+  for (const u of sorted) if (picked.length < COMMON_EXAMPLES && !students.has(u.student) && fresh(u)) take(u);
+  for (const u of sorted) if (picked.length < COMMON_EXAMPLES && !picked.includes(u) && fresh(u)) take(u);
+  return picked;
+}
+/** A picked unit as sent: the first mistake's words and reason, and the sentence when there is one. */
+function exampleOfUnit(unit) {
+  const { original, corrected, explanation } = unit.members[0];
+  const sentence = unit.text ? sentenceOf(unit.text, unit.members.map(m => m.position)) : null;
+  return sentence ? { original, corrected, explanation, sentence } : { original, corrected, explanation };
 }
 
-/**
- * Pure. entries: [{ key (one student), submissionId, submittedAt, corrections (what the student sees) }]. A student with several entries
- * counts once, with the latest. Types are sorted by students, then occurrences, then code; the top COMMON_TOP_TYPES are returned, with
- * examples only for a type at least COMMON_MIN_STUDENTS students made (isCommon). state: 'not_enough_students' | 'none_shared' | 'ok'.
- */
-function commonMistakesOf(entries, legend, { partial = false } = {}) {
-  const index = legendIndex(legend);
+/** Pure. The distinct students (latest entry each) and the correction types, sorted by students, then occurrences, then code. */
+function rankedTypes(entries) {
   const time = e => (e.submittedAt instanceof Date && Number.isFinite(e.submittedAt.getTime()) ? e.submittedAt.getTime() : -Infinity);
   const latest = new Map();
   for (const e of entries || []) {
@@ -345,21 +375,72 @@ function commonMistakesOf(entries, legend, { partial = false } = {}) {
       const item = bySymbol.get(symbol) || { symbol, category: String(c.category || '').toUpperCase() || null, students: new Set(), occurrences: 0, candidates: [] };
       item.students.add(key); item.occurrences += 1;
       const example = exampleOf(c);
-      if (example) item.candidates.push({ student: key, ...example });
+      // The position is kept in memory only, to find the sentence; it is never sent.
+      if (example) item.candidates.push({ student: key, submissionId: String(e.submissionId), ...example,
+        position: { startChar: c.startChar, endChar: c.endChar, quotedText: c.quotedText, suggestedText: example.corrected } });
       bySymbol.set(symbol, item);
     }
   }
   const sorted = [...bySymbol.values()].sort((a, b) => b.students.size - a.students.size || b.occurrences - a.occurrences
     || (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0));
+  return { totalStudents, sorted };
+}
+
+/**
+ * Pure. The submissions whose transcripts the examples need: per common type, up to COMMON_EXAMPLES submissions (one per student, the
+ * shortest mistakes first); at most COMMON_TOP_TYPES x COMMON_EXAMPLES in all.
+ */
+function exampleSubmissionIds(entries) {
+  const { sorted } = rankedTypes(entries);
+  const ids = new Set();
+  const size = c => c.original.length + c.corrected.length;
+  for (const item of sorted.slice(0, COMMON_TOP_TYPES).filter(t => t.students.size >= COMMON_MIN_STUDENTS)) {
+    const ordered = [...item.candidates].sort((a, b) => size(a) - size(b) || (a.submissionId < b.submissionId ? -1 : a.submissionId > b.submissionId ? 1 : 0));
+    const mine = [];
+    for (const c of ordered) if (mine.length < COMMON_EXAMPLES && !mine.includes(c.submissionId)) mine.push(c.submissionId);
+    for (const id of mine) ids.add(id);
+  }
+  return [...ids];
+}
+
+/**
+ * Pure. entries: [{ key (one student), submissionId, submittedAt, corrections (what the student sees) }]. A student with several entries
+ * counts once, with the latest. Types are sorted by students, then occurrences, then code; the top COMMON_TOP_TYPES are returned, with
+ * examples only for a type at least COMMON_MIN_STUDENTS students made (isCommon). state: 'not_enough_students' | 'none_shared' | 'ok'.
+ * transcripts (Map submissionId -> canonical text, optional): examples from those submissions carry the student's sentence.
+ */
+function commonMistakesOf(entries, legend, { partial = false, transcripts = null } = {}) {
+  const index = legendIndex(legend);
+  const { totalStudents, sorted } = rankedTypes(entries);
   const state = totalStudents < COMMON_MIN_STUDENTS ? 'not_enough_students'
     : sorted.some(item => item.students.size >= COMMON_MIN_STUDENTS) ? 'ok' : 'none_shared';
   const types = state !== 'ok' ? [] : sorted.slice(0, COMMON_TOP_TYPES).map(item => {
     const meta = index.symbols.get(item.symbol);
     const isCommon = item.students.size >= COMMON_MIN_STUDENTS;
     return { typeCode: item.symbol, label: meta?.label || item.symbol, category: meta?.category || item.category || null, studentCount: item.students.size,
-      totalStudents, occurrenceCount: item.occurrences, isCommon, examples: isCommon ? pickExamples(item.candidates) : [] };
+      totalStudents, occurrenceCount: item.occurrences, isCommon, examples: isCommon ? pickUnits(exampleUnits(item.candidates, transcripts)).map(exampleOfUnit) : [] };
   });
   return { basis: 'visible_corrections', totalStudents, minStudents: COMMON_MIN_STUDENTS, state, partial: Boolean(partial), types };
+}
+
+/**
+ * The canonical transcript text (the one the highlights use; exact-source pages joined) of each chosen submission, in one read of the
+ * transcript fields only. Map submissionId -> text. A transcript that cannot be built is left out (its examples keep the word pair).
+ */
+async function loadExampleTranscripts(submissionIds) {
+  const texts = new Map();
+  const ids = [...new Set((submissionIds || []).map(String))].filter(id => isObjectId(id)).slice(0, COMMON_TOP_TYPES * COMMON_EXAMPLES);
+  if (!ids.length) return texts;
+  const Submission = require('../models/Submission');
+  const { buildCanonicalSubmissionTranscript } = require('../utils/ocrTranscriptNormalizer');
+  const docs = await Submission.find({ _id: { $in: ids } }).select(EXAMPLE_TRANSCRIPT_FIELDS.join(' ')).lean();
+  for (const doc of docs) {
+    try {
+      const text = buildCanonicalSubmissionTranscript(doc)?.text;
+      if (typeof text === 'string' && text) texts.set(String(doc._id), text);
+    } catch { /* this submission's examples keep their word pairs */ }
+  }
+  return texts;
 }
 
 /** One student: the account for a class member, a one-way key of the guest's email for a guest, else the submission (counted alone). */
@@ -540,7 +621,12 @@ async function loadReportWithStoredSummary({ teacherId, assignmentId, timeZone: 
   const { report, skippedReasons, commonMistakeCandidates } = buildReport({ assignment, classDoc, rows, feedbackById, usersById, currentSettings, legend, timeZone,
     skipped, capped });
   const common = await loadCommonMistakeEntries(commonMistakeCandidates, { assignmentId: assignment._id });
-  report.commonMistakes = commonMistakesOf(common.entries, legend, { partial: common.partial });
+  // The examples' sentences: read now from the chosen submissions' transcripts. If that read fails, the examples keep their word pairs.
+  const transcripts = await loadExampleTranscripts(exampleSubmissionIds(common.entries)).catch(error => {
+    logger.warn({ event: 'assignment_report_example_sentences_unavailable', code: error?.code || error?.name || 'UNKNOWN', assignmentId: idString(assignment._id) });
+    return new Map();
+  });
+  report.commonMistakes = commonMistakesOf(common.entries, legend, { partial: common.partial, transcripts });
   if (report.counts.skippedRows > 0) {
     logger.warn({ event: 'assignment_report_rows_skipped', code: 'ASSIGNMENT_REPORT_ROWS_SKIPPED', assignmentId: String(assignment._id),
       skipped: report.counts.skippedRows, reasons: skippedReasons });
@@ -551,5 +637,6 @@ async function loadReportWithStoredSummary({ teacherId, assignmentId, timeZone: 
 }
 
 module.exports = { REPORT_VERSION, SCAN_CAP, SUBMISSION_FIELDS, FEEDBACK_FIELDS, BANDS, safeTimeZone, displayNameOf, sourceOf,
-  CORRECTION_TEXT_FIELDS, EDITED_FIELDS, EDITED_BATCH, EDITED_CAP, COMMON_MIN_STUDENTS, COMMON_TOP_TYPES, COMMON_EXAMPLES, commonMistakesOf, loadCommonMistakeEntries,
+  CORRECTION_TEXT_FIELDS, EDITED_FIELDS, EDITED_BATCH, EDITED_CAP, COMMON_MIN_STUDENTS, COMMON_TOP_TYPES, COMMON_EXAMPLES, EXAMPLE_TRANSCRIPT_FIELDS, commonMistakesOf, loadCommonMistakeEntries,
+  exampleSubmissionIds, loadExampleTranscripts,
   sourceStatusEligible, timelineOf, buildReport, buildInsights, loadAssignmentReport, loadReportWithStoredSummary };

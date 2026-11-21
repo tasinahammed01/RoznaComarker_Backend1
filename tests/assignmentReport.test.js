@@ -355,15 +355,20 @@ describe('a large heavy assignment on a server where a blocking sort cannot spil
     expect(JSON.stringify({ ...commonMistakes, types: commonMistakes.types.map(({ examples: _examples, ...type }) => type) })).not.toContain('SECRET');
     for (const heavy of ['SECRET OCR', 'SECRETWORD', 'SECRET PAGE TEXT', 'SECRET TRANSCRIPT', 'SECRET ANNOTATION', '"words"'])
       expect(JSON.stringify(res.body)).not.toContain(heavy);
-    // Reads: the main read below is unchanged (still asserted). "Common mistakes" adds exactly one more read here: the correction text of
-    // the submissions with current corrections (one per 500). None of these essays was edited by the teacher, so no transcript read.
-    expect(queries).toHaveLength(2);
+    // Reads: the main read below is unchanged (still asserted). "Common mistakes" adds one read of the correction text of the submissions
+    // with current corrections (one per 500), then one transcript-only read for the example sentences: the chosen submissions only (5 here,
+    // at most 25). None of these essays was edited by the teacher, so no edited-essay read.
+    expect(queries).toHaveLength(3);
+    const sentences = queries[2];
+    expect(Object.keys(sentences.projection()).sort()).toEqual([...report.EXAMPLE_TRANSCRIPT_FIELDS].sort());
+    expect(sentences.getFilter()._id.$in).toHaveLength(5);
+    expect(sentences.getOptions().sort).toBeUndefined();
     const extra = queries[1];
     expect(extra.getOptions().sort).toBeUndefined();
     expect(Object.values(extra.projection()).every(v => v === 1)).toBe(true);
     expect(Object.keys(extra.projection()).sort()).toEqual(['_id', 'draftNumber', 'guest.normalizedEmail', 'teacherAnnotations', 'writingCorrections.category',
-      'writingCorrections.id', 'writingCorrections.message', 'writingCorrections.quotedText', 'writingCorrections.source', 'writingCorrections.suggestedText',
-      'writingCorrections.symbol']);
+      'writingCorrections.endChar', 'writingCorrections.id', 'writingCorrections.message', 'writingCorrections.quotedText', 'writingCorrections.source',
+      'writingCorrections.startChar', 'writingCorrections.suggestedText', 'writingCorrections.symbol']);
     for (const heavy of ['ocrPages', 'ocrPages.words', 'ocrPages.text', 'ocrData', 'transcriptPages', 'transcriptText', 'combinedOcrText', 'sourceTranscriptExact', 'writingCorrections'])
       expect(Object.prototype.hasOwnProperty.call(extra.projection(), heavy)).toBe(false);
     const q = queries[0];

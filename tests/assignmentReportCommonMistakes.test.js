@@ -79,16 +79,16 @@ describe('commonMistakesOf: counting, thresholds, sorting, examples', () => {
     expect(out.types.map(t => [t.typeCode, t.studentCount, t.occurrenceCount])).toEqual([['A1', 4, 4], ['A3', 3, 4], ['A2', 3, 3], ['A4', 2, 2], ['A5', 2, 2]]);
   });
 
-  test('examples: at most 3, duplicates removed, different students first, shorter first, text cleaned and capped', () => {
+  test('examples: at most 5 (the page and the PDF show the first 3), duplicates removed, different students first, shorter first, text cleaned and capped', () => {
     const long = 'x'.repeat(200);
     const out = of([
       entry('u:a', [c('AGR', 'He go', 'He goes'), c('AGR', 'he  GO', 'He goes'), c('AGR', 'a', 'b'), c('AGR', long, long, long)]),
       entry('u:b', [c('AGR', 'They goes', 'They go', 'Plural subject.\u0007')]),
       entry('u:c', [c('AGR', 'She have\nlived', 'She has lived', '')])]);
     const ex = out.types[0].examples;
-    expect(ex).toHaveLength(3);
-    // One per student first (each student's shortest), then any remaining; never the same text twice.
-    expect(ex.map(e => e.original)).toEqual(['a', 'They goes', 'She have lived']);
+    expect(ex).toHaveLength(5);
+    // One per student first (each student's shortest), then any remaining, shortest first; never the same text twice.
+    expect(ex.map(e => e.original)).toEqual(['a', 'They goes', 'She have lived', 'He go', `${'x'.repeat(79)}…`]);
     expect(ex[1]).toEqual({ original: 'They goes', corrected: 'They go', explanation: 'Plural subject.' });
     expect(ex[2]).toEqual({ original: 'She have lived', corrected: 'She has lived', explanation: '' });
     const capped = of([entry('u:a', [c('AGR', long, long, long)]), entry('u:b', [c('AGR', long, long, long)])]).types[0].examples[0];
@@ -135,7 +135,9 @@ describe('the report from the database', () => {
     expect(r.commonMistakes).toEqual(expect.objectContaining({ basis: 'visible_corrections', state: 'ok', totalStudents: 2, minStudents: 2, partial: false }));
     expect(r.commonMistakes.types.map(t => [t.typeCode, t.studentCount, t.occurrenceCount, t.isCommon])).toEqual([['AGR', 2, 4, true], ['SP', 2, 4, true], ['ART', 2, 2, true]]);
     expect(typeOf(r, 'AGR')).toEqual(expect.objectContaining({ label: 'Subject–Verb Agreement', category: 'GRAMMAR', totalStudents: 2 }));
-    expect(typeOf(r, 'ART').examples).toEqual([{ original: 'a', corrected: 'an', explanation: 'Use "an" before a vowel sound.' }]);
+    // Both students wrote the same sentence: shown once, with the mistake marked in it (cut from the stored transcript).
+    expect(typeOf(r, 'ART').examples).toEqual([{ original: 'a', corrected: 'an', explanation: 'Use "an" before a vowel sound.', sentence: { cutStart: false, cutEnd: false,
+      parts: [{ text: 'I ate ' }, { text: 'a', error: true, corrected: 'an' }, { text: ' apple and I dont like it.' }] } }]);
     expect(r.errors.symbols.map(s => [s.symbol, s.count])).toEqual([['AGR', 4], ['SP', 4], ['ART', 2]]);
   });
 
@@ -160,9 +162,11 @@ describe('the report from the database', () => {
       expect((await teacher.act(id, { action: 'add', value: manualValue(doc, 'park', { symbol: 'VF', category: 'GRAMMAR', suggestedText: 'parks', message: 'Teacher added.' }) })).status).toBe(200);
     }
     const r = await load();
-    expect(typeOf(r, 'SP').examples).toEqual(expect.arrayContaining([{ original: 'dont', corrected: 'do not', explanation: 'Teacher wording.' }]));
+    const edited = typeOf(r, 'SP').examples.find(e => e.corrected === 'do not');
+    expect(edited).toEqual(expect.objectContaining({ original: 'dont', corrected: 'do not', explanation: 'Teacher wording.' }));
+    expect(edited.sentence.parts).toContainEqual({ text: 'dont', error: true, corrected: 'do not' });
     expect(typeOf(r, 'VF')).toEqual(expect.objectContaining({ studentCount: 2, occurrenceCount: 2, isCommon: true,
-      examples: [{ original: 'park', corrected: 'parks', explanation: 'Teacher added.' }] }));
+      examples: [expect.objectContaining({ original: 'park', corrected: 'parks', explanation: 'Teacher added.' })] }));
   });
 
   test('the section has no student name, email, student id or submission id; the guest email is not in the response, the logs or the PDF HTML', async () => {
@@ -180,18 +184,25 @@ describe('the report from the database', () => {
       expect(where).not.toContain(GUEST_EMAIL);
       expect(where).not.toMatch(/normalizedEmail/);
     }
+    // The teacher sees the sentences; the logs never hold them.
+    expect(section).toContain('apple and I dont like it.');
+    expect(lines.join('\n')).not.toMatch(/apple and I|dont like it|realy tired|park every day/u);
   });
 
-  test('reads: the main read is unchanged, then exactly one read of the correction text (no sort, exact fields), and no transcript read when nothing was edited', async () => {
+  test('reads: the main read is unchanged, then one read of the correction text, then one transcript-only read for the example sentences (no sort, exact fields)', async () => {
     const real = Submission.find.bind(Submission), queries = [];
     jest.spyOn(Submission, 'find').mockImplementation((...args) => { const q = real(...args); queries.push(q); return q; });
     await load();
-    expect(queries).toHaveLength(2);
+    expect(queries).toHaveLength(3);
     expect(Object.keys(queries[0].projection()).sort()).toEqual([...report.SUBMISSION_FIELDS].sort());
     expect(Object.keys(queries[1].projection()).sort()).toEqual([...report.CORRECTION_TEXT_FIELDS].sort());
     expect(report.CORRECTION_TEXT_FIELDS).toEqual(['_id', 'draftNumber', 'teacherAnnotations', 'guest.normalizedEmail', 'writingCorrections.id',
       'writingCorrections.symbol', 'writingCorrections.category', 'writingCorrections.quotedText', 'writingCorrections.suggestedText',
-      'writingCorrections.message', 'writingCorrections.source']);
+      'writingCorrections.message', 'writingCorrections.source', 'writingCorrections.startChar', 'writingCorrections.endChar']);
+    // The example sentences: the transcript fields only (no corrections, overlay or identity), for the chosen submissions only.
+    expect(Object.keys(queries[2].projection()).sort()).toEqual([...report.EXAMPLE_TRANSCRIPT_FIELDS].sort());
+    for (const field of ['writingCorrections', 'teacherAnnotations', 'guest', 'guest.normalizedEmail', 'student']) expect(queries[2].projection()[field]).toBeUndefined();
+    expect(queries[2].getFilter()._id.$in.map(String).sort()).toEqual([String(fixture.IDS.registered), String(fixture.IDS.guest)].sort());
     for (const q of queries) expect(q.getOptions().sort).toBeUndefined();
     for (const heavy of ['ocrPages', 'ocrData', 'transcriptText', 'combinedOcrText', 'transcriptPages', 'writingCorrections'])
       expect(Object.prototype.hasOwnProperty.call(queries[1].projection(), heavy)).toBe(false);
@@ -223,8 +234,11 @@ describe('the report from the database', () => {
     await editedCopies(44);   // + the edited original = 45 edited essays
     const queries = spyReads();
     const r = await load();
-    const transcriptReads = queries.slice(2);
+    // The edited-essay reads (the example-sentence read is the last one, at most 25 submissions).
+    const transcriptReads = queries.slice(2, -1);
     expect(transcriptReads.map(q => q.getFilter()._id.$in.length)).toEqual([20, 20, 5]);
+    expect(Object.keys(queries[queries.length - 1].projection()).sort()).toEqual([...report.EXAMPLE_TRANSCRIPT_FIELDS].sort());
+    expect(queries[queries.length - 1].getFilter()._id.$in.length).toBeLessThanOrEqual(25);
     for (const q of transcriptReads) {
       expect(Object.keys(q.projection()).sort()).toEqual([...report.EDITED_FIELDS].sort());
       expect(q.getOptions().sort).toBeUndefined();
@@ -241,7 +255,8 @@ describe('the report from the database', () => {
     jest.spyOn(logger, 'warn').mockImplementation(entry => { warnings.push(entry); });
     const queries = spyReads();
     const r = await load();
-    expect(queries.slice(2).map(q => q.getFilter()._id.$in.length)).toEqual([20, 20, 20, 20, 20]);
+    expect(queries.slice(2, -1).map(q => q.getFilter()._id.$in.length)).toEqual([20, 20, 20, 20, 20]);
+    expect(Object.keys(queries[queries.length - 1].projection()).sort()).toEqual([...report.EXAMPLE_TRANSCRIPT_FIELDS].sort());
     expect(r.commonMistakes.partial).toBe(true);
     expect(r.commonMistakes.totalStudents).toBe(101);   // 100 edited + the guest; the 5 left out are not counted at all
     const capped = warnings.filter(w => w.event === 'assignment_report_common_mistakes_partial');
