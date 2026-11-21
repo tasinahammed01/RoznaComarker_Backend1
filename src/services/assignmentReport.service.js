@@ -14,6 +14,16 @@
 // state says 'completed'. The same functions are called here. Unscored submissions never count as 0.
 //
 // Error counts are the stored AI analysis counts (they may include items the teacher removed); the page says so.
+//
+// "Common mistakes" (commonMistakes): per correction type, how many DISTINCT students made it, with up to 3 anonymous examples. It counts
+// only what students see (studentCorrectionView: removed corrections left out, teacher-edited text used, teacher-added corrections in), for
+// the submissions whose corrections are current (the rule above). Its reads come AFTER the main read, which is unchanged:
+//   - the correction text of those submissions (CORRECTION_TEXT_FIELDS, per FEEDBACK_BATCH ids): correction fields, the overlay, and the
+//     guest's email, which is turned into a one-way key at once (guests are counted once each) and never kept, returned or logged;
+//   - essays the teacher edited (an overlay with entries) need their transcript for the overlay: EDITED_FIELDS, EDITED_BATCH ids per read,
+//     at most EDITED_CAP per report. Beyond the cap they are LEFT OUT of the section (never counted with corrections the teacher removed),
+//     partial: true, logged once with ids and counts only. An essay whose view cannot be built is left out the same way.
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');
 const sourceFidelity = require('../utils/sourceFidelity');
@@ -55,6 +65,23 @@ const FEEDBACK_FIELDS = Object.freeze(['submissionId', 'overallScore', 'grade', 
   'customRubricScores.overallScore', 'customRubricScores.criteria.criterionId', 'customRubricScores.criteria.title',
   'customRubricScores.criteria.configuredLevelPercentage', 'customRubricScores.criteria.percentage',
   'teacherEvaluation.draftNumber', ...BUILTIN.map(([key]) => `teacherEvaluation.criteria.${key}.score`)]);
+
+// "Common mistakes": thresholds, caps and reads (see the header).
+const COMMON_MIN_STUDENTS = 2;
+const COMMON_TOP_TYPES = 5;
+const COMMON_EXAMPLES = 3;
+const EXAMPLE_TEXT_MAX = 80;
+const EXAMPLE_EXPLANATION_MAX = 160;
+const EDITED_BATCH = 20;
+const EDITED_CAP = 100;
+const CORRECTION_TEXT_FIELDS = Object.freeze(['_id', 'draftNumber', 'teacherAnnotations', 'guest.normalizedEmail', 'writingCorrections.id',
+  'writingCorrections.symbol', 'writingCorrections.category', 'writingCorrections.quotedText', 'writingCorrections.suggestedText',
+  'writingCorrections.message', 'writingCorrections.source']);
+// What the student view needs to place the teacher's overlay on an edited essay: its transcript (pages, files, exact-source fields), the
+// whole correction list and the overlay.
+const EDITED_FIELDS = Object.freeze(['_id', 'draftNumber', 'ocrJobId', 'files', 'file', 'fileOrder', 'ocrPages', 'ocrData', 'sourceFidelityMode',
+  'sourceFidelityStatus', 'sourceFidelityVersion', 'sourceHumanReviewSummary', 'sourceTranscriptExact', 'sourceTranscriptSha256', 'writingCorrections',
+  'correctionStatistics', 'teacherAnnotations']);
 
 const fail = (statusCode, code) => Object.assign(new Error(code), { statusCode, code });
 const isObjectId = value => value instanceof mongoose.Types.ObjectId || (typeof value === 'string' && /^[a-f0-9]{24}$/i.test(value));
@@ -186,7 +213,9 @@ function rowOf(row, { feedback, user, currentSettings, finalFeedback }) {
     notScoredReason: assessment === 'not_scored' ? String(state.evaluationStatus || 'unknown').toUpperCase() : null,
     reviewed: Boolean(feedback?.teacherReviewedAt), submittedAt, isLate: row.isLate === true || row.status === 'late',
     draftNumber: Math.max(1, Number(row.draftNumber) || 1), needsAttention: attentionReasons.length > 0, attentionReasons,
-    _symbols: symbols, _statistics: statistics, _feedback: score !== null ? final : null };
+    _symbols: symbols, _statistics: statistics, _feedback: score !== null ? final : null,
+    // "Common mistakes": who made it (internal, never in the response). A guest has no account: counted by email later (one-way key).
+    _studentId: row.submissionMode === 'guest' ? null : idString(row.student), _guest: row.submissionMode === 'guest' };
 }
 
 function rubricOf(rows, currentSettings) {
@@ -265,6 +294,127 @@ function topIssueOf(row, legend) {
   return null;
 }
 
+// ---- "Common mistakes" -----------------------------------------------------------------------------------------------------------------
+/** Example text: control characters and runs of spaces removed, cut to `max` characters with "…". */
+function exampleText(value, max) {
+  const text = String(value ?? '').replace(CONTROL, ' ').replace(/\s+/gu, ' ').trim();
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+/** One correction as an example ({ original, corrected, explanation }), or null without original words. */
+function exampleOf(correction) {
+  const original = exampleText(correction?.quotedText, EXAMPLE_TEXT_MAX);
+  if (!original) return null;
+  return { original, corrected: exampleText(correction?.suggestedText, EXAMPLE_TEXT_MAX), explanation: exampleText(correction?.message, EXAMPLE_EXPLANATION_MAX) };
+}
+/** Up to COMMON_EXAMPLES: duplicates removed, the shortest first, one per student before a second from anyone. Deterministic. */
+function pickExamples(candidates) {
+  const seen = new Set(), unique = [];
+  for (const c of candidates) {
+    const key = `${c.original.toLowerCase()}\u0000${c.corrected.toLowerCase()}`;
+    if (!seen.has(key)) { seen.add(key); unique.push(c); }
+  }
+  const size = c => c.original.length + c.corrected.length;
+  unique.sort((a, b) => size(a) - size(b) || (a.original < b.original ? -1 : a.original > b.original ? 1 : 0)
+    || (a.corrected < b.corrected ? -1 : a.corrected > b.corrected ? 1 : 0));
+  const picked = [], students = new Set();
+  for (const c of unique) if (picked.length < COMMON_EXAMPLES && !students.has(c.student)) { picked.push(c); students.add(c.student); }
+  for (const c of unique) if (picked.length < COMMON_EXAMPLES && !picked.includes(c)) picked.push(c);
+  return picked.map(({ original, corrected, explanation }) => ({ original, corrected, explanation }));
+}
+
+/**
+ * Pure. entries: [{ key (one student), submissionId, submittedAt, corrections (what the student sees) }]. A student with several entries
+ * counts once, with the latest. Types are sorted by students, then occurrences, then code; the top COMMON_TOP_TYPES are returned, with
+ * examples only for a type at least COMMON_MIN_STUDENTS students made (isCommon). state: 'not_enough_students' | 'none_shared' | 'ok'.
+ */
+function commonMistakesOf(entries, legend, { partial = false } = {}) {
+  const index = legendIndex(legend);
+  const time = e => (e.submittedAt instanceof Date && Number.isFinite(e.submittedAt.getTime()) ? e.submittedAt.getTime() : -Infinity);
+  const latest = new Map();
+  for (const e of entries || []) {
+    if (!e?.key) continue;
+    const prev = latest.get(e.key);
+    if (!prev || time(e) > time(prev) || (time(e) === time(prev) && String(e.submissionId) > String(prev.submissionId))) latest.set(e.key, e);
+  }
+  const totalStudents = latest.size;
+  const bySymbol = new Map();
+  for (const [key, e] of latest) {
+    for (const c of Array.isArray(e.corrections) ? e.corrections : []) {
+      const symbol = c && typeof c === 'object' && typeof c.symbol === 'string' ? c.symbol.trim().toUpperCase().slice(0, 16) : '';
+      if (!symbol) continue;
+      const item = bySymbol.get(symbol) || { symbol, category: String(c.category || '').toUpperCase() || null, students: new Set(), occurrences: 0, candidates: [] };
+      item.students.add(key); item.occurrences += 1;
+      const example = exampleOf(c);
+      if (example) item.candidates.push({ student: key, ...example });
+      bySymbol.set(symbol, item);
+    }
+  }
+  const sorted = [...bySymbol.values()].sort((a, b) => b.students.size - a.students.size || b.occurrences - a.occurrences
+    || (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0));
+  const state = totalStudents < COMMON_MIN_STUDENTS ? 'not_enough_students'
+    : sorted.some(item => item.students.size >= COMMON_MIN_STUDENTS) ? 'ok' : 'none_shared';
+  const types = state !== 'ok' ? [] : sorted.slice(0, COMMON_TOP_TYPES).map(item => {
+    const meta = index.symbols.get(item.symbol);
+    const isCommon = item.students.size >= COMMON_MIN_STUDENTS;
+    return { typeCode: item.symbol, label: meta?.label || item.symbol, category: meta?.category || item.category || null, studentCount: item.students.size,
+      totalStudents, occurrenceCount: item.occurrences, isCommon, examples: isCommon ? pickExamples(item.candidates) : [] };
+  });
+  return { basis: 'visible_corrections', totalStudents, minStudents: COMMON_MIN_STUDENTS, state, partial: Boolean(partial), types };
+}
+
+/** One student: the account for a class member, a one-way key of the guest's email for a guest, else the submission (counted alone). */
+function studentKeyOf(candidate, guestEmail) {
+  if (!candidate.guest && candidate.studentId) return `u:${candidate.studentId}`;
+  const email = typeof guestEmail === 'string' ? guestEmail.trim().toLowerCase() : '';
+  if (candidate.guest && email) return `g:${crypto.createHash('sha256').update(`report-guest:${email}`).digest('hex')}`;
+  return `s:${candidate.submissionId}`;
+}
+
+/**
+ * The entries for commonMistakesOf, from the database (reads described in the header). candidates: rows with current corrections
+ * ({ submissionId, studentId, guest, submittedAt }). Returns { entries, partial, edited }.
+ */
+async function loadCommonMistakeEntries(candidates, { assignmentId } = {}) {
+  const Submission = require('../models/Submission');
+  const { buildStudentCorrectionView } = require('./studentCorrectionView.service');
+  const { normalizeState } = require('./teacherAnnotation.service');
+  const byId = new Map(candidates.map(c => [c.submissionId, c]));
+  const ids = candidates.map(c => c.submissionId);
+  const entries = [], edited = [];
+  let partial = false;
+  const visible = doc => buildStudentCorrectionView(doc, { overlay: doc.teacherAnnotations ?? null }).corrections;
+  for (let i = 0; i < ids.length; i += FEEDBACK_BATCH) {
+    const docs = await Submission.find({ _id: { $in: ids.slice(i, i + FEEDBACK_BATCH) } }).select(CORRECTION_TEXT_FIELDS.join(' ')).lean();
+    for (const doc of docs) {
+      const candidate = byId.get(String(doc._id));
+      if (!candidate) continue;
+      const key = studentKeyOf(candidate, doc.guest?.normalizedEmail);
+      delete doc.guest;   // the email is not kept beyond its one-way key
+      const base = { key, submissionId: candidate.submissionId, submittedAt: candidate.submittedAt };
+      if (normalizeState(doc.teacherAnnotations).entries.length) { edited.push(base); continue; }
+      try { entries.push({ ...base, corrections: visible(doc) }); } catch { partial = true; }
+    }
+  }
+  // Edited essays: the newest first up to the cap; the rest are left out (never counted with removed corrections).
+  edited.sort((a, b) => ((b.submittedAt?.getTime?.() ?? -Infinity) - (a.submittedAt?.getTime?.() ?? -Infinity)) || (a.submissionId < b.submissionId ? 1 : -1));
+  if (edited.length > EDITED_CAP) {
+    partial = true;
+    logger.warn({ event: 'assignment_report_common_mistakes_partial', code: 'COMMON_MISTAKES_EDITED_CAP', assignmentId: idString(assignmentId),
+      edited: edited.length, cap: EDITED_CAP });
+  }
+  const kept = edited.slice(0, EDITED_CAP);
+  const editedById = new Map(kept.map(e => [e.submissionId, e]));
+  for (let i = 0; i < kept.length; i += EDITED_BATCH) {
+    const docs = await Submission.find({ _id: { $in: kept.slice(i, i + EDITED_BATCH).map(e => e.submissionId) } }).select(EDITED_FIELDS.join(' ')).lean();
+    for (const doc of docs) {
+      const base = editedById.get(String(doc._id));
+      if (!base) continue;
+      try { entries.push({ ...base, corrections: visible(doc) }); } catch { partial = true; }
+    }
+  }
+  return { entries, partial, edited: edited.length };
+}
+
 /** Deterministic sentences built only from the report's own numbers. Also the fallback when the AI summary is unavailable. */
 function buildInsights(report) {
   const { counts, scores, errors, rubric } = report;
@@ -327,6 +477,8 @@ function buildReport({ assignment, classDoc, rows, feedbackById, usersById, curr
       deadline: assignment.deadline instanceof Date && Number.isFinite(assignment.deadline.getTime()) ? assignment.deadline.toISOString() : null,
       writingType: cleanName(assignment.writingType) || null },
     counts, scores, rubric: rubricOf(built, currentSettings), errors: errorsOf(built, legend),
+    // Filled by the loader from the corrections students see (loadCommonMistakeEntries); built from no data here.
+    commonMistakes: commonMistakesOf([], legend),
     timeline: timelineOf(built.map(r => r.submittedAt).filter(Boolean), timeZone),
     students: built.map(r => ({ submissionId: r.submissionId, name: r.name, source: r.source, score: r.score, band: r.band, assessment: r.assessment,
       notScoredReason: r.notScoredReason, reviewed: r.reviewed, topIssue: topIssueOf(r, legend), submittedAt: r.submittedAt ? r.submittedAt.toISOString() : null,
@@ -334,7 +486,10 @@ function buildReport({ assignment, classDoc, rows, feedbackById, usersById, curr
     smallData: { distributionHidden: scored.length < 3, timelineHidden: built.length < 3 }
   };
   report.insights = buildInsights(report);
-  return { report, skippedReasons: reasons };
+  // "Common mistakes" counts the rows whose corrections are current (the same rule as the error counts).
+  const commonMistakeCandidates = built.filter(r => r._statistics).map(r => ({ submissionId: r.submissionId, studentId: r._studentId, guest: r._guest,
+    submittedAt: r.submittedAt }));
+  return { report, skippedReasons: reasons, commonMistakeCandidates };
 }
 
 /** Owner check, light loads, then buildReport. Throws 404 (not the owner / archived / missing) or 409 (not an essay assignment). */
@@ -382,7 +537,10 @@ async function loadReportWithStoredSummary({ teacherId, assignmentId, timeZone: 
   }
   const currentSettings = await require('./evaluationSettingsContext.service').currentEvaluationSettings(assignment);
   const legend = await require('./correctionLegendResolver.service').resolveLegend();
-  const { report, skippedReasons } = buildReport({ assignment, classDoc, rows, feedbackById, usersById, currentSettings, legend, timeZone, skipped, capped });
+  const { report, skippedReasons, commonMistakeCandidates } = buildReport({ assignment, classDoc, rows, feedbackById, usersById, currentSettings, legend, timeZone,
+    skipped, capped });
+  const common = await loadCommonMistakeEntries(commonMistakeCandidates, { assignmentId: assignment._id });
+  report.commonMistakes = commonMistakesOf(common.entries, legend, { partial: common.partial });
   if (report.counts.skippedRows > 0) {
     logger.warn({ event: 'assignment_report_rows_skipped', code: 'ASSIGNMENT_REPORT_ROWS_SKIPPED', assignmentId: String(assignment._id),
       skipped: report.counts.skippedRows, reasons: skippedReasons });
@@ -393,4 +551,5 @@ async function loadReportWithStoredSummary({ teacherId, assignmentId, timeZone: 
 }
 
 module.exports = { REPORT_VERSION, SCAN_CAP, SUBMISSION_FIELDS, FEEDBACK_FIELDS, BANDS, safeTimeZone, displayNameOf, sourceOf,
+  CORRECTION_TEXT_FIELDS, EDITED_FIELDS, EDITED_BATCH, EDITED_CAP, COMMON_MIN_STUDENTS, COMMON_TOP_TYPES, COMMON_EXAMPLES, commonMistakesOf, loadCommonMistakeEntries,
   sourceStatusEligible, timelineOf, buildReport, buildInsights, loadAssignmentReport, loadReportWithStoredSummary };
