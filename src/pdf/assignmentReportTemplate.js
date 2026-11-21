@@ -75,24 +75,69 @@ function barList(items, emptyText) {
   }).join('')}</div>`;
 }
 
-/** Common mistakes: one block per type at least 2 students made ("4 of 6 students", a bar, up to 3 examples), or the empty state. */
-function commonMistakesSection(section) {
-  if (!section || typeof section !== 'object') return '';
-  const common = (Array.isArray(section.types) ? section.types : []).filter(t => t && t.isCommon === true);
-  const empty = COMMON_MISTAKES_EMPTY[section.state] || (common.length ? '' : COMMON_MISTAKES_EMPTY.none_shared);
-  const blocks = common.map(t => {
-    const students = num(t.studentCount) ?? 0, total = num(t.totalStudents) ?? 0;
-    const width = total > 0 ? Math.round((students / total) * 100) : 0;
-    const examples = (Array.isArray(t.examples) ? t.examples : []).map(e => '<li class="example"><p class="change"><del>' + esc(e?.original) + '</del>'
-      + (e?.corrected ? '<span class="arrow" aria-hidden="true"> → </span><ins>' + esc(e.corrected) + '</ins>' : '') + '</p>'
-      + (e?.explanation ? '<p class="why">' + esc(e.explanation) + '</p>' : '') + '</li>').join('');
-    return '<div class="mistake"><div class="bar-head"><span class="bar-label">' + esc(t.typeCode + ' · ' + t.label) + '</span><span class="bar-value">'
-      + esc(students + ' of ' + total + ' students') + '</span></div><div class="track"><div class="fill" style="width:' + width + '%;background:' + (CATEGORY_EDGE[t.category] || COLOR.primary) + '"></div></div>'
-      + (examples ? '<ul class="examples">' + examples + '</ul>' : '') + '</div>';
-  }).join('');
-  return '<section class="panel common" data-section="common-mistakes"><h2>Common mistakes</h2><p class="note">' + esc(COMMON_MISTAKES_NOTE) + '</p>'
-    + (section.partial === true ? '<p class="note">' + esc(COMMON_MISTAKES_PARTIAL) + '</p>' : '')
-    + (empty ? '<p class="muted">' + esc(empty) + '</p>' : blocks) + '</section>';
+// The page shows the first 3 examples of a type (it offers the other 2 on request); the PDF shows the same first 3.
+const PDF_EXAMPLES = 3;
+/**
+ * The student's sentence with the mistakes marked ('err') or with the corrections in their place ('fix'); "…" where the sentence was cut
+ * and between two parts of a long sentence. Every text escaped.
+ */
+function sentenceHtml(sentence, mode) {
+  const parts = sentence.parts.map(p => (p?.gap ? ' … ' : p?.error ? (mode === 'err' ? `<mark class="err">${esc(p.text)}</mark>`
+    : (p.corrected ? `<mark class="fix">${esc(p.corrected)}</mark>` : '')) : esc(p?.text))).join('');
+  return (sentence.cutStart ? '… ' : '') + parts + (sentence.cutEnd ? '…' : '');
+}
+const hasSentence = e => Boolean(e?.sentence && Array.isArray(e.sentence.parts) && e.sentence.parts.some(p => p?.error));
+/** One example: the sentence (as written, then corrected) when there is one, else the word pair; then the reason. */
+function exampleHtml(e) {
+  const change = hasSentence(e)
+    ? '<p class="sent"><span class="lab">Student wrote</span> ' + sentenceHtml(e.sentence, 'err') + '</p>'
+      + (e.sentence.parts.some(p => p?.error && p.corrected) ? '<p class="sent"><span class="lab">Corrected</span> ' + sentenceHtml(e.sentence, 'fix') + '</p>' : '')
+    : '<p class="change"><del>' + esc(e?.original) + '</del>'
+      + (e?.corrected ? '<span class="arrow" aria-hidden="true"> → </span><ins>' + esc(e.corrected) + '</ins>' : '') + '</p>';
+  return '<li class="example">' + change + (e?.explanation ? '<p class="why">' + esc(e.explanation) + '</p>' : '') + '</li>';
+}
+
+/**
+ * Common errors: the page's one card. Category chips from the AI analysis (with its note), then one row per correction type from the
+ * corrections students see ("4 of 6 students · 7 times"), with up to 3 examples for a type 2 or more students made. An older payload, or
+ * too few students: the AI type counts. The empty states and the partial note as on the page.
+ */
+function commonErrorsSection(report) {
+  const errors = report.errors || { total: 0, categories: [], symbols: [] };
+  const section = report.commonMistakes && typeof report.commonMistakes === 'object' ? report.commonMistakes : null;
+  const types = section?.state === 'ok' && Array.isArray(section.types) ? section.types.filter(t => t && typeof t === 'object') : [];
+  const empty = section ? (COMMON_MISTAKES_EMPTY[section.state] || (types.length ? '' : COMMON_MISTAKES_EMPTY.none_shared)) : '';
+  const times = n => (n === 1 ? '1 time' : `${n} times`);
+  const row = (label, value, examples) => '<div class="mistake"><div class="bar-head"><span class="bar-label">' + esc(label) + '</span><span class="bar-value">'
+    + esc(value) + '</span></div>' + (examples ? '<ul class="examples">' + examples + '</ul>' : '') + '</div>';
+  const rows = types.length
+    ? types.map(t => {
+      const students = num(t.studentCount) ?? 0, total = num(t.totalStudents) ?? 0;
+      const examples = t.isCommon === true && Array.isArray(t.examples) ? t.examples.slice(0, PDF_EXAMPLES).map(exampleHtml).join('') : '';
+      return row(`${t.typeCode} · ${t.label}`, `${students === 1 ? '1 student' : `${students} of ${total} students`} · ${times(num(t.occurrenceCount) ?? 0)}`, examples);
+    }).join('')
+    : (Array.isArray(errors.symbols) ? errors.symbols : []).map(s => row(`${s.symbol} · ${s.label}`, times(num(s.count) ?? 0), '')).join('');
+  const chips = (Array.isArray(errors.categories) ? errors.categories : []).filter(c => num(c.count) > 0)
+    .map(c => `<span class="chip" style="border-left-color:${CATEGORY_EDGE[c.key] || COLOR.border}">${esc(c.label)} <b>${esc(c.count)}</b></span>`).join(' ');
+  return '<section class="panel common" data-section="common-errors"><h2>Common errors</h2>'
+    + (section ? '<p class="note">' + esc(COMMON_MISTAKES_NOTE) + '</p>' : '')
+    + (chips ? '<p class="chips"><span class="lab">By category</span> ' + chips + '</p>' : '')
+    + '<p class="note">' + esc(ERRORS_NOTE) + '</p>'
+    + (section?.partial === true ? '<p class="note">' + esc(COMMON_MISTAKES_PARTIAL) + '</p>' : '')
+    + (empty ? '<p class="muted">' + esc(empty) + '</p>' : '')
+    + (rows || (empty ? '' : '<p class="muted">No corrections recorded yet.</p>')) + '</section>';
+}
+
+/** The page's line above the timeline: the busiest day (or week) and how many were late; '' when the timeline is hidden or empty. */
+function timelineSummaryHtml(report) {
+  const points = Array.isArray(report.timeline?.points) ? report.timeline.points : [];
+  if (report.smallData?.timelineHidden || !points.length) return '';
+  const top = points.reduce((best, p) => (p.count > best.count ? p : best), points[0]);
+  if (!top.count) return '';
+  const day = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(`${top.date}T00:00:00Z`));
+  const busiest = report.timeline.granularity === 'week' ? `${top.count} of ${report.counts.total} in the week of ${day} (busiest week)`
+    : `${top.count} of ${report.counts.total} on ${day} (busiest day)`;
+  return `<p class="timing"><span>${esc(busiest)}</span><span class="late-count">${esc(`${report.counts.late} late`)}</span></p>`;
 }
 
 function studentsTable(students) {
@@ -168,7 +213,13 @@ tr.attention td:first-child{box-shadow:inset 1mm 0 0 #ee4e4e}
 .empty{padding:10mm;border:1px solid ${COLOR.border};border-radius:3mm;text-align:center}
 .panel.common{break-inside:auto;page-break-inside:auto}.mistake{margin:0 0 3mm;break-inside:avoid;page-break-inside:avoid}
 .examples{list-style:none;margin:1.5mm 0 0;padding:0}.example{margin:0 0 1.2mm;padding-left:3mm;border-left:2px solid ${COLOR.border}}
-.change{margin:0;font-size:8.5pt}.change del{color:${COLOR.muted}}.change ins{text-decoration:none;font-weight:700;color:${COLOR.title}}.why{margin:.3mm 0 0;color:${COLOR.muted};font-size:8pt}`;
+.change{margin:0;font-size:8.5pt}.change del{color:${COLOR.muted}}.change ins{text-decoration:none;font-weight:700;color:${COLOR.title}}.why{margin:.3mm 0 0;color:${COLOR.muted};font-size:8pt}
+.sent{margin:0 0 .4mm;font-size:8.5pt;overflow-wrap:anywhere}.sent .lab{display:inline-block;min-width:22mm;color:${COLOR.muted};font-size:7pt;text-transform:uppercase;letter-spacing:.03em}
+.chips{margin:1mm 0;font-size:8pt;line-height:1.9}.chips .lab{color:${COLOR.muted};font-weight:700;margin-right:1mm}
+.chip{display:inline-block;padding:0 2mm;border:1px solid ${COLOR.border};border-left-width:1mm;border-radius:3mm;white-space:nowrap}
+.timing{display:flex;gap:4mm;margin:0 0 2mm;font-size:8.5pt;font-weight:700;color:${COLOR.title}}.timing .late-count{color:#92400e}
+mark.err{background:#fde8e8;color:#b42318;text-decoration:line-through;padding:0 .4mm;border-radius:.6mm}
+mark.fix{background:#e3f5ec;color:#0f6b46;font-weight:700;padding:0 .4mm;border-radius:.6mm}`;
 
 /**
  * The report as a self-contained HTML document for the PDF renderer.
@@ -177,7 +228,7 @@ tr.attention td:first-child{box-shadow:inset 1mm 0 0 #ee4e4e}
  */
 function renderAssignmentReportHtml(report, { generatedAt = new Date(), summary = null } = {}) {
   const timeZone = safeTimeZone(report.timeZone);
-  const { assignment, counts, scores, rubric, errors, timeline, smallData } = report;
+  const { assignment, counts, scores, rubric, timeline, smallData } = report;
   const out = [];
   out.push(`<header class="brand"><img src="${LOGO_DATA_URI}" width="512" height="164" alt="Rubrilo">`
     + `<div class="generated">Rubrilo assignment report<br>Generated ${esc(formatDate(generatedAt, timeZone, true))} (${esc(timeZone)})</div></header>`);
@@ -205,33 +256,27 @@ function renderAssignmentReportHtml(report, { generatedAt = new Date(), summary 
         + (summary.nextSteps?.length ? `<h3>Suggested next steps</h3>${list(summary.nextSteps)}` : '')
         + (summary.caution ? `<p class="summary-caution">${esc(summary.caution)}</p>` : '') + '</section>');
     }
-    if (report.insights?.length) out.push(`<section class="panel"><h2>Insights</h2><ul class="insights">${report.insights.map(i => `<li>${esc(i.text)}</li>`).join('')}</ul></section>`);
+    // The page's order: score distribution | rubric, then insights | submissions over time, then Common errors, then students.
     if (counts.scored > 0) {
       out.push('<section class="panel"><h2>Score distribution</h2><p class="sub">Scored submissions per score band (%)</p>'
         + (smallData.distributionHidden ? '<p class="hidden-chart">Not enough scored submissions to show a fair distribution (at least 3 are needed).</p>'
           : columnChart(scores.bands.map(b => ({ label: b.label, value: b.count })), { label: 'Score distribution', valueName: 'submissions', categoryName: 'Score band', color: COLOR.primary, showValues: true }))
         + '</section>');
-    }
-    const weekly = timeline.granularity === 'week';
-    const dayLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
-    out.push(`<section class="panel"><h2>Submissions over time</h2><p class="sub">${weekly ? 'Per week (week starting)' : 'Per day'}, in ${esc(timeZone)}</p>`
-      + (smallData.timelineHidden ? '<p class="hidden-chart">Not enough submissions to show a trend (at least 3 are needed).</p>'
-        : columnChart(timeline.points.map(p => ({ label: dayLabel.format(new Date(`${p.date}T00:00:00Z`)), value: p.count })),
-          { label: weekly ? 'Submissions per week' : 'Submissions per day', valueName: 'submissions', categoryName: weekly ? 'Week starting' : 'Day', color: COLOR.navy, showValues: false }))
-      + '</section>');
-    if (counts.scored > 0) {
       out.push(`<section class="panel"><h2>${rubric.kind === 'custom' ? 'Rubric criteria' : 'Rubric categories'}</h2><p class="sub">Average across scored submissions</p>`
         + barList(rubric.criteria.map(c => ({ label: c.label, percent: c.averagePct, valueText: `${c.averagePct}%`,
           marker: c.key === rubric.strongestKey ? 'strongest' : c.key === rubric.weakestKey ? 'weakest' : null })), 'No rubric scores yet.')
         + '</section>');
     }
-    out.push(`<section class="panel"><h2>Most common errors</h2><p class="note">${esc(ERRORS_NOTE)}</p><h3>By category</h3>`
-      + barList(errors.total > 0 ? errors.categories.map(c => ({ label: c.label, percent: c.pct, valueText: `${c.count} (${c.pct}%)`, color: CATEGORY_EDGE[c.key] })) : [],
-        'No corrections recorded yet.')
-      + (errors.symbols.length ? `<h3>Top correction types</h3>${barList(errors.symbols.map(s => ({ label: `${s.symbol} · ${s.label}`, percent: s.pct,
-        valueText: `${s.count} (${s.pct}%)`, color: CATEGORY_EDGE[s.category] })), '')}` : '')
+    if (report.insights?.length) out.push(`<section class="panel"><h2>Insights</h2><ul class="insights">${report.insights.map(i => `<li>${esc(i.text)}</li>`).join('')}</ul></section>`);
+    const weekly = timeline.granularity === 'week';
+    const dayLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    out.push(`<section class="panel"><h2>Submissions over time</h2><p class="sub">${weekly ? 'Per week (week starting)' : 'Per day'}, in ${esc(timeZone)}</p>`
+      + timelineSummaryHtml(report)
+      + (smallData.timelineHidden ? '<p class="hidden-chart">Not enough submissions to show a trend (at least 3 are needed).</p>'
+        : columnChart(timeline.points.map(p => ({ label: dayLabel.format(new Date(`${p.date}T00:00:00Z`)), value: p.count })),
+          { label: weekly ? 'Submissions per week' : 'Submissions per day', valueName: 'submissions', categoryName: weekly ? 'Week starting' : 'Day', color: COLOR.navy, showValues: false }))
       + '</section>');
-    out.push(commonMistakesSection(report.commonMistakes));
+    out.push(commonErrorsSection(report));
     out.push(`<section><h2>Students</h2><p class="sub">${plural(report.students.length, 'student', 'students')}. Students who need attention are listed first.</p>${studentsTable(report.students)}</section>`);
   }
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Rubrilo assignment report</title><style>${STYLE}</style></head>`
