@@ -27,6 +27,13 @@ function sourceReader(env) {
     sourceReasoning: settings.reasoning, sourceTemperature: settings.temperature === 0 ? '0' : 'omit', sourceSecondReader: second };
 }
 
+function handwritingMechanicsContract(env) {
+  const stage = require('./handwritingMechanics/stage.service'), engine = require('./handwritingMechanics/engine');
+  const s = stage.settings(env);
+  if (!s.enabled) return {};
+  return { handwritingMechanicsCheck: [engine.VERSION, engine.PROMPT_VERSION, engine.SCHEMA_VERSION, s.minConfidence, s.linesPerCrop].join('|') };
+}
+
 function runtimeContractFingerprint(env = process.env) {
   const contract = semanticCorrections.contractVersions(require('./aiGateway.service').correctionModel(env));
   const contracts = Object.freeze({
@@ -45,7 +52,9 @@ function runtimeContractFingerprint(env = process.env) {
     qwenSourcePrompt:require('./gptVisionExact/contract').QWEN_PROMPT_VERSION,
     ...sourceReader(env),
     // Reference files in the assessment prompt: only when switched on, so the hash is unchanged while REFERENCE_FILES_ENABLED is off.
-    ...(require('./referenceFiles/policy').referenceFilesEnabled(env) ? { referenceContext: require('./referenceFiles/markingContext').REFERENCE_CONTEXT_VERSION } : {})
+    ...(require('./referenceFiles/policy').referenceFilesEnabled(env) ? { referenceContext: require('./referenceFiles/markingContext').REFERENCE_CONTEXT_VERSION } : {}),
+    // Handwriting spacing and capitals check: only when switched on, so the hash is unchanged while HANDWRITING_MECHANICS_CHECK_ENABLED is off.
+    ...handwritingMechanicsContract(env)
   });
   const orderedContractValues = [
     contracts.correctionPrompt, contracts.correctionSchema, contracts.rubricPrompt,
@@ -58,6 +67,7 @@ function runtimeContractFingerprint(env = process.env) {
   if(contracts.sourceReader)orderedContractValues.push(contracts.sourceReader, contracts.sourceReaderVersion || null, contracts.sourceModel || null,
     contracts.sourceReasoning || null, contracts.sourceTemperature || null, contracts.sourceSecondReader || null);
   if(contracts.referenceContext)orderedContractValues.push(contracts.referenceContext);
+  if(contracts.handwritingMechanicsCheck)orderedContractValues.push(contracts.handwritingMechanicsCheck);
   const contractHash = crypto.createHash('sha256').update(JSON.stringify(orderedContractValues)).digest('hex').slice(0, 16);
   return Object.freeze({
     applicationVersion: String(packageJson.version || 'unknown'),

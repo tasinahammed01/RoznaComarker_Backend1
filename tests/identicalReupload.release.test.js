@@ -128,6 +128,16 @@ describe('persisted assessment reuse through the upload API (mocked AI)', () => 
     expect(await Transaction.countDocuments()).toBe(count);
     expect(await Revision.countDocuments({ sourceSubmissionId: submission._id })).toBe(1);
   });
+  test('the reuse check hashes with the essay itself, exactly as the correction pipeline does (handwriting mechanics identity)', async () => {
+    const hashSpy = jest.spyOn(pipeline, 'buildCorrectionSourceHash');
+    try {
+      expect((await upload()).status).toBe(200);
+      await new Promise(setImmediate);
+      const call = hashSpy.mock.calls.find(([args]) => args?.doc);
+      expect(call).toBeDefined();
+      expect(String(call[0].doc._id)).toBe(String(submission._id));
+    } finally { hashSpy.mockRestore(); }
+  });
   test.each(['rubric', 'policy', 'evaluation-version'])('%s change invalidates only the necessary assessment stages and reuses OCR', async change => {
     if (change === 'policy') await User.updateOne({ _id: teacher._id }, { $set: { 'aiConfig.strictness': 'strict' } });
     else if (change === 'rubric') await Assignment.updateOne({ _id: assignment._id }, { $set: {

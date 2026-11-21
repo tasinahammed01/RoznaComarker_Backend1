@@ -19,8 +19,14 @@ function getCanonicalCategoryForCorrectionCode(code, legend = defaultLegend()) {
   return legendIndex(legend).get(String(code || '').trim().toUpperCase())?.category || null;
 }
 
+// Findings of the handwriting spacing and capitals check carry this marker, set only by validateCorrections on its trusted path.
+// A Symbol key cannot come from any JSON reply, so a model that copies the "detector" field never gets the check's exceptions.
+const TRUSTED_DETECTOR = Symbol('trustedDetector');
+const HANDWRITING_DETECTOR = 'handwriting-mechanics-v1';
+const trustedCheckFinding = raw => raw?.[TRUSTED_DETECTOR] === true && raw.detector === HANDWRITING_DETECTOR;
+
 const WORD_CHARACTER = /[\p{L}\p{M}\p{N}]/u;
-const SINGLE_WORD = /^[\p{L}\p{M}\p{N}]+(?:['’-][\p{L}\p{M}\p{N}]+)*$/u;
+const SINGLE_WORD =/^[\p{L}\p{M}\p{N}]+(?:['’-][\p{L}\p{M}\p{N}]+)*$/u;
 
 function locateQuote(text, quote, occurrence) {
   if (!text || !quote) return null;
@@ -69,7 +75,9 @@ function correctionGroundingReason(raw, text, spans, range, mapped) {
       || text.slice(mappedSpans[0].start, mappedSpans[0].end) !== quotedText))
       return 'CORRECTION_SOURCE_MISMATCH';
   }
-  if (String(raw?.suggestedText || '').trim()) {
+  // The check's quote is the transcript, its fix what the image shows should be written; when the reader tidied the text they are equal,
+  // and the message names the written form. Only its own SPC/CAP findings, never an AI finding.
+  if (String(raw?.suggestedText || '').trim() && !(trustedCheckFinding(raw) && ['SPC', 'CAP'].includes(symbol))) {
     const normalize = (value) => String(value || '').normalize('NFKC').replace(/\s+/gu, ' ').trim();
     const source = normalize(quotedText);
     const suggestion = normalize(raw.suggestedText);
@@ -121,6 +129,7 @@ function normalizeCorrection(raw, text, spans, legend, source) {
     appliedDeduction: meta.defaultDeduction, deductionPolicyVersion: DEDUCTION_POLICY_VERSION,
     ...(raw.correctionKind ? { correctionKind: raw.correctionKind } : {}),
     ...(source === 'AI' && raw.severity ? { severity: String(raw.severity).toLowerCase() } : {}),
+    ...(trustedCheckFinding(raw) ? { detector: HANDWRITING_DETECTOR } : {}),
     editable: false };
 }
 
@@ -256,7 +265,7 @@ function canonicalFingerprint(items, sourceHash = '') {
   return crypto.createHash('sha256').update(JSON.stringify({ sourceHash: String(sourceHash || ''), identity })).digest('hex');
 }
 
-module.exports = { VERSION, DEDUCTION_POLICY_VERSION, REPETITION_FACTORS, legendIndex,
+module.exports = { VERSION, DEDUCTION_POLICY_VERSION, REPETITION_FACTORS, TRUSTED_DETECTOR, HANDWRITING_DETECTOR, legendIndex,
   getCanonicalCategoryForCorrectionCode, locateQuote, mapOffsetsToWords, correctionGroundingReason,
   normalizeCorrection, canonicalSort,
   mergeCanonicalCorrections, mergeCorrections, statistics, computeCanonicalCorrectionStatistics, canonicalFingerprint };

@@ -645,7 +645,7 @@ async function upsertSubmissionLocked({ req, res, assignment, qrToken }) {
       const legend = await require('../services/correctionLegendResolver.service').resolveLegend();
       const expectedCorrectionHash = canonicalCorrectionsPipeline.buildCorrectionSourceHash({
         transcript: previousTranscript.text, pages: previousTranscript.pages, assignment,
-        fileContentIdentity: contentIdentity, legend });
+        fileContentIdentity: contentIdentity, legend, doc: existing });
       const reusableCorrections = Boolean(contentIdentity && previousRevision.fileContentIdentity === contentIdentity
         && previousFileIds.length === persistedFiles.length
         && previousTranscript.isComplete && existing.ocrStatus === 'completed'

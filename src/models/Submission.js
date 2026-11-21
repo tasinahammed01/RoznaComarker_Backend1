@@ -267,6 +267,8 @@ const submissionSchema = new Schema(
       index: true
     },
     writingCorrections: { type: [Schema.Types.Mixed], default: undefined },
+    // Handwriting spacing and capitals check: counts, cost and status only (no text). Internal; never sent to students or guests.
+    handwritingMechanicsCheck: { type: Schema.Types.Mixed, default: undefined, select: false },
     correctionSourceHash: { type: String, trim: true },
     correctionVersion: { type: String, trim: true },
     correctionTranscriptLayoutVersion: { type: String, trim: true },

@@ -233,6 +233,13 @@ describe('what a student does not get, and what stays', () => {
     const out = strip({ title: 'T', createdBy: 'id', nested: { ownerId: 'id', keep: 1, list: [{ shareToken: 'x', keep: 2 }] }, correctionSourceHash: 'h', modelAnswer: 'a' });
     expect(out).toEqual({ title: 'T', nested: { keep: 1, list: [{ keep: 2 }] }, correctionSourceHash: 'h', modelAnswer: 'a' });
   });
+  test('the handwriting mechanics check tag and summary never reach a student, at any depth', () => {
+    const out = strip({ handwritingMechanicsCheck: { status: 'completed', costUsd: 0.01 }, data: { writingCorrections: [
+      { id: 'c1', quotedText: 'days ,', suggestedText: 'days,', detector: 'handwriting-mechanics-v1' }] } });
+    expect(out).toEqual({ data: { writingCorrections: [{ id: 'c1', quotedText: 'days ,', suggestedText: 'days,' }] } });
+    expect(identity.correctionForStudent({ id: 'c1', quotedText: 'days ,', detector: 'handwriting-mechanics-v1' })).toEqual({ id: 'c1', quotedText: 'days ,' });
+    expect(identity.CORRECTION_FIELDS.has('detector')).toBe(false);
+  });
   test('the provenance blocks keep their outcome and lose who ran them', () => {
     const when = new Date('2026-01-01T00:00:00.000Z');
     expect(strip({ generation: { provider: 'p', model: 'm', promptVersion: 'v', metrics: { totalTokens: 9 }, startedAt: when, errorMessage: 'It failed.' },

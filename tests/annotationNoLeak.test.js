@@ -32,7 +32,9 @@ const { annotationApi, manualValue } = require('./helpers/annotationApi');
 jest.setTimeout(600000);
 const uploadRoot = path.resolve(__dirname, '..', process.env.UPLOAD_BASE_PATH);
 // Text that exists only in suppressed corrections (hidden, archived, orphaned edit) or in AI text a teacher edit replaced.
-const SECRETS = ['before a vowel sound', 'Check the verb', 'Teacher note on realy', 'Missing apostrophe'];
+// The handwriting mechanics check's internal tag and summary (S3): stored on every correction below, never shown to a student or guest.
+const CHECK_TAG = 'handwriting-mechanics-v1';
+const SECRETS = ['before a vowel sound', 'Check the verb', 'Teacher note on realy', 'Missing apostrophe', CHECK_TAG, 'CHECK_SUMMARY_SENTINEL'];
 const EDITED = 'Teacher wording: add the apostrophe.';
 let fixture, teacher, hiddenIds = [], pdfBefore = {};
 const logs = [];
@@ -85,6 +87,12 @@ beforeAll(async () => {
   pdfBefore.registered = await pdfText(await binary(request(app).get(`/api/pdf/download/${fixture.IDS.registered}`).set('Authorization', `Bearer ${studentJwt}`)));
   pdfBefore.guest = await pdfText(await binary(request(app).get(`/api/guest/submissions/${fixture.IDS.guest}/pdf`).set('X-Guest-Token', fixture.guestToken)));
   await decorate('registered'); await decorate('guest');
+  // What the handwriting mechanics check leaves: a tag on its findings and a summary on the submission.
+  for (const id of [fixture.IDS.registered, fixture.IDS.guest]) {
+    const stored = await Submission.collection.findOne({ _id: id });
+    await Submission.collection.updateOne({ _id: id }, { $set: { writingCorrections: stored.writingCorrections.map(c => ({ ...c, detector: CHECK_TAG })),
+      handwritingMechanicsCheck: { version: CHECK_TAG, status: 'completed', reason: 'CHECK_SUMMARY_SENTINEL', calls: 3, costUsd: 0.01 } } });
+  }
   for (const level of ['debug', 'info', 'warn', 'error', 'metric']) if (typeof logger[level] === 'function') {
     const original = logger[level];
     jest.spyOn(logger, level).mockImplementation((...args) => { logs.push(JSON.stringify(args)); return original.apply(logger, args); });
@@ -99,7 +107,7 @@ afterAll(async () => {
 const NOT_FOR_STUDENTS = ['annotationGradeReviewRequired', 'annotationRevision', 'teacherReviewedAt', 'teacherReviewedBy', 'teacherId', 'teacherCommentsUpdatedBy', 'teacherAnnotations',
   'teacher', 'evaluationProvider', 'evaluationModel', 'evaluationAttempts', 'evaluationPolicy', 'analysisInputHash',
   'semanticProvider', 'semanticModel', 'semanticPromptVersion', 'correctionGenerationConfig', 'analysisLeaseOwner', 'evaluationJobId', 'assessmentRunId', 'ocrEvidenceHash', 'ocrRunId',
-  'correctionFingerprint', 'rasterHash', 'createdBy', 'ownerId',
+  'correctionFingerprint', 'rasterHash', 'createdBy', 'ownerId', 'detector', 'handwritingMechanicsCheck',
   'scoringReviewRequired', 'scoringReview', 'scoreReview', 'totalIssueCount', 'countedIssueCount', 'ignoredCorrectionIds', 'canonicalCount', 'rawCorrectionCount', 'acceptedCorrectionCount', 'evaluationDiagnostics'];
 function keysIn(value, keys, at = '$', out = []) {
   if (Array.isArray(value)) value.forEach((v, i) => keysIn(v, keys, `${at}[${i}]`, out));
@@ -116,6 +124,10 @@ describe('no-leak matrix', () => {
   test('positive control: the pipeline internals are in the stored data and in a teacher\'s response, so their absence below means something', async () => {
     const stored = await Submission.findById(fixture.IDS.registered).lean();
     expect(stored).toEqual(expect.objectContaining({ semanticProvider: 'fixture-provider', analysisLeaseOwner: 'worker-fixture', assessmentRunId: 'run-fixture' }));
+    const withCheck = await Submission.collection.findOne({ _id: fixture.IDS.registered });
+    expect(withCheck.handwritingMechanicsCheck.reason).toBe('CHECK_SUMMARY_SENTINEL');
+    expect(withCheck.writingCorrections.length).toBeGreaterThan(0);
+    expect(withCheck.writingCorrections.every(c => c.detector === CHECK_TAG)).toBe(true);
     const teacherJwt = signTestJwt({ id: fixture.teacher._id, role: 'teacher', firebaseUid: fixture.teacher.firebaseUid });
     const res = await request(app).get(`/api/submissions/${fixture.IDS.registered}/ocr-corrections`).set('Authorization', `Bearer ${teacherJwt}`);
     expect(res.body.data.assessmentRunId).toBe('run-fixture');
