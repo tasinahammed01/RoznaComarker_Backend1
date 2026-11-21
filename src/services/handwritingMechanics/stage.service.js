@@ -114,8 +114,9 @@ function start({ doc, transcript, pages, transcriptComplete, env = process.env, 
     promptTokens: 0, completionTokens: 0, costUsd: 0, candidates: { SPC: 0, CAP: 0 }, findings: 0, findingsDropped: {},
     durationMs: 0, aborted: null, settingsInvalid: s.invalid };
   const completed = [];
-  let fatal = null, finished = null;
-  const stop = reason => { if (!controller.signal.aborted) { summary.aborted = reason; controller.abort(reason); } };
+  let fatal = null, finished = null, ranUntil = null;
+  // Only work still running can be stopped: a check that already ended reports no abort reason.
+  const stop = reason => { if (ranUntil === null && !controller.signal.aborted) { summary.aborted = reason; controller.abort(reason); } };
   const budget = setTimeout(() => stop('stage_budget'), s.stageBudgetMs);
 
   async function runGroup(group, image) {
@@ -175,7 +176,7 @@ function start({ doc, transcript, pages, transcriptComplete, env = process.env, 
     await Promise.all(work.map(([group, image]) => runGroup(group, image)));
   }
 
-  const done = run().catch(error => { fatal = safeCode(error); }).finally(() => clearTimeout(budget));
+  const done = run().catch(error => { fatal = safeCode(error); }).finally(() => { clearTimeout(budget); ranUntil = deps.now(); });
   const within = (promise, ms) => Promise.race([promise, new Promise(resolve => setTimeout(resolve, Math.max(0, ms)))]);
 
   function finish(discarded) {
@@ -198,7 +199,8 @@ function start({ doc, transcript, pages, transcriptComplete, env = process.env, 
     if (fatal) summary.reason = fatal;
     summary.findings = findings.length;
     summary.costUsd = Math.round(summary.costUsd * 1e6) / 1e6;
-    summary.durationMs = deps.now() - startedAt;
+    // The check's own running time (not the time until the correction call ended and the result was collected).
+    summary.durationMs = (ranUntil ?? deps.now()) - startedAt;
     try {
       if (s.invalid.length) deps.logger.warn({ event: 'handwriting_mechanics_settings_invalid', names: s.invalid });
       deps.logger.info({ event: 'handwriting_mechanics_check', submissionId: String(doc?._id || ''), ...summary });

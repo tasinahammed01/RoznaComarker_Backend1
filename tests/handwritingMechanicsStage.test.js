@@ -221,6 +221,23 @@ describe('running the check', () => {
     expect(slow.mock.calls[0][0].signal.aborted).toBe(true);
   });
 
+  test('a check that ended before the wait was up reports no abort reason and its own running time', async () => {
+    const e = essay();
+    let clock = 1000;
+    const handle = stage.start({ doc: e.doc, transcript: e.transcript, pages: e.pages, transcriptComplete: true, env: ON,
+      deps: { ...e.deps, providerAttempt: provider(), logger: { info() {}, warn() {} }, now: () => clock } });
+    clock = 1400; await handle.done;
+    // The correction call ends much later: that time is not the check's.
+    clock = 19000;
+    const result = await handle.settle({ correctionSucceeded: true, waitMs: 5000 });
+    expect(result.summary).toMatchObject({ status: 'completed', aborted: null, durationMs: 400 });
+    // Also when there was nothing to check (no geometry): skipped, not stopped by the wait.
+    const none = essay(); none.doc.ocrPages.forEach(p => p.words.forEach(w => { w.bbox = null; }));
+    const skipped = await run(none, provider());
+    expect(skipped.result.summary).toMatchObject({ status: 'skipped', aborted: null, calls: 0 });
+    expect(skipped.result.summary.linesSkipped).toEqual({ NO_GEOMETRY: 2 });
+  });
+
   test('the stage budget cancels the calls on its own', async () => {
     const e = essay(), call = provider({ delayMs: 10000 });
     const handle = stage.start({ doc: e.doc, transcript: e.transcript, pages: e.pages, transcriptComplete: true,
