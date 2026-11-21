@@ -2683,7 +2683,10 @@ async function generateTeacherCommentDraft(req, res) {
   } catch (error) {
     logger.warn({ event: "teacher_comment_draft_failed", feature: "teacher_comment_draft",
       submissionId: req.params.submissionId, code: error.code || "TEACHER_COMMENT_DRAFT_FAILED",
-      finalFailureCode: error.finalFailureCode || null, attemptCount: error.attemptCount ?? null });
+      finalFailureCode: error.finalFailureCode || null, attemptCount: error.attemptCount ?? null,
+      // Which validator rule rejected each attempt, and the reply lengths: codes and numbers only, never the text.
+      validationCodes: Array.isArray(error.attempts) ? error.attempts.map(attempt => attempt.validationCode ?? null) : null,
+      responseTextLengths: Array.isArray(error.attempts) ? error.attempts.map(attempt => attempt.responseTextLength ?? null) : null });
     if (error.code === "TEACHER_COMMENT_SOURCE_INSUFFICIENT")
       return sendError(res, 409, "AI feedback is not available for this submission yet.");
     // The draft did not fit even after the shorter retry: clicking again will not help.

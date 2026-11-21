@@ -20,16 +20,33 @@ const LENGTH_RULES = Object.freeze({
   compact: 'Your previous draft was too long. Write a shorter comment of two or three short sentences. Length: aim for 35-60 words. Hard limit: at most 70 words and 450 characters.'
 });
 
-// Same rules as before; an over-long draft is now marked so a shorter one can be requested.
+const FORBIDDEN_TERMS = /\b(?:AI|OpenRouter|OCR|JSON|prompts?|rubrics?|scores?|grades?|providers?|databases?|language models?|Google Vision|model confidence|canonical evaluation|semantic analysis|automated pipeline|plagiarism|disciplinary)\b/iu;
+// The rules in the order they are checked. Each has its own code, so the logs say which rule rejected a draft.
+const CONTENT_RULES = Object.freeze([
+  ['TEACHER_COMMENT_LINE_BREAK', comment => /[\r\n]/u.test(comment)],
+  ['TEACHER_COMMENT_MARKUP_CHARACTER', comment => /[`<>*_\[\]{}|]/u.test(comment)],
+  ['TEACHER_COMMENT_LIST_START', comment => /^\s*(?:[#{*\-]|\d+[.)])/u.test(comment)],
+  ['TEACHER_COMMENT_FORBIDDEN_TERM', comment => FORBIDDEN_TERMS.test(comment)],
+  ['TEACHER_COMMENT_DIGIT', comment => /\d/u.test(comment)],
+  ['TEACHER_COMMENT_NO_END_PUNCTUATION', comment => !/[.!?]["'’”]?$/u.test(comment)]
+]);
+
+// A rejection carries its rule code and the reply length only (both logged by the gateway), never the text.
+const rejected = (code, raw, message = 'Invalid comment draft') =>
+  Object.assign(new Error(message), { code, responseTextLength: typeof raw === 'string' ? raw.length : null });
+
+// Same rules as before; an over-long draft is marked so a shorter one can be requested.
 function validateDraft(raw) {
-  const parsed = JSON.parse(raw);
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { throw rejected('TEACHER_COMMENT_NOT_JSON', raw); }
   if (!parsed || Array.isArray(parsed) || Object.keys(parsed).length !== 1 || typeof parsed.comment !== 'string')
-    throw new Error('Invalid comment draft');
+    throw rejected('TEACHER_COMMENT_BAD_SHAPE', raw);
   const comment = parsed.comment.trim().replace(/^```(?:text)?\s*\n([\s\S]*?)\n```$/u, '$1').trim().replace(/^"([^"\n]+)"$/u, '$1');
   const count = comment.split(/\s+/u).length;
-  if (count > 120 || comment.length > 1000) throw Object.assign(new Error('Comment draft is too long'), { code: 'TEACHER_COMMENT_TOO_LONG' });
-  if (count < 10 || /[\r\n]|[`<>*_\[\]{}|]|^\s*(?:[#{*\-]|\d+[.)])|\b(?:AI|OpenRouter|OCR|JSON|prompts?|rubrics?|scores?|grades?|providers?|databases?|language models?|Google Vision|model confidence|canonical evaluation|semantic analysis|automated pipeline|plagiarism|disciplinary)\b|\d/iu.test(comment)
-    || !/[.!?]["'’”]?$/u.test(comment)) throw new Error('Invalid comment draft');
+  if (count > 120 || comment.length > 1000) throw rejected('TEACHER_COMMENT_TOO_LONG', raw, 'Comment draft is too long');
+  if (count < 10) throw rejected('TEACHER_COMMENT_TOO_SHORT', raw);
+  const broken = CONTENT_RULES.find(([, breaks]) => breaks(comment));
+  if (broken) throw rejected(broken[0], raw);
   return { comment };
 }
 
