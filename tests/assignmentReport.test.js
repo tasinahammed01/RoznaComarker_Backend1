@@ -218,15 +218,33 @@ describe('class, guest and teacher-upload mix', () => {
     expect(data.insights.length).toBeLessThanOrEqual(7);
   });
 
+  // Narrowed for "Common mistakes" (which shows short, anonymous example corrections on purpose): correction text may appear ONLY inside
+  // commonMistakes.types[].examples, as original / corrected / explanation. Everywhere else in the payload, and in every log line, it still
+  // must not; the email, "@", comment, OCR and internal-key checks are unchanged; and the section itself carries no name or id.
   test('no email address, comment or correction text reaches the payload or the logs', async () => {
     const res = await get(ctx.teacher);
-    const body = JSON.stringify(res.body);
+    const { commonMistakes, ...data } = res.body.data;
+    const body = JSON.stringify({ ...res.body, data });
     for (const email of EMAILS) expect(body).not.toContain(email);
     expect(body).not.toContain('@');
     expect(body).not.toContain('SECRET');
     expect(body).not.toMatch(/normalizedEmail|teacherId|uploadedBy|evaluationSourceHash|ocrPages|writingCorrections/);
+    // The section: correction text only in the three example fields; nothing else from a correction, a submission or a student.
+    expect(commonMistakes.types.some(t => t.examples.length)).toBe(true);   // the planted text does reach the examples (Ana and Gus share AGR)
+    for (const type of commonMistakes.types) {
+      expect(Object.keys(type).sort()).toEqual(['category', 'examples', 'isCommon', 'label', 'occurrenceCount', 'studentCount', 'totalStudents', 'typeCode']);
+      for (const example of type.examples) expect(Object.keys(example).sort()).toEqual(['corrected', 'explanation', 'original']);
+    }
+    expect(JSON.stringify({ ...commonMistakes, types: commonMistakes.types.map(({ examples: _examples, ...type }) => type) })).not.toContain('SECRET');
+    const section = JSON.stringify(commonMistakes);
+    for (const email of EMAILS) expect(section).not.toContain(email);
+    expect(section).not.toContain('@');
+    expect(section).not.toMatch(/normalizedEmail|teacherId|uploadedBy|evaluationSourceHash|ocrPages|writingCorrections|submissionId|"name"/);
+    for (const name of ['Ana Ray', 'Gus Guest', 'Uma Upload', '"Student"']) expect(section).not.toContain(name);
+    for (const doc of [ctx.a, ctx.g, ctx.u, ctx.p, ctx.kidA, ctx.kidB, ctx.teacher]) expect(section).not.toContain(String(doc._id));
     const logs = logged();
     for (const email of EMAILS) expect(logs).not.toContain(email);
+    expect(logs).not.toContain('SECRET');
   });
 });
 
@@ -330,8 +348,24 @@ describe('a large heavy assignment on a server where a blocking sort cannot spil
     Submission.find.mockRestore();
     expect(res.status).toBe(200);
     expect(res.body.data.counts.total).toBe(30);
-    expect(JSON.stringify(res.body)).not.toContain('SECRET');
-    expect(queries).toHaveLength(1);
+    // Narrowed for "Common mistakes": correction text may appear ONLY in commonMistakes.types[].examples (original / corrected /
+    // explanation). Nothing heavy (page text, word data, transcripts, the overlay) appears anywhere.
+    const { commonMistakes, ...data } = res.body.data;
+    expect(JSON.stringify({ ...res.body, data })).not.toContain('SECRET');
+    expect(JSON.stringify({ ...commonMistakes, types: commonMistakes.types.map(({ examples: _examples, ...type }) => type) })).not.toContain('SECRET');
+    for (const heavy of ['SECRET OCR', 'SECRETWORD', 'SECRET PAGE TEXT', 'SECRET TRANSCRIPT', 'SECRET ANNOTATION', '"words"'])
+      expect(JSON.stringify(res.body)).not.toContain(heavy);
+    // Reads: the main read below is unchanged (still asserted). "Common mistakes" adds exactly one more read here: the correction text of
+    // the submissions with current corrections (one per 500). None of these essays was edited by the teacher, so no transcript read.
+    expect(queries).toHaveLength(2);
+    const extra = queries[1];
+    expect(extra.getOptions().sort).toBeUndefined();
+    expect(Object.values(extra.projection()).every(v => v === 1)).toBe(true);
+    expect(Object.keys(extra.projection()).sort()).toEqual(['_id', 'draftNumber', 'guest.normalizedEmail', 'teacherAnnotations', 'writingCorrections.category',
+      'writingCorrections.id', 'writingCorrections.message', 'writingCorrections.quotedText', 'writingCorrections.source', 'writingCorrections.suggestedText',
+      'writingCorrections.symbol']);
+    for (const heavy of ['ocrPages', 'ocrPages.words', 'ocrPages.text', 'ocrData', 'transcriptPages', 'transcriptText', 'combinedOcrText', 'sourceTranscriptExact', 'writingCorrections'])
+      expect(Object.prototype.hasOwnProperty.call(extra.projection(), heavy)).toBe(false);
     const q = queries[0];
     expect(q.getOptions().sort).toBeUndefined();
     const projection = q.projection();

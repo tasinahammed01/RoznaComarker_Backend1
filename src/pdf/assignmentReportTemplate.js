@@ -12,6 +12,10 @@ const LOGO_DATA_URI = `data:image/png;base64,${fs.readFileSync(path.join(__dirna
 const MAX_PDF_ROWS = 500;
 const ERRORS_NOTE = 'Counts are from the AI analysis and may include items you removed.';
 const SUMMARY_LABEL = 'AI-generated summary. Please review before sharing.';
+// Common mistakes: the page's wording (assignment-report.ts), so the PDF says exactly what the page says.
+const COMMON_MISTAKES_NOTE = 'Based on the corrections students can see. Corrections you removed are not counted.';
+const COMMON_MISTAKES_EMPTY = { not_enough_students: 'Not enough submissions yet to find common mistakes', none_shared: 'No mistake was shared by 2 or more students.' };
+const COMMON_MISTAKES_PARTIAL = 'Some edited essays were left out of this section.';
 const CHART = { width: 600, height: 220 };
 // The app's theme colours (styles.css) and its category edge colours (constants/category-palette.ts): the same as the page.
 const COLOR = { primary: '#008081', navy: '#203864', title: '#14264d', text: '#374151', muted: '#6b7280', border: '#e5e7eb' };
@@ -69,6 +73,26 @@ function barList(items, emptyText) {
     return `<div class="bar-row"><div class="bar-head"><span class="bar-label">${esc(item.label)}</span><span class="bar-value">${esc(item.valueText)}</span>${marker}</div>`
       + `<div class="track"><div class="fill" style="width:${width}%;background:${item.color || COLOR.primary}"></div></div></div>`;
   }).join('')}</div>`;
+}
+
+/** Common mistakes: one block per type at least 2 students made ("4 of 6 students", a bar, up to 3 examples), or the empty state. */
+function commonMistakesSection(section) {
+  if (!section || typeof section !== 'object') return '';
+  const common = (Array.isArray(section.types) ? section.types : []).filter(t => t && t.isCommon === true);
+  const empty = COMMON_MISTAKES_EMPTY[section.state] || (common.length ? '' : COMMON_MISTAKES_EMPTY.none_shared);
+  const blocks = common.map(t => {
+    const students = num(t.studentCount) ?? 0, total = num(t.totalStudents) ?? 0;
+    const width = total > 0 ? Math.round((students / total) * 100) : 0;
+    const examples = (Array.isArray(t.examples) ? t.examples : []).map(e => '<li class="example"><p class="change"><del>' + esc(e?.original) + '</del>'
+      + (e?.corrected ? '<span class="arrow" aria-hidden="true"> → </span><ins>' + esc(e.corrected) + '</ins>' : '') + '</p>'
+      + (e?.explanation ? '<p class="why">' + esc(e.explanation) + '</p>' : '') + '</li>').join('');
+    return '<div class="mistake"><div class="bar-head"><span class="bar-label">' + esc(t.typeCode + ' · ' + t.label) + '</span><span class="bar-value">'
+      + esc(students + ' of ' + total + ' students') + '</span></div><div class="track"><div class="fill" style="width:' + width + '%;background:' + (CATEGORY_EDGE[t.category] || COLOR.primary) + '"></div></div>'
+      + (examples ? '<ul class="examples">' + examples + '</ul>' : '') + '</div>';
+  }).join('');
+  return '<section class="panel common" data-section="common-mistakes"><h2>Common mistakes</h2><p class="note">' + esc(COMMON_MISTAKES_NOTE) + '</p>'
+    + (section.partial === true ? '<p class="note">' + esc(COMMON_MISTAKES_PARTIAL) + '</p>' : '')
+    + (empty ? '<p class="muted">' + esc(empty) + '</p>' : blocks) + '</section>';
 }
 
 function studentsTable(students) {
@@ -141,7 +165,10 @@ tr.attention td:first-child{box-shadow:inset 1mm 0 0 #ee4e4e}
 .status.good{background:#dcfce7;color:#166534}.status.warning{background:#fef3c7;color:#92400e}.status.critical{background:#fee2e2;color:#991b1b}
 .status.unscored{background:#f1f5f9;color:#334155}.status.progress{background:#e0f2fe;color:#075985}
 .late{color:#92400e;font-weight:700}.done{color:#136c6d;font-weight:700}.more{margin:2mm 0 0;color:${COLOR.muted}}
-.empty{padding:10mm;border:1px solid ${COLOR.border};border-radius:3mm;text-align:center}`;
+.empty{padding:10mm;border:1px solid ${COLOR.border};border-radius:3mm;text-align:center}
+.panel.common{break-inside:auto;page-break-inside:auto}.mistake{margin:0 0 3mm;break-inside:avoid;page-break-inside:avoid}
+.examples{list-style:none;margin:1.5mm 0 0;padding:0}.example{margin:0 0 1.2mm;padding-left:3mm;border-left:2px solid ${COLOR.border}}
+.change{margin:0;font-size:8.5pt}.change del{color:${COLOR.muted}}.change ins{text-decoration:none;font-weight:700;color:${COLOR.title}}.why{margin:.3mm 0 0;color:${COLOR.muted};font-size:8pt}`;
 
 /**
  * The report as a self-contained HTML document for the PDF renderer.
@@ -204,6 +231,7 @@ function renderAssignmentReportHtml(report, { generatedAt = new Date(), summary 
       + (errors.symbols.length ? `<h3>Top correction types</h3>${barList(errors.symbols.map(s => ({ label: `${s.symbol} · ${s.label}`, percent: s.pct,
         valueText: `${s.count} (${s.pct}%)`, color: CATEGORY_EDGE[s.category] })), '')}` : '')
       + '</section>');
+    out.push(commonMistakesSection(report.commonMistakes));
     out.push(`<section><h2>Students</h2><p class="sub">${plural(report.students.length, 'student', 'students')}. Students who need attention are listed first.</p>${studentsTable(report.students)}</section>`);
   }
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Rubrilo assignment report</title><style>${STYLE}</style></head>`
@@ -230,4 +258,4 @@ function reportPdfFilename(title, date = new Date(), timeZone = 'UTC') {
   return `Rubrilo-report-${slugifyTitle(title)}-${day}.pdf`;
 }
 
-module.exports = { renderAssignmentReportHtml, reportPdfFilename, slugifyTitle, ERRORS_NOTE, SUMMARY_LABEL, MAX_PDF_ROWS };
+module.exports = { renderAssignmentReportHtml, reportPdfFilename, slugifyTitle, ERRORS_NOTE, SUMMARY_LABEL, COMMON_MISTAKES_NOTE, MAX_PDF_ROWS };
