@@ -12,11 +12,12 @@ const app = require("./app");
 let server;
 let assessmentRecoveryWorker;
 let teacherUploadEmailWorker;
+let audioWorker;
 
 const { createShutdown } = require('./services/shutdown.service');
 const shutdown = createShutdown({ getServer: () => server,
   closeBrowser: () => pdfBrowserManager.closeBrowser(),
-  stopBackground: () => { assessmentRecoveryWorker?.stop(); teacherUploadEmailWorker?.stop(); },
+  stopBackground: () => { assessmentRecoveryWorker?.stop(); teacherUploadEmailWorker?.stop(); audioWorker?.stop(); },
   disconnect: () => require('mongoose').disconnect(), logger });
 
 process.on("SIGINT", () => shutdown("SIGINT"));
@@ -64,6 +65,10 @@ async function start() {
     teacherUploadEmailIntervalMs: teacherUploadEmailWorker.intervalMs });
   // Reference files left waiting by a restart are read again (also on the next list or status request).
   if (require('./services/referenceFiles/policy').referenceFilesEnabled()) void require('./services/referenceFiles/referenceFile.service').resumeInBackground();
+  // Audio transcription jobs (AUDIO_STT_ENABLED, default off): null while off, so nothing starts.
+  audioWorker = require('./services/audio/processing').startAudioWorkerIfEnabled();
+  // The speaking assessor's own contract (not part of the runtime contract fingerprint): one line, versions only.
+  { const speakingPrompt = require('./services/audio/speakingAssessmentPrompt'); logger.info({ event: 'speaking_assessment_contract', promptVersion: speakingPrompt.PROMPT_VERSION, schemaVersion: speakingPrompt.SCHEMA_VERSION }); }
   const pdfEngine = String(process.env.PDF_REPORT_ENGINE || "puppeteer").toLowerCase();
   if (pdfEngine !== "puppeteer") throw new Error("Unsupported PDF_REPORT_ENGINE configuration.");
   pdfBrowserManager.validateBrowserRuntime();

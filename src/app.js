@@ -201,6 +201,8 @@ app.use("/api/assignments", assignmentRoutes);
 app.use("/api/files", fileRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/submissions", submissionRoutes);
+// Guests on speaking assignments (stage 10): before /api/guest, and it answers every request that reaches it.
+app.use('/api/guest/speaking', require('./routes/speakingGuest.routes'));
 app.use('/api/guest', require('./routes/guestSubmission.routes'));
 app.use('/api/recovery', require('./routes/recoveryPortal.routes'));
 app.use("/api/feedback", feedbackRoutes);
@@ -212,6 +214,10 @@ app.use("/api/writing-corrections", writingCorrectionsRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/rubrics", rubricRoutes);
 app.use('/api/reference-files', require('./routes/referenceFile.routes'));
+app.use('/api/audio', require('./routes/audio.routes'));
+// Stage 9: teacher-uploaded recordings (mounted before the speaking router, whose last handler answers 404 to anything else).
+app.use('/api/speaking/assignments/:assignmentId/teacher-uploads', require('./routes/speakingTeacherUpload.routes'));
+app.use('/api/speaking', require('./routes/speaking.routes'));
 app.use("/api/flashcards", flashcardRoutes);
 app.use("/api/shared", sharedFlashcardRoutes);
 app.use("/api/worksheets/generate/text", worksheetTextRoute);

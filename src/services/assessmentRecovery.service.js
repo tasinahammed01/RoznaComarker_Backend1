@@ -234,6 +234,8 @@ async function sweepStalledTeacherUploads(config = workerConfig(), now = new Dat
     leaseAvailable(now),
     { updatedAt: { $lte: quietBefore } },
     { $nor: [{ evaluationStatus: 'blocked', evaluationErrorCode: 'INSUFFICIENT_ASSESSMENT_CREDITS' }] },
+    // A recording (stage 9) is run by the speaking queue (its lease lives on the recording, with its own attempts and limits), never here.
+    { sourceKind: { $ne: 'audio' } },
     { $or: [{ analysisAttempt: { $gte: config.maxAttempts } }, { $and: [notWaiting, { $nor: [dueWorkQuery(now, config.maxAttempts, config.leaseMs)] }] }] }
   ] };
   const stalled = await Submission.find(stalledQuery).select('_id ocrJobId ocrErrorCode evaluationErrorCode analysisErrorCode').limit(50).lean();

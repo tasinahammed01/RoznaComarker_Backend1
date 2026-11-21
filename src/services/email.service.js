@@ -199,13 +199,19 @@ async function testEmailConfig() {
 module.exports = {
   // Feedback for work a teacher uploaded ("Save and send" or Send). Never throws: { success, code, delivery } with a safe failure
   // code; delivery = { acceptedCount, rejectedCount, responseCode, enhancedStatus, messageId } when the server answered.
-  async sendTeacherUploadFeedbackEmail({ to, studentName, teacherName, assignmentTitle, link, expiresAt = null, needsLogin = false }) {
+  // kind 'speaking' (stage 9): a teacher-uploaded recording, its own template (teacherUploadSpeakingEmailTemplate.js); the essay one is unchanged.
+  async sendTeacherUploadFeedbackEmail({ to, studentName, teacherName, assignmentTitle, link, expiresAt = null, needsLogin = false, kind = 'essay' }) {
+    // (stage 10: a guest's recording passes needsLogin false and expiresAt to the speaking template too.)
     let delivery = null;
     try {
       const readiness = emailReadiness();
       if (!readiness.ready) throw Object.assign(new Error('Email configuration unavailable'), { code: readiness.code });
       let content;
-      try { content = require('./teacherUploadEmailTemplate').buildTeacherUploadFeedbackEmail({ studentName, teacherName, assignmentTitle, link, expiresAt, needsLogin }); }
+      try {
+        content = kind === 'speaking'
+          ? require('./teacherUploadSpeakingEmailTemplate').buildTeacherUploadSpeakingFeedbackEmail({ studentName, teacherName, assignmentTitle, link, expiresAt, needsLogin })
+          : require('./teacherUploadEmailTemplate').buildTeacherUploadFeedbackEmail({ studentName, teacherName, assignmentTitle, link, expiresAt, needsLogin });
+      }
       catch { throw Object.assign(new Error('Email template unavailable'), { code: 'TEMPLATE_FAILURE' }); }
       const result = await getTransporter().sendMail({
         from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
@@ -269,13 +275,17 @@ module.exports = {
       opens: 'Your teacher sent you a new private link. It opens your submitted assignment with its feedback, the same page as your original link. Your earlier links keep working.',
       cta: 'Open my submission', validity: `${days} day${days === 1 ? '' : 's'}`, allSubmissions: new URL('/recover', link).href });
   },
-  async sendGuestSubmissionEmail({ to, assignmentTitle, returnUrl, resultReady = false }) {
+  // kind 'speaking' (stage 10): a guest's recording, its own wording (guestSpeakingEmailTemplate.js); the essay message below is unchanged.
+  async sendGuestSubmissionEmail({ to, assignmentTitle, returnUrl, resultReady = false, kind = 'essay' }) {
     try {
       const readiness = emailReadiness();
       if (!readiness.ready) throw Object.assign(new Error('Email configuration unavailable'), { code: readiness.code });
       const status = resultReady ? 'feedback is ready' : 'submission was received';
       let message;
-      try { message = {
+      try { message = kind === 'speaking' ? {
+        from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
+        to, ...require('./guestSpeakingEmailTemplate').buildGuestSpeakingEmail({ assignmentTitle, returnUrl, resultReady })
+      } : {
         from: `"${process.env.MAIL_FROM_NAME || 'Rubrilo'}" <${process.env.MAIL_FROM_EMAIL || process.env.SMTP_USER}>`,
         to,
         subject: `Your Rubrilo ${resultReady ? 'feedback is ready' : 'assignment submission'}: ${String(assignmentTitle).replace(/[\r\n]/g, ' ').slice(0, 150)}`,

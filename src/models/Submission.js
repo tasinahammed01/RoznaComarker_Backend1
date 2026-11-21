@@ -24,6 +24,11 @@ const submissionSchema = new Schema(
       required: function () { return this.submissionMode !== 'guest'; }
     },
     submissionMode: { type: String, enum: ['registered', 'guest'], default: 'registered' },
+    // Speaking work (audio + speech-to-text): 'audio'; essays leave it unset. An audio submission has no files and never gets ocrStatus, so
+    // the essay recovery worker never selects it; essay-only routes refuse it (middlewares/essayOnly.middleware.js). Its audio, words and
+    // transcript live in AudioRecording (audioRecording, never selected unless asked: no student surface needs the id).
+    sourceKind: { type: String, enum: ['audio'], default: undefined },
+    audioRecording: { type: Schema.Types.ObjectId, ref: 'AudioRecording', default: undefined, select: false },
     guest: {
       displayName: { type: String, maxlength: 120 },
       normalizedEmail: { type: String, maxlength: 254, select: false },
@@ -39,7 +44,9 @@ const submissionSchema = new Schema(
       recoveredAt: Date,
       // Links issued by email recovery. A resend ADDS a link and never invalidates the student's other links, so a third party
       // who knows the email cannot cut off a working link. Hashes only; the newest 10 are kept.
-      recoveryAccess: { type: [{ _id: false, hash: String, expiresAt: Date, createdAt: Date }], select: false, default: undefined }
+      recoveryAccess: { type: [{ _id: false, hash: String, expiresAt: Date, createdAt: Date }], select: false, default: undefined },
+      // A guest's recording (stage 10): the notice version accepted and when (config/speakingGuestNotice.js). Never read back unless asked for.
+      consent: { type: { _id: false, version: { type: String, maxlength: 40 }, acceptedAt: Date }, select: false, default: undefined }
     },
     guestRequestKey: { type: String, select: false },
     registeredRequestKey: { type: String, select: false },

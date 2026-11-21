@@ -14,6 +14,8 @@ const { enforceStorageLimitFromUploadedFile } = require('../middlewares/usage.mi
 
 const { param } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
+// Essay feedback, rubric and AI feedback routes refuse a speaking (audio) submission (tests/audioGuardInventory.test.js).
+const { refuseAudioSubmission } = require('../middlewares/essayOnly.middleware');
 
 const { createSensitiveRateLimiter, createUserRateLimiter } = require('../middlewares/rateLimit.middleware');
 const { createUserConcurrencyGuard } = require('../middlewares/concurrency.middleware');
@@ -104,6 +106,7 @@ router.post(
   requireRole('teacher'),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   setUploadType('feedback'),
   upload.single('file'),
   handleUploadError,
@@ -121,6 +124,7 @@ router.post(
   aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.generateAiFeedbackFromOcr
 );
 
@@ -132,6 +136,7 @@ router.get(
   requireRole(['teacher', 'student']),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.getSubmissionFeedback
 );
 
@@ -145,6 +150,7 @@ router.post(
   aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.generateAiSubmissionFeedback
 );
 
@@ -158,6 +164,7 @@ router.post(
   aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.generateAiRubricDesigner
 );
 
@@ -172,6 +179,7 @@ router.post(
   aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.generateAiRubricFromDesigner
 );
 
@@ -185,6 +193,7 @@ router.post(
   aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.generateRubricDesignerFromPrompt
 );
 
@@ -197,6 +206,7 @@ router.post(
   aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.generateRubricDesignerFromContext
 );
 
@@ -210,6 +220,7 @@ router.post(
   aiConcurrency,
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   rubricUpload.single('file'),
   feedbackController.generateRubricDesignerFromFile
 );
@@ -221,6 +232,7 @@ router.put(
   requireRole('teacher'),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.upsertSubmissionFeedback
 );
 
@@ -230,6 +242,7 @@ router.patch(
   requireRole('teacher'),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.markSubmissionReviewed
 );
 
@@ -240,6 +253,7 @@ router.patch(
   requireRole('teacher'),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.updateTeacherComments
 );
 
@@ -250,6 +264,7 @@ router.post(
   requireRole('teacher'),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   createUserRateLimiter({ event: 'AI_GENERATION_RATE_LIMITED', reason: 'teacher_comment_draft' }),
   createUserConcurrencyGuard({ operation: 'teacher_comment_draft', maxConcurrent: 1 }),
   feedbackController.generateTeacherCommentDraft
@@ -354,6 +369,7 @@ router.get(
   requireRole('student'),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.getFeedbackBySubmissionForStudent
 );
 
@@ -364,6 +380,7 @@ router.get(
   requireRole('teacher'),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.getFeedbackBySubmissionForTeacher
 );
 
@@ -373,6 +390,7 @@ router.get(
   requireRole('student'),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   feedbackController.getFeedbackBySubmissionForStudent
 );
 

@@ -16,6 +16,7 @@ const SubmissionFeedback = require('../models/SubmissionFeedback');
 const staleAssignmentEvaluation = require('../services/staleAssignmentEvaluation.service');
 const { currentEvaluationSettings } = require('../services/evaluationSettingsContext.service');
 const { assignmentCapabilities } = require('../config/assignmentCapabilities');
+const speakingAssignment = require('../services/audio/speakingAssignment');
 
 const {
   RubricExcelTemplateError,
@@ -49,6 +50,11 @@ function sendError(res, statusCode, message) {
     success: false,
     message
   });
+}
+
+// Speaking settings refusals carry their code (services/audio/speakingAssignment.js).
+function sendSpeakingSettingsError(res, error) {
+  return res.status(error.statusCode || 400).json({ success: false, message: error.message, code: error.code });
 }
 
 function safeString(v) {
@@ -679,7 +685,7 @@ async function createAssignment(req, res) {
     }
 
     const resolvedResourceType = resourceType || 'essay';
-    if (!['essay', 'flashcard', 'worksheet'].includes(resolvedResourceType)) {
+    if (!speakingAssignment.creatableTypes().includes(resolvedResourceType)) {
       return sendError(res, 400, 'resourceType must be essay, flashcard, or worksheet');
     }
 
@@ -688,7 +694,7 @@ async function createAssignment(req, res) {
       return sendError(res, 400, 'writingType is required for essay assignments');
     }
 
-    if (resolvedResourceType !== 'essay' && !isNonEmptyString(resourceId)) {
+    if (!['essay', 'speaking'].includes(resolvedResourceType) && !isNonEmptyString(resourceId)) {
       return sendError(res, 400, 'resourceId is required for flashcard/worksheet assignments');
     }
 
@@ -745,14 +751,24 @@ async function createAssignment(req, res) {
       return sendError(res, 400, 'instructions must be a string');
     }
 
-    const normalizedRubric = normalizeRubric(rubric);
+    // Speaking: its own settings; the essay rubric fields are neither checked nor stored, nor are resubmission and late resubmission.
+    const speaking = resolvedResourceType === 'speaking';
+    const normalizedRubric = speaking ? undefined : normalizeRubric(rubric);
     if (normalizedRubric === null) {
       return sendError(res, 400, 'rubric must be valid text or JSON');
     }
 
-    const normalizedRubrics = normalizeRubrics(rubrics);
+    const normalizedRubrics = speaking ? undefined : normalizeRubrics(rubrics);
     if (normalizedRubrics === null) {
       return sendError(res, 400, 'rubrics must be valid JSON');
+    }
+
+    let speakingSettings;
+    if (speaking) {
+      try { speakingSettings = await speakingAssignment.parseSpeakingSettings(req.body?.speaking, { teacherId }); }
+      catch (error) { if (error.code) return sendSpeakingSettingsError(res, error); throw error; }
+      // No rubric chosen: the teacher's own editable copy of the default speaking rubric (created once).
+      if (!speakingSettings.rubricRef) speakingSettings.rubricRef = await require('../services/audio/speakingRubric').ensureDefaultSpeakingRubric(teacherId);
     }
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -763,16 +779,18 @@ async function createAssignment(req, res) {
           title: title.trim(),
           writingType: resolvedWritingType.trim(),
           resourceType: resolvedResourceType,
-          resourceId: resourceId || null,
+          resourceId: speaking ? null : resourceId || null,
           instructions: normalizedInstructions,
-          rubric: normalizedRubric,
-          rubrics: normalizedRubrics,
+          rubric: speaking ? undefined : normalizedRubric,
+          rubrics: speaking ? undefined : normalizedRubrics,
+          ...(speaking ? { speaking: speakingSettings } : {}),
           deadline: parsedDeadline,
           class: classDoc._id,
           teacher: teacherId,
           qrToken,
-          allowGuestSubmission: resolvedResourceType === 'essay' && allowGuestSubmission === true,
-          allowLateResubmission: typeof allowLateResubmission === 'boolean' ? allowLateResubmission : undefined,
+          // Guests: essays, and speaking (stage 10: guest recordings, routes/speakingGuest.routes.js).
+          allowGuestSubmission: ['essay', 'speaking'].includes(resolvedResourceType) && allowGuestSubmission === true,
+          allowLateResubmission: !speaking && typeof allowLateResubmission === 'boolean' ? allowLateResubmission : undefined,
           showMarksToStudent: typeof showMarksToStudent === 'boolean' ? showMarksToStudent : undefined,
           allowResubmission: resolvedResourceType === 'essay' && allowResubmission === true,
           requireAdaptiveBeforeResubmission: resolvedResourceType === 'essay' && allowResubmission === true && requireAdaptiveBeforeResubmission === true,
@@ -880,6 +898,13 @@ async function updateAssignment(req, res) {
       return sendError(res, 404, 'Assignment not found');
     }
     const capabilities = assignmentCapabilities(assignment);
+    // Speaking: its own settings (validated before anything changes); the essay rubric and late-resubmission fields are ignored.
+    const isSpeakingAssignment = speakingAssignment.isSpeaking(assignment);
+    if (isSpeakingAssignment && typeof req.body?.speaking !== 'undefined') {
+      try {
+        assignment.speaking = await speakingAssignment.parseSpeakingSettings(req.body.speaking, { teacherId, current: assignment.speaking });
+      } catch (error) { if (error.code) return sendSpeakingSettingsError(res, error); throw error; }
+    }
 
     if (typeof title !== 'undefined') {
       if (!isNonEmptyString(title)) {
@@ -903,7 +928,7 @@ async function updateAssignment(req, res) {
       assignment.instructions = normalizedInstructions;
     }
 
-    if (typeof rubric !== 'undefined') {
+    if (typeof rubric !== 'undefined' && !isSpeakingAssignment) {
       const normalizedRubric = normalizeRubric(rubric);
       if (normalizedRubric === null) {
         return sendError(res, 400, 'rubric must be valid text or JSON');
@@ -911,7 +936,7 @@ async function updateAssignment(req, res) {
       assignment.rubric = normalizedRubric;
     }
 
-    if (typeof rubrics !== 'undefined') {
+    if (typeof rubrics !== 'undefined' && !isSpeakingAssignment) {
       const normalizedRubrics = normalizeRubrics(rubrics, { existingRubric: assignment.rubrics });
       if (normalizedRubrics === null) {
         return sendError(res, 400, 'rubrics must be valid JSON');
@@ -932,7 +957,7 @@ async function updateAssignment(req, res) {
       assignment.deadline = parsedDeadline;
     }
 
-    if (typeof allowLateResubmission !== 'undefined') {
+    if (typeof allowLateResubmission !== 'undefined' && !isSpeakingAssignment) {
       if (typeof allowLateResubmission !== 'boolean') {
         return sendError(res, 400, 'allowLateResubmission must be a boolean');
       }
@@ -942,7 +967,7 @@ async function updateAssignment(req, res) {
     if (typeof allowGuestSubmission !== 'undefined') {
       if (typeof allowGuestSubmission !== 'boolean') return sendError(res, 400, 'allowGuestSubmission must be a boolean');
       if (allowGuestSubmission === true && assignment.allowGuestSubmission !== true && !guestFeature.guestSubmissionEnabled()) return sendError(res, 403, guestFeature.message);
-      assignment.allowGuestSubmission = (!assignment.resourceType || assignment.resourceType === 'essay') && allowGuestSubmission === true;
+      assignment.allowGuestSubmission = (!assignment.resourceType || ['essay', 'speaking'].includes(assignment.resourceType)) && allowGuestSubmission === true;
     }
     if (typeof showMarksToStudent !== 'undefined') {
       if (typeof showMarksToStudent !== 'boolean') {
@@ -977,7 +1002,7 @@ async function updateAssignment(req, res) {
     const saved = await assignment.save();
 
     try {
-      if (typeof rubrics !== 'undefined' || typeof rubric !== 'undefined') {
+      if (!isSpeakingAssignment && (typeof rubrics !== 'undefined' || typeof rubric !== 'undefined')) {
         const updateRubricDesigner = typeof rubrics !== 'undefined';
         const designer = updateRubricDesigner
           ? rubricsToRubricDesigner({ rubrics: saved.rubrics, assignmentTitle: saved.title })
@@ -1312,6 +1337,8 @@ async function getClassAssignments(req, res) {
     // endpoints remain unchanged for report and review workflows.
     const { activeStudentIds, countsByAssignment } = await currentRosterAssignmentCounts(filteredAssignments, [
       { type: 'essay', model: Submission, assignmentField: 'assignment', studentField: 'student' },
+      // Speaking work is a Submission too (sourceKind 'audio').
+      { type: 'speaking', model: Submission, assignmentField: 'assignment', studentField: 'student' },
       { type: 'flashcard', model: FlashcardSubmission, assignmentField: 'assignmentId', studentField: 'userId' },
       { type: 'worksheet', model: WorksheetSubmission, assignmentField: 'assignmentId', studentField: 'studentId' }
     ]);
@@ -1887,6 +1914,8 @@ async function duplicateAssignment(req, res) {
       requireAdaptiveBeforeResubmission: source.resourceType === 'essay'
         && source.allowResubmission === true && source.requireAdaptiveBeforeResubmission === true,
       ...(source.resourceType === 'essay' && source.allowResubmission === true && Number.isInteger(source.maxDrafts) ? { maxDrafts: source.maxDrafts } : {}),
+      ...(source.resourceType === 'speaking' && source.speaking ? { speaking: { maxRecordingSeconds: source.speaking.maxRecordingSeconds ?? null,
+        rubricRef: source.speaking.rubricRef ?? null } } : {}),
       isActive: true
     };
 

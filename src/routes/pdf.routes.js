@@ -8,6 +8,7 @@ const assignmentReportPdf = require('../controllers/assignmentReportPdf.controll
 
 const { param } = require('express-validator');
 const { handleValidationResult } = require('../middlewares/validation.middleware');
+const { refuseAudioSubmission } = require('../middlewares/essayOnly.middleware');
 
 const router = express.Router();
 
@@ -18,6 +19,7 @@ router.get(
   requireRole(['student', 'teacher']),
   param('submissionId').isMongoId().withMessage('Invalid submission id'),
   handleValidationResult,
+  refuseAudioSubmission,
   pdfController.downloadSubmissionPdf
 );
 

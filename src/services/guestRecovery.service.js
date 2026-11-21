@@ -11,13 +11,16 @@ const logger = require('../utils/logger');
 
 const MAX_RECOVERY_LINKS = 10;
 
-async function resendGuestLink({ emailNormalized, submissionId = null, qrToken = null, now = new Date(), env = process.env }) {
-  let assignmentToken = qrToken, assignment = null;
+// kind 'speaking' (stage 10): the qrToken is a speaking assignment's guest link (routes/speakingGuest.routes.js). With a submissionId the kind is
+// the submission's own (a recording is a speaking submission), whichever route asked.
+async function resendGuestLink({ emailNormalized, submissionId = null, qrToken = null, kind = 'essay', now = new Date(), env = process.env }) {
+  let assignmentToken = qrToken, assignment = null, speaking = kind === 'speaking';
   if (submissionId) {
     if (!mongoose.isValidObjectId(submissionId)) return { sent: false, reason: 'no_submission' };
     const original = await Submission.findOne({ _id: submissionId, submissionMode: 'guest', 'guest.normalizedEmail': emailNormalized,
-      'guest.revokedAt': null }).select('qrToken assignment +teacherUpload').lean();
+      'guest.revokedAt': null }).select('qrToken assignment sourceKind +teacherUpload').lean();
     if (!original) return { sent: false, reason: 'no_submission' };
+    speaking = original.sourceKind === 'audio';
     // Work a teacher uploaded has no QR entry: its assignment only has to be active (the guest-submission setting does not apply).
     if (original.teacherUpload?.uploadedBy) {
       assignment = await require('../models/assignment.model').findOne({ _id: original.assignment, isActive: true }).select('_id').lean();
@@ -26,8 +29,10 @@ async function resendGuestLink({ emailNormalized, submissionId = null, qrToken =
     assignmentToken = original.qrToken;
   }
   if (!assignment) {
-    try { ({ assignment } = await require('../controllers/guestSubmission.controller').assignmentFor(assignmentToken)); }
-    catch { return { sent: false, reason: 'unavailable' }; }
+    try {
+      ({ assignment } = speaking ? await require('./audio/speakingGuest.service').assignmentFor(assignmentToken)
+        : await require('../controllers/guestSubmission.controller').assignmentFor(assignmentToken));
+    } catch { return { sent: false, reason: 'unavailable' }; }
   }
   // The latest submission for this email in this assignment (or exactly the one asked for).
   const candidate = await Submission.findOne({ ...(submissionId ? { _id: submissionId } : {}), assignment: assignment._id, submissionMode: 'guest',
@@ -51,8 +56,11 @@ async function resendGuestLink({ emailNormalized, submissionId = null, qrToken =
 async function deliverRecoveryLink({ submissionId, now = new Date(), release, send }) {
   const issued = access.issueToken();
   let link;
-  try { link = access.returnUrl(submissionId, issued.token); }    // frontend URL validated before anything is stored
-  catch (error) { await release(); throw error; }
+  try {
+    // The submission's own page: a recording opens the speaking guest page (stage 10).
+    const target = await Submission.findById(submissionId).select('_id sourceKind').lean();
+    link = access.returnUrlFor(target || { _id: submissionId }, issued.token);    // frontend URL validated before anything is stored
+  } catch (error) { await release(); throw error; }
   const added = await Submission.updateOne({ _id: submissionId, submissionMode: 'guest', 'guest.revokedAt': null }, {
     $push: { 'guest.recoveryAccess': { $each: [{ hash: issued.accessHash, expiresAt: issued.expiresAt, createdAt: now }], $slice: -MAX_RECOVERY_LINKS } },
     $set: { 'guest.recoveredAt': now } });

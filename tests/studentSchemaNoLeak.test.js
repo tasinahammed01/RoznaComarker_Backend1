@@ -224,6 +224,91 @@ describe('what reaches a student', () => {
   });
 });
 
+// Speaking (audio + speech-to-text, stage 5). The two new Submission paths cannot carry a sentinel (an enum and an ObjectId), so each has its
+// own decision, checked here:
+//   Submission.sourceKind      ARRIVES as 'audio': the student page needs it to show a recording instead of an essay
+//   Submission.audioRecording  NEVER arrives (select: false): no student surface needs the recording id (playback is by submission id)
+// Every AudioRecording path the filler can reach (provider fields inside the transcript, words, edits, hash, lease, attempt key, request id,
+// minutes and storage accounting, error codes) is filled with a sentinel; none may reach a student surface. SPEAKING_ALLOWED lists exceptions.
+const SPEAKING_ALLOWED = {};
+describe('speaking: what reaches a student', () => {
+  let speaking, speakingResponses, speakingFiller, assessed;
+  beforeAll(async () => {
+    process.env.AUDIO_STT_ENABLED = 'true';
+    const Assignment = require('../src/models/assignment.model');
+    const AudioRecording = require('../src/models/AudioRecording');
+    const { makeAudioSubmission } = require('./helpers/speakingFixtures');
+    const assignment = await Assignment.create({ title: 'Speaking task', writingType: 'speaking', resourceType: 'speaking', class: f.IDS.class, teacher: f.IDS.teacher,
+      deadline: new Date(Date.now() + 86400000), qrToken: `speaking-noleak-${Date.now()}`, speaking: { maxRecordingSeconds: null, rubricRef: null } });
+    speaking = await makeAudioSubmission({ student: { user: f.student }, teacher: { user: f.teacher }, assignment, klass: { _id: f.IDS.class } }, { status: 'failed' });
+    speaking.assignment = assignment;
+    // Stage 6: a second speaking assignment with a COMPLETED assessment (mocked provider), so the result endpoint has a full result to show.
+    const h = require('./helpers/speakingAssessmentFixtures');
+    const assessmentService = require('../src/services/audio/speakingAssessment.service');
+    const assessedAssignment = await Assignment.create({ title: 'Speaking task 2', writingType: 'speaking', resourceType: 'speaking', class: f.IDS.class, teacher: f.IDS.teacher,
+      deadline: new Date(Date.now() + 86400000), qrToken: `speaking-noleak-2-${Date.now()}`, speaking: { maxRecordingSeconds: null, rubricRef: null } });
+    await h.personalCredits(f.teacher, 3);
+    const assessedText = require('./fixtures/audio/speakingBenchmark.cjs').TEXTS.WEAK;
+    assessed = await h.readyRecording({ student: { user: f.student }, teacher: { user: f.teacher }, assignment: assessedAssignment, klass: { _id: f.IDS.class } }, assessedText);
+    await assessmentService.enqueueAssessment(assessed.recording._id);
+    const outcome = await assessmentService.runSpeakingAssessment(assessed.recording._id, { env: h.TEST_ENV, fetchImpl: h.fakeOpenRouter(h.output({ level: 'Developing',
+      corrections: [{ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'It have', occurrence: 1, suggestedText: 'It has', message: 'Use has with it.' }] })) });
+    expect(outcome.status).toBe('completed');
+    speakingFiller = sentinelFiller();
+    await speakingFiller.fillModel(AudioRecording);
+    // Every string, Mixed and number path of the speaking Submission and its SubmissionFeedback the filler can reach (provider, model, hashes,
+    // scoring audit, attempts, error codes, teacher-only fields).
+    await speakingFiller.fillModel(SubmissionFeedback);
+    await speakingFiller.fillModel(Submission);
+    const asStudent = url => request(app).get(url).set('Authorization', `Bearer ${studentJwt}`);
+    speakingResponses = {
+      'speaking status': await asStudent(`/api/speaking/${assignment._id}/my`),
+      'my submissions': await asStudent('/api/submissions/my'),
+      'my submission (essay route, speaking assignment)': await asStudent(`/api/submissions/assignment/${assignment._id}/my`),
+      'my assignments': await asStudent('/api/assignments/my'),
+      'speaking result (completed assessment)': await asStudent(`/api/speaking/submissions/${assessed.submission._id}/result`),
+      'retry transcription': await request(app).post(`/api/speaking/submissions/${speaking.submission._id}/retry-transcription`).set('Authorization', `Bearer ${studentJwt}`)
+    };
+  });
+  afterAll(() => { delete process.env.AUDIO_STT_ENABLED; });
+
+  test('controls: every surface answered 200, and the recording really holds the sentinels', async () => {
+    expect(Object.entries(speakingResponses).filter(([, res]) => res.status !== 200).map(([name, res]) => `${name}: ${res.status}`)).toEqual([]);
+    const raw = JSON.stringify(await require('../src/models/AudioRecording').collection.findOne({ _id: speaking.recording._id }));
+    // (Dates are not filled; lastErrorCode was filled too but the retry call above cleared it, after the other surfaces had read it.)
+    for (const path of ['transcript', 'derived', 'editedRevisions', 'audioSha256', 'attemptKey', 'transcriptSchemaVersion', 'audioDeletionReason']) expect(raw).toContain(`LEAK_AudioRecording.${path}`);
+    expect(JSON.stringify(speakingResponses['my submissions'].body)).toContain(String(speaking.submission._id));
+  });
+
+  test('no AudioRecording sentinel outside SPEAKING_ALLOWED, on any speaking surface', () => {
+    const seen = {};
+    for (const [name, res] of Object.entries(speakingResponses)) for (const sentinel of sentinelsIn(res.body, speakingFiller.numbers)) {
+      if (sentinel.startsWith('AudioRecording.') && !(sentinel in SPEAKING_ALLOWED)) (seen[sentinel] ||= []).push(name);
+    }
+    expect(seen).toEqual({});
+  });
+
+  test('the speaking result: no Submission or SubmissionFeedback sentinel at all (a field-by-field DTO), and the result really is there', () => {
+    const res = speakingResponses['speaking result (completed assessment)'];
+    expect(res.body.data).toMatchObject({ state: 'ready', result: { overallScore: expect.any(Number) } });
+    expect(res.body.data.corrections.map(c => c.quotedText)).toEqual(['It have']);
+    expect([...sentinelsIn(res.body, speakingFiller.numbers)]).toEqual([]);
+    expect(JSON.stringify(res.body)).not.toMatch(/gemini|openrouter|speaking-assessment-prompt|scoringAudit|evaluationAttempts|evaluationJobId|[a-f0-9]{64}/i);
+  });
+
+  test('Submission.sourceKind arrives as "audio"; Submission.audioRecording never arrives; no provider, hash or lease key name either', () => {
+    const mine = speakingResponses['my submissions'].body.data.find(item => String(item._id) === String(speaking.submission._id));
+    expect(mine.sourceKind).toBe('audio');
+    expect(mine).not.toHaveProperty('audioRecording');
+    expect(speakingResponses['my submission (essay route, speaking assignment)'].body.data).not.toHaveProperty('audioRecording');
+    for (const res of Object.values(speakingResponses)) {
+      const text = JSON.stringify(res.body);
+      expect(text).not.toContain(String(speaking.recording._id));
+      expect(text).not.toMatch(/"(audioRecording|audioSha256|attemptKey|leaseUntil|processingQueue|transcript|derived|editedRevisions|minutesChargedTo|storageChargedTo|storageChargedMB|requestId|providerRequestId)"/);
+    }
+  });
+});
+
 describe('the guard itself', () => {
   test('a path added to a schema later is filled and, not being allowed, is reported', async () => {
     expect((await Submission.collection.findOne({ _id: f.IDS.registered }))[NEW_PATH]).toContain(`LEAK_Submission.${NEW_PATH}`);

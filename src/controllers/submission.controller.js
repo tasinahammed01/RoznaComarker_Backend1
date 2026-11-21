@@ -1011,7 +1011,7 @@ async function getSubmissionsByAssignment(req, res) {
     // assessment/OCR fields remain available through the existing detail view.
     if (req.query?.view === 'cards') {
       const cards = await submissionQuery
-        .select('_id student guest.displayName guest.normalizedEmail submissionMode class submittedAt createdAt updatedAt evaluationStatus')
+        .select('_id student guest.displayName guest.normalizedEmail submissionMode sourceKind class submittedAt createdAt updatedAt evaluationStatus')
         .populate('student', '_id email displayName photoURL role')
         .lean();
       return sendSuccess(res, cards);

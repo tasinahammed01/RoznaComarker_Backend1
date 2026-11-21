@@ -44,12 +44,22 @@ const assignmentSchema = new Schema(
     /** PART 1 — resourceType/resourceId allow flashcard and worksheet assignments */
     resourceType: {
       type: String,
-      enum: ['essay', 'flashcard', 'worksheet'],
+      // 'speaking' (audio + speech-to-text): created only while AUDIO_STT_ENABLED is on (services/audio/speakingAssignment.js).
+      enum: ['essay', 'flashcard', 'worksheet', 'speaking'],
       default: 'essay'
     },
     resourceId: {
       type: String,
       default: null
+    },
+    // Speaking assignments only (absent on every other type). maxRecordingSeconds null = the policy limit (AUDIO_MAX_DURATION_SECONDS);
+    // rubricRef: one of the teacher's saved rubrics, kept for the marking stage (not used yet).
+    speaking: {
+      type: new Schema({
+        maxRecordingSeconds: { type: Number, min: 10, default: null },
+        rubricRef: { type: Schema.Types.ObjectId, ref: 'SavedRubric', default: null }
+      }, { _id: false }),
+      default: undefined
     },
     instructions: {
       type: String,
