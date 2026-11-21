@@ -13,12 +13,14 @@ const Class = require('../src/models/class.model');
 const Assignment = require('../src/models/assignment.model');
 const Submission = require('../src/models/Submission');
 const SubmissionFeedback = require('../src/models/SubmissionFeedback');
-const { validateDraft, generateTeacherCommentDraft } = require('../src/services/teacherCommentDraft.service');
+const { validateDraft, strictRuleOf, generateTeacherCommentDraft } = require('../src/services/teacherCommentDraft.service');
 const { connectInMemoryMongo, disconnectInMemoryMongo, clearDatabase } = require('./helpers/testServer');
 const { signTestJwt } = require('./helpers/auth');
 
 const GOOD = 'You organised your ideas clearly and your opening sets up the topic well. Next, check spelling and spacing in each paragraph, and reread your work aloud before you hand it in.';
 const DIGIT_COMMENT = 'You organised your ideas clearly. There were 14 spelling and spacing issues, so reread each paragraph slowly before you hand it in.';
+// A content problem (a forbidden word): still rejected after the repair step.
+const REJECTED_COMMENT = 'You organised your ideas clearly. To raise your score, check spelling and spacing in each paragraph before you hand it in.';
 const raw = comment => JSON.stringify({ comment });
 const codeOf = text => { try { validateDraft(text); return 'PASS'; } catch (error) { return error.code ?? null; } };
 
@@ -30,27 +32,33 @@ describe('teacher comment draft validator: one code per rule', () => {
     ['comment not a string', JSON.stringify({ comment: 7 }), 'TEACHER_COMMENT_BAD_SHAPE'],
     ['too long', raw(Array(26).fill('Keep reading your work aloud.').join(' ')), 'TEACHER_COMMENT_TOO_LONG'],
     ['too short', raw('Good work, keep going.'), 'TEACHER_COMMENT_TOO_SHORT'],
-    ['a line break', raw(GOOD.replace('. Next', '.\nNext')), 'TEACHER_COMMENT_LINE_BREAK'],
-    ['square brackets', raw('You organised your ideas clearly, but a word like [?] was hard to read, so write each word carefully before you hand it in.'), 'TEACHER_COMMENT_MARKUP_CHARACTER'],
-    ['an underscore', raw(GOOD.replace('spelling', 'spelling_and')), 'TEACHER_COMMENT_MARKUP_CHARACTER'],
-    ['a list start', raw(`- ${GOOD}`), 'TEACHER_COMMENT_LIST_START'],
-    ['a numbered list start', raw(`1. ${GOOD}`), 'TEACHER_COMMENT_LIST_START'],
     ['the word score', raw('You organised your ideas clearly. To raise your score, reread each paragraph slowly and fix spelling before you hand it in.'), 'TEACHER_COMMENT_FORBIDDEN_TERM'],
     ['the word grade', raw('You used grade-level vocabulary well. Next, reread each paragraph slowly and fix spelling and spacing before you hand it in.'), 'TEACHER_COMMENT_FORBIDDEN_TERM'],
-    ['a digit', raw(DIGIT_COMMENT), 'TEACHER_COMMENT_DIGIT'],
-    ['no final punctuation', raw(GOOD.replace(/\.$/u, '')), 'TEACHER_COMMENT_NO_END_PUNCTUATION'],
   ])('%s -> %s', (_name, text, code) => {
     expect(codeOf(text)).toBe(code);
   });
 
+  // Formatting rules are repaired before the check (teacherCommentDraftRepair.test.js); they keep their codes in the final strict check.
+  it.each([
+    ['a line break', GOOD.replace('. Next', '.\nNext'), 'TEACHER_COMMENT_LINE_BREAK'],
+    ['square brackets', 'You organised your ideas clearly, but a word like [?] was hard to read, so write each word carefully before you hand it in.', 'TEACHER_COMMENT_MARKUP_CHARACTER'],
+    ['an underscore', GOOD.replace('spelling', 'spelling_and'), 'TEACHER_COMMENT_MARKUP_CHARACTER'],
+    ['a list start', `- ${GOOD}`, 'TEACHER_COMMENT_LIST_START'],
+    ['a numbered list start', `1. ${GOOD}`, 'TEACHER_COMMENT_LIST_START'],
+    ['a digit', DIGIT_COMMENT, 'TEACHER_COMMENT_DIGIT'],
+    ['no final punctuation', GOOD.replace(/\.$/u, ''), 'TEACHER_COMMENT_NO_END_PUNCTUATION'],
+  ])('strict check: %s -> %s', (_name, text, code) => {
+    expect(strictRuleOf(text)).toBe(code);
+  });
+
   it('a rejection carries the raw reply length, and nothing of its text', () => {
     let error;
-    try { validateDraft(raw(DIGIT_COMMENT)); } catch (caught) { error = caught; }
-    expect(error.responseTextLength).toBe(raw(DIGIT_COMMENT).length);
+    try { validateDraft(raw(REJECTED_COMMENT)); } catch (caught) { error = caught; }
+    expect(error.responseTextLength).toBe(raw(REJECTED_COMMENT).length);
     expect(JSON.stringify({ ...error, message: error.message })).not.toContain('spelling and spacing');
   });
 
-  it('accepts and rejects exactly what it did before (only the reason is new)', () => {
+  it('still accepts everything it accepted before, unchanged', () => {
     const accepted = [GOOD, 'You organised your ideas clearly. There were fourteen spelling and spacing issues, so reread each paragraph slowly before you hand it in.',
       'You organised your ideas clearly. Revise the SP/SPC corrections in the highlighted passages and reread your work before you hand it in.',
       `"${GOOD}"`, `${GOOD.slice(0, -1)}!`, `${GOOD.slice(0, -1)}?”`];
@@ -79,14 +87,14 @@ describe('teacher comment draft: the rule that fired reaches the logs', () => {
     if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = originalKey;
   });
 
-  it('both attempts record TEACHER_COMMENT_DIGIT and the reply length; no log holds the comment text', async () => {
-    jest.spyOn(global, 'fetch').mockResolvedValue(reply(raw(DIGIT_COMMENT)));
+  it('both attempts record TEACHER_COMMENT_FORBIDDEN_TERM and the reply length; no log holds the comment text', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue(reply(raw(REJECTED_COMMENT)));
     const error = await generateTeacherCommentDraft(feedback, '64b000000000000000000001').catch(caught => caught);
     expect(error.code).toBe('AI_CHAIN_EXHAUSTED');
-    expect(error.attempts.map(attempt => attempt.validationCode)).toEqual(['TEACHER_COMMENT_DIGIT', 'TEACHER_COMMENT_DIGIT']);
-    expect(error.attempts.map(attempt => attempt.responseTextLength)).toEqual([raw(DIGIT_COMMENT).length, raw(DIGIT_COMMENT).length]);
+    expect(error.attempts.map(attempt => attempt.validationCode)).toEqual(['TEACHER_COMMENT_FORBIDDEN_TERM', 'TEACHER_COMMENT_FORBIDDEN_TERM']);
+    expect(error.attempts.map(attempt => attempt.responseTextLength)).toEqual([raw(REJECTED_COMMENT).length, raw(REJECTED_COMMENT).length]);
     const failedLogs = spies[1].mock.calls.map(([entry]) => entry).filter(entry => entry?.message === 'AI gateway attempt failed');
-    expect(failedLogs.map(entry => entry.validationCode)).toEqual(['TEACHER_COMMENT_DIGIT', 'TEACHER_COMMENT_DIGIT']);
+    expect(failedLogs.map(entry => entry.validationCode)).toEqual(['TEACHER_COMMENT_FORBIDDEN_TERM', 'TEACHER_COMMENT_FORBIDDEN_TERM']);
     expect(logged(spies)).not.toContain('spelling and spacing');
   });
 
@@ -111,14 +119,14 @@ describe('teacher comment draft: the rule that fired reaches the logs', () => {
     });
 
     it('the teacher_comment_draft_failed log lists the code and length of every attempt; the answer is unchanged', async () => {
-      jest.spyOn(global, 'fetch').mockResolvedValue(reply(raw(DIGIT_COMMENT)));
+      jest.spyOn(global, 'fetch').mockResolvedValue(reply(raw(REJECTED_COMMENT)));
       const response = await request(app).post(`/api/feedback/${submission._id}/teacher-comments/ai-draft`)
         .set('Authorization', `Bearer ${token}`).send({});
       expect(response.status).toBe(503);
       expect(response.body.code).toBe('TEACHER_COMMENT_DRAFT_TRY_AGAIN');
       const failed = spies[1].mock.calls.map(([entry]) => entry).find(entry => entry?.event === 'teacher_comment_draft_failed');
-      expect(failed.validationCodes).toEqual(['TEACHER_COMMENT_DIGIT', 'TEACHER_COMMENT_DIGIT']);
-      expect(failed.responseTextLengths).toEqual([raw(DIGIT_COMMENT).length, raw(DIGIT_COMMENT).length]);
+      expect(failed.validationCodes).toEqual(['TEACHER_COMMENT_FORBIDDEN_TERM', 'TEACHER_COMMENT_FORBIDDEN_TERM']);
+      expect(failed.responseTextLengths).toEqual([raw(REJECTED_COMMENT).length, raw(REJECTED_COMMENT).length]);
       expect(logged(spies)).not.toContain('spelling and spacing');
     });
   });

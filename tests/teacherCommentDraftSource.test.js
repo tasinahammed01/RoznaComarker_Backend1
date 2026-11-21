@@ -9,8 +9,9 @@ const logger = require('../src/utils/logger');
 const { generateTeacherCommentDraft } = require('../src/services/teacherCommentDraft.service');
 
 const GOOD = 'You organised your ideas clearly and your opening sets up the topic well. Next, check spelling and spacing in each paragraph, and reread your work aloud before you hand it in.';
-const DIGIT_COMMENT = 'You organised your ideas clearly. There were 14 spelling and spacing issues, so reread each paragraph slowly before you hand it in.';
-const BRACKET_COMMENT = 'You organised your ideas clearly, but a word like [?] was hard to read, so write each word carefully before you hand it in.';
+// Digits and brackets are repaired now (teacherCommentDraftRepair.test.js); these replies are still rejected, so they test the retry line.
+const MARK_COMMENT = 'You reached 72% on this task and organised your ideas clearly, so reread each paragraph slowly before you hand it in.';
+const SHORT_COMMENT = 'Good work, keep going.';
 const SCORE_COMMENT = 'You organised your ideas clearly. To raise your score, reread each paragraph slowly and fix spelling before you hand it in.';
 const raw = comment => JSON.stringify({ comment });
 
@@ -78,8 +79,8 @@ describe('teacher comment draft: what the model is asked', () => {
   });
 
   it.each([
-    ['digits', DIGIT_COMMENT, 'Your previous reply was rejected because it contained digits; write numbers as words.'],
-    ['brackets', BRACKET_COMMENT, 'Your previous reply was rejected because it contained symbols such as brackets, asterisks or underscores; use plain sentences only.'],
+    ['a score-like number', MARK_COMMENT, 'Your previous reply was rejected because it contained a number that looks like a mark or a percentage; leave all marks out.'],
+    ['too few words', SHORT_COMMENT, 'Your previous reply was rejected because it was too short; write at least two full sentences.'],
     ['a forbidden word', SCORE_COMMENT, 'Your previous reply was rejected because it used a word that is not allowed here; describe the work without mentioning scores, grades, rubrics, AI or the process.'],
   ])('after a reply with %s, the retry names that rule and never repeats the rejected text', async (_name, rejectedComment, line) => {
     provider.mockResolvedValueOnce(reply(raw(rejectedComment))).mockResolvedValueOnce(reply(raw(GOOD)));
@@ -101,7 +102,7 @@ describe('teacher comment draft: what the model is asked', () => {
   });
 
   it('two rejected replies still end in the same clean failure (no third attempt)', async () => {
-    provider.mockResolvedValue(reply(raw(DIGIT_COMMENT)));
+    provider.mockResolvedValue(reply(raw(SCORE_COMMENT)));
     const error = await generateTeacherCommentDraft(SHORT_TYPED, 'sub-6').catch(caught => caught);
     expect(error.code).toBe('AI_CHAIN_EXHAUSTED');
     expect(provider).toHaveBeenCalledTimes(2);
