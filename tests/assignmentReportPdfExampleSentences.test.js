@@ -31,7 +31,7 @@ describe('the teacher PDF', () => {
     const out = html(section([{ original: '<img src=x onerror=alert(1)>', corrected: 'fixed', explanation: '<b>why</b>',
       sentence: { cutStart: true, cutEnd: true, parts: [{ text: '<script>x</script> a ' }, { text: '<img src=x onerror=alert(1)>', error: true, corrected: '<i>fixed</i>' }, { gap: true }, { text: ' end &' }] } }]));
     // Only the section's own text is checked (the template's logo image and readiness script are not student text).
-    const common = out.slice(out.indexOf('data-section="common-mistakes"'), out.indexOf('<h2>Students</h2>'));
+    const common = out.slice(out.indexOf('data-section="common-errors"'), out.indexOf('<h2>Students</h2>'));
     expect(common.length).toBeGreaterThan(0);
     expect(common).not.toMatch(/<img|<script|<i>|<b>why/u);
     expect(out).toContain('&lt;img src=x onerror=alert(1)&gt;');

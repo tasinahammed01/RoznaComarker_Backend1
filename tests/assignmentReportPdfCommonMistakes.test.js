@@ -1,8 +1,10 @@
 'use strict';
-// "Common mistakes" in the assignment report PDF (Stage B): the same section as the page, from the same payload. Placed after "Most common
-// errors" and before "Students"; one block per common type ("4 of 6 students", a bar, up to 3 examples: the original struck through, then
-// the correction, then the explanation); the two empty states; the partial note; every text escaped; page-break safe (a type's block never
-// splits; the section may break between types). Tested on the HTML directly (no browser). Synthetic data only.
+// "Common errors" in the assignment report PDF: the page's one card (it replaced "Most common errors" and "Common mistakes"), from the same
+// payload, placed where the page has it (after the overview, before "Students"): category chips from the AI analysis with its note, then
+// one row per correction type from the corrections students see ("4 of 6 students · 7 times"), with up to 3 examples (the original struck
+// through, then the correction, then the explanation) for a type 2 or more students made; the AI type counts for an older payload or too
+// few students; the two empty states; the partial note; every text escaped; page-break safe (a type's block never splits; the section may
+// break between types). Tested on the HTML directly (no browser). Synthetic data only.
 const { renderAssignmentReportHtml, ERRORS_NOTE, COMMON_MISTAKES_NOTE } = require('../src/pdf/assignmentReportTemplate');
 
 const report = (commonMistakes, overrides = {}) => ({
@@ -12,7 +14,8 @@ const report = (commonMistakes, overrides = {}) => ({
   scores: { average: 70, median: 70, highest: 80, lowest: 60, onTrack: 1, needsRevision: 5, needsAttention: 0, needsRevisionPct: 83, needsAttentionPct: 0, reviewedPct: 0,
     bands: [] },
   rubric: { kind: 'builtin', strongestKey: null, weakestKey: null, criteria: [] },
-  errors: { basis: 'ai_analysis', total: 3, symbolTotal: 3, submissionsWithCorrections: 2, categories: [{ key: 'GRAMMAR', label: 'Grammar', color: null, count: 3, pct: 100 }],
+  errors: { basis: 'ai_analysis', total: 3, symbolTotal: 3, submissionsWithCorrections: 2, categories: [{ key: 'GRAMMAR', label: 'Grammar', color: null, count: 3, pct: 100 },
+    { key: 'MECHANICS', label: 'Mechanics', color: null, count: 0, pct: 0 }],
     symbols: [{ symbol: 'VF', label: 'Verb Form', category: 'GRAMMAR', count: 3, pct: 100 }] },
   commonMistakes,
   timeline: { granularity: 'day', points: [] },
@@ -30,43 +33,46 @@ const ok = (over = {}) => ({ basis: 'visible_corrections', totalStudents: 6, min
 const html = r => renderAssignmentReportHtml(r, { generatedAt: new Date('2026-11-14T20:30:00.000Z') });
 const textOf = h => h.replace(/<style[\s\S]*?<\/style>/g, '').replace(/<script[\s\S]*?<\/script>/g, '').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&')
   .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, ' ');
-const section = h => h.slice(h.indexOf('data-section="common-mistakes"'), h.indexOf('<h2>Students</h2>'));
+const section = h => h.slice(h.indexOf('data-section="common-errors"'), h.indexOf('<h2>Students</h2>'));
+const rows = h => [...section(h).matchAll(/<div class="mistake"><div class="bar-head"><span class="bar-label">([^<]*)<\/span><span class="bar-value">([^<]*)<\/span>/g)]
+  .map(m => `${m[1]} | ${m[2]}`);
 
-describe('the Common mistakes section in the report PDF', () => {
-  test('after "Most common errors" and before "Students"; its note; one block per common type with "4 of 6 students", a bar and the examples', () => {
+describe('the Common errors section in the report PDF', () => {
+  test('one section replaces the two, before "Students": chips with the AI-analysis note, then a row per type with students and total, and the examples', () => {
     const h = html(report(ok()));
-    const errorsAt = h.indexOf('<h2>Most common errors</h2>'), commonAt = h.indexOf('<h2>Common mistakes</h2>'), studentsAt = h.indexOf('<h2>Students</h2>');
-    expect(errorsAt).toBeGreaterThan(-1);
-    expect(commonAt).toBeGreaterThan(errorsAt);
+    expect(h).not.toContain('<h2>Most common errors</h2>');
+    expect(h).not.toContain('<h2>Common mistakes</h2>');
+    const commonAt = h.indexOf('<h2>Common errors</h2>'), studentsAt = h.indexOf('<h2>Students</h2>');
+    expect(commonAt).toBeGreaterThan(-1);
     expect(studentsAt).toBeGreaterThan(commonAt);
     const t = textOf(section(h));
     expect(COMMON_MISTAKES_NOTE).toBe('Based on the corrections students can see. Corrections you removed are not counted.');
     expect(t).toContain(COMMON_MISTAKES_NOTE);
-    expect(t).toContain('VF · Verb Form');
-    expect(t).toContain('4 of 6 students');
-    expect(t).toContain('SP · Spelling');
-    expect(t).toContain('2 of 6 students');
-    expect(t).not.toContain('Word Choice');   // a type only one student made is not shown
-    expect((section(h).match(/class="mistake"/g) || [])).toHaveLength(2);
-    expect(section(h)).toContain('style="width:67%');   // 4 of 6
+    expect(t).toContain('By category Grammar 3');
+    expect(t).not.toContain('Mechanics 0');
+    expect(t).toContain(ERRORS_NOTE);
+    expect(rows(h)).toEqual(['VF · Verb Form | 4 of 6 students · 7 times', 'SP · Spelling | 2 of 6 students · 2 times', 'WC · Word Choice | 1 student · 1 time']);
     expect(section(h)).toContain('<del>He go</del>');
     expect(section(h)).toContain('<ins>He goes</ins>');
     expect(t).toContain('Third person singular.');
     // No replacement: the original and the explanation only, no arrow.
     expect(section(h)).toMatch(/<del>a apple<\/del>(?!\s*<span class="arrow")/);
     expect(t).toContain('Use "an" before a vowel sound.');
+    // A type only one student made has no examples (anonymity).
+    expect(section(h).split('WC · Word Choice')[1]).not.toContain('class="example"');
   });
 
-  test('page-break safe: a type\'s block never splits; the section may break between types; the heading stays with what follows', () => {
+  test('page-break safe: a type\'s block never splits; the section may break between types', () => {
     const h = html(report(ok()));
     expect(h).toMatch(/\.mistake\{[^}]*break-inside:avoid[^}]*page-break-inside:avoid/);
     expect(h).toMatch(/\.panel\.common\{[^}]*break-inside:auto/);
-    expect(h).toContain('<section class="panel common" data-section="common-mistakes">');
+    expect(h).toContain('<section class="panel common" data-section="common-errors">');
   });
 
-  test('the empty states: fewer than 2 students; nothing shared by 2 or more', () => {
-    expect(textOf(section(html(report({ ...ok(), state: 'not_enough_students', totalStudents: 1, types: [] })))))
-      .toContain('Not enough submissions yet to find common mistakes');
+  test('the empty states: fewer than 2 students (the AI type counts still listed); nothing shared by 2 or more', () => {
+    const notEnough = html(report({ ...ok(), state: 'not_enough_students', totalStudents: 1, types: [] }));
+    expect(textOf(section(notEnough))).toContain('Not enough submissions yet to find common mistakes');
+    expect(rows(notEnough)).toEqual(['VF · Verb Form | 3 times']);
     expect(textOf(section(html(report({ ...ok(), state: 'none_shared', types: [] }))))).toContain('No mistake was shared by 2 or more students.');
   });
 
@@ -86,12 +92,19 @@ describe('the Common mistakes section in the report PDF', () => {
     expect(s).not.toContain('SECRET');
   });
 
-  test('an older payload without the section, and the empty report: no section, no error; the errors card and its note are unchanged', () => {
+  test('an older payload without commonMistakes: the AI type counts and the AI-analysis note, no students chip; the empty report has no section', () => {
     const old = report(undefined);
     delete old.commonMistakes;
     const h = html(old);
-    expect(h).not.toContain('Common mistakes');
-    expect(textOf(h)).toContain(ERRORS_NOTE);
-    expect(html(report(ok(), { counts: { ...report(ok()).counts, total: 0 } }))).not.toContain('Common mistakes');
+    expect(rows(h)).toEqual(['VF · Verb Form | 3 times']);
+    expect(textOf(section(h))).toContain(ERRORS_NOTE);
+    expect(textOf(section(h))).not.toContain(COMMON_MISTAKES_NOTE);
+    expect(html(report(ok(), { counts: { ...report(ok()).counts, total: 0 } }))).not.toContain('Common errors');
+  });
+
+  test('no corrections at all: the section says so', () => {
+    const none = report(undefined, { errors: { basis: 'ai_analysis', total: 0, symbolTotal: 0, submissionsWithCorrections: 0, categories: [], symbols: [] } });
+    delete none.commonMistakes;
+    expect(textOf(section(html(none)))).toContain('No corrections recorded yet.');
   });
 });

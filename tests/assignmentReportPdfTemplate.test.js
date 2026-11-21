@@ -53,9 +53,18 @@ describe('assignment report PDF HTML', () => {
     expect(h).not.toMatch(/rozna/i);
   });
 
+  test('submissions over time leads with the page\'s summary: the busiest day (or week) and how many were late; none when the timeline is hidden', () => {
+    const t = textOf(html());
+    expect(t).toContain('4 of 5 on Nov 12 (busiest day)');
+    expect(t).toContain('1 late');
+    expect(textOf(html(report({ timeline: { granularity: 'week', points: [{ date: '2026-11-09', count: 5 }] } })))).toContain('5 of 5 in the week of Nov 9 (busiest week)');
+    expect(textOf(html(report({ smallData: { distributionHidden: false, timelineHidden: true } })))).not.toContain('busiest');
+  });
+
   test('sections follow the page order and show the same numbers as the payload', () => {
     const t = textOf(html());
-    const order = ['Key numbers', 'Insights', 'Score distribution', 'Submissions over time', 'Rubric categories', 'Most common errors', 'Students'].map(s => t.indexOf(s));
+    // The page's order: the two chart rows (distribution | rubric, insights | timeline), then the one Common errors card, then students.
+    const order = ['Key numbers', 'Score distribution', 'Rubric categories', 'Insights', 'Submissions over time', 'Common errors', 'Students'].map(s => t.indexOf(s));
     expect(order.every(i => i >= 0)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
     for (const kpi of ['Total submissions 5', 'Scored 3', 'Average 68.7%', 'Median 66%', 'Highest 85%', 'Lowest 55%', 'Needs revision 67%', 'Late 1', 'Not scored 1'])
