@@ -10,7 +10,7 @@ const mongoose = require('mongoose');
 const SPEAKING_COACH_INDEXES = Object.freeze({
   SpeakingPracticeSession: ['speaking_practice_session_student_v1', 'speaking_practice_session_guest_v1', 'speaking_practice_session_assignment_v1'],
   SpeakingPracticeAttempt: ['speaking_practice_attempt_number_v1', 'speaking_practice_attempt_request_v1', 'speaking_practice_attempt_queue_v1',
-    'speaking_practice_attempt_recording_v1']
+    'speaking_practice_attempt_recording_v1', 'speaking_practice_attempt_transcribing_v1']
 });
 const MODELS = { SpeakingPracticeSession: () => require('../src/models/SpeakingPracticeSession'),
   SpeakingPracticeAttempt: () => require('../src/models/SpeakingPracticeAttempt') };

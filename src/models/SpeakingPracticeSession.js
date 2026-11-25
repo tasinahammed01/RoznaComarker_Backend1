@@ -69,6 +69,8 @@ const sessionSchema = new Schema({
   completedAt: { type: Date, default: undefined },
   endedAt: { type: Date, default: null },
   endedReason: { type: String, enum: [null, 'completed', 'capped'], default: null },
+  // The attempt being transcribed or checked (one at a time per session): set atomically with the attempt count, cleared when it ends.
+  activeAttemptId: { type: Schema.Types.ObjectId, ref: 'SpeakingPracticeAttempt', default: null },
   // Server only: never sent to a student or guest.
   generation: {
     source: { type: String, enum: ['ai', 'template'], default: undefined },

@@ -49,6 +49,8 @@ attemptSchema.index({ sessionId: 1, requestId: 1 }, { unique: true, name: 'speak
 attemptSchema.index({ assessmentQueue: 1, assessmentNextAttemptAt: 1, assessmentLeaseUntil: 1 },
   { name: 'speaking_practice_attempt_queue_v1', partialFilterExpression: { assessmentQueue: true } });
 attemptSchema.index({ recordingId: 1 }, { name: 'speaking_practice_attempt_recording_v1' });
+// The practice sweep finds attempts still waiting for their transcription (to catch a transcription that ended without the worker hook).
+attemptSchema.index({ status: 1, updatedAt: 1 }, { name: 'speaking_practice_attempt_transcribing_v1', partialFilterExpression: { status: 'transcribing' } });
 
 attemptSchema.set('toJSON', { transform(_doc, ret) {
   for (const key of ['assessmentQueue', 'assessmentLeaseUntil', 'assessmentAttemptKey', 'assessing']) delete ret[key];

@@ -17,7 +17,7 @@ beforeEach(clearDatabase);
 const id = () => new mongoose.Types.ObjectId();
 const SESSION_INDEXES = ['speaking_practice_session_student_v1', 'speaking_practice_session_guest_v1', 'speaking_practice_session_assignment_v1'];
 const ATTEMPT_INDEXES = ['speaking_practice_attempt_number_v1', 'speaking_practice_attempt_request_v1', 'speaking_practice_attempt_queue_v1',
-  'speaking_practice_attempt_recording_v1'];
+  'speaking_practice_attempt_recording_v1', 'speaking_practice_attempt_transcribing_v1'];
 
 const task = (over = {}) => ({ taskId: 't1', order: 1, type: 'repeat_improve', criterionId: 'speaking-grammar', areaLabel: 'Grammar',
   prompt: 'Answer the task again and use the past tense carefully.', tip: 'Say each sentence slowly.', maxSeconds: 90, status: 'active',
@@ -49,6 +49,8 @@ test('creates every index, twice without error, and leaves other indexes alone',
   expect(a.speaking_practice_attempt_queue_v1).toEqual({ name: 'speaking_practice_attempt_queue_v1',
     key: { assessmentQueue: 1, assessmentNextAttemptAt: 1, assessmentLeaseUntil: 1 }, partialFilterExpression: { assessmentQueue: true } });
   expect(a.speaking_practice_attempt_recording_v1).toEqual({ name: 'speaking_practice_attempt_recording_v1', key: { recordingId: 1 } });
+  expect(a.speaking_practice_attempt_transcribing_v1).toEqual({ name: 'speaking_practice_attempt_transcribing_v1', key: { status: 1, updatedAt: 1 },
+    partialFilterExpression: { status: 'transcribing' } });
 });
 
 test('main refuses to run without MONGO_URI', async () => {
