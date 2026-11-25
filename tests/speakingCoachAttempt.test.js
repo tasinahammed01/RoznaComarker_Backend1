@@ -56,6 +56,7 @@ const GOOD = Object.fromEntries(h.DEFAULT_IDS.map(id => [id, 'Good']));
 const CORRECTIONS = [{ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'It have', occurrence: 1, suggestedText: 'It has', message: 'Use has with it.' },
   { category: 'VOCABULARY', symbol: 'WC', quotedText: 'by walk', occurrence: 1, suggestedText: 'on foot', message: 'We say on foot.' },
   { category: 'VOCABULARY', symbol: 'WC', quotedText: 'quiet', occurrence: 1, suggestedText: 'peaceful', message: 'A more exact word fits here.' }];
+const NOTICE = require('../src/config/speakingGuestNotice').SPEAKING_COACH_NOTICE_VERSION;
 const ATTEMPT_TEXT = 'My town is small and peaceful. It has one school and one shop. I go to school on foot every morning with my friend. '
   + 'There is a river near the park and people are friendly. I like my town because it is calm and green.';
 let f;
@@ -79,7 +80,7 @@ async function startedSession({ mode = 'registered', levels = { ...GOOD, 'speaki
   await assessment.enqueueAssessment(made.recording._id);
   await assessment.runSpeakingAssessment(made.recording._id, { env: h.TEST_ENV, fetchImpl: h.fakeOpenRouter(h.output({ levels, corrections: CORRECTIONS })) });
   const actor = mode === 'guest' ? accessContext.guestContext(made.submission) : f.student.user._id;
-  const started = await coach.startSession(made.submission._id, actor, { env, fetchImpl: h.fakeOpenRouter({ status: 500 }) });
+  const started = await coach.startSession(made.submission._id, actor, { env, fetchImpl: h.fakeOpenRouter({ status: 500 }), noticeVersion: NOTICE });
   return { ...made, actor, session: started.session };
 }
 

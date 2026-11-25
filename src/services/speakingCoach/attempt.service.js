@@ -29,7 +29,8 @@ const MESSAGES = Object.freeze({
   COACH_SESSION_NOT_OPEN: 'This practice has ended.',
   COACH_TASK_NOT_ACTIVE: 'This task is not open yet.',
   COACH_ATTEMPT_IN_PROGRESS: 'Your last recording is still being checked. Please wait a moment.',
-  COACH_MINUTES_UNAVAILABLE: 'Practice recordings are not available right now. Please try again later.'
+  COACH_MINUTES_UNAVAILABLE: 'Practice recordings are not available right now. Please try again later.',
+  COACH_NOTICE_REQUIRED: 'Read the practice notice and agree to it before you record.'
 });
 const refuse = (statusCode, code) => fail(statusCode, code, MESSAGES[code]);
 
@@ -51,6 +52,9 @@ async function prepareAttempt({ sessionId, taskId, actor, requestId, env = proce
   const task = session.tasks.find(item => item.taskId === taskId);
   if (!task || task.status !== 'active' || session.currentTaskId !== taskId) throw refuse(409, 'COACH_TASK_NOT_ACTIVE');
   if (session.activeAttemptId) throw refuse(409, 'COACH_ATTEMPT_IN_PROGRESS');
+  if (accessContext.isGuest(actor) && session.guestNotice?.version !== require('../../config/speakingGuestNotice').SPEAKING_COACH_NOTICE_VERSION) {
+    throw refuse(409, 'COACH_NOTICE_REQUIRED');
+  }
   const assignment = await Assignment.findById(session.assignmentId).select('_id teacher class').lean();
   if (!assignment?.teacher) throw notFound();
   const classDoc = await Class.findById(assignment.class).select('_id institutionId').lean();

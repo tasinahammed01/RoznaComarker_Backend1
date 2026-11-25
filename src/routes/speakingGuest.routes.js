@@ -34,6 +34,24 @@ router.post('/assignments/:qrToken/recover', createSensitiveRateLimiter({ limit:
   controller.recover);
 router.get('/submissions/:submissionId', controller.requireSpeakingGuest, controller.result);
 router.get('/submissions/:submissionId/media', controller.requireSpeakingGuest, media.guestMedia);
+// Speaking Coach for guests (SPEAKING_COACH_ENABLED, default off: the hidden-feature 404). The guest's own link only (a recovery-portal session is
+// read-only: GET). The practice notice must be accepted (start, noticeVersion) before the first practice recording. Per-IP limits; the attempt cap
+// per submission is the real guard (a device cannot be identified).
+//   GET  /submissions/:submissionId/coach                                           the practice state, session and notice
+//   POST /submissions/:submissionId/coach/start                                     start (or return) the session; body noticeVersion
+//   POST /submissions/:submissionId/coach/sessions/:sessionId/tasks/:taskId/attempts one practice recording, field "audio", header Idempotency-Key
+//   GET  /submissions/:submissionId/coach/sessions/:sessionId/attempts/:attemptId   the attempt state and feedback
+//   POST /submissions/:submissionId/coach/sessions/:sessionId/attempts/:attemptId/retry  check a failed check again
+const coach = require('../controllers/speakingCoach.controller');
+router.get('/submissions/:submissionId/coach', coach.requireEnabled, controller.requireSpeakingGuest, coach.getSession);
+router.post('/submissions/:submissionId/coach/start', coach.requireEnabled, createSensitiveRateLimiter({ limit: 10, windowMs: MINUTES_15, reason: 'guest_speaking_coach_start' }),
+  controller.requireSpeakingGuest, coach.start);
+router.post('/submissions/:submissionId/coach/sessions/:sessionId/tasks/:taskId/attempts', coach.requireEnabled,
+  createSensitiveRateLimiter({ limit: 20, windowMs: MINUTES_15, reason: 'guest_speaking_coach_upload' }), controller.requireSpeakingGuest, coach.prepareAttempt,
+  ...audioUpload({ maxDurationSeconds: coach.maxDurationFor }), coach.commitAttempt);
+router.get('/submissions/:submissionId/coach/sessions/:sessionId/attempts/:attemptId', coach.requireEnabled, controller.requireSpeakingGuest, coach.getAttempt);
+router.post('/submissions/:submissionId/coach/sessions/:sessionId/attempts/:attemptId/retry', coach.requireEnabled,
+  createSensitiveRateLimiter({ limit: 20, windowMs: MINUTES_15, reason: 'guest_speaking_coach_retry' }), controller.requireSpeakingGuest, coach.retry);
 router.use((_req, res) => res.status(404).json(NOT_FOUND));
 
 module.exports = router;

@@ -96,13 +96,31 @@ async function wordTasks({ source, plan, settings, env, fetchImpl }) {
   return { texts: result.value, provider: result.provider, model: result.model, usage: result.usage || {} };
 }
 
-/** Starts (or returns) the session. Returns { state, session }. Throws 404 (not the owner) or 409 COACH_RESULT_NOT_READY. */
-async function startSession(submissionId, actor, { env = process.env, fetchImpl = globalThis.fetch, now = () => new Date() } = {}) {
+/** A guest must send the current practice notice version (stored with the time); a student sends nothing. Returns the notice to store, or null. */
+function acceptedNotice(actor, noticeVersion, now) {
+  if (!accessContext.isGuest(actor)) return null;
+  const { SPEAKING_COACH_NOTICE_VERSION } = require('../../config/speakingGuestNotice');
+  if (noticeVersion !== SPEAKING_COACH_NOTICE_VERSION) throw new CoachError(400, 'COACH_NOTICE_REQUIRED', 'Read the practice notice and agree to it before you start.');
+  return { version: SPEAKING_COACH_NOTICE_VERSION, acceptedAt: now() };
+}
+
+/**
+ * Starts (or returns) the session. Returns { state, session }. Throws 404 (not the owner), 409 COACH_RESULT_NOT_READY, or for a guest 400
+ * COACH_NOTICE_REQUIRED (noticeVersion is not the current practice notice). A guest's acceptance is stored, and refreshed when the version changed.
+ */
+async function startSession(submissionId, actor, { env = process.env, fetchImpl = globalThis.fetch, now = () => new Date(), noticeVersion } = {}) {
   const source = await loadSource(submissionId, actor);
   if (!source.ready) throw new CoachError(409, 'COACH_RESULT_NOT_READY', 'Practice opens once your result is ready.');
+  const guestNotice = acceptedNotice(actor, noticeVersion, now);
   const key = sessionKey(source, actor);
   const existing = await SpeakingPracticeSession.findOne(key).lean();
-  if (existing && existing.status !== 'failed' && !isStale(existing)) return { state: STATE_OF[existing.status], session: existing };
+  if (existing && existing.status !== 'failed' && !isStale(existing)) {
+    if (guestNotice && existing.guestNotice?.version !== guestNotice.version) {
+      await SpeakingPracticeSession.updateOne({ _id: existing._id }, { $set: { guestNotice }, $inc: { revision: 1 } });
+      existing.guestNotice = guestNotice;
+    }
+    return { state: STATE_OF[existing.status], session: existing };
+  }
   const { settings } = readSettings(env);
   const weak = areas.weakAreas(source.criteria, settings.passPercent);
   if (!weak.length) return { state: 'no_practice_needed', session: null };
@@ -114,7 +132,8 @@ async function startSession(submissionId, actor, { env = process.env, fetchImpl 
   try {
     session = await SpeakingPracticeSession.findOneAndUpdate(
       { ...key, $or: [{ status: 'failed' }, { status: 'generating', updatedAt: { $lt: new Date(Date.now() - STALE_GENERATING_MS) } }] },
-      { $set: { status: 'generating', assignmentId: source.assignment._id, tasks: [], currentTaskId: null, 'generation.startedAt': startedAt },
+      { $set: { status: 'generating', assignmentId: source.assignment._id, tasks: [], currentTaskId: null, 'generation.startedAt': startedAt,
+        ...(guestNotice ? { guestNotice } : {}) },
         $setOnInsert: { settings: { passPercent: settings.passPercent, attemptCap: settings.maxAttemptsPerSubmission },
           sourceSnapshot: { feedbackId: source.stored._id, feedbackUpdatedAt: source.stored.updatedAt || null, criteria: source.criteria, fluency: source.fluency } } },
       { returnDocument: 'after', upsert: !existing, setDefaultsOnInsert: true });

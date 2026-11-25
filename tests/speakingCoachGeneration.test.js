@@ -37,6 +37,7 @@ const uploadRoot = path.resolve(__dirname, '..', process.env.UPLOAD_BASE_PATH);
 const ENV = { ...h.TEST_ENV, AUDIO_STT_ENABLED: 'true', SPEAKING_COACH_ENABLED: 'true' };
 const CORRECTIONS = [{ category: 'GRAMMAR', symbol: 'AGR', quotedText: 'It have', occurrence: 1, suggestedText: 'It has', message: 'Use has with it.' },
   { category: 'VOCABULARY', symbol: 'WC', quotedText: 'by walk', occurrence: 1, suggestedText: 'on foot', message: 'We say on foot.' }];
+const NOTICE = require('../src/config/speakingGuestNotice').SPEAKING_COACH_NOTICE_VERSION;
 const GOOD = Object.fromEntries(h.DEFAULT_IDS.map(id => [id, 'Good']));
 let f;
 
@@ -175,7 +176,7 @@ test('anyone but the owner: 404 (another student, the teacher, a guest context o
 test('a guest (through the link context): a guest-owned session', async () => {
   const made = await assessed({ mode: 'guest' });
   const actor = actorFor(made, 'guest');
-  const out = await coach.startSession(made.submission._id, actor, { env: ENV, fetchImpl: h.fakeOpenRouter(wording(['t1', 't2'])) });
+  const out = await coach.startSession(made.submission._id, actor, { env: ENV, fetchImpl: h.fakeOpenRouter(wording(['t1', 't2'])), noticeVersion: NOTICE });
   const session = await SpeakingPracticeSession.findById(out.session._id).lean();
   expect(String(session.guestSubmissionId)).toBe(String(made.submission._id));
   expect(session.studentId).toBeUndefined();
