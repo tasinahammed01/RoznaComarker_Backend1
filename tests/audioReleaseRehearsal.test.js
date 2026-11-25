@@ -118,9 +118,12 @@ afterEach(() => { delete process.env.AUDIO_STT_ENABLED; });
 describe('A. deployed with AUDIO_STT_ENABLED unset', () => {
   test('every audio and speaking route answers the hidden-feature 404 (signed in as a teacher, a student, or not at all)', async () => {
     const routes = featureRoutes();
-    expect(routes.length).toBe(19);   // every route of /api/audio, /api/speaking (and its teacher uploads) and /api/guest/speaking
+    // Every route of /api/audio, /api/speaking (and its teacher uploads), /api/guest/speaking, and the Speaking Coach (/api/speaking-coach: 7;
+    // its 5 guest routes are in /api/guest/speaking), which is hidden while either AUDIO_STT_ENABLED or SPEAKING_COACH_ENABLED is off.
+    expect(routes.length).toBe(31);
     expect(routes.map(([, route]) => route)).toEqual(expect.arrayContaining(['/api/audio/config', '/api/speaking/:assignmentId', '/api/guest/speaking/assignments/:qrToken/submit',
-      '/api/speaking/assignments/:assignmentId/teacher-uploads']));
+      '/api/speaking/assignments/:assignmentId/teacher-uploads', '/api/speaking-coach/submissions/:submissionId/start',
+      '/api/speaking-coach/sessions/:sessionId/tasks/:taskId/attempts', '/api/guest/speaking/submissions/:submissionId/coach/start']));
     for (const [method, route] of routes) {
       for (const headers of [auth(f.teacher.token), auth(f.student.token), {}]) {
         const res = await request(app)[method](fill(route)).set(headers);
