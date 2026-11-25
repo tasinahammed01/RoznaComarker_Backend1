@@ -9,6 +9,10 @@
 // figures sent and the model's feedback: summary, strengths, improvements and each criterion's comment (the transcripts are synthetic).
 //   SPEAKING_TRIAL=call-openrouter node scripts/speakingAssessmentTrial.js [--case <part of a case name>] [--max <n>] [--show-feedback]
 // Uses OPENROUTER_API_KEY and ASSESSMENT_AI_MODEL from the environment (or backend/.env when run directly).
+// Speaking Coach: --coach-check measures ONE practice check per synthetic transcript (default one transcript; --max <n> for more) with the
+// coach's real check prompt and validation, on the default rubric's grammar criterion. It REQUIRES a cost cap and never retries a call:
+//   SPEAKING_TRIAL=call-openrouter node scripts/speakingAssessmentTrial.js --coach-check --max-cost-usd <amount> [--case <name>] [--max <n>]
+// It stops as soon as the cost OpenRouter reports reaches the cap (the last call can pass it by at most that call's cost).
 const SWITCH = 'call-openrouter';
 
 function refuse(message) { console.error(`speakingAssessmentTrial: ${message}`); process.exitCode = 1; }
@@ -29,6 +33,7 @@ async function main(argv = process.argv.slice(2), env = process.env, deps = {}) 
   const cases = require('../tests/fixtures/audio/speakingBenchmark.cjs');
   let config;
   try { config = gateway.getAssessmentAIConfig(env); } catch { return refuse('the assessment model is not configured (OPENROUTER_API_KEY / ASSESSMENT_AI_MODEL).'); }
+  if (argv.includes('--coach-check')) return coachCheck(argv, env, deps, config, gateway);
   const pick = argv.includes('--case') ? argv[argv.indexOf('--case') + 1] : null;
   const max = argv.includes('--max') ? Number(argv[argv.indexOf('--max') + 1]) : Infinity;
   const showFeedback = argv.includes('--show-feedback');
@@ -74,6 +79,57 @@ async function main(argv = process.argv.slice(2), env = process.env, deps = {}) 
   }
   console.log(`total: ${totals.calls} call(s), ${totals.inputTokens} input and ${totals.outputTokens} output tokens, $${totals.costUsd.toFixed(5)} reported`);
   if (totals.calls) console.log(`average per assessed transcript: $${(totals.costUsd / totals.calls).toFixed(5)}`);
+}
+
+/** Speaking Coach: the real cost of practice checks, one call each (no retry), stopped at --max-cost-usd. Synthetic transcripts only. */
+async function coachCheck(argv, env, deps, config, gateway) {
+  const capIndex = argv.indexOf('--max-cost-usd');
+  const cap = capIndex >= 0 ? Number(argv[capIndex + 1]) : NaN;
+  if (!(Number.isFinite(cap) && cap > 0 && cap <= 5)) return refuse('refused: --coach-check needs --max-cost-usd <amount> (more than 0, at most 5 dollars).');
+  const checkPrompt = require('../src/services/speakingCoach/checkPrompt');
+  const assessment = require('../src/services/audio/speakingAssessment.service');
+  const { readSettings } = require('../src/services/speakingCoach/policy');
+  const { resolveSpeakingRubric } = require('../src/services/audio/speakingRubric');
+  const { caseRecording } = require('../tests/helpers/speakingAssessmentFixtures');
+  const cases = require('../tests/fixtures/audio/speakingBenchmark.cjs');
+  const { settings } = readSettings(env);
+  const pick = argv.includes('--case') ? argv[argv.indexOf('--case') + 1] : null;
+  const max = argv.includes('--max') ? Math.max(1, Number(argv[argv.indexOf('--max') + 1]) || 1) : 1;
+  const seen = new Set();
+  const selected = cases.filter(c => (!pick || c.name.includes(pick)) && !seen.has(c.text) && seen.add(c.text)
+    && assessment.countWords(c.text) >= settings.minWords && assessment.nonLatinShare(c.text) <= 0.3).slice(0, max);
+  const rubric = (await resolveSpeakingRubric({ speaking: null })).rubric;
+  const grammar = rubric.criteria.find(c => c.id === 'speaking-grammar');
+  const criterion = { criterionId: grammar.id, title: grammar.title, levels: grammar.levels.map(l => ({ title: l.title, percent: l.percentage, description: l.description })) };
+  const levelTitles = criterion.levels.map(l => l.title);
+  const forbiddenWords = [...new Set(rubric.criteria.flatMap(c => c.levels.map(l => l.title)))];
+  const assignment = { title: 'Describe your town', instructions: 'Speak for one to three minutes about the town where you live: what it is like, what people do there, and what you would change.' };
+  const task = { type: 'repeat_improve', prompt: 'Answer the task again. This time, focus on your grammar.', targets: [] };
+  const totals = { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 };
+  console.log(`practice check: model ${config.chain[0].model}; prompt ${checkPrompt.CHECK_PROMPT_VERSION}; ${selected.length} transcript(s); cap $${cap.toFixed(5)}`);
+  for (const item of selected) {
+    const { fluency } = caseRecording(item);
+    const input = checkPrompt.checkInput({ assignment, task, criterion, before: { levelReached: 'Developing', notes: ['Check the verb forms as you speak.'], fluency },
+      nowFluency: fluency, answer: item.text, wordsNotToUse: forbiddenWords });
+    totals.calls++;
+    try {
+      const result = await gateway.generate({ feature: checkPrompt.CHECK_FEATURE, config: { ...config, primaryRetries: 0, fallbackRetries: 0, retriesPerModel: 0 }, env,
+        ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), messages: checkPrompt.checkMessages(input), maxOutputTokens: settings.maxOutputTokens, temperature: 0,
+        responseFormat: 'json', responseSchema: checkPrompt.checkSchema(levelTitles), schemaName: checkPrompt.CHECK_FEATURE, metadata: { purpose: 'speaking_coach_trial' },
+        validate: raw => checkPrompt.validateCheck(raw, { levelTitles, forbiddenWords }) });
+      const usage = result.usage || {};
+      totals.inputTokens += usage.prompt_tokens || 0; totals.outputTokens += usage.completion_tokens || 0; totals.costUsd += typeof usage.cost === 'number' ? usage.cost : 0;
+      const value = result.value;
+      console.log(`- ${item.name}: ${value.assessable ? `level ${value.level}, ${value.onTask ? 'on task' : 'off task'}` : `not assessable (${value.reason})`}; `
+        + `tokens ${usage.prompt_tokens ?? '?'} in / ${usage.completion_tokens ?? '?'} out; cost ${typeof usage.cost === 'number' ? `$${usage.cost.toFixed(5)}` : 'not reported'}`);
+    } catch (error) {
+      const sub = subCode(error);
+      console.log(`- ${item.name}: FAILED ${String(error?.finalFailureCode || error?.code || 'ERROR').replace(/[^A-Z0-9_]/gi, '')}${sub ? ` (${sub})` : ''}`);
+    }
+    if (totals.costUsd >= cap) { console.log(`cost cap reached ($${totals.costUsd.toFixed(5)} of $${cap.toFixed(5)}); stopping`); break; }
+  }
+  console.log(`total: ${totals.calls} call(s), ${totals.inputTokens} input and ${totals.outputTokens} output tokens, $${totals.costUsd.toFixed(5)} reported`);
+  if (totals.calls) console.log(`average per practice check: $${(totals.costUsd / totals.calls).toFixed(5)}`);
 }
 
 if (require.main === module) {

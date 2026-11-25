@@ -88,6 +88,58 @@ describe('with the switch and an injected fake provider (stage 7b output)', () =
   });
 });
 
+describe('--coach-check (Speaking Coach: the cost of one practice check), with an injected fake provider', () => {
+  const h = require('./helpers/speakingAssessmentFixtures');
+  const env = { ...h.TEST_ENV, NODE_ENV: 'development', SPEAKING_TRIAL: trial.SWITCH, OPENROUTER_API_KEY: 'sk-or-placeholder-should-never-print' };
+  const reply = { assessable: true, notAssessableReason: 'none', onTask: true, level: 'Good', improved: ['You checked your verbs more carefully.'],
+    stillWeak: ['Link your ideas with because.'], nextTip: 'Say each sentence a little more slowly.' };
+  const capture = async (argv, fetchImpl) => {
+    const lines = [];
+    const log = jest.spyOn(console, 'log').mockImplementation((...args) => lines.push(args.join(' ')));
+    const err = jest.spyOn(console, 'error').mockImplementation((...args) => lines.push(args.join(' ')));
+    try { await trial.main(argv, env, { fetchImpl }); } finally { log.mockRestore(); err.mockRestore(); }
+    return lines.join('\n');
+  };
+
+  test.each([[['--coach-check']], [['--coach-check', '--max-cost-usd', '0']], [['--coach-check', '--max-cost-usd', '6']], [['--coach-check', '--max-cost-usd', 'x']]])(
+    '%j: refused without a cap from more than 0 to 5 dollars, and nothing is called', async (argv) => {
+      const fetchImpl = h.fakeOpenRouter(reply);
+      const out = await capture(argv, fetchImpl);
+      expect(out).toContain('refused: --coach-check needs --max-cost-usd');
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+  test('one call per synthetic transcript (default one), tokens and the reported cost; stops once the reported cost reaches the cap', async () => {
+    const fetchImpl = h.fakeOpenRouter(reply, { usage: { prompt_tokens: 1400, completion_tokens: 300, cost: 0.002 } });
+    const one = await capture(['--coach-check', '--max-cost-usd', '0.5'], fetchImpl);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(one).toMatch(/practice check: .*speaking-coach-check-v1/);
+    expect(one).toMatch(/- \w[\w ]*: level Good, on task; tokens 1400 in \/ 300 out; cost \$0\.00200/);
+    expect(one).toContain('average per practice check: $0.00200');
+    const capped = h.fakeOpenRouter(reply, { usage: { prompt_tokens: 1400, completion_tokens: 300, cost: 0.002 } });
+    const out = await capture(['--coach-check', '--max', '5', '--max-cost-usd', '0.003'], capped);
+    expect(capped).toHaveBeenCalledTimes(2);
+    expect(out).toContain('cost cap reached ($0.00400 of $0.00300); stopping');
+    expect(out).not.toContain('sk-or-placeholder');
+    expect(out).not.toContain('kind speaking coach');
+  });
+
+  test('a rejected reply is one call (no retry) and prints the check that rejected it', async () => {
+    const fetchImpl = h.fakeOpenRouter({ ...reply, improved: ['Your score went up.'] });
+    const out = await capture(['--coach-check', '--max-cost-usd', '0.5'], fetchImpl);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(out).toMatch(/FAILED AI_OUTPUT_VALIDATION_FAILED \(COACH_TEXT_FORBIDDEN_TERM\)/);
+  });
+
+  test('a provider error is one call too: the trial never retries (no hidden extra cost)', async () => {
+    const fetchImpl = h.fakeOpenRouter({ status: 500 });
+    const out = await capture(['--coach-check', '--max-cost-usd', '0.5'], fetchImpl);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(out).toMatch(/FAILED /);
+  });
+});
+
 test('the source never prints the environment, a key or the prompt', () => {
   const source = fs.readFileSync(SCRIPT, 'utf8');
   for (const line of source.split('\n').filter(l => /console\.(log|error)/.test(l))) {
