@@ -88,6 +88,24 @@ function credentialFor(provider, env = process.env) {
   if (provider === 'openrouter') return text(env.OPENROUTER_API_KEY);
   return '';
 }
+// A key is sent in a header. One holding anything but printable ASCII inside it (a line break, a tab, a zero-width or non-breaking space, as a
+// copy and paste can add) is refused by fetch before any byte leaves, as a bare TypeError that used to read as AI_RESPONSE_INVALID. Refused here
+// instead, with its own code. The key itself is never logged or kept.
+const credentialIssue = value => (value && /[^\x21-\x7E]/u.test(value) ? 'non_printable_characters' : null);
+/**
+ * Codes only, for an error that is not the gateway's own: where it happened, its name and its cause code (never its message). Kept in a
+ * NON-enumerable field read only by the gateway's server log line, so it never reaches the public error, its attempts or anything stored
+ * (transport details stay private: tests/aiRequestDiagnostics.test.js; callers that need them use onDiagnostic).
+ */
+function annotateForeignError(error, failureStage) {
+  if (!error || typeof error !== 'object' || String(error.code || '').startsWith('AI_') || error.gatewayDiagnostics) return;
+  const cause = String(error.cause?.code || error.code || '');
+  try {
+    Object.defineProperty(error, 'gatewayDiagnostics', { enumerable: false, value: Object.freeze({ failureStage,
+      ...(/^[A-Za-z]{1,40}$/u.test(String(error.name || '')) ? { errorName: error.name } : {}),
+      ...(/^[A-Z0-9_]{1,40}$/u.test(cause) ? { causeCode: cause } : {}) }) });
+  } catch { /* a frozen error keeps the generic code */ }
+}
 
 function endpointFor(provider, env = process.env) {
   if (provider === 'google') return text(env.GEMINI_BASE_URL)
@@ -274,7 +292,7 @@ function safeFailureMetadata(error) {
     'requiredPropertyMissing', 'unexpectedPropertyPresent', 'expectedSymbolCount',
     'receivedSymbolCount', 'missingSymbols', 'duplicateSymbols', 'unexpectedSymbols',
     'providerErrorCode', 'providerErrorMessage', 'providerErrorParameter', 'providerErrorMetadata',
-    'schemaName', 'schemaPath'];
+    'schemaName', 'schemaPath', 'credentialIssue'];
   return Object.fromEntries(allowed.filter((key) => error?.[key] !== undefined && error?.[key] !== null)
     .map((key) => [key, error[key]]));
 }
@@ -403,7 +421,7 @@ function abortable(promise,signal){
 }
 async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temperature, responseFormat,
   responseSchema, schemaName, attemptTimeoutMs, fetchImpl, env, now, googleThinkingLevel, feature, onDiagnostic,
-  requestProfile, signal, timeoutScope='local_attempt_timeout', samplingVariant=null }) {
+  requestProfile, signal, timeoutScope='local_attempt_timeout', samplingVariant=null, reasoningEffort=null }) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener('abort', abort, { once: true });
@@ -432,6 +450,11 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
     // Assignment report summary: the proven Claude request shape of teacher comment drafts (no temperature, reasoning off, so no billed
     // thinking), without the correction model chain. Only this feature; every other request body is unchanged.
     if(feature==='assignment_report_summary'&&!google){delete body.temperature;body.reasoning={effort:'none'};}
+    // A caller's reasoning effort (the Speaking Coach's calls): only on OpenRouter, only where no profile above set one, and with
+    // require_parameters so no route that would ignore it (or the strict schema) serves the request.
+    if(!google&&!body.reasoning&&['low','medium','high'].includes(reasoningEffort)){
+      body.reasoning={effort:reasoningEffort};body.provider={...(body.provider||{}),require_parameters:true};
+    }
     if(isAssessmentFeature(feature)) {
       if(google || !ASSESSMENT_MODELS.includes(entry.model))
         throw attemptError('AI_ASSESSMENT_AUTHORITY_INVALID','Assessment requires one approved OpenRouter model.');
@@ -506,6 +529,8 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
         body.reasoning={effort:mechanicsProfile.REASONING_EFFORT};
       }
     }
+    const issue = credentialIssue(credentialFor(entry.provider, env));
+    if (issue) throw attemptError('AI_PROVIDER_CREDENTIAL_INVALID', 'AI provider credential cannot be sent.', { credentialIssue: issue });
     const options = {
       method: 'POST',
       headers: {
@@ -589,6 +614,7 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
       // Which provider actually served the call (a short name only), for the production log.
       ...(requestProfile && typeof payload.provider === 'string' ? { provider: payload.provider.slice(0, 80) } : {}) };
   } catch (error) {
+    if (!controller.signal.aborted) annotateForeignError(error, failureStage);
     if(isAssessmentFeature(feature)&&diagnosticUsage)Object.assign(error,rubricUsage(diagnosticUsage));
     accountingOutcome=controller.signal.aborted?'AI_ATTEMPT_TIMEOUT':safeCode(error);
     requestDiagnostics.notify(onDiagnostic, { failureStage: controller.signal.aborted || error?.name === 'AbortError'
@@ -622,7 +648,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
   env = process.env, fetchImpl = global.fetch,
   now = Date.now, sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   randomFn = Math.random, config = getAIConfig(env), onAttempt, onRetry, deadlineAt = null,
-  retryableSameModelCodes = [], terminalCodes = [], onDiagnostic, samplingVariant = null } = {}) {
+  retryableSameModelCodes = [], terminalCodes = [], onDiagnostic, samplingVariant = null, reasoningEffort = null } = {}) {
   if (!Array.isArray(messages) || typeof fetchImpl !== 'function') {
     throw new TypeError('AI gateway requires messages and fetch.');
   }
@@ -679,7 +705,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
       try {
         const result = await providerAttempt({ entry, messages, maxOutputTokens, temperature,
           responseFormat, responseSchema, schemaName, attemptTimeoutMs: timeout, fetchImpl, env, now,
-          googleThinkingLevel, feature, onDiagnostic, samplingVariant,
+          googleThinkingLevel, feature, onDiagnostic, samplingVariant, reasoningEffort,
           timeoutScope:deadlineAt&&timeout<config.attemptTimeoutMs?'shared_stage_deadline':'local_attempt_timeout' });
         let value = result.content;
         if (typeof validate === 'function') {
@@ -732,7 +758,9 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
           retryIndex: retry, durationMs: now() - attemptStarted, attemptTimeoutMs: timeout,
           remainingBudgetMs: Math.max(0, deadline - now()), maxOutputTokens, code, httpStatus,
           retryDelayMs: null,
-          ...failureMetadata });
+          ...failureMetadata,
+          // Server log only: where a non-gateway error happened (stage, name, cause code), so it never hides behind AI_RESPONSE_INVALID.
+          ...(error?.gatewayDiagnostics || {}) });
         if (terminalCodes.includes(code)) {
           // Preserve sanitized attempt diagnostics for the canonical failure
           // record while preventing a terminal account/request failure from

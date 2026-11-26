@@ -14,6 +14,8 @@ const AdaptivePracticeAttempt = require('../models/AdaptivePracticeAttempt');
 const Upload = require('../models/Upload');
 const File = require('../models/File');
 const AudioRecording = require('../models/AudioRecording');
+const SpeakingPracticeSession = require('../models/SpeakingPracticeSession');
+const SpeakingPracticeAttempt = require('../models/SpeakingPracticeAttempt');
 const Notification = require('../models/notification.model');
 const User = require('../models/user.model');
 const logger = require('../utils/logger');
@@ -113,7 +115,15 @@ async function collectCleanupContext(submission) {
   // Speaking (audio) submissions: their recordings and audio files. Storage is released exactly as charged (storageChargedMB), not re-measured.
   const audioRecordings = submission.sourceKind === 'audio'
     ? await AudioRecording.find({ submissionId: submission._id }).select('_id audioFileId storageChargedTo storageChargedMB').lean() : [];
-  const audioFileIds = uniqueIds(audioRecordings.map(recording => recording.audioFileId));
+  // Speaking Coach: the practice sessions of this submission, their attempts and practice recordings (no submissionId on them), and any practice
+  // audio still on disk (a transcribed practice recording has no file left). No storage was charged for practice audio.
+  const practiceSessionIds = submission.sourceKind === 'audio'
+    ? (await SpeakingPracticeSession.find({ submissionId: submission._id }).select('_id').lean()).map(session => session._id) : [];
+  const practiceRecordingIds = practiceSessionIds.length ? uniqueIds((await SpeakingPracticeAttempt.find({ sessionId: { $in: practiceSessionIds } })
+    .select('recordingId').lean()).map(attempt => attempt.recordingId)) : [];
+  const practiceRecordings = practiceRecordingIds.length
+    ? await AudioRecording.find({ _id: { $in: practiceRecordingIds }, purpose: 'practice' }).select('_id audioFileId').lean() : [];
+  const audioFileIds = uniqueIds([...audioRecordings, ...practiceRecordings].map(recording => recording.audioFileId));
   const audioFiles = audioFileIds.length ? await File.find({ _id: { $in: audioFileIds } }).select('_id path').lean() : [];
   const physicalPaths = uniqueIds([
     ...fileDocs.map((doc) => doc.path),
@@ -122,7 +132,7 @@ async function collectCleanupContext(submission) {
     ...audioFiles.map(doc => doc.path)
   ]);
   return { fileIds: uniqueIds([...fileIds, ...derived.map(doc => doc._id), ...audioFiles.map(doc => doc._id)]), physicalPaths,
-    storageBytes: await physicalFileSize(originalPaths), audioRecordings };
+    storageBytes: await physicalFileSize(originalPaths), audioRecordings, practiceSessionIds, practiceRecordings };
 }
 
 async function deleteDatabaseState(context, mongoSession = null) {
@@ -151,6 +161,13 @@ async function deleteDatabaseState(context, mongoSession = null) {
       'usage.storageMB': { $max: [0, { $subtract: [{ $ifNull: ['$usage.storageMB', 0] }, charged] }] } } }], { ...options, updatePipeline: true });
   }
   if (context.audioRecordings?.length) await AudioRecording.deleteMany({ _id: { $in: context.audioRecordings.map(recording => recording._id) } }, options);
+  if (context.practiceSessionIds?.length) {
+    await SpeakingPracticeAttempt.deleteMany({ sessionId: { $in: context.practiceSessionIds } }, options);
+    await SpeakingPracticeSession.deleteMany({ _id: { $in: context.practiceSessionIds } }, options);
+  }
+  if (context.practiceRecordings?.length) {
+    await AudioRecording.deleteMany({ _id: { $in: context.practiceRecordings.map(recording => recording._id) }, purpose: 'practice' }, options);
+  }
 
   const storageMB = Number((context.storageBytes / (1024 * 1024)).toFixed(2));
   await User.updateOne({ _id: submission.student }, [{ $set: {
@@ -170,7 +187,9 @@ async function removeSubmissionForTeacher(submissionId, teacherId) {
   const cleanup = await collectCleanupContext(authorized.submission);
   const context = { ...authorized, ...cleanup };
   // A transcription still running is cancelled first, so its minutes reservation is released and a late result has nowhere to go.
-  for (const recording of context.audioRecordings || []) await require('./audio/processing').cancelAudioRecording(recording._id);
+  for (const recording of [...(context.audioRecordings || []), ...(context.practiceRecordings || [])]) {
+    await require('./audio/processing').cancelAudioRecording(recording._id);
+  }
   const mongoSession = await mongoose.startSession();
   try {
     try {

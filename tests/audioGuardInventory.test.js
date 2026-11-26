@@ -122,7 +122,18 @@ const ALLOWED = {
   // Stage 10: guests on speaking assignments. Both need the guest's own link (or a read-only portal session) AND a recording; anything else
   // (another guest, a student, a teacher, an essay guest submission) answers one 404 (speakingGuest.test.js and the test below).
   'GET /api/guest/speaking/submissions/:submissionId': 'the speaking feature itself: the guest\'s own speaking result',
-  'GET /api/guest/speaking/submissions/:submissionId/media': 'the speaking feature itself: the guest\'s own recording (playback)'
+  'GET /api/guest/speaking/submissions/:submissionId/media': 'the speaking feature itself: the guest\'s own recording (playback)',
+  // Speaking Coach (SPEAKING_COACH_ENABLED): practice after a speaking result. Every query requires sourceKind 'audio' and the owner (the student,
+  // the guest's own link, or the owning teacher for progress); any other id or caller answers 404 (speakingCoachRoutes.test.js). Practice writes
+  // only its own collections, never the graded submission (speakingCoachAttempt.test.js, speakingCoachGeneration.test.js).
+  'GET /api/speaking-coach/submissions/:submissionId': 'the speaking feature itself: the owning student\'s speaking practice state (Speaking Coach)',
+  'POST /api/speaking-coach/submissions/:submissionId/start': 'the speaking feature itself: the owning student starts speaking practice (Speaking Coach)',
+  'GET /api/speaking-coach/teacher/submissions/:submissionId/progress': 'the speaking feature itself: the owning teacher reads speaking practice progress (Speaking Coach)',
+  'GET /api/guest/speaking/submissions/:submissionId/coach': 'the speaking feature itself: the guest\'s own speaking practice state and notice (Speaking Coach)',
+  'POST /api/guest/speaking/submissions/:submissionId/coach/start': 'the speaking feature itself: the guest starts speaking practice after the notice (Speaking Coach)',
+  'POST /api/guest/speaking/submissions/:submissionId/coach/sessions/:sessionId/tasks/:taskId/attempts': 'the speaking feature itself: the guest\'s practice recording (Speaking Coach)',
+  'GET /api/guest/speaking/submissions/:submissionId/coach/sessions/:sessionId/attempts/:attemptId': 'the speaking feature itself: the guest\'s practice attempt and feedback (Speaking Coach)',
+  'POST /api/guest/speaking/submissions/:submissionId/coach/sessions/:sessionId/attempts/:attemptId/retry': 'the speaking feature itself: the guest checks a failed practice check again (Speaking Coach)'
 };
 
 /** Every route (all methods) of every router mounted in app.js whose path has :submissionId. Same reading as tests/helpers/studentRouteScan.js. */

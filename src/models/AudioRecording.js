@@ -36,6 +36,10 @@ const audioRecordingSchema = new Schema({
   // created for an assignment. Without it the worker refuses before any provider call. institutionId is recorded with the minutes, for reports.
   minutesChargedTo: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   institutionId: { type: Schema.Types.ObjectId, ref: 'Institution', default: null },
+  // Speaking Coach: 'practice' for a practice attempt's recording (submissionId stays null, so no graded reader sees it; practiceAttemptId points
+  // to its SpeakingPracticeAttempt). Unset (every existing recording) = a graded recording.
+  purpose: { type: String, enum: ['graded', 'practice'], default: undefined },
+  practiceAttemptId: { type: Schema.Types.ObjectId, ref: 'SpeakingPracticeAttempt', default: undefined },
   // Exactly what was charged to whose storage quota, so a later deletion releases exactly that.
   storageChargedTo: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   storageChargedMB: { type: Number, min: 0, default: 0 },

@@ -28,7 +28,10 @@ const audioUsageLedgerSchema = new Schema({
   reservedAt: { type: Date, required: true },
   expiresAt: { type: Date, required: true },
   closedAt: { type: Date, default: null },
-  reason: { type: String, trim: true, maxlength: 64, default: null }
+  reason: { type: String, trim: true, maxlength: 64, default: null },
+  // Speaking Coach: 'practice' rows count only toward the separate practice caps (SPEAKING_COACH_*_MINUTES_PER_TEACHER); unset rows (every
+  // existing row) are graded minutes and count only toward the graded caps.
+  purpose: { type: String, enum: ['graded', 'practice'], default: undefined }
 }, { timestamps: true, versionKey: false });
 
 audioUsageLedgerSchema.index({ key: 1 }, { unique: true, name: 'audio_usage_key_v1' });

@@ -7,4 +7,11 @@ const SPEAKING_GUEST_NOTICE_TEXT = 'Your recording and its transcript are saved 
   + 'speech-to-text service to create the transcript, and the result is marked with AI to help your teacher. It is kept until your teacher deletes the '
   + 'submission. If you are under 18, ask a parent or guardian before recording.';
 
-module.exports = Object.freeze({ SPEAKING_GUEST_NOTICE_VERSION, SPEAKING_GUEST_NOTICE_TEXT });
+// Speaking Coach: the practice notice a guest accepts before the first practice recording (stored on the practice session with the time). It
+// adds to the notice above, which stays valid, unchanged, for the graded recording. Same rule: change the text -> change the version.
+const SPEAKING_COACH_NOTICE_VERSION = 'speaking-coach-guest-2026-11';
+const SPEAKING_COACH_NOTICE_TEXT = 'Practice recordings are sent to a speech-to-text service and checked with AI to give you feedback. The audio is deleted '
+  + 'as soon as it has been turned into text. The text and the feedback are kept with your practice so your teacher can see your progress. Practice never '
+  + 'changes your mark. If you are under 18, ask a parent or guardian before recording.';
+
+module.exports = Object.freeze({ SPEAKING_GUEST_NOTICE_VERSION, SPEAKING_GUEST_NOTICE_TEXT, SPEAKING_COACH_NOTICE_VERSION, SPEAKING_COACH_NOTICE_TEXT });

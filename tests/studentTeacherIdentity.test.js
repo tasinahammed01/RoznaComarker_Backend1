@@ -148,6 +148,12 @@ const NOT_COVERED = {
   '/api/guest/speaking/assignments/:qrToken': 'behind AUDIO_STT_ENABLED (off here: 404); the task, the limits and the consent notice, no teacher or class field (speakingGuest.test.js)',
   '/api/guest/speaking/submissions/:submissionId': 'behind AUDIO_STT_ENABLED (off here: 404); the result of the guest who owns it, a strict field-by-field DTO, nothing internal (speakingGuest.test.js)',
   '/api/guest/speaking/submissions/:submissionId/media': 'behind AUDIO_STT_ENABLED (off here: 404); the audio of the guest who owns it, not JSON (speakingGuest.test.js)',
+  // Speaking Coach: behind SPEAKING_COACH_ENABLED and AUDIO_STT_ENABLED (off here: 404). Strict field-by-field DTOs; speakingCoachRoutes.test.js checks
+  // every student and guest response for teacher ids, levels, pass flags, provider, model, prompt and hash fields.
+  '/api/speaking-coach/submissions/:submissionId': 'behind SPEAKING_COACH_ENABLED (off here: 404); the owning student\'s practice, a strict DTO (speakingCoachRoutes.test.js)',
+  '/api/speaking-coach/sessions/:sessionId/attempts/:attemptId': 'behind SPEAKING_COACH_ENABLED (off here: 404); the owning student\'s attempt, a strict DTO (speakingCoachRoutes.test.js)',
+  '/api/guest/speaking/submissions/:submissionId/coach': 'behind SPEAKING_COACH_ENABLED (off here: 404); the guest\'s own practice and notice, a strict DTO (speakingCoachRoutes.test.js)',
+  '/api/guest/speaking/submissions/:submissionId/coach/sessions/:sessionId/attempts/:attemptId': 'behind SPEAKING_COACH_ENABLED (off here: 404); the guest\'s own attempt, a strict DTO (speakingCoachRoutes.test.js)',
 };
 // Keys that look internal but that a student page reads. Each has a reason; a key is added here only after its reader is named.
 const STUDENT_READS = {

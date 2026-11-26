@@ -218,6 +218,8 @@ app.use('/api/audio', require('./routes/audio.routes'));
 // Stage 9: teacher-uploaded recordings (mounted before the speaking router, whose last handler answers 404 to anything else).
 app.use('/api/speaking/assignments/:assignmentId/teacher-uploads', require('./routes/speakingTeacherUpload.routes'));
 app.use('/api/speaking', require('./routes/speaking.routes'));
+// Speaking Coach (SPEAKING_COACH_ENABLED, default off): practice after a speaking result. Guests: /api/guest/speaking/submissions/:id/coach.
+app.use('/api/speaking-coach', require('./routes/speakingCoach.routes'));
 app.use("/api/flashcards", flashcardRoutes);
 app.use("/api/shared", sharedFlashcardRoutes);
 app.use("/api/worksheets/generate/text", worksheetTextRoute);

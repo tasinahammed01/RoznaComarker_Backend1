@@ -27,20 +27,35 @@ const nextUtcMidnight = date => { const d = new Date(date); return new Date(Date
 const refusal = (code, retryable, retryAt = null) => ({ ok: false, code, retryable, retryAt: retryable ? retryAt : null });
 const log = fields => logger.metric(fields);
 
-/** The cap read for one teacher's UTC month: consumed rows and reservations still in flight. */
-function usageQuery(teacher, { now = new Date() } = {}) {
+// Speaking Coach: practice minutes ('practice' rows) have their own caps and never count toward the graded caps, and graded minutes (rows with no
+// purpose, or 'graded') never count toward the practice caps. So practice can never use up the minutes graded work needs.
+const PRACTICE = 'practice';
+const purposeFilter = purpose => (purpose === PRACTICE ? { purpose: PRACTICE } : { purpose: { $ne: PRACTICE } });
+/** The daily and monthly caps in seconds for one purpose. */
+function capsFor(purpose, env) {
+  if (purpose === PRACTICE) {
+    const { settings } = require('../speakingCoach/policy').readSettings(env);
+    return { dailyCap: settings.dailyMinutesPerTeacher * 60, monthlyCap: settings.monthlyMinutesPerTeacher * 60 };
+  }
+  const { limits } = readLimits(env);
+  return { dailyCap: limits.dailyMinutesPerTeacher * 60, monthlyCap: limits.monthlyMinutesPerTeacher * 60 };
+}
+
+/** The cap read for one teacher's UTC month and one purpose (graded by default): consumed rows and reservations still in flight. */
+function usageQuery(teacher, { now = new Date(), purpose } = {}) {
   const at = new Date(now);
   return {
-    filter: { minutesChargedTo: teacher, monthKey: utcKeys(at).monthKey, $or: [{ state: 'consumed' }, { state: 'reserved', expiresAt: { $gt: at } }] },
+    filter: { minutesChargedTo: teacher, monthKey: utcKeys(at).monthKey, ...purposeFilter(purpose),
+      $or: [{ state: 'consumed' }, { state: 'reserved', expiresAt: { $gt: at } }] },
     projection: { ...PROJECTION },
     limit: USAGE_READ_CAP + 1
   };
 }
 
 /** { daySeconds, monthSeconds, reservedSeconds, capped } for the UTC day and month of now(). Both totals include in-flight reservations. */
-async function readUsage(teacher, { now = () => new Date(), readCap = USAGE_READ_CAP } = {}) {
+async function readUsage(teacher, { now = () => new Date(), readCap = USAGE_READ_CAP, purpose } = {}) {
   const at = now();
-  const { filter, projection } = usageQuery(teacher, { now: at });
+  const { filter, projection } = usageQuery(teacher, { now: at, purpose });
   const rows = await AudioUsageLedger.find(filter).select(projection).limit(readCap + 1).lean();
   const { dayKey } = utcKeys(at);
   const totals = { daySeconds: 0, monthSeconds: 0, reservedSeconds: 0, capped: rows.length > readCap };
@@ -64,10 +79,9 @@ async function reserveMinutes({ recording, now = () => new Date(), env = process
   if (!teacher) return refusal('AUDIO_USAGE_OWNER_UNKNOWN', false);
   const duration = Number(recording.durationSeconds);
   if (!Number.isFinite(duration) || duration <= 0) return refusal('AUDIO_USAGE_DURATION_UNKNOWN', false);
-  const { limits } = readLimits(env);
+  const purpose = recording.purpose === PRACTICE ? PRACTICE : undefined;
+  const { dailyCap, monthlyCap } = capsFor(purpose, env);
   const seconds = Math.ceil(duration);
-  const dailyCap = limits.dailyMinutesPerTeacher * 60;
-  const monthlyCap = limits.monthlyMinutesPerTeacher * 60;
   if (seconds > dailyCap) { log({ event: 'audio_usage_refused', recordingId, code: 'AUDIO_RECORDING_EXCEEDS_DAILY_CAP', seconds }); return refusal('AUDIO_RECORDING_EXCEEDS_DAILY_CAP', false); }
 
   const key = `${recordingId}:${recording.attemptKey}`;
@@ -86,7 +100,7 @@ async function reserveMinutes({ recording, now = () => new Date(), env = process
     { $set: { state: 'expired', closedAt: at, reason: 'lease_ended' } });
   try {
     await AudioUsageLedger.create({ key, recordingId: recording._id, uploader: recording.owner, minutesChargedTo: teacher, institutionId: recording.institutionId || null,
-      seconds, dayKey, monthKey, state: 'reserved', reservedAt: at, expiresAt: recording.leaseUntil });
+      seconds, dayKey, monthKey, state: 'reserved', reservedAt: at, expiresAt: recording.leaseUntil, ...(purpose ? { purpose } : {}) });
   } catch (error) {
     if (error?.code !== 11000) throw error;
     const same = await mine();                                                  // the same attempt, concurrently: one row
@@ -95,7 +109,7 @@ async function reserveMinutes({ recording, now = () => new Date(), env = process
     return refusal('AUDIO_TRANSCRIPTION_BUSY', true, new Date(at.getTime() + BUSY_RETRY_MS));
   }
 
-  const usage = await readUsage(teacher, { now: () => at, readCap });
+  const usage = await readUsage(teacher, { now: () => at, readCap, purpose });
   if (usage.capped) {
     await close({ key, state: 'reserved' }, 'released', at, 'usage_unavailable');
     log({ event: 'audio_usage_read_capped', recordingId, cap: readCap });
@@ -105,10 +119,10 @@ async function reserveMinutes({ recording, now = () => new Date(), env = process
     : usage.daySeconds > dailyCap ? refusal('AUDIO_DAILY_MINUTES_EXCEEDED', true, nextUtcMidnight(at)) : null;
   if (over) {
     await close({ key, state: 'reserved' }, 'refused', at, over.code);
-    log({ event: 'audio_usage_refused', recordingId, code: over.code, seconds, daySeconds: usage.daySeconds - seconds, monthSeconds: usage.monthSeconds - seconds });
+    log({ event: 'audio_usage_refused', recordingId, ...(purpose ? { purpose } : {}), code: over.code, seconds, daySeconds: usage.daySeconds - seconds, monthSeconds: usage.monthSeconds - seconds });
     return over;
   }
-  log({ event: 'audio_usage_reserved', recordingId, seconds, daySeconds: usage.daySeconds, monthSeconds: usage.monthSeconds });
+  log({ event: 'audio_usage_reserved', recordingId, ...(purpose ? { purpose } : {}), seconds, daySeconds: usage.daySeconds, monthSeconds: usage.monthSeconds });
   return { ok: true, key, seconds };
 }
 
@@ -130,5 +144,13 @@ async function releaseRecordingReservations(recordingId, { now = () => new Date(
   return { released: result.modifiedCount || 0 };
 }
 
-module.exports = { USAGE_READ_CAP, BUSY_RETRY_MS, utcKeys, nextUtcMidnight, usageQuery, readUsage, reserveMinutes, consumeReservation, releaseReservation,
-  releaseRecordingReservations };
+/** Seconds left today and this month (the smaller) for one teacher and purpose. 0 when the usage cannot be read in full. Read-only. */
+async function minutesLeft(teacher, { now = () => new Date(), env = process.env, purpose } = {}) {
+  const { dailyCap, monthlyCap } = capsFor(purpose, env);
+  const used = await readUsage(teacher, { now, purpose });
+  if (used.capped) return 0;
+  return Math.max(0, Math.min(dailyCap - used.daySeconds, monthlyCap - used.monthSeconds));
+}
+
+module.exports = { USAGE_READ_CAP, BUSY_RETRY_MS, PRACTICE, utcKeys, nextUtcMidnight, usageQuery, readUsage, reserveMinutes, consumeReservation,
+  releaseReservation, releaseRecordingReservations, minutesLeft };
