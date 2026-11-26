@@ -105,7 +105,7 @@ describe('--coach-check (Speaking Coach: the cost of one practice check), with a
     '%j: refused without a cap from more than 0 to 5 dollars, and nothing is called', async (argv) => {
       const fetchImpl = h.fakeOpenRouter(reply);
       const out = await capture(argv, fetchImpl);
-      expect(out).toContain('refused: --coach-check needs --max-cost-usd');
+      expect(out).toContain('refused: --coach-check and --coach-generate need --max-cost-usd');
       expect(fetchImpl).not.toHaveBeenCalled();
       expect(process.exitCode).toBe(1);
     });
@@ -137,6 +137,79 @@ describe('--coach-check (Speaking Coach: the cost of one practice check), with a
     const out = await capture(['--coach-check', '--max-cost-usd', '0.5'], fetchImpl);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(out).toMatch(/FAILED /);
+  });
+});
+
+describe('--coach-generate (Speaking Coach: the cost of one task wording), alone and with --coach-check under one shared cap', () => {
+  const h = require('./helpers/speakingAssessmentFixtures');
+  const env = { ...h.TEST_ENV, NODE_ENV: 'development', SPEAKING_TRIAL: trial.SWITCH, OPENROUTER_API_KEY: 'sk-or-placeholder-should-never-print' };
+  const PROMPTS = ['Answer the task again and check each verb you use.', 'Answer again and use the new words in your answer.'];
+  const TIPS = ['Speak a little more slowly.', 'Plan where each word fits first.'];
+  const wording = { tasks: [{ taskId: 't1', prompt: PROMPTS[0], tip: TIPS[0] }, { taskId: 't2', prompt: PROMPTS[1], tip: TIPS[1] }] };
+  const checkReply = { assessable: true, notAssessableReason: 'none', onTask: true, level: 'Good', improved: ['You checked your verbs more carefully.'],
+    stillWeak: [], nextTip: 'Say each sentence a little more slowly.' };
+  const usage = { usage: { prompt_tokens: 1500, completion_tokens: 500, cost: 0.002 } };
+  const capture = async (argv, fetchImpl) => {
+    const lines = [];
+    const log = jest.spyOn(console, 'log').mockImplementation((...args) => lines.push(args.join(' ')));
+    const err = jest.spyOn(console, 'error').mockImplementation((...args) => lines.push(args.join(' ')));
+    try { await trial.main(argv, env, { fetchImpl }); } finally { log.mockRestore(); err.mockRestore(); }
+    return lines.join('\n');
+  };
+
+  test.each([[['--coach-generate']], [['--coach-generate', '--max-cost-usd', '0']], [['--coach-generate', '--max-cost-usd', '5.01']]])(
+    '%j: refused without a cap from more than 0 to 5 dollars, and nothing is called', async (argv) => {
+      const fetchImpl = h.fakeOpenRouter(wording);
+      const out = await capture(argv, fetchImpl);
+      expect(out).toContain('refused: --coach-check and --coach-generate need --max-cost-usd');
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+  test('one call (default one transcript): the tasks worded, tokens and the reported cost; never the wording, the key or the prompt', async () => {
+    const fetchImpl = h.fakeOpenRouter(wording, usage);
+    const out = await capture(['--coach-generate', '--max-cost-usd', '0.1'], fetchImpl);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(out).toMatch(/task wording: model .*speaking-coach-tasks-v1/);
+    expect(out).toMatch(/- generation \w[\w ]*: 2 tasks worded; tokens 1500 in \/ 500 out; cost \$0\.00200/);
+    expect(out).toContain('average per task wording: $0.00200');
+    for (const hidden of [...PROMPTS, ...TIPS, 'sk-or-placeholder', 'short speaking practice tasks', 'It have', 'by walk']) expect(out).not.toContain(hidden);
+    // What the model read: the coach's real wording input (stored assessment data, never a whole answer).
+    const sent = JSON.stringify(fetchImpl.bodies[0].messages);
+    expect(sent).toContain('wordsNotToUse');
+    expect(sent).not.toContain(require('./fixtures/audio/speakingBenchmark.cjs').TEXTS.WEAK);
+  });
+
+  test('a rejected reply and a provider error are one call each (no retry), with only the code printed', async () => {
+    const bad = h.fakeOpenRouter({ tasks: [{ taskId: 't1', prompt: 'Raise your score on grammar.', tip: TIPS[0] }, wording.tasks[1]] });
+    const out = await capture(['--coach-generate', '--max-cost-usd', '0.1'], bad);
+    expect(bad).toHaveBeenCalledTimes(1);
+    expect(out).toMatch(/FAILED AI_OUTPUT_VALIDATION_FAILED \(COACH_TEXT_FORBIDDEN_TERM\)/);
+    expect(out).not.toContain('Raise your score');
+    const down = h.fakeOpenRouter({ status: 500 });
+    await capture(['--coach-generate', '--max-cost-usd', '0.1'], down);
+    expect(down).toHaveBeenCalledTimes(1);
+  });
+
+  test('several transcripts: the wording stops once the reported cost reaches the cap', async () => {
+    const fetchImpl = h.fakeOpenRouter(wording, usage);
+    const out = await capture(['--coach-generate', '--max', '5', '--max-cost-usd', '0.003'], fetchImpl);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(out).toContain('cost cap reached ($0.00400 of $0.00300); stopping');
+  });
+
+  test('both modes in one run share one cap: the checks first, then the wording, stopping once the reported total reaches the cap', async () => {
+    const both = h.fakeOpenRouter([checkReply, wording], usage);
+    const out = await capture(['--coach-check', '--coach-generate', '--max-cost-usd', '0.003'], both);
+    expect(both).toHaveBeenCalledTimes(2);
+    expect(out).toMatch(/- \w[\w ]*: level Good, on task/);
+    expect(out).toMatch(/- generation \w[\w ]*: 2 tasks worded/);
+    expect(out).toContain('cost cap reached ($0.00400 of $0.00300); stopping');
+    const capped = h.fakeOpenRouter([checkReply, wording], usage);
+    const early = await capture(['--coach-check', '--coach-generate', '--max-cost-usd', '0.001'], capped);
+    expect(capped).toHaveBeenCalledTimes(1);
+    expect(early).toContain('cost cap reached ($0.00200 of $0.00100); stopping');
+    expect(early).not.toMatch(/- generation/);
   });
 });
 

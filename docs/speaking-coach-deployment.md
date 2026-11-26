@@ -69,6 +69,15 @@ SPEAKING_TRIAL=call-openrouter NODE_ENV=development node scripts/speakingAssessm
 It reads `OPENROUTER_API_KEY` and `ASSESSMENT_AI_MODEL` from the environment (or `backend/.env`); use a dev key. Read the "average per
 practice check" line. The last call can pass the cap by at most that call's cost.
 
+The cost of task wording (one call per started session) is measured the same way with `--coach-generate`. Both in one run share one cap
+(the checks first, then the wording); read "average per practice check" and "average per task wording":
+
+```
+SPEAKING_TRIAL=call-openrouter NODE_ENV=development node scripts/speakingAssessmentTrial.js --coach-check --coach-generate --max 3 --max-cost-usd 0.10
+```
+
+Worst case per submission: one task wording plus the attempt cap (20) times one practice check (a check that fails is run at most twice).
+
 ## 6. Smoke test
 
 1. As a teacher, create a speaking assignment; as a student, upload a recording and wait for the result.
