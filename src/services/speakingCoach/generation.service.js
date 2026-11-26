@@ -47,15 +47,26 @@ async function loadSource(submissionId, actor) {
   const assignment = await Assignment.findOne({ _id: submission.assignment, resourceType: 'speaking' }).select('_id title instructions teacher class').lean();
   if (!assignment) throw notFound();
   const stored = await SubmissionFeedback.findOne({ submissionId: submission._id }).lean();
-  if (!READY.includes(submission.evaluationStatus) || !stored || !READY.includes(stored.evaluationStatus)) return { submission, assignment, ready: false };
-  const criteria = areas.snapshotFromFeedback(finalFeedback(stored, submission));
-  if (!criteria) return { submission, assignment, ready: false };
+  if (!READY.includes(submission.evaluationStatus) || !stored || !READY.includes(stored.evaluationStatus)) return { submission, assignment, ready: false, reason: 'result_not_ready' };
+  const final = finalFeedback(stored, submission);
+  const criteria = areas.snapshotFromFeedback(final);
+  if (!criteria) return { submission, assignment, ready: false, reason: 'no_rubric_scores' };
   const recording = submission.audioRecording ? await AudioRecording.findById(submission.audioRecording).select('_id +derived').lean() : null;
   const fluency = recording?.derived?.fluency?.available ? recording.derived.fluency : null;
   const corrections = buildStudentCorrectionView(submission, { overlay: null }).corrections || [];
   const sourceFingerprint = sha({ v: SOURCE_VERSION, feedbackId: String(stored._id), evaluationSourceHash: stored.evaluationSourceHash || '',
     rubricHash: stored.evaluationRubricSourceHash || '', criteria: criteria.map(c => [c.criterionId, c.levelTitle, c.levelPercent]) });
-  return { submission, assignment, ready: true, stored, criteria, fluency, corrections, sourceFingerprint };
+  return { submission, assignment, ready: true, stored, final, criteria, fluency, corrections, sourceFingerprint };
+}
+
+/**
+ * The coach card's overview for the student or guest: { reason, areas } (areas.overviewAreas). reason: result_not_ready, no_rubric_scores,
+ * no_weak_areas, or null when there is practice. A session keeps the pass percent it was started with.
+ */
+function overviewOf({ state, session, source }, { env = process.env } = {}) {
+  if (!source?.ready) return { reason: source?.reason || 'result_not_ready', areas: [] };
+  const passPercent = session?.settings?.passPercent ?? readSettings(env).settings.passPercent;
+  return { reason: state === 'no_practice_needed' ? 'no_weak_areas' : null, areas: areas.overviewAreas(source.final, source.criteria, passPercent) };
 }
 
 const sessionKey = (source, actor) => ({ submissionId: source.submission._id, ...accessContext.ownerFields(actor), sourceFingerprint: source.sourceFingerprint });
@@ -121,11 +132,11 @@ async function startSession(submissionId, actor, { env = process.env, fetchImpl 
       await SpeakingPracticeSession.updateOne({ _id: existing._id }, { $set: { guestNotice }, $inc: { revision: 1 } });
       existing.guestNotice = guestNotice;
     }
-    return { state: STATE_OF[existing.status], session: existing };
+    return { state: STATE_OF[existing.status], session: existing, source };
   }
   const { settings } = readSettings(env);
   const weak = areas.weakAreas(source.criteria, settings.passPercent);
-  if (!weak.length) return { state: 'no_practice_needed', session: null };
+  if (!weak.length) return { state: 'no_practice_needed', session: null, source };
   const plan = areas.planTasks(weak, { vocabTargets: areas.vocabTargets(source.corrections), passPercent: settings.passPercent })
     .map((item, index) => ({ ...item, taskId: `t${index + 1}` }));
 
@@ -142,11 +153,11 @@ async function startSession(submissionId, actor, { env = process.env, fetchImpl 
   } catch (error) {
     if (error?.code !== 11000) throw error;
     const winner = await SpeakingPracticeSession.findOne(key).lean();
-    return { state: STATE_OF[winner?.status] || 'generating', session: winner };
+    return { state: STATE_OF[winner?.status] || 'generating', session: winner, source };
   }
   if (!session) {
     const current = await SpeakingPracticeSession.findOne(key).lean();
-    return { state: STATE_OF[current?.status] || 'generating', session: current };
+    return { state: STATE_OF[current?.status] || 'generating', session: current, source };
   }
 
   let worded = null;
@@ -164,7 +175,7 @@ async function startSession(submissionId, actor, { env = process.env, fetchImpl 
   logger.metric({ event: 'speaking_coach_session_started', submissionId: String(source.submission._id), sessionId: String(doc._id),
     guest: accessContext.isGuest(actor), taskCount: doc.tasks.length, taskTypes: doc.tasks.map(t => t.type), source: doc.generation.source,
     errorCode, ...doc.generation.metrics });
-  return { state: 'ready', session: doc.toObject() };
+  return { state: 'ready', session: doc.toObject(), source };
 }
 
-module.exports = { CoachError, loadSource, getSession, startSession, SOURCE_VERSION, STALE_GENERATING_MS };
+module.exports = { CoachError, loadSource, getSession, startSession, overviewOf, SOURCE_VERSION, STALE_GENERATING_MS };

@@ -1,8 +1,10 @@
 'use strict';
 // Speaking Coach DTOs, built field by field (never a stored document minus a denylist).
 // - Student and guest (D4): task wording and progress, the attempt state, the short feedback, the target words used, the fluency change in
-//   words. Never a level title or percent, a pass flag, the pass rule, a score, provider, model, prompt, hashes, ids of recordings or teachers.
+//   words. Never a level percent, a pass flag on a task or attempt, the pass rule, a score, provider, model, prompt, hashes, ids of recordings or teachers.
 //   Task statuses are current / done / locked; an attempt says what comes next (next_task, try_again, finished, practice_ended).
+//   The coach card overview (generation.service overviewOf) is the one exception: each area's title and level title exactly as the graded result
+//   shows them, and whether it needs practice ("Needs practice" / "Strong"; client decision 2026-11-26, overriding D4 for this card only).
 // - Teacher: the same plus the level reached, pass or not, the pass rule in words (D3), the original level and the answer text.
 
 const STUDENT_TASK_STATUS = Object.freeze({ active: 'current', passed: 'done', locked: 'locked' });
@@ -70,11 +72,17 @@ function passRuleText(passRule, passPercent) {
 
 const TEACHER_STATE = Object.freeze({ generating: 'generating', ready: 'in-progress', completed: 'completed', capped: 'capped', failed: 'failed' });
 
-/** The teacher's progress card. attempts: the session's attempts with status, taskId, result.levelTitle, result.passed, createdAt. */
-function teacherProgress({ submissionId, session, attempts = [], sourceStatus = 'current' }) {
+/** The teacher's areas: the student's overview areas with the level title named as such (the teacher sees levels, D4). */
+const teacherAreas = (areas = []) => areas.map(a => ({ criterionId: a.criterionId, title: a.title, levelTitle: a.strength, needsPractice: a.needsPractice }));
+
+/**
+ * The teacher's progress card. attempts: the session's attempts with status, taskId, result.levelTitle, result.passed, createdAt.
+ * areas: the current result's overview areas. emptyState (no session): not-started, no-practice-needed, result-not-ready or no-rubric-scores.
+ */
+function teacherProgress({ submissionId, session, attempts = [], sourceStatus = 'current', areas = [], emptyState = 'not-started' }) {
   if (!session) {
-    return { state: 'not-started', sourceStatus: 'current', submissionId: String(submissionId), sessionId: null, settings: null,
-      summary: { totalTasks: 0, passedTasks: 0, attemptsUsed: 0, attemptCap: null, lastPracticedAt: null }, tasks: [] };
+    return { state: emptyState, sourceStatus: 'current', submissionId: String(submissionId), sessionId: null, settings: null,
+      summary: { totalTasks: 0, passedTasks: 0, attemptsUsed: 0, attemptCap: null, lastPracticedAt: null }, tasks: [], areas: teacherAreas(areas) };
   }
   const passPercent = session.settings?.passPercent;
   const original = new Map((session.sourceSnapshot?.criteria || []).map(c => [c.criterionId, c.levelTitle || null]));
@@ -91,7 +99,7 @@ function teacherProgress({ submissionId, session, attempts = [], sourceStatus = 
   return { state: TEACHER_STATE[session.status] || 'failed', sourceStatus, submissionId: String(submissionId), sessionId: String(session._id),
     settings: { passPercent, attemptCap: session.settings?.attemptCap },
     summary: { totalTasks: tasks.length, passedTasks: tasks.filter(t => t.passed).length, attemptsUsed: session.attemptsUsed || 0,
-      attemptCap: session.settings?.attemptCap, lastPracticedAt: iso(last?.createdAt) }, tasks };
+      attemptCap: session.settings?.attemptCap, lastPracticedAt: iso(last?.createdAt) }, tasks, areas: teacherAreas(areas) };
 }
 
 /** One attempt in the teacher's history. answerText: the attempt's assessed text (from its recording). */

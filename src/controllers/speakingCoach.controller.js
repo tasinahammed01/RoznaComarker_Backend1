@@ -33,9 +33,10 @@ function requireEnabled(_req, res, next) { return speakingCoachEnabled() ? next(
 
 const attemptsOf = sessionId => SpeakingPracticeAttempt.find({ sessionId }).select('_id taskId attemptNumber status notAssessableReason errorCode result createdAt').lean();
 
-/** { state, session[, notice] } for the student or guest. */
+/** { state, session, overview[, notice] } for the student or guest. */
 async function sessionPayload(out, actor) {
-  const data = { state: out.state, session: out.session ? views.studentSession(out.session, await attemptsOf(out.session._id)) : null };
+  const data = { state: out.state, session: out.session ? views.studentSession(out.session, await attemptsOf(out.session._id)) : null,
+    overview: coach.overviewOf(out) };
   if (accessContext.isGuest(actor)) {
     data.notice = { version: notice.SPEAKING_COACH_NOTICE_VERSION, text: notice.SPEAKING_COACH_NOTICE_TEXT,
       accepted: out.session?.guestNotice?.version === notice.SPEAKING_COACH_NOTICE_VERSION };

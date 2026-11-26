@@ -3,7 +3,7 @@
 // (guests through their private link). In-memory MongoDB; the REAL gateway against a fake OpenRouter, an injected speech-to-text fake; no
 // network; synthetic texts only.
 // - SPEAKING_COACH_ENABLED off (the default): every coach route answers the hidden-feature 404 before sign-in.
-// - Students: owner only (404 for another student). Strict DTOs: never a level title or percent, a pass flag, a score, provider, model,
+// - Students: owner only (404 for another student). Strict DTOs: never a level percent (the level title only as the overview strength the result already shows), a pass flag, a score, provider, model,
 //   prompt, hash, teacher id or internal field (D4).
 // - Teachers: the owning teacher's progress and attempt history with the level reached, pass or not, and the pass rule (D3); 404 for another teacher.
 // - Guests: the practice notice (versioned) must be accepted before the first practice recording; the graded consent is unchanged.
@@ -69,6 +69,9 @@ const ATTEMPT_TEXT = 'My town is small and peaceful. It has one school and one s
   + 'There is a river near the park and people are friendly. I like my town because it is calm and green.';
 // What a student or guest must never receive from a coach route.
 const FORBIDDEN = /levelTitle|levelPercent|"passed"|passRule|minimumPercent|passPercent|"score"|grade|provider|"model"|promptVersion|"generation"|sourceFingerprint|sourceSnapshot|"teacher[A-Za-z]*":|minutesChargedTo|recordingId|assessmentQueue|assessmentLease|requestId|errorCode|activeAttemptId|"(Excellent|Good|Developing|Beginning)"|[a-f0-9]{64}|openrouter|gemini|deepgram/i;
+// The coach card's overview may name each area's level title (overview.areas[].strength, the same as the graded result shows: checked in
+// speakingCoachOverview.test.js); everything else in the body stays under FORBIDDEN.
+const withoutStrength = body => JSON.stringify(body, (k, v) => (k === 'strength' ? undefined : v));
 let f;
 let gatewayFetch;
 
@@ -174,7 +177,7 @@ describe('students', () => {
     expect(done.body.data.state).toBe('completed');
     expect(done.body.data.session.lastAttempt).toMatchObject({ nextStep: 'finished', vocab: { used: ['on foot', 'peaceful'], missing: [] } });
 
-    for (const body of bodies) expect(JSON.stringify(body)).not.toMatch(FORBIDDEN);
+    for (const body of bodies) expect(withoutStrength(body)).not.toMatch(FORBIDDEN);
     expect((await request(app).get(`/api/speaking/submissions/${id}/result`).set(auth(f.student.token))).body).toEqual(gradedBefore);
   });
 
@@ -198,7 +201,7 @@ describe('students', () => {
   test('not ready yet: unavailable; a start is refused with 409', async () => {
     const made = await makeAudioSubmission(f, { status: 'ready', seconds: 60 });
     const get = await request(app).get(`${coachBase}/submissions/${made.submission._id}`).set(auth(f.student.token));
-    expect(get.body.data).toEqual({ state: 'unavailable', session: null });
+    expect(get.body.data).toEqual({ state: 'unavailable', session: null, overview: { reason: 'result_not_ready', areas: [] } });
     const start = await request(app).post(`${coachBase}/submissions/${made.submission._id}/start`).set(auth(f.student.token)).send({});
     expect(start.status).toBe(409);
     expect(start.body.code).toBe('COACH_RESULT_NOT_READY');
@@ -295,7 +298,7 @@ describe('guests', () => {
     await workAttempt();
     const read = await request(app).get(`${guestBase(made.submission._id)}/sessions/${sessionId}/attempts/${up.body.data.attempt.id}`).set(headers);
     expect(read.body.data.attempt.state).toBe('ready');
-    for (const body of [idle.body, started.body, up.body, read.body]) expect(JSON.stringify(body)).not.toMatch(FORBIDDEN);
+    for (const body of [idle.body, started.body, up.body, read.body]) expect(withoutStrength(body)).not.toMatch(FORBIDDEN);
     // The graded consent is unchanged and still valid for graded recordings.
     expect(notice.SPEAKING_GUEST_NOTICE_VERSION).toBe('speaking-guest-2026-11');
   });

@@ -10,7 +10,7 @@ const SpeakingPracticeSession = require('../../models/SpeakingPracticeSession');
 const SpeakingPracticeAttempt = require('../../models/SpeakingPracticeAttempt');
 const accessContext = require('../submissionAccessContext.service');
 const views = require('./views');
-const { CoachError, loadSource } = require('./generation.service');
+const { CoachError, loadSource, overviewOf } = require('./generation.service');
 
 const notFound = () => new CoachError(404, 'NOT_FOUND', 'Not found.');
 
@@ -27,17 +27,25 @@ async function ownedSubmission(submissionId, teacherId) {
 /** The practice owner as the coach services see it: the student id, or the guest context of a guest submission. */
 const ownerOf = submission => (submission.submissionMode === 'guest' ? accessContext.guestContext(submission) : submission.student);
 
-async function getProgress(submissionId, teacherId) {
+/** The card with no session: why there is none (no rubric scores, the result not ready, nothing to practise, or not started yet). */
+function emptyStateOf(source, overview) {
+  if (!source?.ready) return source?.reason === 'no_rubric_scores' ? 'no-rubric-scores' : 'result-not-ready';
+  return overview.areas.some(area => area.needsPractice) ? 'not-started' : 'no-practice-needed';
+}
+
+async function getProgress(submissionId, teacherId, { env = process.env } = {}) {
   const submission = await ownedSubmission(submissionId, teacherId);
   const session = await SpeakingPracticeSession.findOne({ submissionId: submission._id }).sort({ createdAt: -1, _id: -1 }).lean();
-  if (!session) return views.teacherProgress({ submissionId: submission._id, session: null });
-  let sourceStatus = 'outdated';
-  try {
-    const source = await loadSource(submission._id, ownerOf(submission));
-    if (source.ready && source.sourceFingerprint === session.sourceFingerprint) sourceStatus = 'current';
-  } catch { /* the current result may be unavailable; the stored practice stays readable */ }
+  let source = null;
+  try { source = await loadSource(submission._id, ownerOf(submission)); } catch { /* the current result may be unavailable; the card stays readable */ }
+  if (!session) {
+    const overview = overviewOf({ state: null, session: null, source }, { env });
+    return views.teacherProgress({ submissionId: submission._id, session: null, areas: overview.areas, emptyState: emptyStateOf(source, overview) });
+  }
+  const sourceStatus = source?.ready && source.sourceFingerprint === session.sourceFingerprint ? 'current' : 'outdated';
+  const areas = sourceStatus === 'current' ? overviewOf({ state: null, session, source }, { env }).areas : [];
   const attempts = await SpeakingPracticeAttempt.find({ sessionId: session._id }).select('_id taskId attemptNumber status result.levelTitle result.passed createdAt').lean();
-  return views.teacherProgress({ submissionId: submission._id, session, attempts, sourceStatus });
+  return views.teacherProgress({ submissionId: submission._id, session, attempts, sourceStatus, areas });
 }
 
 async function getAttempts(sessionId, taskId, teacherId, pageValue, limitValue) {

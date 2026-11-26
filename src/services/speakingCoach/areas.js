@@ -27,12 +27,25 @@ function snapshotFromFeedback(feedback) {
   return criteria.some(c => c.levelPercent !== null) ? criteria : null;
 }
 
+/** A scored criterion below the pass rule (an unscored one never needs practice). */
+const needsPractice = (criterion, passPercent) => criterion.levelPercent !== null && !isPassingLevel(criterion.levelPercent, criterion.levels, passPercent);
+
 /** Criteria that do not pass, weakest first (then heavier first, then rubric order); at most three. */
 function weakAreas(criteria, passPercent) {
   return (Array.isArray(criteria) ? criteria : []).map((criterion, index) => ({ criterion, index }))
-    .filter(({ criterion }) => criterion.levelPercent !== null && !isPassingLevel(criterion.levelPercent, criterion.levels, passPercent))
+    .filter(({ criterion }) => needsPractice(criterion, passPercent))
     .sort((a, b) => a.criterion.levelPercent - b.criterion.levelPercent || (b.criterion.weight || 0) - (a.criterion.weight || 0) || a.index - b.index)
     .slice(0, MAX_AREAS).map(({ criterion }) => criterion);
+}
+
+/**
+ * Every area of the graded result as the result itself shows it (speakingResult.service resultBlock: customRubricScores.criteria, its title and
+ * selectedLevel, in that order) and whether it needs practice. Nothing else: never a percent, the levels, a weight, a comment or a description.
+ */
+function overviewAreas(feedback, criteria, passPercent) {
+  const weak = new Set((criteria || []).filter(criterion => needsPractice(criterion, passPercent)).map(criterion => criterion.criterionId));
+  return (feedback?.customRubricScores?.criteria || []).map(c => ({ criterionId: c.criterionId, title: c.title, strength: c.selectedLevel ?? null,
+    needsPractice: weak.has(clip(c.criterionId, 120)) }));
 }
 
 /** Target words for a vocabulary swap: the suggested words of the student's vocabulary corrections (1 to 3 plain words), unique, at most four. */
@@ -72,4 +85,4 @@ function planTasks(weak, { vocabTargets: targets = [], passPercent }) {
   return plan;
 }
 
-module.exports = { snapshotFromFeedback, weakAreas, vocabTargets, planTasks, primaryType, MAX_AREAS, MIN_TARGETS };
+module.exports = { snapshotFromFeedback, weakAreas, overviewAreas, needsPractice, vocabTargets, planTasks, primaryType, MAX_AREAS, MIN_TARGETS };
