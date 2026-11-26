@@ -134,8 +134,13 @@ async function retryCheck({ sessionId, attemptId, actor, now = () => new Date() 
   const latest = await SpeakingPracticeAttempt.findOne({ sessionId: session._id }).sort({ attemptNumber: -1 }).select('_id').lean();
   if (attempt.status !== 'failed' || attempt.errorCode !== 'COACH_CHECK_FAILED' || session.status !== 'ready' || session.currentTaskId !== attempt.taskId
     || String(latest?._id) !== String(attempt._id)) throw fail(409, 'COACH_RETRY_NOT_ALLOWED', 'This recording cannot be checked again. Record a new answer instead.');
-  const held = await SpeakingPracticeSession.updateOne({ _id: session._id, status: 'ready', activeAttemptId: null }, { $set: { activeAttemptId: attempt._id }, $inc: { revision: 1 } });
-  if (!held.modifiedCount) throw refuse(409, 'COACH_ATTEMPT_IN_PROGRESS');
+  // A failed check gave its attempt back (assessment.service failCheck): checking it again takes one again, within the cap.
+  const held = await SpeakingPracticeSession.updateOne({ _id: session._id, status: 'ready', activeAttemptId: null, attemptsUsed: { $lt: session.settings.attemptCap } },
+    { $set: { activeAttemptId: attempt._id }, $inc: { revision: 1, attemptsUsed: 1, 'tasks.$[t].attemptCount': 1 } }, { arrayFilters: [{ 't.taskId': attempt.taskId }] });
+  if (!held.modifiedCount) {
+    const current = await SpeakingPracticeSession.findById(session._id).select('activeAttemptId').lean();
+    throw refuse(409, current?.activeAttemptId ? 'COACH_ATTEMPT_IN_PROGRESS' : 'COACH_SESSION_NOT_OPEN');
+  }
   await SpeakingPracticeAttempt.updateOne({ _id: attempt._id, status: 'failed' }, { $set: { status: 'assessing', errorCode: null, assessmentQueue: true,
     assessmentAttempts: 0, assessmentNextAttemptAt: now(), assessmentLeaseUntil: null } });
   processing.kickAudioWorker();

@@ -112,18 +112,32 @@ async function coachTrial(argv, env, deps, config, gateway) {
   const runs = { check: { calls: 0, costUsd: 0 }, generate: { calls: 0, costUsd: 0 } };
   const noRetry = { ...config, primaryRetries: 0, fallbackRetries: 0, retriesPerModel: 0 };
   /** One call; counts it, adds the reported usage, and says whether the cap is reached. */
-  const call = async (kind, name, request, describe) => {
+  const { generateWithTruncationRetry } = require('../src/services/speakingCoach/aiCall');
+  /**
+   * One call as the live coach makes it (its reasoning effort, and one retry with twice the limit when the reply is cut off). The cost of a
+   * cut-off reply comes from the gateway's private onDiagnostic report and is counted in the cap with the retry.
+   */
+  const call = async (kind, name, { maxOutputTokens, ...request }, describe) => {
     totals.calls++; runs[kind].calls++;
     let diagnostic = null;
+    let earlierCost = 0;
+    let truncatedAt = null;
+    const onDiagnostic = report => {
+      diagnostic = report;
+      if (Number.isFinite(report?.usage?.cost)) earlierCost += report.usage.cost;
+      if (report?.safeCode === 'AI_RESPONSE_TRUNCATED' && truncatedAt === null) truncatedAt = maxOutputTokens;
+    };
+    const addCost = cost => { totals.costUsd += cost; runs[kind].costUsd += cost; };
     try {
-      const result = await gateway.generate({ ...request, config: noRetry, env, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), metadata: { purpose: 'speaking_coach_trial' },
-        onDiagnostic: report => { diagnostic = report; } });
+      const result = await generateWithTruncationRetry(gateway, { ...request, config: noRetry, env, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+        metadata: { purpose: 'speaking_coach_trial' }, onDiagnostic }, { maxOutputTokens, env });
       const usage = result.usage || {};
-      const cost = typeof usage.cost === 'number' ? usage.cost : 0;
-      totals.inputTokens += usage.prompt_tokens || 0; totals.outputTokens += usage.completion_tokens || 0; totals.costUsd += cost; runs[kind].costUsd += cost;
+      const cost = (typeof usage.cost === 'number' ? usage.cost : 0) + earlierCost;
+      totals.inputTokens += usage.prompt_tokens || 0; totals.outputTokens += usage.completion_tokens || 0; addCost(cost);
       console.log(`- ${name}: ${describe(result.value)}; tokens ${usage.prompt_tokens ?? '?'} in / ${usage.completion_tokens ?? '?'} out; `
-        + `cost ${typeof usage.cost === 'number' ? `$${usage.cost.toFixed(5)}` : 'not reported'}`);
+        + `cost ${typeof usage.cost === 'number' ? `$${cost.toFixed(5)}` : 'not reported'}${truncatedAt ? ` (retried after truncation at ${truncatedAt})` : ''}`);
     } catch (error) {
+      addCost(earlierCost);
       const sub = subCode(error, diagnostic);
       console.log(`- ${name}: FAILED ${String(error?.finalFailureCode || error?.code || 'ERROR').replace(/[^A-Z0-9_]/gi, '')}${sub ? ` (${sub})` : ''}`);
     }
@@ -182,7 +196,7 @@ async function coachGenerate(argv, env, config, cap, call) {
   for (const item of selected) {
     const input = prompt.generationInput({ assignment: TRIAL_ASSIGNMENT, plan, criteria, fluency: caseRecording(item).fluency, corrections });
     const capped = await call('generate', `generation ${item.name}`, { feature: prompt.GENERATION_FEATURE, messages: prompt.generationMessages(input),
-      maxOutputTokens: settings.maxOutputTokens, temperature: 0.2, responseFormat: 'json', responseSchema: prompt.generationSchema(taskIds),
+      maxOutputTokens: settings.tasksMaxOutputTokens, temperature: 0.2, responseFormat: 'json', responseSchema: prompt.generationSchema(taskIds),
       schemaName: prompt.GENERATION_FEATURE, validate: raw => prompt.validateGeneration(raw, { taskIds, forbiddenWords }) },
     value => `${Object.keys(value).length} tasks worded`);
     if (capped) break;
@@ -205,7 +219,7 @@ async function coachCheck(argv, env, config, cap, call) {
     const { fluency } = caseRecording(item);
     const input = checkPrompt.checkInput({ assignment: TRIAL_ASSIGNMENT, task, criterion, before: { levelReached: 'Developing', notes: ['Check the verb forms as you speak.'],
       fluency }, nowFluency: fluency, answer: item.text, wordsNotToUse: forbiddenWords });
-    const capped = await call('check', item.name, { feature: checkPrompt.CHECK_FEATURE, messages: checkPrompt.checkMessages(input), maxOutputTokens: settings.maxOutputTokens,
+    const capped = await call('check', item.name, { feature: checkPrompt.CHECK_FEATURE, messages: checkPrompt.checkMessages(input), maxOutputTokens: settings.checkMaxOutputTokens,
       temperature: 0, responseFormat: 'json', responseSchema: checkPrompt.checkSchema(levelTitles), schemaName: checkPrompt.CHECK_FEATURE,
       validate: raw => checkPrompt.validateCheck(raw, { levelTitles, forbiddenWords }) },
     value => (value.assessable ? `level ${value.level}, ${value.onTask ? 'on task' : 'off task'}` : `not assessable (${value.reason})`));

@@ -26,6 +26,7 @@ const { readSettings, isPassingLevel } = require('./policy');
 const prompt = require('./checkPrompt');
 const { forbiddenTitles } = require('./prompt');
 const { retryLine } = require('./coachText');
+const { generateWithTruncationRetry } = require('./aiCall');
 
 const MAX_CHECK_RUNS = 2;
 const RETRY_DELAY_MS = 30000;
@@ -99,7 +100,7 @@ async function sweepPracticeChecks({ now = () => new Date(), env = process.env, 
   const at = now();
   const reconciled = await reconcileTranscriptions(now);
   const exhausted = await SpeakingPracticeAttempt.find({ assessmentQueue: true, assessmentAttempts: { $gte: MAX_CHECK_RUNS },
-    $or: [{ assessmentLeaseUntil: null }, { assessmentLeaseUntil: { $lte: at } }] }).select('_id sessionId').limit(SWEEP_CAP).lean();
+    $or: [{ assessmentLeaseUntil: null }, { assessmentLeaseUntil: { $lte: at } }] }).select('_id sessionId taskId').limit(SWEEP_CAP).lean();
   for (const attempt of exhausted) await failCheck({ _id: attempt._id }, attempt, 'COACH_CHECK_FAILED');
   const found = await SpeakingPracticeAttempt.find(due(at)).select({ _id: 1, assessmentNextAttemptAt: 1, createdAt: 1 }).limit(SWEEP_CAP + 1).lean();
   const order = doc => (doc.assessmentNextAttemptAt || doc.createdAt || at).getTime();
@@ -151,11 +152,18 @@ async function notifyTeacher(session) {
   } catch { logger.warn({ event: 'speaking_coach_notification_failed', sessionId: String(session._id) }); }
 }
 
+/**
+ * The check ended without a result. A failed check (COACH_CHECK_FAILED, a reply cut off by its limit included) gives the attempt back: it does
+ * not count against the cap (it counts again once it is checked: attempt.service retryCheck). The student sees "try again".
+ */
 async function failCheck(mine, attempt, code) {
   const failed = await SpeakingPracticeAttempt.updateOne(mine, { $set: { status: 'failed', errorCode: code, assessmentLeaseUntil: null, assessmentNextAttemptAt: null },
     $unset: { assessmentQueue: 1 } });
   if (!failed.modifiedCount) return;
-  await SpeakingPracticeSession.updateOne({ _id: attempt.sessionId, activeAttemptId: attempt._id }, { $set: { activeAttemptId: null }, $inc: { revision: 1 } });
+  const refund = code === 'COACH_CHECK_FAILED' && attempt.taskId;
+  await SpeakingPracticeSession.updateOne({ _id: attempt.sessionId, activeAttemptId: attempt._id }, { $set: { activeAttemptId: null },
+    $inc: { revision: 1, ...(refund ? { attemptsUsed: -1, 'tasks.$[t].attemptCount': -1 } : {}) } },
+  refund ? { arrayFilters: [{ 't.taskId': attempt.taskId }] } : {});
   log({ event: 'speaking_coach_check_failed', attemptId: String(attempt._id), sessionId: String(attempt.sessionId), code });
 }
 
@@ -227,10 +235,12 @@ async function runPracticeCheck(attemptId, { now = () => new Date(), env = proce
   try {
     const gateway = require('../aiGateway.service');
     const base = gateway.getAssessmentAIConfig(env);
-    result = await gateway.generate({ feature: prompt.CHECK_FEATURE, env, fetchImpl, messages, onAttempt, validate,
+    // The coach's reasoning effort, and one retry with a larger limit if the reply is cut off (aiCall.js).
+    result = await generateWithTruncationRetry(gateway, { feature: prompt.CHECK_FEATURE, env, fetchImpl, messages, onAttempt, validate,
       config: { ...base, attemptTimeoutMs: Math.min(base.attemptTimeoutMs || CHECK_TIMEOUT_MS, CHECK_TIMEOUT_MS), primaryRetries: 1, fallbackRetries: 0 },
-      maxOutputTokens: settings.maxOutputTokens, temperature: 0, responseFormat: 'json', responseSchema: prompt.checkSchema(levelTitles), schemaName: prompt.CHECK_FEATURE,
-      retryableSameModelCodes: ['AI_OUTPUT_VALIDATION_FAILED'], metadata: { attemptId: String(claimed._id), purpose: prompt.CHECK_FEATURE } });
+      temperature: 0, responseFormat: 'json', responseSchema: prompt.checkSchema(levelTitles), schemaName: prompt.CHECK_FEATURE,
+      retryableSameModelCodes: ['AI_OUTPUT_VALIDATION_FAILED'], metadata: { attemptId: String(claimed._id), purpose: prompt.CHECK_FEATURE } },
+    { maxOutputTokens: settings.checkMaxOutputTokens, env });
   } catch (error) {
     const code = safeCode(error);
     if (claimed.assessmentAttempts < MAX_CHECK_RUNS) {

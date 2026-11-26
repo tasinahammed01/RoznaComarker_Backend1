@@ -27,10 +27,13 @@ summaries or PDFs. The teacher sees progress on the speaking submission page.
 | `SPEAKING_COACH_MIN_WORDS` | `15` | 5 to 100. Fewer words: "not enough speech", no AI call (the attempt still counts). |
 | `SPEAKING_COACH_DAILY_MINUTES_PER_TEACHER` | `30` | Practice speech-to-text minutes per teacher per UTC day. Separate from the graded caps: practice can never use the minutes graded work needs, and graded work never uses these. |
 | `SPEAKING_COACH_MONTHLY_MINUTES_PER_TEACHER` | `300` | The same per UTC month. A monthly value below the daily value resets both to the defaults. |
-| `SPEAKING_COACH_AI_MAX_OUTPUT_TOKENS` | `1200` | 256 to 4000. Output limit of the task wording and the practice check. |
+| `SPEAKING_COACH_CHECK_MAX_OUTPUT_TOKENS` | `3000` | 256 to 8000. Output limit of a practice check, thinking included. A reply cut off by the limit is retried once with twice the limit (never above 8000). |
+| `SPEAKING_COACH_TASKS_MAX_OUTPUT_TOKENS` | `2500` | 256 to 8000. Output limit of the task wording, thinking included, with the same one retry. |
+| `SPEAKING_COACH_REASONING_EFFORT` | `low` | The model's thinking for both calls: `low`, `medium` or `high` (anything else is `low`). |
 | `SPEAKING_COACH_UPLOAD_RATE_LIMIT_MAX` | `10` | Practice uploads per student per 15 minutes. Guests: 20 per IP per 15 minutes. |
 
-A value that is not a whole number or is out of range is ignored (the default applies).
+A value that is not a whole number or is out of range is ignored (the default applies). `SPEAKING_COACH_AI_MAX_OUTPUT_TOKENS` (one limit of
+1200 for both calls) is retired and has no effect: at 1200 the model's thinking cut most replies off (section 4).
 
 ## 3. Turning it on
 
@@ -47,15 +50,26 @@ To turn it off: unset it (or `false`) and restart. Sessions and attempts stay st
 
 - Speech-to-text: practice recordings use the same provider as graded ones, against the teacher's practice minutes. A 60 to 90 second
   practice answer costs about $0.005 to $0.007 with Deepgram, about $0.004 to $0.006 with Scribe.
-- AI: one call to word a session's tasks (about 1,500 input and 600 output tokens), and one practice check per assessed attempt (about 1,500
-  input and 350 output tokens; up to two runs if the first fails). Measure the real cost before rollout (section 5).
+- AI, measured (trial on a dev key, `google/gemini-3.8-flash`, before the fix below): about **$0.0035 per successful practice check** and
+  about **$0.0035 per task wording** (one per started session).
+- What that trial showed: with an output limit of 1200 and the model's default thinking, 2 of 3 practice checks were cut off by the limit
+  (`AI_RESPONSE_TRUNCATED`). The successful check used 719 output tokens, 581 of them thinking; the task wording used 1027 of 1200, 932 of
+  them thinking. Fix: the coach asks for low thinking (`SPEAKING_COACH_REASONING_EFFORT`), the limits are 3000 (check) and 2500 (wording),
+  and a reply that is still cut off is retried once with twice the limit. Re-measure after the fix (section 5).
+- A cut-off reply is billed too, so a check that needs its retry costs about two calls. A check that fails (after its retries) gives the
+  student's attempt back: it does not count against the cap, and the student sees "try again".
 - No credit is charged to the teacher, the student or the guest.
-- Worst case per submission: the attempt cap (20) times one recording and one check, plus one wording call.
+- Typical per submission: one task wording plus about 6 to 9 checks (3 tasks, 2 to 3 tries each), about $0.025 to $0.035.
+- Worst case per submission: one task wording plus 20 counted checks, about $0.0035 + 20 × $0.0035 = **about $0.074** when no reply is cut
+  off. If every one of them needed its truncation retry, about twice that, **about $0.15**. Failed checks are not counted against the cap, so
+  repeated provider failures can add calls beyond these figures; the per-student upload limit (10 per 15 minutes) and the teacher's practice
+  minutes bound them.
 
 ## 5. Measuring the cost of one practice check (dev key only)
 
-The trial uses the coach's real check prompt and validation on the synthetic benchmark transcripts, makes one call per transcript with no
-retry, and stops once the cost OpenRouter reports reaches the cap. It refuses to run without `--max-cost-usd` (more than 0, at most 5 dollars),
+The trial uses the coach's real check prompt and validation on the synthetic benchmark transcripts and makes the calls exactly as the live
+coach does: low thinking, the output limits above, and the one retry with twice the limit when a reply is cut off (its cost is counted in the
+cap; the line says "retried after truncation at <limit>"). No other retry. It stops once the cost OpenRouter reports reaches the cap. It refuses to run without `--max-cost-usd` (more than 0, at most 5 dollars),
 in tests and in production, and never prints a key, the prompt or a provider error text.
 
 ```

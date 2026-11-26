@@ -23,6 +23,7 @@ const areas = require('./areas');
 const { buildTasks } = require('./tasks');
 const prompt = require('./prompt');
 const { retryLine } = require('./coachText');
+const { generateWithTruncationRetry } = require('./aiCall');
 
 const SOURCE_VERSION = 'speaking-coach-source-v1';
 const STALE_GENERATING_MS = 2 * 60 * 1000;
@@ -88,11 +89,12 @@ async function wordTasks({ source, plan, settings, env, fetchImpl }) {
     brokenRule = null;
   };
   const base = gateway.getAssessmentAIConfig(env);
-  const result = await gateway.generate({ feature: prompt.GENERATION_FEATURE, env, fetchImpl, messages, onAttempt, validate,
+  // The coach's reasoning effort, and one retry with a larger limit if the reply is cut off (aiCall.js).
+  const result = await generateWithTruncationRetry(gateway, { feature: prompt.GENERATION_FEATURE, env, fetchImpl, messages, onAttempt, validate,
     config: { ...base, attemptTimeoutMs: Math.min(base.attemptTimeoutMs || WORDING_TIMEOUT_MS, WORDING_TIMEOUT_MS), primaryRetries: 1, fallbackRetries: 0 },
-    maxOutputTokens: settings.maxOutputTokens, temperature: 0.2, responseFormat: 'json', responseSchema: prompt.generationSchema(taskIds),
+    temperature: 0.2, responseFormat: 'json', responseSchema: prompt.generationSchema(taskIds),
     schemaName: prompt.GENERATION_FEATURE, retryableSameModelCodes: ['AI_OUTPUT_VALIDATION_FAILED'],
-    metadata: { submissionId: String(source.submission._id), purpose: prompt.GENERATION_FEATURE } });
+    metadata: { submissionId: String(source.submission._id), purpose: prompt.GENERATION_FEATURE } }, { maxOutputTokens: settings.tasksMaxOutputTokens, env });
   return { texts: result.value, provider: result.provider, model: result.model, usage: result.usage || {} };
 }
 

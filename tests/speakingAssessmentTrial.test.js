@@ -191,6 +191,29 @@ describe('--coach-generate (Speaking Coach: the cost of one task wording), alone
     expect(down).toHaveBeenCalledTimes(1);
   });
 
+  test('as in production: low reasoning, the larger limits, and a cut-off reply retried once with twice the limit; both calls are counted in the cap', async () => {
+    // A fake provider: the first reply is cut off by its limit (finish reason length), the second one is complete.
+    const bodies = [];
+    const replies = [{ finish: 'length', content: '{"assessable":tr', cost: 0.003 }, { finish: 'stop', content: JSON.stringify(checkReply), cost: 0.0035 }];
+    const fetchImpl = jest.fn(async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      const reply = replies.shift();
+      return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({ model: h.MODEL,
+        choices: [{ message: { content: reply.content }, finish_reason: reply.finish }], usage: { prompt_tokens: 1500, completion_tokens: 900, cost: reply.cost } }) };
+    });
+    const out = await capture(['--coach-check', '--max-cost-usd', '0.006'], fetchImpl);
+    expect(bodies.map(b => b.max_tokens)).toEqual([3000, 6000]);
+    expect(bodies.every(b => b.reasoning?.effort === 'low')).toBe(true);
+    expect(out).toMatch(/- \w[\w ]*: level Good, on task; tokens 1500 in \/ 900 out; cost \$0\.00650 \(retried after truncation at 3000\)/);
+    expect(out).toContain('cost cap reached ($0.00650 of $0.00600); stopping');
+    expect(out).not.toContain('assessable');
+    const words = jest.fn(async (_url, init) => { bodies.push(JSON.parse(init.body)); return { ok: true, status: 200, headers: { get: () => null },
+      text: async () => JSON.stringify({ model: h.MODEL, choices: [{ message: { content: JSON.stringify(wording) }, finish_reason: 'stop' }], usage }) }; });
+    bodies.length = 0;
+    await capture(['--coach-generate', '--max-cost-usd', '0.1'], words);
+    expect(bodies[0]).toMatchObject({ max_tokens: 2500, reasoning: { effort: 'low' } });
+  });
+
   test('a failure names the failing check (codes only): a key that cannot be sent, or a request that failed before any answer', async () => {
     const lines = [];
     const log = jest.spyOn(console, 'log').mockImplementation((...args) => lines.push(args.join(' ')));

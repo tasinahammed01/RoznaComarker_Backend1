@@ -421,7 +421,7 @@ function abortable(promise,signal){
 }
 async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temperature, responseFormat,
   responseSchema, schemaName, attemptTimeoutMs, fetchImpl, env, now, googleThinkingLevel, feature, onDiagnostic,
-  requestProfile, signal, timeoutScope='local_attempt_timeout', samplingVariant=null }) {
+  requestProfile, signal, timeoutScope='local_attempt_timeout', samplingVariant=null, reasoningEffort=null }) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener('abort', abort, { once: true });
@@ -450,6 +450,11 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
     // Assignment report summary: the proven Claude request shape of teacher comment drafts (no temperature, reasoning off, so no billed
     // thinking), without the correction model chain. Only this feature; every other request body is unchanged.
     if(feature==='assignment_report_summary'&&!google){delete body.temperature;body.reasoning={effort:'none'};}
+    // A caller's reasoning effort (the Speaking Coach's calls): only on OpenRouter, only where no profile above set one, and with
+    // require_parameters so no route that would ignore it (or the strict schema) serves the request.
+    if(!google&&!body.reasoning&&['low','medium','high'].includes(reasoningEffort)){
+      body.reasoning={effort:reasoningEffort};body.provider={...(body.provider||{}),require_parameters:true};
+    }
     if(isAssessmentFeature(feature)) {
       if(google || !ASSESSMENT_MODELS.includes(entry.model))
         throw attemptError('AI_ASSESSMENT_AUTHORITY_INVALID','Assessment requires one approved OpenRouter model.');
@@ -643,7 +648,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
   env = process.env, fetchImpl = global.fetch,
   now = Date.now, sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   randomFn = Math.random, config = getAIConfig(env), onAttempt, onRetry, deadlineAt = null,
-  retryableSameModelCodes = [], terminalCodes = [], onDiagnostic, samplingVariant = null } = {}) {
+  retryableSameModelCodes = [], terminalCodes = [], onDiagnostic, samplingVariant = null, reasoningEffort = null } = {}) {
   if (!Array.isArray(messages) || typeof fetchImpl !== 'function') {
     throw new TypeError('AI gateway requires messages and fetch.');
   }
@@ -700,7 +705,7 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
       try {
         const result = await providerAttempt({ entry, messages, maxOutputTokens, temperature,
           responseFormat, responseSchema, schemaName, attemptTimeoutMs: timeout, fetchImpl, env, now,
-          googleThinkingLevel, feature, onDiagnostic, samplingVariant,
+          googleThinkingLevel, feature, onDiagnostic, samplingVariant, reasoningEffort,
           timeoutScope:deadlineAt&&timeout<config.attemptTimeoutMs?'shared_stage_deadline':'local_attempt_timeout' });
         let value = result.content;
         if (typeof validate === 'function') {

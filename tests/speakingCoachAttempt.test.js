@@ -358,7 +358,7 @@ describe('the check', () => {
     expect(a).toMatchObject({ status: 'not_assessable', notAssessableReason: 'not_english' });
   });
 
-  test('a reply that breaks the rules (a level title, a score): retried once, then the attempt fails; a retry re-checks without using the cap', async () => {
+  test('a reply that breaks the rules (a level title, a score): retried once, then the attempt fails and is given back (not counted); checking it again counts it once', async () => {
     const s = await startedSession();
     const attempt = await uploadAttempt(s);
     await transcribed(attempt);
@@ -368,7 +368,7 @@ describe('the check', () => {
     await SpeakingPracticeAttempt.updateOne({ _id: attempt._id }, { $set: { assessmentNextAttemptAt: new Date(Date.now() - 1000) } });
     const second = await checked(attempt, checkOutput({ improved: ['Your score went up.'] }));
     expect(second.attempt).toMatchObject({ status: 'failed', errorCode: 'COACH_CHECK_FAILED' });
-    expect(second.session).toMatchObject({ attemptsUsed: 1, activeAttemptId: null });
+    expect(second.session).toMatchObject({ attemptsUsed: 0, activeAttemptId: null });
     await attempts.retryCheck({ sessionId: s.session._id, attemptId: attempt._id, actor: s.actor });
     expect((await SpeakingPracticeSession.findById(s.session._id).lean()).attemptsUsed).toBe(1);
     const third = await checked(attempt, checkOutput({ level: 'Good' }));

@@ -19,19 +19,43 @@ describe('the feature switch', () => {
 });
 
 describe('settings', () => {
-  test('defaults', () => {
+  test('defaults: room for the model\'s thinking (the real trial truncated at 1200: 581 of 719 and 932 of 1027 output tokens were thinking)', () => {
     expect(policy.readSettings({})).toEqual({ settings: { passPercent: 70, maxAttemptsPerSubmission: 20, maxRecordingSeconds: 90, minWords: 15,
-      dailyMinutesPerTeacher: 30, monthlyMinutesPerTeacher: 300, maxOutputTokens: 1200 }, issues: [] });
+      dailyMinutesPerTeacher: 30, monthlyMinutesPerTeacher: 300, checkMaxOutputTokens: 3000, tasksMaxOutputTokens: 2500 }, issues: [] });
   });
 
   test('valid values are used', () => {
     const { settings, issues } = policy.readSettings({ SPEAKING_COACH_PASS_PERCENT: '80', SPEAKING_COACH_MAX_ATTEMPTS_PER_SUBMISSION: '5',
       SPEAKING_COACH_MAX_RECORDING_SECONDS: '60', SPEAKING_COACH_MIN_WORDS: '10', SPEAKING_COACH_DAILY_MINUTES_PER_TEACHER: '15',
-      SPEAKING_COACH_MONTHLY_MINUTES_PER_TEACHER: '100', SPEAKING_COACH_AI_MAX_OUTPUT_TOKENS: '800' });
+      SPEAKING_COACH_MONTHLY_MINUTES_PER_TEACHER: '100', SPEAKING_COACH_CHECK_MAX_OUTPUT_TOKENS: '4000', SPEAKING_COACH_TASKS_MAX_OUTPUT_TOKENS: '3500' });
     expect(issues).toEqual([]);
     expect(settings).toEqual({ passPercent: 80, maxAttemptsPerSubmission: 5, maxRecordingSeconds: 60, minWords: 10, dailyMinutesPerTeacher: 15,
-      monthlyMinutesPerTeacher: 100, maxOutputTokens: 800 });
+      monthlyMinutesPerTeacher: 100, checkMaxOutputTokens: 4000, tasksMaxOutputTokens: 3500 });
   });
+
+  test.each([['SPEAKING_COACH_CHECK_MAX_OUTPUT_TOKENS', 'checkMaxOutputTokens', 3000], ['SPEAKING_COACH_TASKS_MAX_OUTPUT_TOKENS', 'tasksMaxOutputTokens', 2500]])(
+    '%s: 256 to 8000, anything else ignored', (name, key, fallback) => {
+      expect(policy.readSettings({ [name]: '256' }).settings[key]).toBe(256);
+      expect(policy.readSettings({ [name]: '8000' }).settings[key]).toBe(8000);
+      for (const bad of ['255', '8001', 'many', '2500.5']) expect(policy.readSettings({ [name]: bad })).toMatchObject({ settings: { [key]: fallback }, issues: [name] });
+    });
+
+  test('the retired single limit (SPEAKING_COACH_AI_MAX_OUTPUT_TOKENS, 1200) no longer lowers either call', () => {
+    expect(policy.readSettings({ SPEAKING_COACH_AI_MAX_OUTPUT_TOKENS: '1200' }).settings).toMatchObject({ checkMaxOutputTokens: 3000, tasksMaxOutputTokens: 2500 });
+  });
+
+  test('the retry after a truncated reply: twice the limit, never above 8000', () => {
+    expect(policy.truncationRetryLimit(3000)).toBe(6000);
+    expect(policy.truncationRetryLimit(2500)).toBe(5000);
+    expect(policy.truncationRetryLimit(5000)).toBe(8000);
+    expect(policy.truncationRetryLimit(8000)).toBe(8000);
+  });
+
+  test.each([[{}, 'low'], [{ SPEAKING_COACH_REASONING_EFFORT: 'medium' }, 'medium'], [{ SPEAKING_COACH_REASONING_EFFORT: ' HIGH ' }, 'high'],
+    [{ SPEAKING_COACH_REASONING_EFFORT: 'none' }, 'low'], [{ SPEAKING_COACH_REASONING_EFFORT: 'max' }, 'low']])(
+    'the reasoning effort %j -> %s (low, medium or high; anything else is low)', (env, effort) => {
+      expect(policy.reasoningEffort(env)).toBe(effort);
+    });
 
   test.each([
     ['SPEAKING_COACH_PASS_PERCENT', '49', 'passPercent', 70],

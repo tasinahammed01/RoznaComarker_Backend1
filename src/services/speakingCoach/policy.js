@@ -7,6 +7,16 @@ const { audioSttEnabled } = require('../audio/policy');
 /** SPEAKING_COACH_ENABLED=true AND AUDIO_STT_ENABLED=true. Anything else: off (every coach route answers 404). */
 const speakingCoachEnabled = (env = process.env) => audioSttEnabled(env) && String(env.SPEAKING_COACH_ENABLED || '').trim().toLowerCase() === 'true';
 
+const MAX_OUTPUT_TOKENS = 8000;
+/** The one retry after a reply cut off by its output limit (AI_RESPONSE_TRUNCATED): twice the limit, never above 8000. */
+const truncationRetryLimit = limit => Math.min(MAX_OUTPUT_TOKENS, Math.max(1, Number(limit) || 0) * 2);
+const REASONING_EFFORTS = Object.freeze(['low', 'medium', 'high']);
+/** SPEAKING_COACH_REASONING_EFFORT: the model's thinking for the coach's calls, low (default), medium or high; anything else is low. */
+function reasoningEffort(env = process.env) {
+  const value = String(env.SPEAKING_COACH_REASONING_EFFORT || '').trim().toLowerCase();
+  return REASONING_EFFORTS.includes(value) ? value : 'low';
+}
+
 // [variable, key, default, minimum, maximum]
 const SETTINGS = Object.freeze([
   ['SPEAKING_COACH_PASS_PERCENT', 'passPercent', 70, 50, 100],
@@ -15,7 +25,10 @@ const SETTINGS = Object.freeze([
   ['SPEAKING_COACH_MIN_WORDS', 'minWords', 15, 5, 100],
   ['SPEAKING_COACH_DAILY_MINUTES_PER_TEACHER', 'dailyMinutesPerTeacher', 30, 1, 100000],
   ['SPEAKING_COACH_MONTHLY_MINUTES_PER_TEACHER', 'monthlyMinutesPerTeacher', 300, 1, 1000000],
-  ['SPEAKING_COACH_AI_MAX_OUTPUT_TOKENS', 'maxOutputTokens', 1200, 256, 4000]
+  // Output limits per call, with room for the model's thinking (a real trial at 1200 was cut off: 581 of 719 and 932 of 1027 output tokens
+  // were thinking). They replace the single SPEAKING_COACH_AI_MAX_OUTPUT_TOKENS (1200), which no longer has any effect.
+  ['SPEAKING_COACH_CHECK_MAX_OUTPUT_TOKENS', 'checkMaxOutputTokens', 3000, 256, MAX_OUTPUT_TOKENS],
+  ['SPEAKING_COACH_TASKS_MAX_OUTPUT_TOKENS', 'tasksMaxOutputTokens', 2500, 256, MAX_OUTPUT_TOKENS]
 ]);
 const DEFAULTS = Object.freeze(Object.fromEntries(SETTINGS.map(([, key, fallback]) => [key, fallback])));
 
@@ -63,4 +76,5 @@ function isPassingLevel(percent, levels, passPercent) {
   return value >= passRule(levels, passPercent).minimumPercent;
 }
 
-module.exports = { speakingCoachEnabled, readSettings, passRule, isPassingLevel, SETTINGS, DEFAULTS };
+module.exports = { speakingCoachEnabled, readSettings, passRule, isPassingLevel, truncationRetryLimit, reasoningEffort, SETTINGS, DEFAULTS,
+  MAX_OUTPUT_TOKENS, REASONING_EFFORTS };
