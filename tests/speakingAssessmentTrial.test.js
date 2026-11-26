@@ -191,6 +191,20 @@ describe('--coach-generate (Speaking Coach: the cost of one task wording), alone
     expect(down).toHaveBeenCalledTimes(1);
   });
 
+  test('a failure names the failing check (codes only): a key that cannot be sent, or a request that failed before any answer', async () => {
+    const lines = [];
+    const log = jest.spyOn(console, 'log').mockImplementation((...args) => lines.push(args.join(' ')));
+    const fetchImpl = h.fakeOpenRouter(wording, usage);
+    try { await trial.main(['--coach-generate', '--max-cost-usd', '0.1'], { ...env, OPENROUTER_API_KEY: 'sk-or-v1-place​holder' }, { fetchImpl }); } finally { log.mockRestore(); }
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(lines.join('\n')).toMatch(/FAILED AI_PROVIDER_CREDENTIAL_INVALID \(credential non_printable_characters\)/);
+    expect(lines.join('\n')).not.toContain('placeholder');
+    const failing = jest.fn(async () => { throw Object.assign(new TypeError('fetch failed: hidden'), { cause: { code: 'ENOTFOUND' } }); });
+    const out = await capture(['--coach-generate', '--max-cost-usd', '0.1'], failing);
+    expect(out).toMatch(/FAILED AI_RESPONSE_INVALID \(stage TRANSPORT_FAILURE, TypeError, ENOTFOUND\)/);
+    expect(out).not.toContain('hidden');
+  });
+
   test('several transcripts: the wording stops once the reported cost reaches the cap', async () => {
     const fetchImpl = h.fakeOpenRouter(wording, usage);
     const out = await capture(['--coach-generate', '--max', '5', '--max-cost-usd', '0.003'], fetchImpl);

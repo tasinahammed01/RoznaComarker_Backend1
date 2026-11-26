@@ -88,6 +88,24 @@ function credentialFor(provider, env = process.env) {
   if (provider === 'openrouter') return text(env.OPENROUTER_API_KEY);
   return '';
 }
+// A key is sent in a header. One holding anything but printable ASCII inside it (a line break, a tab, a zero-width or non-breaking space, as a
+// copy and paste can add) is refused by fetch before any byte leaves, as a bare TypeError that used to read as AI_RESPONSE_INVALID. Refused here
+// instead, with its own code. The key itself is never logged or kept.
+const credentialIssue = value => (value && /[^\x21-\x7E]/u.test(value) ? 'non_printable_characters' : null);
+/**
+ * Codes only, for an error that is not the gateway's own: where it happened, its name and its cause code (never its message). Kept in a
+ * NON-enumerable field read only by the gateway's server log line, so it never reaches the public error, its attempts or anything stored
+ * (transport details stay private: tests/aiRequestDiagnostics.test.js; callers that need them use onDiagnostic).
+ */
+function annotateForeignError(error, failureStage) {
+  if (!error || typeof error !== 'object' || String(error.code || '').startsWith('AI_') || error.gatewayDiagnostics) return;
+  const cause = String(error.cause?.code || error.code || '');
+  try {
+    Object.defineProperty(error, 'gatewayDiagnostics', { enumerable: false, value: Object.freeze({ failureStage,
+      ...(/^[A-Za-z]{1,40}$/u.test(String(error.name || '')) ? { errorName: error.name } : {}),
+      ...(/^[A-Z0-9_]{1,40}$/u.test(cause) ? { causeCode: cause } : {}) }) });
+  } catch { /* a frozen error keeps the generic code */ }
+}
 
 function endpointFor(provider, env = process.env) {
   if (provider === 'google') return text(env.GEMINI_BASE_URL)
@@ -274,7 +292,7 @@ function safeFailureMetadata(error) {
     'requiredPropertyMissing', 'unexpectedPropertyPresent', 'expectedSymbolCount',
     'receivedSymbolCount', 'missingSymbols', 'duplicateSymbols', 'unexpectedSymbols',
     'providerErrorCode', 'providerErrorMessage', 'providerErrorParameter', 'providerErrorMetadata',
-    'schemaName', 'schemaPath'];
+    'schemaName', 'schemaPath', 'credentialIssue'];
   return Object.fromEntries(allowed.filter((key) => error?.[key] !== undefined && error?.[key] !== null)
     .map((key) => [key, error[key]]));
 }
@@ -506,6 +524,8 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
         body.reasoning={effort:mechanicsProfile.REASONING_EFFORT};
       }
     }
+    const issue = credentialIssue(credentialFor(entry.provider, env));
+    if (issue) throw attemptError('AI_PROVIDER_CREDENTIAL_INVALID', 'AI provider credential cannot be sent.', { credentialIssue: issue });
     const options = {
       method: 'POST',
       headers: {
@@ -589,6 +609,7 @@ async function unboundedProviderAttempt({ entry, messages, maxOutputTokens, temp
       // Which provider actually served the call (a short name only), for the production log.
       ...(requestProfile && typeof payload.provider === 'string' ? { provider: payload.provider.slice(0, 80) } : {}) };
   } catch (error) {
+    if (!controller.signal.aborted) annotateForeignError(error, failureStage);
     if(isAssessmentFeature(feature)&&diagnosticUsage)Object.assign(error,rubricUsage(diagnosticUsage));
     accountingOutcome=controller.signal.aborted?'AI_ATTEMPT_TIMEOUT':safeCode(error);
     requestDiagnostics.notify(onDiagnostic, { failureStage: controller.signal.aborted || error?.name === 'AbortError'
@@ -732,7 +753,9 @@ async function generate({ feature = 'unspecified', messages, maxOutputTokens = 4
           retryIndex: retry, durationMs: now() - attemptStarted, attemptTimeoutMs: timeout,
           remainingBudgetMs: Math.max(0, deadline - now()), maxOutputTokens, code, httpStatus,
           retryDelayMs: null,
-          ...failureMetadata });
+          ...failureMetadata,
+          // Server log only: where a non-gateway error happened (stage, name, cause code), so it never hides behind AI_RESPONSE_INVALID.
+          ...(error?.gatewayDiagnostics || {}) });
         if (terminalCodes.includes(code)) {
           // Preserve sanitized attempt diagnostics for the canonical failure
           // record while preventing a terminal account/request failure from

@@ -20,8 +20,21 @@ const SWITCH = 'call-openrouter';
 
 function refuse(message) { console.error(`speakingAssessmentTrial: ${message}`); process.exitCode = 1; }
 
-/** The check that rejected the last attempt (the gateway's own code is AI_OUTPUT_VALIDATION_FAILED). Codes only, never provider text. */
-const subCode = error => String(error?.attempts?.at?.(-1)?.validationCode || '').replace(/[^A-Z0-9_]/gi, '');
+/**
+ * The check that failed the last attempt, codes only (never provider text, a message or a key): the validation rule that rejected a reply (the
+ * gateway's own code is then AI_OUTPUT_VALIDATION_FAILED), a key that cannot be sent, or (from the gateway's private onDiagnostic report) the
+ * stage, error name and cause code of a failure before any answer.
+ */
+const subCode = (error, diagnostic = null) => {
+  const last = error?.attempts?.at?.(-1) || {};
+  const clean = value => String(value || '').replace(/[^A-Za-z0-9_]/g, '');
+  if (last.validationCode) return clean(last.validationCode);
+  if (last.credentialIssue) return `credential ${clean(last.credentialIssue)}`;
+  if (diagnostic?.failureStage) {
+    return [`stage ${clean(diagnostic.failureStage)}`, clean(diagnostic.causes?.[0]?.name), clean(diagnostic.internalCauseCode)].filter(Boolean).join(', ');
+  }
+  return '';
+};
 
 /** deps.fetchImpl is for tests only (a fake provider); by default the real fetch is used. */
 async function main(argv = process.argv.slice(2), env = process.env, deps = {}) {
@@ -101,15 +114,17 @@ async function coachTrial(argv, env, deps, config, gateway) {
   /** One call; counts it, adds the reported usage, and says whether the cap is reached. */
   const call = async (kind, name, request, describe) => {
     totals.calls++; runs[kind].calls++;
+    let diagnostic = null;
     try {
-      const result = await gateway.generate({ ...request, config: noRetry, env, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), metadata: { purpose: 'speaking_coach_trial' } });
+      const result = await gateway.generate({ ...request, config: noRetry, env, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), metadata: { purpose: 'speaking_coach_trial' },
+        onDiagnostic: report => { diagnostic = report; } });
       const usage = result.usage || {};
       const cost = typeof usage.cost === 'number' ? usage.cost : 0;
       totals.inputTokens += usage.prompt_tokens || 0; totals.outputTokens += usage.completion_tokens || 0; totals.costUsd += cost; runs[kind].costUsd += cost;
       console.log(`- ${name}: ${describe(result.value)}; tokens ${usage.prompt_tokens ?? '?'} in / ${usage.completion_tokens ?? '?'} out; `
         + `cost ${typeof usage.cost === 'number' ? `$${usage.cost.toFixed(5)}` : 'not reported'}`);
     } catch (error) {
-      const sub = subCode(error);
+      const sub = subCode(error, diagnostic);
       console.log(`- ${name}: FAILED ${String(error?.finalFailureCode || error?.code || 'ERROR').replace(/[^A-Z0-9_]/gi, '')}${sub ? ` (${sub})` : ''}`);
     }
     if (totals.costUsd >= cap) { totals.capped = true; console.log(`cost cap reached ($${totals.costUsd.toFixed(5)} of $${cap.toFixed(5)}); stopping`); }
