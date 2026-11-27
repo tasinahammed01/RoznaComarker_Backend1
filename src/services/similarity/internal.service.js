@@ -9,7 +9,7 @@ const Submission = require('../../models/Submission');
 const SimilarityFingerprint = require('../../models/SimilarityFingerprint');
 const Class = require('../../models/class.model');
 const Assignment = require('../../models/assignment.model');
-const ReferenceFile = require('../../models/ReferenceFile');
+const { referenceSequenceHashes } = require('../referenceFiles/similarityHashes');
 const { buildCanonicalSubmissionTranscript } = require('../../utils/ocrTranscriptNormalizer');
 const sourceFidelity = require('../../utils/sourceFidelity');
 const { similarityEnabled } = require('./policy');
@@ -83,13 +83,9 @@ const markSequences = (mask, hashes, set) => hashes.forEach((hash, i) => {
 /** The words that never count as a match for this essay: quotes (setting), the brief, the task's active reference files, common phrasing. */
 async function blockedMask(essay, settings) {
   const mask = settings.excludeQuotes ? quoteMask(essay.text, essay.tokens) : new Array(essay.tokens.length).fill(false);
-  const refs = await ReferenceFile.find({ status: 'ready', activeSlot: { $exists: true },
-    $or: [{ scope: 'class', class: essay.submission.class }, { scope: 'assignment', assignment: essay.submission.assignment }] })
-    .select('+text').limit(10).lean();
-  const brief = new Set();
-  for (const value of [essay.assignment.instructions, ...refs.map(r => r.text)]) {
-    for (const hash of shingleHashes(tokenize(String(value || '')))) if (hash !== null) brief.add(hash);
-  }
+  // the teacher's material: hashes only, through the one bridge into reference files (never their text)
+  const brief = new Set(await referenceSequenceHashes({ classId: essay.submission.class, assignmentId: essay.submission.assignment }));
+  for (const hash of shingleHashes(tokenize(String(essay.assignment.instructions || '')))) if (hash !== null) brief.add(hash);
   markSequences(mask, essay.hashes, brief);
   const others = await SimilarityFingerprint.find({ assignmentId: essay.submission.assignment, submissionId: { $ne: essay.submission._id } })
     .select('allHashes').limit(MAX_TASK_ESSAYS).lean();
