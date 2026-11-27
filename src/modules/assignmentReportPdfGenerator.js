@@ -18,13 +18,13 @@ const timeout = (promise, ms, message, onTimeout) => new Promise((resolve, rejec
   Promise.resolve(promise).then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
 });
 
-const HEADER = '<div style="width:100%;margin:0 12mm;font:7pt Arial;color:#738392;border-bottom:1px solid #dfe6ea;padding-bottom:1mm">'
-  + '<b style="color:#087f83">RUBRILO</b> &nbsp;/&nbsp; Assignment Report</div>';
+const headerFor = title => '<div style="width:100%;margin:0 12mm;font:7pt Arial;color:#738392;border-bottom:1px solid #dfe6ea;padding-bottom:1mm">'
+  + `<b style="color:#087f83">RUBRILO</b> &nbsp;/&nbsp; ${String(title).replace(/[<>&"']/gu, '')}</div>`;
 const FOOTER = '<div style="width:100%;margin:0 12mm;font:7pt Arial;color:#738392;border-top:1px solid #dfe6ea;padding-top:1mm;display:flex;justify-content:space-between">'
   + '<span>Rubrilo &middot; Teacher report, confidential</span><span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span></div>';
 
 /** html -> outputPath (A4). Resolves { path, pageCount }; rejects with an ApiError (413 too large, 499 cancelled, 503 busy, 504 timeout). */
-async function generateAssignmentReportPdf(html, outputPath, { abortSignal } = {}) {
+async function generateAssignmentReportPdf(html, outputPath, { abortSignal, headerTitle = 'Assignment Report' } = {}) {
   const htmlBytes = Buffer.byteLength(String(html || ''));
   if (htmlBytes > positiveEnv('PDF_MAX_HTML_BYTES', 12 * 1024 * 1024)) throw new ApiError(413, 'The report is too large to render safely.');
   throwIfAborted(abortSignal);
@@ -51,7 +51,7 @@ async function generateAssignmentReportPdf(html, outputPath, { abortSignal } = {
       await timeout(page.evaluate(async () => { await document.fonts.ready; }), limits.pageReadyTimeoutMs, 'PDF font loading timed out.', cancelRender);
       throwIfAborted(abortSignal);
       await timeout(page.pdf({ path: outputPath, format: 'A4', preferCSSPageSize: true, printBackground: true, displayHeaderFooter: true,
-        headerTemplate: HEADER, footerTemplate: FOOTER }), limits.renderTimeoutMs, 'PDF document rendering timed out.', cancelRender);
+        headerTemplate: headerFor(headerTitle), footerTemplate: FOOTER }), limits.renderTimeoutMs, 'PDF document rendering timed out.', cancelRender);
       throwIfAborted(abortSignal);
       const rendered = await PDFDocument.load(await fs.promises.readFile(outputPath));
       assertUniformA4Portrait(rendered);

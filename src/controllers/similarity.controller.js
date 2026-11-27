@@ -2,6 +2,10 @@
 // /api/similarity: the owning teacher's similarity panel. Anyone else (another teacher, a student, a guest) gets 404. Mutations carry a
 // request id (Idempotency-Key header for checks, requestId for exclusions) and exclusions a revision (409 with the current report on a
 // conflict). /api/similarity/webhooks: the asynchronous provider's callbacks (Copyleaks), authenticated by the shared secret.
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
 const SimilarityReport = require('../models/SimilarityReport');
 const Submission = require('../models/Submission');
 const { similarityEnabled } = require('../services/similarity/policy');
@@ -138,6 +142,29 @@ async function restoreAll(req, res, next) {
   } catch (error) { return next(error); }
 }
 
+/** The teacher-only similarity PDF of a completed (or expired) report, with the saved exclusions. 409 before there is one. */
+async function pdf(req, res, next) {
+  let outputPath = null;
+  try {
+    const essay = await ownedEssay(req);
+    if (!essay) return notFound(res);
+    const view = await viewFor(req, essay);
+    if (!VIEWABLE.includes(view.state)) return res.status(409).json({ success: false, code: 'SIMILARITY_NO_REPORT', message: 'There is no similarity report for this essay yet.' });
+    if (process.env.NODE_ENV === 'test' && process.env.ENABLE_TEST_PDF_HTTP !== 'true') return res.status(503).json({ success: false, code: 'PDF_UNAVAILABLE', message: 'PDF is unavailable.' });
+    const generatedAt = new Date();
+    const html = require('../services/similarity/pdfHtml').renderSimilarityHtml(view, { generatedAt, title: essay.assignment.title });
+    const dir = path.join(os.tmpdir(), 'rubrilo-similarity-pdf');
+    await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+    outputPath = path.join(dir, `similarity-${crypto.randomUUID()}.pdf`);
+    // Required here so tests can replace the generator.
+    await require('../modules/assignmentReportPdfGenerator').generateAssignmentReportPdf(html, outputPath, { headerTitle: 'Similarity Report' });
+    const body = await fs.promises.readFile(outputPath);
+    res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="similarity-report-${generatedAt.toISOString().slice(0, 10)}.pdf"`,
+      'Content-Length': String(body.length), 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+    return res.status(200).end(body);
+  } catch (error) { return next(error); } finally { if (outputPath) await fs.promises.unlink(outputPath).catch(() => {}); }
+}
+
 /** The notice line the essay upload page shows while the feature is on (students and guests; no sign-in, no data). */
 function notice(_req, res) {
   const { ESSAY_SIMILARITY_NOTICE_VERSION, ESSAY_SIMILARITY_NOTICE_TEXT } = require('../config/essaySimilarityNotice');
@@ -155,4 +182,4 @@ const copyleaksExport = kind => async (req, res, next) => {
   } catch (error) { return next(error); }
 };
 
-module.exports = { NOT_FOUND, requireEnabled, hideFromNonTeachers, notice, getReport, startCheck, retry, setExcluded, restoreAll, copyleaksStatus, copyleaksExport };
+module.exports = { NOT_FOUND, requireEnabled, hideFromNonTeachers, notice, pdf, getReport, startCheck, retry, setExcluded, restoreAll, copyleaksStatus, copyleaksExport };
