@@ -93,6 +93,8 @@ async function complete({ runId, submissionId, teacherId, sourceHash }) {
     await Submission.updateOne({ _id: submissionId, assessmentRunId: runId }, { $set: {
       assessmentStatus: 'complete', assessmentCompletedAt: completed.completedAt || new Date(), assessmentErrorCode: null
     } });
+    // Similarity index (off unless SIMILARITY_ENABLED): not awaited and never throws, so marking never waits on or fails because of it.
+    void require('./similarity/internal.service').onAssessmentComplete(submissionId);
     const credit = await AssessmentCreditRouter.consumeAssessmentCredit({ teacherUserId: teacherId, submissionId,
       assignmentId: submission.assignment, assessmentId: runId,
       reason: submission.draftVersion && Number(submission.draftVersion) > 1 ? 'Revised Draft Assessment' : 'AI Assessment' });
