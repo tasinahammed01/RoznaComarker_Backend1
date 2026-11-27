@@ -24,10 +24,14 @@ const ALLOWED = new Set(['app.js', 'server.js', 'models/ReferenceFile.js', 'mode
   // Stage 4, marking: adds the two prompt lines (assessment prompt only; none without usable files).
   'services/semanticRubricAssessment.service.js',
   // Stage 4: the context version joins the runtime fingerprint only while REFERENCE_FILES_ENABLED is on.
-  'services/runtimeContractFingerprint.service.js']);
+  'services/runtimeContractFingerprint.service.js',
+  // Similarity Reporting: subtracts the words of the active reference files from matches, through SIMILARITY_BRIDGE only (hashes, never text).
+  'services/similarity/internal.service.js']);
 const isFeature = name => name === 'models/ReferenceFile.js' || name.startsWith('services/referenceFiles/');
 // The single entry point marking may use. Followed no further: what it reads (ready files' excerpts) goes only into the AI request.
 const MARKING_BRIDGE = 'services/referenceFiles/markingContext.js';
+// The single entry point Similarity Reporting may use. Followed no further: it returns 5-word sequence hashes (numbers) only.
+const SIMILARITY_BRIDGE = 'services/referenceFiles/similarityHashes.js';
 // The on/off switch and limits (no database, no file data, no requires): the runtime fingerprint (health route) reads the switch.
 const SWITCH_ONLY = 'services/referenceFiles/policy.js';
 const MENTION = /ReferenceFile|referenceFiles|reference-files|referencefiles/u;
@@ -66,6 +70,7 @@ describe('static isolation', () => {
         if (seen.has(file)) continue;
         seen.add(file);
         if (rel(file) === MARKING_BRIDGE) { throughBridge.add(route); continue; }
+        if (rel(file) === SIMILARITY_BRIDGE) continue;
         if (rel(file) === SWITCH_ONLY) { expect(requiresOf(file)).toEqual([]); continue; }
         if (isFeature(rel(file))) (reached[route] ||= []).push(rel(file));
         queue.push(...requiresOf(file));
@@ -83,6 +88,20 @@ describe('static isolation', () => {
     expect(marking.promptLines(ctx)[0]).toContain('Secret course text.');   // only ever passed to the assessment request builder
     const callers = sourceFiles(SRC).map(rel).filter(name => name !== MARKING_BRIDGE && /promptLines\(/u.test(fs.readFileSync(path.join(SRC, name), 'utf8')));
     expect(callers).toEqual(['services/semanticRubricAssessment.service.js']);
+  });
+
+  test('the similarity bridge has one caller and returns numbers only, never file text', async () => {
+    const callers = sourceFiles(SRC).map(rel).filter(name => name !== SIMILARITY_BRIDGE && /referenceFiles\/similarityHashes/u.test(fs.readFileSync(path.join(SRC, name), 'utf8')));
+    expect(callers).toEqual(['services/similarity/internal.service.js']);
+    const ReferenceFile = require('../src/models/ReferenceFile');
+    const spy = jest.spyOn(ReferenceFile, 'find').mockReturnValue({ select: () => ({ limit: () => ({ lean: async () => [
+      { _id: 'f1', originalName: 'Secret notes.pdf', text: 'Secret course text with enough words in it here.' }] }) }) });
+    try {
+      const out = await require('../src/services/referenceFiles/similarityHashes').referenceSequenceHashes({ classId: 'c', assignmentId: 'a' });
+      expect(out.length).toBeGreaterThan(0);
+      expect(out.every(n => Number.isInteger(n) && n >= 0)).toBe(true);
+      expect(JSON.stringify(out)).not.toMatch(/Secret|notes|f1/);
+    } finally { spy.mockRestore(); }
   });
 
   test('the check itself works: the reference-file router does reach them', () => {

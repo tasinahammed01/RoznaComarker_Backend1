@@ -119,6 +119,8 @@ fs.mkdirSync(path.join(uploadsRoot, "templates"), { recursive: true });
 // Webhook signature verification must see the exact bytes before JSON parsing.
 // Legacy Stripe routes are intentionally not mounted in this PayPal-only application.
 app.use('/api/webhooks/paypal', require('./routes/paypalWebhook.routes'));
+// Similarity provider callbacks (Copyleaks export files can exceed the global 1 MB JSON limit): their own parser, 404 unless configured.
+app.use('/api/similarity/webhooks', require('./routes/similarityWebhook.routes'));
 // Keep ordinary JSON/form requests bounded. Multipart uploads are parsed by
 // Multer on their individual routes and retain their feature-specific limits.
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "1mb" }));
@@ -220,6 +222,7 @@ app.use('/api/speaking/assignments/:assignmentId/teacher-uploads', require('./ro
 app.use('/api/speaking', require('./routes/speaking.routes'));
 // Speaking Coach (SPEAKING_COACH_ENABLED, default off): practice after a speaking result. Guests: /api/guest/speaking/submissions/:id/coach.
 app.use('/api/speaking-coach', require('./routes/speakingCoach.routes'));
+app.use('/api/similarity', require('./routes/similarity.routes'));
 app.use("/api/flashcards", flashcardRoutes);
 app.use("/api/shared", sharedFlashcardRoutes);
 app.use("/api/worksheets/generate/text", worksheetTextRoute);

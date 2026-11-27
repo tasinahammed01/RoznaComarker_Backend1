@@ -129,6 +129,14 @@ const ALLOWED = {
   'GET /api/speaking-coach/submissions/:submissionId': 'the speaking feature itself: the owning student\'s speaking practice state (Speaking Coach)',
   'POST /api/speaking-coach/submissions/:submissionId/start': 'the speaking feature itself: the owning student starts speaking practice (Speaking Coach)',
   'GET /api/speaking-coach/teacher/submissions/:submissionId/progress': 'the speaking feature itself: the owning teacher reads speaking practice progress (Speaking Coach)',
+  // Similarity Reporting is essays only: similarity/internal.service.loadEssay returns null for an audio submission, so every route answers 404
+  // (similarityCheck.test.js "owner only ... a speaking submission").
+  'GET /api/similarity/submissions/:submissionId': 'essays only: an audio submission answers 404 (no similarity report)',
+  'GET /api/similarity/submissions/:submissionId/pdf': 'essays only: an audio submission answers 404 (no similarity report)',
+  'PATCH /api/similarity/submissions/:submissionId/sources/:sourceId': 'essays only: an audio submission answers 404 (no similarity report)',
+  'POST /api/similarity/submissions/:submissionId/checks': 'essays only: an audio submission answers 404 (no check is queued)',
+  'POST /api/similarity/submissions/:submissionId/checks/retry': 'essays only: an audio submission answers 404 (no check is queued)',
+  'POST /api/similarity/submissions/:submissionId/sources/restore-all': 'essays only: an audio submission answers 404 (no similarity report)',
   'GET /api/guest/speaking/submissions/:submissionId/coach': 'the speaking feature itself: the guest\'s own speaking practice state and notice (Speaking Coach)',
   'POST /api/guest/speaking/submissions/:submissionId/coach/start': 'the speaking feature itself: the guest starts speaking practice after the notice (Speaking Coach)',
   'POST /api/guest/speaking/submissions/:submissionId/coach/sessions/:sessionId/tasks/:taskId/attempts': 'the speaking feature itself: the guest\'s practice recording (Speaking Coach)',

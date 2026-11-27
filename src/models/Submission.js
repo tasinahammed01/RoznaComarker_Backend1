@@ -48,6 +48,9 @@ const submissionSchema = new Schema(
       // A guest's recording (stage 10): the notice version accepted and when (config/speakingGuestNotice.js). Never read back unless asked for.
       consent: { type: { _id: false, version: { type: String, maxlength: 40 }, acceptedAt: Date }, select: false, default: undefined }
     },
+    // The essay similarity notice the student or guest saw when submitting (config/essaySimilarityNotice.js): only then may the essay be
+    // sent to an external similarity service. Teacher/server only; never read back unless asked for.
+    similarityNotice: { type: { _id: false, version: { type: String, maxlength: 40 }, acceptedAt: Date }, select: false, default: undefined },
     guestRequestKey: { type: String, select: false },
     registeredRequestKey: { type: String, select: false },
     guestRevisionLease: { owner: String, until: Date },
@@ -377,6 +380,7 @@ submissionSchema.index({ ocrStatus: 1, analysisNextRetryAt: 1, analysisLeaseExpi
 require('../services/sourceFidelity/immutability').install(submissionSchema);
 submissionSchema.set('toJSON',{transform(_doc,ret){
   delete ret.registeredRequestKey;
+  delete ret.similarityNotice; // server-only, even when a query selected it
   delete ret.teacherAnnotations; // teacher-only, even when a query selected it
   delete ret.teacherUpload; // teacher/server-only, even when a query selected it; teacher endpoints build their own DTO
   for(const page of ret.ocrPages||[])delete page.studentSourceEvidence;

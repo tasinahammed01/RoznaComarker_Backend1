@@ -54,6 +54,9 @@ const { normalizeAssignmentRubric, hashNormalizedRubric } = require('../services
 const ADAPTIVE_RESUBMISSION_MESSAGE = 'Complete the required Adaptive Learning activities before submitting another draft.';
 const submissionAccess = require('../services/submissionAccessContext.service');
 
+// Essay similarity notice (config/essaySimilarityNotice.js): stored only when the upload page showed this exact version and the feature is on.
+const similarityNoticeFields = body => require('../config/essaySimilarityNotice').noticeFields(body, { enabled: require('../services/similarity/policy').similarityEnabled() });
+
 function sendSuccess(res, data) {
   return res.json({
     success: true,
@@ -719,6 +722,7 @@ async function upsertSubmissionLocked({ req, res, assignment, qrToken }) {
         existing.guest.resultEmailNextAttemptAt = undefined;
       }
       if(!guestRevision)existing.registeredRequestKey=req.registeredRequestKey;
+      Object.assign(existing, similarityNoticeFields(req.body));
       let saved;
       try { saved = await existing.save(); } catch (error) {
         if (error?.name !== 'DocumentNotFoundError' || !draftLimit.enabled()) throw error;
@@ -807,6 +811,7 @@ async function upsertSubmissionLocked({ req, res, assignment, qrToken }) {
     }
 
     const created = await Submission.create({
+      ...similarityNoticeFields(req.body),
       student: studentId,
       registeredRequestKey: req.registeredRequestKey,
       assignment: assignment._id,

@@ -21,6 +21,9 @@ const logger = require('../utils/logger');
 const { withActiveStatus } = require('../services/classLifecycle.service');
 
 const ok = (res, data) => res.json({ success: true, data });
+// Essay similarity notice (config/essaySimilarityNotice.js): stored only when the upload page showed this exact version and the feature is on.
+const similarityNoticeFields = body => require('../config/essaySimilarityNotice').noticeFields(body, { enabled: require('../services/similarity/policy').similarityEnabled() });
+
 async function clean(req, documents = []) {
   if (req.guestRevisionLease) {
     const lease = req.guestRevisionLease; req.guestRevisionLease = null;
@@ -249,7 +252,7 @@ const submit = endpoint(async (req, res) => {
     const now = new Date();
     const isLate = Boolean(assignment.deadline && now > assignment.deadline);
     // Existing first submissions accept late work and label it late; preserve that policy.
-    created = await Submission.create({ _id: id, submissionMode: 'guest', assignment: assignment._id,
+    created = await Submission.create({ ...similarityNoticeFields(req.body), _id: id, submissionMode: 'guest', assignment: assignment._id,
       class: classDoc._id, guestRequestKey, fileContentIdentity: contentIdentity,
       guest: { ...guest, requestHash, accessHash: issued.accessHash, expiresAt: issued.expiresAt },
       files: persisted.files.map(file => file._id), file: persisted.files[0]._id,
