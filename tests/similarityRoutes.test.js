@@ -92,7 +92,7 @@ describe('GET before any check, and starting a check', () => {
     const res = await get(s, s.teacher);
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual({ state: 'none', eligible: true, reason: null, wordCount: 80, checksLeftToday: 7, checksLeftForSubmission: 3,
-      externalAvailable: false, noticeShown: true });
+      externalAvailable: false, noticeShown: true, confirmationNeeded: false });
   });
   test('the external check is offered only with a configured provider and an essay that carries the notice', async () => {
     const s = await scene();
@@ -100,6 +100,25 @@ describe('GET before any check, and starting a check', () => {
     expect((await get(s, s.teacher)).body.data).toMatchObject({ externalAvailable: true, noticeShown: true });
     const noNotice = await request(app).get(`/api/similarity/submissions/${s.sameClass._id}`).set(auth(s.teacher.token));
     expect(noNotice.body.data).toMatchObject({ externalAvailable: false, noticeShown: false });
+  });
+  test('confirmationNeeded: only with a configured provider and an essay without the notice', async () => {
+    const s = await scene();
+    const other = () => request(app).get(`/api/similarity/submissions/${s.sameClass._id}`).set(auth(s.teacher.token));
+    expect((await other()).body.data.confirmationNeeded).toBe(false);              // provider none: nothing to confirm
+    process.env.SIMILARITY_PROVIDER = 'stub';
+    expect((await other()).body.data.confirmationNeeded).toBe(true);               // no notice: the teacher must confirm
+    expect((await get(s, s.teacher)).body.data.confirmationNeeded).toBe(false);   // the notice was shown
+  });
+  test('POST checks: confirmPermission must be true or false; true is passed on', async () => {
+    const s = await scene();
+    process.env.SIMILARITY_PROVIDER = 'stub';
+    const url = `/api/similarity/submissions/${s.sameClass._id}/checks`;
+    expect((await request(app).post(url).set(auth(s.teacher.token)).set('Idempotency-Key', 'c0').send({ confirmPermission: 'yes' })).status).toBe(400);
+    expect((await request(app).post(url).set(auth(s.teacher.token)).set('Idempotency-Key', 'c1').send({ confirmPermission: true })).status).toBe(202);
+    const doc = await SimilarityReport.findOne({ submissionId: s.sameClass._id }).lean();
+    expect(doc.checks[0]).toMatchObject({ permission: 'teacher_confirmed', permitted: true });
+    expect(String(doc.checks[0].permissionConfirmedBy)).toBe(String(s.teacher.user._id));
+    expect(doc.checks[0].permissionConfirmedAt).toBeInstanceOf(Date);
   });
   test('POST needs an Idempotency-Key; 202 with the queued report; the same key again is the same check; errors are coded', async () => {
     const s = await scene();

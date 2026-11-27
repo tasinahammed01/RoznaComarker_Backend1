@@ -29,13 +29,18 @@ async function internalVisibility(sources, viewerId) {
   return new Map(subs.map(s => [String(s._id), { own: teacherOf.get(String(s.class)) === String(viewerId), sub: s }]));
 }
 
-/** The panel before any check: { state: 'none', eligible, reason, wordCount, checksLeftToday, checksLeftForSubmission, externalAvailable, noticeShown }. */
+/**
+ * The panel before any check: { state: 'none', eligible, reason, wordCount, checksLeftToday, checksLeftForSubmission, externalAvailable,
+ * noticeShown, confirmationNeeded }. confirmationNeeded: an external provider is configured but the essay has no notice, so the internet
+ * check runs only if the teacher confirms permission.
+ */
 function emptyView({ essay, checksLeftToday, settings, used, noticeShown, env }) {
   const provider = getProvider(env);
+  const configured = Boolean(provider && provider.isConfigured(env, settings));
   return { state: 'none', eligible: essay.eligible && essay.tokens.length <= settings.maxWords,
     reason: !essay.tokens.length ? 'no_text' : !essay.eligible ? 'transcript_not_confirmed' : essay.tokens.length > settings.maxWords ? 'too_long' : null,
     wordCount: essay.tokens.length, checksLeftToday, checksLeftForSubmission: Math.max(0, settings.checksPerSubmission - used),
-    externalAvailable: Boolean(provider && provider.isConfigured(env, settings) && noticeShown), noticeShown };
+    externalAvailable: configured && noticeShown, noticeShown, confirmationNeeded: configured && !noticeShown };
 }
 
 /** The full report for its owning teacher. */

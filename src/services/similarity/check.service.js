@@ -36,11 +36,15 @@ async function ownedEssay(userId, submissionId) {
   return essay;
 }
 
-/** May this essay go to an external service? The notice was shown, or the teacher confirms permission for an essay they uploaded. */
-async function externalPermitted(submissionId, confirmPermission) {
-  const doc = await Submission.findById(submissionId).select('+similarityNotice +teacherUpload').lean();
-  if (doc?.similarityNotice?.version) return true;
-  return Boolean(doc?.teacherUpload && confirmPermission === true);
+/**
+ * May this essay go to an external service? 'notice': the student or guest saw the notice when submitting. 'teacher_confirmed': no notice
+ * (an essay submitted before it existed, or one the teacher uploaded) and the teacher ticked that they have permission (recorded with who
+ * and when on the check). 'none': internal comparison only.
+ */
+async function externalPermission(submissionId, confirmPermission) {
+  const doc = await Submission.findById(submissionId).select('+similarityNotice').lean();
+  if (doc?.similarityNotice?.version) return 'notice';
+  return confirmPermission === true ? 'teacher_confirmed' : 'none';
 }
 
 async function checksLeftToday(teacherId, ctx) {
@@ -67,7 +71,8 @@ async function requestCheck({ userId, submissionId, requestId, confirmPermission
   if ((existing?.checks?.length || 0) >= settings.checksPerSubmission) return fail('submission_cap');
   const at = now(ctx);
   if (!await usage.reserveCheck(userId, settings.dailyChecksPerTeacher, at)) return fail('daily_cap');
-  const permitted = await externalPermitted(essay.submission._id, confirmPermission);
+  const permission = await externalPermission(essay.submission._id, confirmPermission);
+  const permitted = permission !== 'none';
   try {
     const report = await SimilarityReport.findOneAndUpdate(
       { submissionId: essay.submission._id, status: { $nin: ACTIVE }, 'checks.requestId': { $ne: requestId } },
@@ -76,7 +81,8 @@ async function requestCheck({ userId, submissionId, requestId, confirmPermission
         'job.attempts': 0, 'job.charged': false, 'job.spendUsd': 0, 'job.spendDay': null, 'job.submittedAt': null, 'job.deadlineAt': null, 'job.resentAt': null,
         'job.retried': false },
       $unset: { 'job.externalRef': 1, providerPending: 1 }, $inc: { revision: 1 },
-      $push: { checks: { at, by: userId, requestId, textSha256: sha256(essay.text), day: usage.dayOf(at), permitted } } },
+      $push: { checks: { at, by: userId, requestId, textSha256: sha256(essay.text), day: usage.dayOf(at), permitted, permission,
+        ...(permission === 'teacher_confirmed' ? { permissionConfirmedBy: userId, permissionConfirmedAt: at } : {}) } } },
       { upsert: true, returnDocument: 'after', lean: true });
     return { ok: true, report };
   } catch (error) {

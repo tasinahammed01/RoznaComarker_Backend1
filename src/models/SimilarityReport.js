@@ -43,6 +43,9 @@ const checkSchema = new Schema({
   textSha256: { type: String, maxlength: 64 },
   day: { type: String, maxlength: 10 },               // the UTC day its daily check was counted on
   permitted: Boolean,                                 // the essay could be sent to an external service for this check
+  permission: { type: String, enum: ['notice', 'teacher_confirmed', 'none'] },   // why (none: internal only)
+  permissionConfirmedBy: { type: Schema.Types.ObjectId },  // teacher_confirmed: the teacher who ticked the confirmation, and when
+  permissionConfirmedAt: Date,
   refunded: { type: Boolean, default: false }
 }, { _id: false });
 

@@ -171,6 +171,35 @@ describe('the job: internal only, and a synchronous provider', () => {
     expect((await full(s.mine._id)).external.state).toBe('completed');
     expect(fetch.calls).toHaveLength(1);
   });
+  test('an essay submitted before the notice: external only after the teacher confirms; the check records who confirmed and when', async () => {
+    const s = await scene({ notice: false });
+    const fetch = F.fakeFetch([{ match: () => true, reply: { body: F.copyscapeSearch(words('a', 12)) } }]);
+    const ctx = ctxFor(CS_ENV, fetch);
+    await ask(s, ctx);
+    await check.runQueued(ctx);
+    let doc = await full(s.mine._id);
+    expect(doc.external.state).toBe('not_permitted');
+    expect(doc.checks[0]).toMatchObject({ permitted: false, permission: 'none' });
+    expect(doc.checks[0].permissionConfirmedBy).toBeUndefined();
+    clock = new Date('2026-11-27T11:30:00Z');
+    await ask(s, ctx, { confirmPermission: true });
+    await check.runQueued(ctx);
+    doc = await full(s.mine._id);
+    expect(doc.external.state).toBe('completed');
+    expect(fetch.calls).toHaveLength(1);
+    expect(doc.checks[1]).toMatchObject({ permitted: true, permission: 'teacher_confirmed' });
+    expect(String(doc.checks[1].permissionConfirmedBy)).toBe(String(s.teacherId));
+    expect(doc.checks[1].permissionConfirmedAt).toEqual(clock);
+  });
+  test('an essay with the notice records the notice as the permission, never a teacher confirmation', async () => {
+    const s = await scene();
+    const ctx = ctxFor(BASE_ENV);
+    await ask(s, ctx, { confirmPermission: true });
+    const doc = await full(s.mine._id);
+    expect(doc.checks[0]).toMatchObject({ permitted: true, permission: 'notice' });
+    expect(doc.checks[0].permissionConfirmedBy).toBeUndefined();
+    expect(doc.checks[0].permissionConfirmedAt).toBeUndefined();
+  });
   test('the daily spend stop: the external check is skipped, nothing is sent', async () => {
     const s = await scene();
     const fetch = F.fakeFetch([]);
