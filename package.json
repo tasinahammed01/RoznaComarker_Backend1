@@ -12,6 +12,7 @@
     "migrate:reference-file-indexes": "node scripts/migrateReferenceFileIndexes.js",
     "migrate:audio-indexes": "node scripts/migrateAudioIndexes.js",
     "migrate:speaking-coach-indexes": "node scripts/migrateSpeakingCoachIndexes.js",
+    "migrate:similarity-indexes": "node scripts/migrateSimilarityIndexes.js",
     "audit:audio-storage": "node scripts/auditAudioStorage.js",
     "migrate:submission-writing-model-indexes": "node scripts/migrateSubmissionWritingModelIndexes.js",
     "migrate:annotation-indexes": "node scripts/migrateAnnotationIndexes.js",
