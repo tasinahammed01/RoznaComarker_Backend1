@@ -41,7 +41,8 @@ const checkSchema = new Schema({
   by: { type: Schema.Types.ObjectId, required: true },
   requestId: { type: String, maxlength: 64 },
   textSha256: { type: String, maxlength: 64 },
-  external: { type: String, enum: EXTERNAL_STATES },
+  day: { type: String, maxlength: 10 },               // the UTC day its daily check was counted on
+  permitted: Boolean,                                 // the essay could be sent to an external service for this check
   refunded: { type: Boolean, default: false }
 }, { _id: false });
 
@@ -53,6 +54,7 @@ const reportSchema = new Schema({
   status: { type: String, enum: STATUSES, required: true },
   revision: { type: Number, min: 0, default: 0 },
   lastRequestId: { type: String, maxlength: 64 },
+  lastMutationId: { type: String, maxlength: 64 },       // the last exclude/restore request (a repeat changes nothing)
   text: {
     sha256: { type: String, maxlength: 64 },
     chars: { type: Number, min: 0 },
@@ -82,7 +84,10 @@ const reportSchema = new Schema({
     deadlineAt: Date,
     resentAt: Date,
     externalRef: { type: String, maxlength: 64, select: false },
-    charged: { type: Boolean, default: false }         // the provider may have charged: the daily check is not given back
+    charged: { type: Boolean, default: false },        // the provider may have charged: the daily check is not given back
+    spendUsd: { type: Number, min: 0 },                // the estimated spend reserved in that day's global total
+    spendDay: { type: String, maxlength: 10 },
+    retried: { type: Boolean, default: false }         // the one retry of this check was used
   },
   // Teacher-only audit (never in a student or guest response): provider, scan id, units, estimated cost, counts. No raw payload.
   providerAudit: {

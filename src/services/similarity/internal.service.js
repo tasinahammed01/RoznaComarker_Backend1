@@ -7,6 +7,9 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Submission = require('../../models/Submission');
 const SimilarityFingerprint = require('../../models/SimilarityFingerprint');
+const Class = require('../../models/class.model');
+const Assignment = require('../../models/assignment.model');
+const ReferenceFile = require('../../models/ReferenceFile');
 const { buildCanonicalSubmissionTranscript } = require('../../utils/ocrTranscriptNormalizer');
 const sourceFidelity = require('../../utils/sourceFidelity');
 const { similarityEnabled } = require('./policy');
@@ -41,8 +44,8 @@ async function loadEssay(submissionId) {
   const submission = await Submission.findById(submissionId).select(`${TRANSCRIPT_FIELDS.join(' ')} +guest.normalizedEmail`).lean();
   if (!submission || submission.sourceKind === 'audio') return null;
   const [klass, assignment] = await Promise.all([
-    mongoose.model('Class').findById(submission.class).select('teacher institutionId').lean(),
-    mongoose.model('Assignment').findById(submission.assignment).select('instructions title writingType').lean()
+    Class.findById(submission.class).select('teacher institutionId').lean(),
+    Assignment.findById(submission.assignment).select('instructions title writingType').lean()
   ]);
   if (!klass || !assignment || assignment.writingType === 'speaking') return null;
   let text = '';
@@ -80,7 +83,6 @@ const markSequences = (mask, hashes, set) => hashes.forEach((hash, i) => {
 /** The words that never count as a match for this essay: quotes (setting), the brief, the task's active reference files, common phrasing. */
 async function blockedMask(essay, settings) {
   const mask = settings.excludeQuotes ? quoteMask(essay.text, essay.tokens) : new Array(essay.tokens.length).fill(false);
-  const ReferenceFile = mongoose.model('ReferenceFile');
   const refs = await ReferenceFile.find({ status: 'ready', activeSlot: { $exists: true },
     $or: [{ scope: 'class', class: essay.submission.class }, { scope: 'assignment', assignment: essay.submission.assignment }] })
     .select('+text').limit(10).lean();

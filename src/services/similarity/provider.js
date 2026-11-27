@@ -35,8 +35,11 @@ const ADAPTERS = {
 
 /** The adapter for SIMILARITY_PROVIDER, or null (none). */
 function getProvider(env = process.env) {
-  const name = providerName(env);
-  return ADAPTERS[name] ? ADAPTERS[name]() : null;
+  return providerByName(providerName(env));
+}
+/** The adapter by its name (a job in flight finishes with the provider it started with), or null. */
+function providerByName(name) {
+  return Object.prototype.hasOwnProperty.call(ADAPTERS, name) ? ADAPTERS[name]() : null;
 }
 
 /** Generic labels shown to the teacher (provider names never appear). */
@@ -64,4 +67,4 @@ function resolveSources(result, { text, tokens, blocked, settings }) {
   });
 }
 
-module.exports = { getProvider, resolveSources, ProviderError, SOURCE_LABELS };
+module.exports = { getProvider, providerByName, resolveSources, ProviderError, SOURCE_LABELS };
