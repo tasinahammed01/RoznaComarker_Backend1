@@ -10,8 +10,28 @@ const colorOf = number => COLORS[(Math.max(1, number) - 1) % COLORS.length];
 const pct = value => `${value}%`;
 const dateOf = value => { const d = new Date(value); return Number.isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10); };
 
+/**
+ * Display only: a single line break (the handwriting's line ends) becomes a space of the same length; a paragraph break (a blank line, also
+ * with spaces or a carriage return on it) and the page separator stay. Same length, so the highlight offsets are unchanged. The same rule as
+ * the teacher page (frontend utils/similarity-display.ts flowText).
+ */
+function flowText(text) {
+  const t = typeof text === 'string' ? text : '';
+  const out = t.split('');
+  const blank = c => c === ' ' || c === '\t' || c === '\r';
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] !== '\n') continue;
+    let j = i - 1; while (j >= 0 && blank(t[j])) j--;
+    let k = i + 1; while (k < t.length && blank(t[k])) k++;
+    if ((j >= 0 && t[j] === '\n') || (k < t.length && t[k] === '\n')) continue;
+    out[i] = ' ';
+    if (i > 0 && t[i - 1] === '\r') out[i - 1] = ' ';
+  }
+  return out.join('');
+}
+
 function essayHtml(view, numberOf) {
-  const text = String(view.text || '');
+  const text = flowText(String(view.text || ''));
   let out = '';
   let at = 0;
   for (const h of (view.highlights || []).slice().sort((a, b) => a.start - b.start)) {
@@ -64,4 +84,4 @@ ${list('Excluded by the teacher', excluded)}
 </body></html>`;
 }
 
-module.exports = { renderSimilarityHtml, escapeHtml };
+module.exports = { renderSimilarityHtml, escapeHtml, flowText };
