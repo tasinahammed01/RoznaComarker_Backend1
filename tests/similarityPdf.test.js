@@ -29,6 +29,23 @@ const VIEW = {
     { sourceId: 's4', number: null, kind: 'repository', label: 'Published or institutional source', percent: null, words: 0, excluded: true, compared: true }]
 };
 
+describe('flowText and the essay in the PDF: lines flow as paragraphs', () => {
+  const { flowText } = require('../src/services/similarity/pdfHtml');
+  test('a single line break becomes a space of the same length; paragraph breaks and the page separator stay', () => {
+    const text = 'one two\nthree\r\nfour\n\nfive\n \nsix\n\n\f\n\nseven';
+    const out = flowText(text);
+    expect(out).toBe('one two three  four\n\nfive\n \nsix\n\n\f\n\nseven');
+    expect(out.length).toBe(text.length);
+    expect(flowText(null)).toBe('');
+  });
+  test('the PDF essay has no line break inside a paragraph, keeps the paragraph break, and highlights the same words', () => {
+    const view = { ...VIEW, text: 'one two\nthree four\n\nfive six', highlights: [{ start: 4, end: 13, sourceId: 's1' }] };
+    const html = renderSimilarityHtml(view, { generatedAt: new Date() });
+    const essay = html.slice(html.indexOf('<div class="essay">'), html.indexOf('</div>', html.indexOf('<div class="essay">')));
+    expect(essay).toContain('one <mark class="m1" style="background:#f8c9c9">two three<sup>1</sup></mark> four<br><br>five six');
+  });
+});
+
 describe('renderSimilarityHtml', () => {
   const html = renderSimilarityHtml(VIEW, { generatedAt: new Date('2026-11-27T12:00:00Z'), title: 'Essay <1>' });
   test('escapes every text: the essay, titles, URLs and the assignment title', () => {
