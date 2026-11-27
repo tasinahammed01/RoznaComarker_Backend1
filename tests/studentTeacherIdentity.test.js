@@ -152,6 +152,7 @@ const NOT_COVERED = {
   // every student and guest response for teacher ids, levels, pass flags, provider, model, prompt and hash fields.
   '/api/speaking-coach/submissions/:submissionId': 'behind SPEAKING_COACH_ENABLED (off here: 404); the owning student\'s practice, a strict DTO (speakingCoachRoutes.test.js)',
   '/api/speaking-coach/sessions/:sessionId/attempts/:attemptId': 'behind SPEAKING_COACH_ENABLED (off here: 404); the owning student\'s attempt, a strict DTO (speakingCoachRoutes.test.js)',
+  '/api/similarity/notice': 'behind SIMILARITY_ENABLED (off here: 404); a fixed notice text and version, no data (similarityNoLeak.test.js)',
   '/api/guest/speaking/submissions/:submissionId/coach': 'behind SPEAKING_COACH_ENABLED (off here: 404); the guest\'s own practice and notice, a strict DTO (speakingCoachRoutes.test.js)',
   '/api/guest/speaking/submissions/:submissionId/coach/sessions/:sessionId/attempts/:attemptId': 'behind SPEAKING_COACH_ENABLED (off here: 404); the guest\'s own attempt, a strict DTO (speakingCoachRoutes.test.js)',
 };

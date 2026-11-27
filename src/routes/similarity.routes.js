@@ -7,6 +7,7 @@
 //   PATCH  /submissions/:submissionId/sources/:sourceId      { excluded, revision, requestId }: exclude or restore one source
 //   POST   /submissions/:submissionId/sources/restore-all    { revision, requestId }
 //   GET    /submissions/:submissionId/pdf                    the teacher-only similarity PDF
+//   GET    /notice                                           the notice line for the essay upload page (public: a fixed text, no data)
 // Anyone but the owning teacher gets 404. Students and guests have no similarity route at all.
 const router = require('express').Router();
 const { verifyJwtToken } = require('../middlewares/jwtAuth.middleware');
@@ -21,6 +22,7 @@ const mutationLimiter = createUserRateLimiter({ windowMs: 60 * 1000, limit: 60, 
 router.use(controller.requireEnabled);
 router.use((_req, res, next) => { res.set('Cache-Control', 'private, no-store'); next(); });
 
+router.get('/notice', controller.notice);
 router.get('/submissions/:submissionId', verifyJwtToken, controller.hideFromNonTeachers, requireRole('teacher'), controller.getReport);
 router.post('/submissions/:submissionId/checks/retry', verifyJwtToken, controller.hideFromNonTeachers, requireRole('teacher'), checkLimiter, controller.retry);
 router.post('/submissions/:submissionId/checks', verifyJwtToken, controller.hideFromNonTeachers, requireRole('teacher'), checkLimiter, controller.startCheck);

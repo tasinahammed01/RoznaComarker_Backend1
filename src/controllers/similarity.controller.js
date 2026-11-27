@@ -138,6 +138,12 @@ async function restoreAll(req, res, next) {
   } catch (error) { return next(error); }
 }
 
+/** The notice line the essay upload page shows while the feature is on (students and guests; no sign-in, no data). */
+function notice(_req, res) {
+  const { ESSAY_SIMILARITY_NOTICE_VERSION, ESSAY_SIMILARITY_NOTICE_TEXT } = require('../config/essaySimilarityNotice');
+  return res.json({ success: true, data: { version: ESSAY_SIMILARITY_NOTICE_VERSION, text: ESSAY_SIMILARITY_NOTICE_TEXT } });
+}
+
 // ---- provider webhooks: always a JSON body and the status the service decides (404 hides everything when off or not authentic) ----
 const webhookReply = (res, status) => res.status(status).json(status === 404 ? NOT_FOUND : { success: true });
 async function copyleaksStatus(req, res, next) {
@@ -149,4 +155,4 @@ const copyleaksExport = kind => async (req, res, next) => {
   } catch (error) { return next(error); }
 };
 
-module.exports = { NOT_FOUND, requireEnabled, hideFromNonTeachers, getReport, startCheck, retry, setExcluded, restoreAll, copyleaksStatus, copyleaksExport };
+module.exports = { NOT_FOUND, requireEnabled, hideFromNonTeachers, notice, getReport, startCheck, retry, setExcluded, restoreAll, copyleaksStatus, copyleaksExport };
